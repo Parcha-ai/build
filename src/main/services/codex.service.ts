@@ -195,6 +195,12 @@ class CodexServiceImpl {
       case 'item.completed': {
         const item = event.item;
         if (!item) return null;
+        if (item.type === 'agent_message') {
+          return { type: 'text_delta', content: item.text };
+        }
+        if (item.type === 'reasoning') {
+          return { type: 'thinking_delta', content: item.text };
+        }
         if (item.type === 'command_execution') {
           return {
             type: 'tool_result',
