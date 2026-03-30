@@ -196,6 +196,8 @@ class CodexServiceImpl {
         const item = event.item;
         if (!item) return null;
         if (item.type === 'agent_message') {
+          // Only emit if we haven't seen this text via item.updated already
+          // Track via _lastEmittedText on the event (set by streamDirect)
           return { type: 'text_delta', content: item.text };
         }
         if (item.type === 'reasoning') {
@@ -413,11 +415,25 @@ class CodexServiceImpl {
     }
 
     try {
+      // Track text already emitted via item.updated to avoid duplicating on item.completed
+      let lastUpdatedText = '';
+
       for await (const event of this.spawnCodex(sessionId, safePrompt, workingDir, apiKey)) {
-        const translated = this.translateEvent(event);
-        if (translated) {
-          yield translated;
+        // Track item.updated text for dedup
+        if (event.type === 'item.updated' && event.item?.type === 'agent_message') {
+          lastUpdatedText = event.item.text || '';
         }
+
+        const translated = this.translateEvent(event);
+        if (!translated) continue;
+
+        // Skip item.completed text_delta if item.updated already sent the same text
+        if (event.type === 'item.completed' && event.item?.type === 'agent_message' && lastUpdatedText) {
+          lastUpdatedText = '';
+          continue; // Already emitted via item.updated
+        }
+
+        yield translated;
       }
 
       yield { type: 'complete' };
