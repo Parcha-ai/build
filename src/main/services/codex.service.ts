@@ -46,16 +46,19 @@ function findCodexBinary(): string {
   else if (platform === 'linux' && arch === 'arm64') targetTriple = 'aarch64-unknown-linux-gnu';
 
   if (targetTriple) {
-    const platformPkg = `@openai/codex-${platform}-${arch}`;
-    // Check relative to our module (works in both dev and packaged)
+    const platformPkg = path.join('@openai', `codex-${platform}-${arch}`);
+    const binaryRel = path.join('vendor', targetTriple, 'codex', platform === 'win32' ? 'codex.exe' : 'codex');
     const candidates = [
-      // In packaged app: Resources/node_modules/@openai/codex-darwin-arm64/vendor/...
-      path.resolve(__dirname, '..', '..', 'node_modules', platformPkg, 'vendor', targetTriple, 'codex', 'codex'),
-      // In dev: project root node_modules
-      path.resolve(process.cwd(), 'node_modules', platformPkg, 'vendor', targetTriple, 'codex', 'codex'),
+      // Packaged app: Resources/node_modules/ (outside app.asar)
+      path.join(process.resourcesPath, 'node_modules', platformPkg, binaryRel),
+      // Dev: project root node_modules
+      path.resolve(process.cwd(), 'node_modules', platformPkg, binaryRel),
+      // Dev fallback: relative to __dirname (webpack output)
+      path.resolve(__dirname, '..', '..', 'node_modules', platformPkg, binaryRel),
     ];
 
     for (const candidate of candidates) {
+      console.log(`[Codex Service] Checking binary path: ${candidate}`);
       if (fs.existsSync(candidate)) {
         console.log(`[Codex Service] Found binary at: ${candidate}`);
         return candidate;
@@ -75,6 +78,7 @@ function findCodexBinary(): string {
     // not in PATH
   }
 
+  console.error(`[Codex Service] Binary not found. __dirname=${__dirname}, resourcesPath=${process.resourcesPath}, cwd=${process.cwd()}`);
   throw new Error('Unable to locate Codex CLI binary. Ensure @openai/codex is installed with optional dependencies.');
 }
 
