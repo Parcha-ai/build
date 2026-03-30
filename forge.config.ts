@@ -59,6 +59,8 @@ const config: ForgeConfig = {
           { name: '@anthropic-ai/claude-agent-sdk', source: path.join(__dirname, 'node_modules', '@anthropic-ai', 'claude-agent-sdk'), dest: path.join(nodeModulesPath, '@anthropic-ai', 'claude-agent-sdk') },
           { name: '@anthropic-ai/sdk', source: path.join(__dirname, 'node_modules', '@anthropic-ai', 'sdk'), dest: path.join(nodeModulesPath, '@anthropic-ai', 'sdk') },
           { name: '@openai/codex-sdk', source: path.join(__dirname, 'node_modules', '@openai', 'codex-sdk'), dest: path.join(nodeModulesPath, '@openai', 'codex-sdk') },
+          { name: '@openai/codex', source: path.join(__dirname, 'node_modules', '@openai', 'codex'), dest: path.join(nodeModulesPath, '@openai', 'codex') },
+          { name: '@openai/codex-darwin-arm64', source: path.join(__dirname, 'node_modules', '@openai', 'codex-darwin-arm64'), dest: path.join(nodeModulesPath, '@openai', 'codex-darwin-arm64') },
           // Monaco editor assets for code editing
           { name: 'monaco-editor', source: path.join(__dirname, 'node_modules', 'monaco-editor') },
         ];
