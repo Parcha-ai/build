@@ -499,23 +499,24 @@ class CodexServiceImpl {
       : this.spawnCodex(sessionId, safePrompt, workingDir, apiKey);
 
     try {
-      // Track text already emitted via item.updated to avoid duplicating on item.completed
-      let lastUpdatedText = '';
+      // Track whether we've seen item.updated for agent_message — if so, skip item.completed
+      let hadUpdatedMessage = false;
 
       for await (const event of eventSource) {
-        // Track item.updated text for dedup
         if (event.type === 'item.updated' && event.item?.type === 'agent_message') {
-          lastUpdatedText = event.item.text || '';
+          hadUpdatedMessage = true;
+        }
+
+        // Skip item.completed for agent_message/reasoning if we already streamed via item.updated
+        if (event.type === 'item.completed' && event.item) {
+          if ((event.item.type === 'agent_message' || event.item.type === 'reasoning') && hadUpdatedMessage) {
+            hadUpdatedMessage = false;
+            continue;
+          }
         }
 
         const translated = this.translateEvent(event);
         if (!translated) continue;
-
-        // Skip item.completed text_delta if item.updated already sent the same text
-        if (event.type === 'item.completed' && event.item?.type === 'agent_message' && lastUpdatedText) {
-          lastUpdatedText = '';
-          continue; // Already emitted via item.updated
-        }
 
         yield translated;
       }
