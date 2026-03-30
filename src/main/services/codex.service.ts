@@ -365,6 +365,17 @@ class CodexServiceImpl {
     if (child.stdin) {
       child.stdin.write(prompt);
       child.stdin.end();
+      console.log(`[Codex Service] Prompt written to stdin (${prompt.length} chars)`);
+    }
+
+    // Capture stderr for diagnostics
+    let stderrOutput = '';
+    if (child.stderr) {
+      child.stderr.on('data', (data: Buffer) => {
+        const text = data.toString();
+        stderrOutput += text;
+        console.log('[Codex Service] stderr:', text.substring(0, 200));
+      });
     }
 
     // Read JSON events line-by-line from stdout
@@ -373,12 +384,15 @@ class CodexServiceImpl {
     }
 
     const rl = readline.createInterface({ input: child.stdout });
+    let eventCount = 0;
 
     try {
       for await (const line of rl) {
         if (!line.trim()) continue;
         try {
           const event = JSON.parse(line) as CodexJsonEvent;
+          eventCount++;
+          console.log(`[Codex Service] Event ${eventCount}: ${event.type} ${event.item?.type || ''}`);
           yield event;
         } catch {
           console.warn('[Codex Service] Failed to parse JSON line:', line.substring(0, 200));
@@ -387,13 +401,20 @@ class CodexServiceImpl {
     } finally {
       rl.close();
       this.activeProcesses.delete(sessionId);
+      console.log(`[Codex Service] Stream ended. Total events: ${eventCount}, stderr: ${stderrOutput.substring(0, 200)}`);
     }
 
     // Wait for process to exit
     await new Promise<void>((resolve) => {
-      child.on('close', () => resolve());
+      child.on('close', (code) => {
+        console.log(`[Codex Service] Process exited with code: ${code}`);
+        resolve();
+      });
       // If already exited
-      if (child.exitCode !== null) resolve();
+      if (child.exitCode !== null) {
+        console.log(`[Codex Service] Process already exited with code: ${child.exitCode}`);
+        resolve();
+      }
     });
   }
 
