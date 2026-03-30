@@ -2516,11 +2516,11 @@ ${memoriesPrompt}
         console.log('[Claude Service] Using Anthropic default:', selectedModel);
       }
 
-      // Route to Codex SDK when Codex model is selected
+      // Route to Codex when Codex model is selected
       if (selectedModel === 'codex') {
-        console.log('[Claude Service] Routing to Codex SDK');
-        const projectPath = session.worktreePath || session.repoPath || process.cwd();
-        for await (const event of codexService.streamAsChat(sessionId, userMessage, projectPath)) {
+        console.log(`[Claude Service] Routing to Codex${session.sshConfig ? ' (SSH)' : ' (local)'}`);
+        const projectPath = session.sshConfig?.remoteWorkdir || session.worktreePath || session.repoPath || process.cwd();
+        for await (const event of codexService.streamAsChat(sessionId, userMessage, projectPath, session.sshConfig)) {
           yield event as StreamEvent;
         }
         return;

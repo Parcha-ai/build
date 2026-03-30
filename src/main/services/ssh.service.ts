@@ -2247,6 +2247,12 @@ CONFIG_EOF`);
       };
     }
   }
+  /**
+   * Public accessor for getting/creating SSH connections (used by Codex service).
+   */
+  async getConnectionForCodex(sessionId: string, config: SSHConfig): Promise<Client> {
+    return this.getConnection(sessionId, config);
+  }
 }
 
 // Export singleton instance

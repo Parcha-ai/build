@@ -3,6 +3,7 @@ import { spawn, ChildProcess } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as readline from 'readline';
+import { sshService } from './ssh.service';
 
 // Stream event types for Codex (parallel to Claude's StreamEvent but separate)
 export interface CodexStreamEvent {
@@ -419,9 +420,66 @@ class CodexServiceImpl {
   }
 
   /**
+   * Spawn codex on a remote SSH server and yield JSON events.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private async *spawnCodexSSH(
+    sessionId: string,
+    prompt: string,
+    workingDir: string,
+    apiKey: string,
+    sshConfig: any,
+  ): AsyncGenerator<CodexJsonEvent> {
+    console.log(`[Codex Service] Spawning Codex via SSH on ${sshConfig.host}`);
+
+    const client = await sshService.getConnectionForCodex(sessionId, sshConfig);
+
+    // Escape the prompt for shell (replace single quotes)
+    const escapedPrompt = prompt.replace(/'/g, "'\\''");
+
+    // Build the remote command — codex must be in PATH on the server
+    const cmd = `export PATH="$HOME/.local/bin:$HOME/.nvm/versions/node/*/bin:$HOME/.cargo/bin:/usr/local/bin:$PATH" && ` +
+      `cd '${workingDir}' && ` +
+      `CODEX_API_KEY='${apiKey}' ` +
+      `codex exec --experimental-json --sandbox workspace-write --skip-git-repo-check --config 'approval_policy="never"' <<'CODEX_EOF'\n${prompt}\nCODEX_EOF`;
+
+    const channel = await new Promise<import('ssh2').ClientChannel>((resolve, reject) => {
+      client.exec(cmd, (err, channel) => {
+        if (err) reject(err);
+        else resolve(channel);
+      });
+    });
+
+    const rl = readline.createInterface({ input: channel });
+    let eventCount = 0;
+
+    channel.stderr.on('data', (data: Buffer) => {
+      console.log('[Codex Service] SSH stderr:', data.toString().substring(0, 200));
+    });
+
+    try {
+      for await (const line of rl) {
+        if (!line.trim()) continue;
+        try {
+          const event = JSON.parse(line) as CodexJsonEvent;
+          eventCount++;
+          console.log(`[Codex Service] SSH Event ${eventCount}: ${event.type} ${event.item?.type || ''}`);
+          yield event;
+        } catch {
+          // Non-JSON output from remote (e.g. shell messages) — skip
+        }
+      }
+    } finally {
+      rl.close();
+      console.log(`[Codex Service] SSH stream ended. Total events: ${eventCount}`);
+    }
+  }
+
+  /**
    * Stream Codex events for direct /codex invocation.
    */
-  async *streamDirect(sessionId: string, prompt: string, workingDir: string): AsyncGenerator<CodexStreamEvent> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async *streamDirect(sessionId: string, prompt: string, workingDir: string, sshConfig?: any): AsyncGenerator<CodexStreamEvent> {
     const apiKey = this.getOpenAiApiKey();
     if (!apiKey) {
       yield { type: 'error', error: 'No OpenAI API key configured. Please set your OpenAI API key in Settings.' };
@@ -435,11 +493,16 @@ class CodexServiceImpl {
       safePrompt = prompt.substring(0, MAX_PROMPT_CHARS) + '\n\n[... truncated due to length]';
     }
 
+    // Choose local or SSH spawn
+    const eventSource = sshConfig
+      ? this.spawnCodexSSH(sessionId, safePrompt, workingDir, apiKey, sshConfig)
+      : this.spawnCodex(sessionId, safePrompt, workingDir, apiKey);
+
     try {
       // Track text already emitted via item.updated to avoid duplicating on item.completed
       let lastUpdatedText = '';
 
-      for await (const event of this.spawnCodex(sessionId, safePrompt, workingDir, apiKey)) {
+      for await (const event of eventSource) {
         // Track item.updated text for dedup
         if (event.type === 'item.updated' && event.item?.type === 'agent_message') {
           lastUpdatedText = event.item.text || '';
@@ -470,7 +533,8 @@ class CodexServiceImpl {
   /**
    * Stream Codex as Claude-compatible StreamEvents so it works in the existing chat pipeline.
    */
-  async *streamAsChat(sessionId: string, prompt: string, workingDir: string): AsyncGenerator<{
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async *streamAsChat(sessionId: string, prompt: string, workingDir: string, sshConfig?: any): AsyncGenerator<{
     type: string;
     content?: string;
     toolCall?: { id: string; name: string; input: Record<string, unknown>; status: string; result?: string };
@@ -482,7 +546,7 @@ class CodexServiceImpl {
       systemInfo: { tools: ['Bash', 'Edit', 'Read', 'Write', 'Glob', 'Grep'], model: 'codex' },
     };
 
-    for await (const event of this.streamDirect(sessionId, prompt, workingDir)) {
+    for await (const event of this.streamDirect(sessionId, prompt, workingDir, sshConfig)) {
       switch (event.type) {
         case 'text_start':
           break;
