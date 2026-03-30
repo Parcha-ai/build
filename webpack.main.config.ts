@@ -22,9 +22,8 @@ export const mainConfig: Configuration = {
     'node-pty': 'commonjs node-pty',
     '@anthropic-ai/claude-agent-sdk': 'commonjs @anthropic-ai/claude-agent-sdk',
     '@anthropic-ai/sdk': 'commonjs @anthropic-ai/sdk',
-    // codex-sdk is ESM-only — loaded via runtime dynamic import() in codex.service.ts
-    // (bypasses webpack using new Function('specifier', 'return import(specifier)'))
-    // Still externalized to prevent webpack from trying to bundle ESM files
+    // codex-sdk no longer imported — we spawn the codex binary directly
+    // Keep the external to prevent webpack from trying to bundle the ESM package if any stray type imports remain
     '@openai/codex-sdk': 'commonjs @openai/codex-sdk',
   },
 };

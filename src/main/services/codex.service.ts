@@ -1,10 +1,8 @@
 import Store from 'electron-store';
-// @openai/codex-sdk is ESM-only — must use dynamic import() in CJS context
-// Type imports are fine (erased at compile time)
-type ThreadEvent = import('@openai/codex-sdk').ThreadEvent;
-type ThreadItem = import('@openai/codex-sdk').ThreadItem;
-type Thread = import('@openai/codex-sdk').Thread;
-type Codex = import('@openai/codex-sdk').Codex;
+import { spawn, ChildProcess } from 'child_process';
+import * as path from 'path';
+import * as fs from 'fs';
+import * as readline from 'readline';
 
 // Stream event types for Codex (parallel to Claude's StreamEvent but separate)
 export interface CodexStreamEvent {
@@ -33,44 +31,99 @@ export interface CodexToolResult {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const settingsStore = new Store({ name: 'claudette-settings' }) as any;
 
-// Lazy-load the ESM-only Codex SDK
-// webpack transforms import() to __webpack_require__() which generates require() for externals.
-// require() of an ESM-only package throws ERR_PACKAGE_PATH_NOT_EXPORTED.
-// Bypass webpack's static analysis with Function() to get a real ESM dynamic import().
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const dynamicImport = new Function('specifier', 'return import(specifier)') as (specifier: string) => Promise<any>;
+/**
+ * Find the codex CLI binary — checks node_modules platform packages first,
+ * then falls back to PATH.
+ */
+function findCodexBinary(): string {
+  // Platform binary from @openai/codex-<platform> package
+  const platform = process.platform;
+  const arch = process.arch;
+  let targetTriple = '';
+  if (platform === 'darwin' && arch === 'arm64') targetTriple = 'aarch64-apple-darwin';
+  else if (platform === 'darwin' && arch === 'x64') targetTriple = 'x86_64-apple-darwin';
+  else if (platform === 'linux' && arch === 'x64') targetTriple = 'x86_64-unknown-linux-gnu';
+  else if (platform === 'linux' && arch === 'arm64') targetTriple = 'aarch64-unknown-linux-gnu';
 
-async function createCodex(apiKey: string): Promise<InstanceType<typeof import('@openai/codex-sdk').Codex>> {
-  const mod = await dynamicImport('@openai/codex-sdk');
-  // ESM dynamic import returns the namespace directly: { Codex, Thread }
-  // But handle potential .default wrapping from interop layers
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const resolved = (mod as any).default || mod;
-  const CodexClass = resolved.Codex || resolved;
-  if (typeof CodexClass !== 'function') {
-    throw new Error(`Failed to load Codex SDK: got ${typeof CodexClass} instead of constructor. Module keys: ${Object.keys(mod).join(', ')}`);
+  if (targetTriple) {
+    const platformPkg = `@openai/codex-${platform}-${arch}`;
+    // Check relative to our module (works in both dev and packaged)
+    const candidates = [
+      // In packaged app: Resources/node_modules/@openai/codex-darwin-arm64/vendor/...
+      path.resolve(__dirname, '..', '..', 'node_modules', platformPkg, 'vendor', targetTriple, 'codex', 'codex'),
+      // In dev: project root node_modules
+      path.resolve(process.cwd(), 'node_modules', platformPkg, 'vendor', targetTriple, 'codex', 'codex'),
+    ];
+
+    for (const candidate of candidates) {
+      if (fs.existsSync(candidate)) {
+        console.log(`[Codex Service] Found binary at: ${candidate}`);
+        return candidate;
+      }
+    }
   }
-  return new CodexClass({ apiKey });
+
+  // Fallback: check PATH
+  const { execSync } = require('child_process');
+  try {
+    const result = execSync('which codex', { encoding: 'utf8' }).trim();
+    if (result) {
+      console.log(`[Codex Service] Found binary in PATH: ${result}`);
+      return result;
+    }
+  } catch {
+    // not in PATH
+  }
+
+  throw new Error('Unable to locate Codex CLI binary. Ensure @openai/codex is installed with optional dependencies.');
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+interface CodexJsonEvent {
+  type: string;
+  item?: {
+    id: string;
+    type: string;
+    text?: string;
+    command?: string;
+    aggregated_output?: string;
+    status?: string;
+    changes?: Array<{ kind: string; path: string }>;
+    server?: string;
+    tool?: string;
+    arguments?: Record<string, unknown>;
+    result?: unknown;
+    error?: { message: string };
+  };
+  error?: { message: string };
+  message?: string;
 }
 
 class CodexServiceImpl {
-  private activeThreads: Map<string, { thread: Thread; abortController: AbortController }> = new Map();
+  private activeProcesses: Map<string, { process: ChildProcess; abortController: AbortController }> = new Map();
+  private codexBinaryPath: string | null = null;
 
   getOpenAiApiKey(): string | undefined {
-    // User-provided key
     const userKey = settingsStore.get('openAiApiKey') as string | undefined;
     if (userKey) return userKey;
-    // Fallback to openaiApiKey (alternate key name)
     return settingsStore.get('openaiApiKey') as string | undefined;
   }
 
+  private getCodexBinary(): string {
+    if (!this.codexBinaryPath) {
+      this.codexBinaryPath = findCodexBinary();
+    }
+    return this.codexBinaryPath;
+  }
+
   /**
-   * Translate a Codex ThreadEvent into our CodexStreamEvent format.
+   * Translate a JSON event from `codex exec --experimental-json` into our CodexStreamEvent.
    */
-  private translateEvent(event: ThreadEvent): CodexStreamEvent | null {
+  private translateEvent(event: CodexJsonEvent): CodexStreamEvent | null {
     switch (event.type) {
       case 'item.started': {
         const item = event.item;
+        if (!item) return null;
         switch (item.type) {
           case 'agent_message':
             return { type: 'text_start' };
@@ -113,6 +166,7 @@ class CodexServiceImpl {
 
       case 'item.updated': {
         const item = event.item;
+        if (!item) return null;
         if (item.type === 'agent_message') {
           return { type: 'text_delta', content: item.text };
         }
@@ -136,6 +190,7 @@ class CodexServiceImpl {
 
       case 'item.completed': {
         const item = event.item;
+        if (!item) return null;
         if (item.type === 'command_execution') {
           return {
             type: 'tool_result',
@@ -189,50 +244,6 @@ class CodexServiceImpl {
   }
 
   /**
-   * Summarise thread items into a structured result for the MCP tool response.
-   */
-  private summariseItems(items: ThreadItem[]): CodexToolResult {
-    let summary = '';
-    let reasoning = '';
-    const toolCalls: Array<{ type: string; detail: string }> = [];
-
-    for (const item of items) {
-      switch (item.type) {
-        case 'agent_message':
-          summary += item.text + '\n';
-          break;
-        case 'reasoning':
-          reasoning += item.text + '\n';
-          break;
-        case 'command_execution':
-          toolCalls.push({
-            type: 'bash',
-            detail: `$ ${item.command}\n${item.aggregated_output || ''}`.trim(),
-          });
-          break;
-        case 'file_change':
-          toolCalls.push({
-            type: 'file_change',
-            detail: item.changes.map(c => `${c.kind}: ${c.path}`).join('\n'),
-          });
-          break;
-        case 'mcp_tool_call':
-          toolCalls.push({
-            type: 'mcp',
-            detail: `${item.server}:${item.tool}`,
-          });
-          break;
-      }
-    }
-
-    return {
-      summary: summary.trim() || 'Codex completed without a text response.',
-      toolCalls,
-      reasoning: reasoning.trim() || undefined,
-    };
-  }
-
-  /**
    * Run Codex for the MCP tool invocation (blocks until complete, returns structured result).
    */
   async runForTool(sessionId: string, prompt: string, workingDir: string): Promise<CodexToolResult> {
@@ -244,35 +255,49 @@ class CodexServiceImpl {
       };
     }
 
-    // Truncate if too long for Codex CLI
     const MAX_PROMPT_CHARS = 50000;
     const safePrompt = prompt.length > MAX_PROMPT_CHARS
       ? prompt.substring(0, MAX_PROMPT_CHARS) + '\n\n[... truncated due to length]'
       : prompt;
 
-    let codex: Awaited<ReturnType<typeof createCodex>>;
-    try {
-      codex = await createCodex(apiKey);
-    } catch (err) {
-      return {
-        summary: `Failed to initialize Codex: ${err instanceof Error ? err.message : String(err)}`,
-        toolCalls: [],
-      };
-    }
-
-    const thread = codex.startThread({
-      workingDirectory: workingDir,
-      sandboxMode: 'workspace-write',
-      approvalPolicy: 'never',
-      skipGitRepoCheck: true,
-    });
-
-    const abortController = new AbortController();
-    this.activeThreads.set(`tool:${sessionId}`, { thread, abortController });
+    let summary = '';
+    let reasoning = '';
+    const toolCalls: Array<{ type: string; detail: string }> = [];
 
     try {
-      const result = await thread.run(safePrompt, { signal: abortController.signal });
-      return this.summariseItems(result.items);
+      for await (const event of this.spawnCodex(sessionId, safePrompt, workingDir, apiKey)) {
+        const item = event.item;
+        if (!item) continue;
+
+        if (event.type === 'item.completed') {
+          switch (item.type) {
+            case 'agent_message':
+              summary += (item.text || '') + '\n';
+              break;
+            case 'reasoning':
+              reasoning += (item.text || '') + '\n';
+              break;
+            case 'command_execution':
+              toolCalls.push({
+                type: 'bash',
+                detail: `$ ${item.command}\n${item.aggregated_output || ''}`.trim(),
+              });
+              break;
+            case 'file_change':
+              toolCalls.push({
+                type: 'file_change',
+                detail: (item.changes || []).map((c: { kind: string; path: string }) => `${c.kind}: ${c.path}`).join('\n'),
+              });
+              break;
+            case 'mcp_tool_call':
+              toolCalls.push({
+                type: 'mcp',
+                detail: `${item.server}:${item.tool}`,
+              });
+              break;
+          }
+        }
+      }
     } catch (error) {
       if ((error as Error).name === 'AbortError') {
         return { summary: 'Codex run was cancelled.', toolCalls: [] };
@@ -281,9 +306,83 @@ class CodexServiceImpl {
         summary: `Codex error: ${error instanceof Error ? error.message : String(error)}`,
         toolCalls: [],
       };
-    } finally {
-      this.activeThreads.delete(`tool:${sessionId}`);
     }
+
+    return {
+      summary: summary.trim() || 'Codex completed without a text response.',
+      toolCalls,
+      reasoning: reasoning.trim() || undefined,
+    };
+  }
+
+  /**
+   * Spawn `codex exec --experimental-json` and yield parsed JSON events.
+   */
+  private async *spawnCodex(
+    sessionId: string,
+    prompt: string,
+    workingDir: string,
+    apiKey: string,
+  ): AsyncGenerator<CodexJsonEvent> {
+    let binary: string;
+    try {
+      binary = this.getCodexBinary();
+    } catch (err) {
+      throw new Error(`Failed to initialize Codex: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    const args = [
+      'exec',
+      '--experimental-json',
+      '--sandbox', 'workspace-write',
+      '--cd', workingDir,
+      '--skip-git-repo-check',
+      '--config', 'approval_policy="never"',
+    ];
+
+    const env: Record<string, string> = { ...process.env as Record<string, string> };
+    env.CODEX_API_KEY = apiKey;
+    env.CODEX_SDK_ORIGINATOR = 'grep-build';
+
+    const abortController = new AbortController();
+    const child = spawn(binary, args, { env, signal: abortController.signal });
+
+    this.activeProcesses.set(sessionId, { process: child, abortController });
+
+    // Write prompt to stdin then close it
+    if (child.stdin) {
+      child.stdin.write(prompt);
+      child.stdin.end();
+    }
+
+    // Read JSON events line-by-line from stdout
+    if (!child.stdout) {
+      throw new Error('Codex process has no stdout');
+    }
+
+    const rl = readline.createInterface({ input: child.stdout });
+
+    try {
+      for await (const line of rl) {
+        if (!line.trim()) continue;
+        try {
+          const event = JSON.parse(line) as CodexJsonEvent;
+          yield event;
+        } catch {
+          console.warn('[Codex Service] Failed to parse JSON line:', line.substring(0, 200));
+        }
+      }
+    } finally {
+      rl.close();
+      this.activeProcesses.delete(sessionId);
+    }
+
+    // Wait for process to exit
+    await new Promise<void>((resolve) => {
+      child.on('close', () => resolve());
+      // If already exited
+      if (child.exitCode !== null) resolve();
+    });
   }
 
   /**
@@ -296,7 +395,6 @@ class CodexServiceImpl {
       return;
     }
 
-    // Codex CLI has internal prompt limits — truncate if excessively long
     const MAX_PROMPT_CHARS = 50000;
     let safePrompt = prompt;
     if (prompt.length > MAX_PROMPT_CHARS) {
@@ -304,37 +402,14 @@ class CodexServiceImpl {
       safePrompt = prompt.substring(0, MAX_PROMPT_CHARS) + '\n\n[... truncated due to length]';
     }
 
-    let codex: Awaited<ReturnType<typeof createCodex>>;
     try {
-      codex = await createCodex(apiKey);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error('[Codex Service] Failed to create Codex instance:', msg);
-      yield { type: 'error', error: `Failed to initialize Codex: ${msg}` };
-      return;
-    }
-
-    const thread = codex.startThread({
-      workingDirectory: workingDir,
-      sandboxMode: 'workspace-write',
-      approvalPolicy: 'never',
-      skipGitRepoCheck: true,
-    });
-
-    const abortController = new AbortController();
-    this.activeThreads.set(sessionId, { thread, abortController });
-
-    try {
-      const streamedTurn = await thread.runStreamed(safePrompt, { signal: abortController.signal });
-
-      for await (const event of streamedTurn.events) {
+      for await (const event of this.spawnCodex(sessionId, safePrompt, workingDir, apiKey)) {
         const translated = this.translateEvent(event);
         if (translated) {
           yield translated;
         }
       }
 
-      // Ensure we always yield a complete event
       yield { type: 'complete' };
     } catch (error) {
       if ((error as Error).name === 'AbortError') {
@@ -342,14 +417,11 @@ class CodexServiceImpl {
       } else {
         yield { type: 'error', error: error instanceof Error ? error.message : String(error) };
       }
-    } finally {
-      this.activeThreads.delete(sessionId);
     }
   }
 
   /**
    * Stream Codex as Claude-compatible StreamEvents so it works in the existing chat pipeline.
-   * This is the main integration point — when user selects "Codex" as the model.
    */
   async *streamAsChat(sessionId: string, prompt: string, workingDir: string): AsyncGenerator<{
     type: string;
@@ -358,7 +430,6 @@ class CodexServiceImpl {
     error?: string;
     systemInfo?: { tools: string[]; model: string };
   }> {
-    // Emit system info first (like Claude does)
     yield {
       type: 'system',
       systemInfo: { tools: ['Bash', 'Edit', 'Read', 'Write', 'Glob', 'Grep'], model: 'codex' },
@@ -367,7 +438,6 @@ class CodexServiceImpl {
     for await (const event of this.streamDirect(sessionId, prompt, workingDir)) {
       switch (event.type) {
         case 'text_start':
-          // Nothing to emit — text_delta will follow
           break;
         case 'text_delta':
           if (event.content) {
@@ -404,13 +474,13 @@ class CodexServiceImpl {
    * Cancel an active Codex run for a session.
    */
   cancel(sessionId: string): void {
-    // Check both direct and tool-mode keys
     for (const key of [sessionId, `tool:${sessionId}`]) {
-      const active = this.activeThreads.get(key);
+      const active = this.activeProcesses.get(key);
       if (active) {
         console.log(`[Codex Service] Cancelling run for ${key}`);
         active.abortController.abort();
-        this.activeThreads.delete(key);
+        active.process.kill('SIGTERM');
+        this.activeProcesses.delete(key);
       }
     }
   }
