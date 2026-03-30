@@ -118,7 +118,7 @@ function GStackLauncher({ sessionId, onClose }: { sessionId: string; onClose: ()
   }, [onClose]);
 
   const GROUPS = [
-    { label: 'Strategy', ids: ['office-hours', 'plan-ceo', 'plan-eng', 'design', 'autoplan'] },
+    { label: 'Strategy', ids: ['office-hours', 'plan-ceo', 'plan-eng', 'design', 'autoplan', 'sdd'] },
     { label: 'Development', ids: ['review', 'ship', 'document-release', 'investigate'] },
     { label: 'Testing', ids: ['qa', 'browse'] },
     { label: 'Safety', ids: ['careful', 'freeze', 'guard', 'cso'] },
@@ -955,6 +955,27 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
     if (e.key === ']' && e.metaKey) {
       e.preventDefault();
       useSessionStore.getState().cycleForkTabs('next');
+      return;
+    }
+
+    // Cmd+T: Fork the current chat (empty fork — user types in new tab)
+    if (e.key === 't' && e.metaKey && !e.shiftKey && !e.altKey) {
+      e.preventDefault();
+      useSessionStore.getState().createForkFromCurrent('');
+      return;
+    }
+
+    // Cmd+S: Open new session dialog
+    if (e.key === 's' && e.metaKey && !e.shiftKey && !e.altKey) {
+      e.preventDefault();
+      useUIStore.getState().openNewSessionDialog();
+      return;
+    }
+
+    // Cmd+F: Fork the current chat (same as Cmd+T)
+    if (e.key === 'f' && e.metaKey && !e.shiftKey && !e.altKey) {
+      e.preventDefault();
+      useSessionStore.getState().createForkFromCurrent('');
       return;
     }
 

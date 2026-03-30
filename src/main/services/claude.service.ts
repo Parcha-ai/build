@@ -8,6 +8,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import type { ChatMessage, ToolCall, Session, QuestionRequest, QuestionResponse, Attachment, ContentBlock, CompactionStatus, CompactionComplete, PlanApprovalRequest, PlanApprovalResponse } from '../../shared/types';
+import { powerService } from './power.service';
 import { BrowserWindow, nativeImage } from 'electron';
 import { IPC_CHANNELS } from '../../shared/constants/channels';
 import { browserService } from './browser.service';
@@ -2434,6 +2435,7 @@ ${memoriesPrompt}
     // Create abort controller for cancellation
     const abortController = new AbortController();
     this.activeQueries.set(sessionId, abortController);
+    powerService.sessionStarted();
 
     // Invalidate message cache - new message being sent (performance optimization)
     this.invalidateMessageCache(sessionId);
@@ -3892,6 +3894,7 @@ Begin by creating the task structure now.
     } finally {
       this.activeQueries.delete(sessionId);
       this.activeQueryObjects.delete(sessionId);
+      powerService.sessionEnded();
     }
   }
 
@@ -3902,7 +3905,10 @@ Begin by creating the task structure now.
   cleanupSession(sessionId: string): void {
     // Abort active query if any
     const controller = this.activeQueries.get(sessionId);
-    if (controller) controller.abort();
+    if (controller) {
+      controller.abort();
+      powerService.sessionEnded();
+    }
     this.activeQueries.delete(sessionId);
     this.activeQueryObjects.delete(sessionId);
 
@@ -3929,6 +3935,7 @@ Begin by creating the task structure now.
       controller.abort();
       this.activeQueries.delete(sessionId);
       this.activeQueryObjects.delete(sessionId);
+      powerService.sessionEnded();
     }
   }
 

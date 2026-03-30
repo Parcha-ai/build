@@ -62,6 +62,7 @@ import { registerCodexHandlers } from './ipc/codex.ipc';
 import { getGStackModes, getGStackModePrompt } from './services/gstack.service';
 import { IPC_CHANNELS } from '../shared/constants/channels';
 import { cdpProxyService } from './services/cdp-proxy.service';
+import { powerService } from './services/power.service';
 
 // Global error handlers to prevent crashes from broken pipes and other uncaught errors
 process.on('uncaughtException', (error: Error) => {
@@ -491,6 +492,7 @@ function migrateFromGrepBuild(): void {
 app.on('ready', async () => {
   migrateFromGrepBuild();
   registerIPCHandlers();
+  powerService.init();
   createWindow();
 
   // Start CDP proxy for Stagehand webview integration
@@ -500,6 +502,11 @@ app.on('ready', async () => {
   } catch (error) {
     console.error('[Main] Failed to start CDP proxy:', error);
   }
+});
+
+// Clean up power management on quit
+app.on('will-quit', () => {
+  powerService.dispose();
 });
 
 // Quit when all windows are closed, except on macOS.

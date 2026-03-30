@@ -1,4 +1,5 @@
 import React, { useState, useCallback } from 'react';
+import { Plus } from 'lucide-react';
 import { useSessionStore } from '../../stores/session.store';
 
 interface ForkTabsProps {
@@ -14,6 +15,7 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
   const getForkSiblings = useSessionStore(s => s.getForkSiblings);
   const setActiveSession = useSessionStore(s => s.setActiveSession);
   const activeSessionId = useSessionStore(s => s.activeSessionId);
+  const createForkFromCurrent = useSessionStore(s => s.createForkFromCurrent);
 
   // Track closed/hidden tabs locally (persists within the component's lifecycle)
   const [closedTabs, setClosedTabs] = useState<Set<string>>(new Set());
@@ -80,6 +82,14 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
             </div>
           );
         })}
+        {/* New fork button */}
+        <button
+          onClick={() => createForkFromCurrent('')}
+          className="flex items-center justify-center px-2 py-1 border-l border-claude-border/30 text-claude-text-secondary hover:text-claude-accent transition-colors"
+          title="Fork conversation (Cmd+T)"
+        >
+          <Plus size={12} />
+        </button>
       </div>
     </div>
   );

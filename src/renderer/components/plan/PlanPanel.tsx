@@ -1,9 +1,48 @@
 import React from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { X, FileText, Trash2, Check, XCircle, RefreshCw, ClipboardList } from 'lucide-react';
+import { X, FileText, Trash2, Check, XCircle, RefreshCw, ClipboardList, FileCheck } from 'lucide-react';
 import { useUIStore } from '../../stores/ui.store';
 import { useSessionStore } from '../../stores/session.store';
+
+function SpecMetadataBar({ content }: { content: string }) {
+  const frontmatterMatch = content.match(/^---\n([\s\S]*?)\n---/);
+  if (!frontmatterMatch) return null;
+
+  const yaml = frontmatterMatch[1];
+  const name = yaml.match(/^name:\s*(.+)$/m)?.[1]?.trim();
+  const description = yaml.match(/^description:\s*(.+)$/m)?.[1]?.trim();
+  // Match targets under "targets:" — lines starting with "  - "
+  const targetsSection = yaml.match(/^targets:\s*\n((?:\s+-\s+.+\n?)*)/m);
+  const targets = targetsSection
+    ? [...targetsSection[1].matchAll(/^\s*-\s*(.+)$/gm)].map(m => m[1].trim())
+    : [];
+  const capabilityCount = (content.match(/\[@test\]/g) || []).length;
+
+  return (
+    <div className="mb-4 p-3 bg-claude-surface border border-claude-border">
+      <div className="flex items-center gap-2 mb-1">
+        <FileCheck size={14} className="text-teal-400" />
+        <span className="text-xs font-bold uppercase tracking-wider text-teal-400">SPEC</span>
+        {name && <span className="text-sm font-mono text-claude-text">{name}</span>}
+      </div>
+      {description && <p className="text-xs text-claude-text-secondary mb-2">{description}</p>}
+      <div className="flex gap-4 text-xs text-claude-text-secondary">
+        {targets.length > 0 && <span>{targets.length} target file{targets.length !== 1 ? 's' : ''}</span>}
+        {capabilityCount > 0 && <span>{capabilityCount} capabilit{capabilityCount !== 1 ? 'ies' : 'y'}</span>}
+      </div>
+      {targets.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1">
+          {targets.map((t, i) => (
+            <span key={i} className="px-1.5 py-0.5 text-[10px] font-mono bg-claude-bg border border-claude-border text-claude-text-secondary">
+              {t}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function PlanPanel() {
   const { togglePlanPanel, sessionPlanContent, clearPlanContent, setPlanContent } = useUIStore();
@@ -14,6 +53,7 @@ export default function PlanPanel() {
   const planContent = activeSessionId ? sessionPlanContent[activeSessionId] : null;
   const pendingApproval = activeSessionId ? pendingPlanApproval[activeSessionId] : null;
   const sessionMessages = activeSessionId ? messages[activeSessionId] : [];
+  const isSpecFile = !!(planContent?.startsWith('---\n') && planContent?.includes('[@test]'));
 
   // Debug logging
   React.useEffect(() => {
@@ -103,11 +143,12 @@ export default function PlanPanel() {
               const filePath = toolCall.input.file_path as string;
               console.log(`[PlanPanel] Write tool file path: ${filePath}`);
 
-              if (filePath.includes('.claude/plans') && filePath.endsWith('.md')) {
+              const isSpecFile = filePath.endsWith('.spec.md');
+              if ((filePath.includes('.claude/plans') && filePath.endsWith('.md')) || isSpecFile) {
                 const content = toolCall.input.content as string;
-                console.log(`[PlanPanel] Found plan file Write, content length: ${content?.length || 0}, first 100 chars:`, content?.substring(0, 100));
+                console.log(`[PlanPanel] Found ${isSpecFile ? 'spec' : 'plan'} file Write, content length: ${content?.length || 0}, first 100 chars:`, content?.substring(0, 100));
 
-                if (content && content.length > 500) {
+                if (content && content.length > (isSpecFile ? 200 : 500)) {
                   console.log('[PlanPanel] ✅ Loading plan from Write tool call:', filePath);
                   setPlanContent(activeSessionId, content);
                   return;
@@ -159,8 +200,13 @@ export default function PlanPanel() {
       {/* Header */}
       <div className="h-10 flex items-center justify-between px-3 border-b border-claude-border bg-claude-surface">
         <div className="flex items-center gap-2">
-          <ClipboardList size={14} className="text-claude-accent" />
-          <span className="text-sm font-medium">Plan</span>
+          {isSpecFile ? <FileCheck size={14} className="text-teal-400" /> : <ClipboardList size={14} className="text-claude-accent" />}
+          <span className="text-sm font-medium">{isSpecFile ? 'Spec' : 'Plan'}</span>
+          {isSpecFile && (
+            <span className="px-2 py-0.5 text-xs font-medium bg-teal-500/20 text-teal-400 border border-teal-500/30">
+              SDD
+            </span>
+          )}
           {pendingApproval && (
             <span className="px-2 py-0.5 text-xs font-medium bg-amber-500/20 text-amber-400 border border-amber-500/30">
               Awaiting Approval
@@ -281,6 +327,7 @@ export default function PlanPanel() {
         )}
         {planContent ? (
           <div className="prose prose-invert prose-sm max-w-none font-mono">
+            {isSpecFile && <SpecMetadataBar content={planContent} />}
             <ReactMarkdown
               remarkPlugins={[remarkGfm]}
               components={{
@@ -372,16 +419,29 @@ export default function PlanPanel() {
                   </td>
                 ),
                 hr: () => <hr className="border-claude-border my-4" />,
-                a: ({ href, children }) => (
-                  <a
-                    href={href}
-                    className="text-claude-accent hover:underline"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
-                    {children}
-                  </a>
-                ),
+                a: ({ href, children }) => {
+                  const childText = String(children);
+                  if (childText === '@test' && href) {
+                    return (
+                      <span
+                        className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-mono font-bold bg-teal-500/20 text-teal-400 border border-teal-500/30 cursor-default"
+                        title={`Test: ${href}`}
+                      >
+                        @test
+                      </span>
+                    );
+                  }
+                  return (
+                    <a
+                      href={href}
+                      className="text-claude-accent hover:underline"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      {children}
+                    </a>
+                  );
+                },
                 // Task list support
                 input: ({ type, checked, ...props }) => {
                   if (type === 'checkbox') {

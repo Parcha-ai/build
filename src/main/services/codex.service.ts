@@ -34,9 +34,23 @@ export interface CodexToolResult {
 const settingsStore = new Store({ name: 'claudette-settings' }) as any;
 
 // Lazy-load the ESM-only Codex SDK
+// webpack transforms import() to __webpack_require__() which generates require() for externals.
+// require() of an ESM-only package throws ERR_PACKAGE_PATH_NOT_EXPORTED.
+// Bypass webpack's static analysis with Function() to get a real ESM dynamic import().
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const dynamicImport = new Function('specifier', 'return import(specifier)') as (specifier: string) => Promise<any>;
+
 async function createCodex(apiKey: string): Promise<InstanceType<typeof import('@openai/codex-sdk').Codex>> {
-  const { Codex } = await import('@openai/codex-sdk');
-  return new Codex({ apiKey });
+  const mod = await dynamicImport('@openai/codex-sdk');
+  // ESM dynamic import returns the namespace directly: { Codex, Thread }
+  // But handle potential .default wrapping from interop layers
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const resolved = (mod as any).default || mod;
+  const CodexClass = resolved.Codex || resolved;
+  if (typeof CodexClass !== 'function') {
+    throw new Error(`Failed to load Codex SDK: got ${typeof CodexClass} instead of constructor. Module keys: ${Object.keys(mod).join(', ')}`);
+  }
+  return new CodexClass({ apiKey });
 }
 
 class CodexServiceImpl {
@@ -230,7 +244,22 @@ class CodexServiceImpl {
       };
     }
 
-    const codex = await createCodex(apiKey);
+    // Truncate if too long for Codex CLI
+    const MAX_PROMPT_CHARS = 50000;
+    const safePrompt = prompt.length > MAX_PROMPT_CHARS
+      ? prompt.substring(0, MAX_PROMPT_CHARS) + '\n\n[... truncated due to length]'
+      : prompt;
+
+    let codex: Awaited<ReturnType<typeof createCodex>>;
+    try {
+      codex = await createCodex(apiKey);
+    } catch (err) {
+      return {
+        summary: `Failed to initialize Codex: ${err instanceof Error ? err.message : String(err)}`,
+        toolCalls: [],
+      };
+    }
+
     const thread = codex.startThread({
       workingDirectory: workingDir,
       sandboxMode: 'workspace-write',
@@ -242,7 +271,7 @@ class CodexServiceImpl {
     this.activeThreads.set(`tool:${sessionId}`, { thread, abortController });
 
     try {
-      const result = await thread.run(prompt, { signal: abortController.signal });
+      const result = await thread.run(safePrompt, { signal: abortController.signal });
       return this.summariseItems(result.items);
     } catch (error) {
       if ((error as Error).name === 'AbortError') {
@@ -267,7 +296,24 @@ class CodexServiceImpl {
       return;
     }
 
-    const codex = await createCodex(apiKey);
+    // Codex CLI has internal prompt limits — truncate if excessively long
+    const MAX_PROMPT_CHARS = 50000;
+    let safePrompt = prompt;
+    if (prompt.length > MAX_PROMPT_CHARS) {
+      console.warn(`[Codex Service] Prompt too long (${prompt.length} chars), truncating to ${MAX_PROMPT_CHARS}`);
+      safePrompt = prompt.substring(0, MAX_PROMPT_CHARS) + '\n\n[... truncated due to length]';
+    }
+
+    let codex: Awaited<ReturnType<typeof createCodex>>;
+    try {
+      codex = await createCodex(apiKey);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error('[Codex Service] Failed to create Codex instance:', msg);
+      yield { type: 'error', error: `Failed to initialize Codex: ${msg}` };
+      return;
+    }
+
     const thread = codex.startThread({
       workingDirectory: workingDir,
       sandboxMode: 'workspace-write',
@@ -279,7 +325,7 @@ class CodexServiceImpl {
     this.activeThreads.set(sessionId, { thread, abortController });
 
     try {
-      const streamedTurn = await thread.runStreamed(prompt, { signal: abortController.signal });
+      const streamedTurn = await thread.runStreamed(safePrompt, { signal: abortController.signal });
 
       for await (const event of streamedTurn.events) {
         const translated = this.translateEvent(event);

@@ -2149,10 +2149,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // DON'T clear parent session's streaming state — let it keep running
       // The fork is a separate conversation that doesn't affect the parent
 
-      // Add to session list
-      set(state => ({
-        sessions: [...state.sessions, forkedSession]
-      }));
+      // Add to session list (guard against duplicate from sessionsUpdated event race)
+      set(state => {
+        if (state.sessions.some(s => s.id === forkedSession.id)) return state;
+        return { sessions: [...state.sessions, forkedSession] };
+      });
 
       // Update fork group tracking
       // Find root session (walk up parentSessionId chain)
