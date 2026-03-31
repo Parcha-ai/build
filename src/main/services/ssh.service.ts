@@ -1433,10 +1433,12 @@ export class SSHService {
 
       console.log('[SSH Service] Fetching remote transcript:', transcriptPath);
 
-      // Try to read the transcript file
+      // Read the last 500 lines of the transcript (fast) instead of the entire file.
+      // 500 JSONL lines covers ~200+ messages (some lines are metadata, not messages).
+      // This dramatically speeds up initial load for long-running sessions.
       const result = await this.execCommand(
         client,
-        `cat "${transcriptPath}" 2>/dev/null || echo "___TRANSCRIPT_NOT_FOUND___"`
+        `tail -n 500 "${transcriptPath}" 2>/dev/null || echo "___TRANSCRIPT_NOT_FOUND___"`
       );
 
       if (result.includes('___TRANSCRIPT_NOT_FOUND___')) {
@@ -1446,7 +1448,7 @@ export class SSHService {
 
         const altResult = await this.execCommand(
           client,
-          `cat ${altPath} 2>/dev/null || echo "___TRANSCRIPT_NOT_FOUND___"`
+          `tail -n 500 ${altPath} 2>/dev/null || echo "___TRANSCRIPT_NOT_FOUND___"`
         );
 
         if (altResult.includes('___TRANSCRIPT_NOT_FOUND___')) {
