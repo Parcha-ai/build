@@ -441,7 +441,7 @@ class CodexServiceImpl {
     const cmd = `export PATH="$HOME/.local/bin:$HOME/.nvm/versions/node/*/bin:$HOME/.cargo/bin:/usr/local/bin:$PATH" && ` +
       `cd '${workingDir}' && ` +
       `CODEX_API_KEY='${apiKey}' ` +
-      `codex exec --experimental-json --sandbox workspace-write --skip-git-repo-check --config 'approval_policy="never"' <<'CODEX_EOF'\n${prompt}\nCODEX_EOF`;
+      `codex exec --experimental-json --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox <<'CODEX_EOF'\n${prompt}\nCODEX_EOF`;
 
     const channel = await new Promise<import('ssh2').ClientChannel>((resolve, reject) => {
       client.exec(cmd, (err, channel) => {
