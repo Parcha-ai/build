@@ -333,9 +333,19 @@ export class ClaudeService {
         description: 'Fastest model - best for simple tasks'
       },
       {
-        id: 'codex',
-        name: 'Codex',
-        description: 'OpenAI Codex - second opinion from a different AI'
+        id: 'codex:o3',
+        name: 'o3 (Codex)',
+        description: 'OpenAI o3 — most capable reasoning model'
+      },
+      {
+        id: 'codex:o4-mini',
+        name: 'o4-mini (Codex)',
+        description: 'OpenAI o4-mini — fast and efficient'
+      },
+      {
+        id: 'codex:gpt-4.1',
+        name: 'GPT-4.1 (Codex)',
+        description: 'OpenAI GPT-4.1 — strong general model'
       },
     ];
   }
@@ -2517,9 +2527,10 @@ ${memoriesPrompt}
         console.log('[Claude Service] Using Anthropic default:', selectedModel);
       }
 
-      // Route to Codex when Codex model is selected
-      if (selectedModel === 'codex') {
-        console.log(`[Claude Service] Routing to Codex${session.sshConfig ? ' (SSH)' : ' (local)'}`);
+      // Route to Codex when a codex:* model is selected
+      if (selectedModel?.startsWith('codex:')) {
+        const codexModel = selectedModel.split(':')[1]; // e.g. "o3", "o4-mini", "gpt-4.1"
+        console.log(`[Claude Service] Routing to Codex model=${codexModel}${session.sshConfig ? ' (SSH)' : ' (local)'}`);
         const projectPath = session.sshConfig?.remoteWorkdir || session.worktreePath || session.repoPath || process.cwd();
 
         // Load conversation history to give Codex context from prior Claude turns
@@ -2539,7 +2550,7 @@ ${memoriesPrompt}
           console.warn('[Claude Service] Could not load messages for Codex context:', e);
         }
 
-        for await (const event of codexService.streamAsChat(sessionId, userMessage, projectPath, session.sshConfig, conversationContext)) {
+        for await (const event of codexService.streamAsChat(sessionId, userMessage, projectPath, session.sshConfig, conversationContext, codexModel)) {
           yield event as StreamEvent;
         }
         return;

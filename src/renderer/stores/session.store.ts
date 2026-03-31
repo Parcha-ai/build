@@ -992,6 +992,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           fixedSelections[sessionId] = 'claude-opus-4-5-20251101';
           needsUpdate = true;
           console.log(`[SessionStore] Migrating session ${sessionId} from invalid model ID to Opus 4.5`);
+        } else if (modelId === 'codex') {
+          fixedSelections[sessionId] = 'codex:o3';
+          needsUpdate = true;
+          console.log(`[SessionStore] Migrating session ${sessionId} from 'codex' to 'codex:o3'`);
         } else {
           fixedSelections[sessionId] = modelId;
         }

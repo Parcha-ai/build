@@ -336,6 +336,7 @@ class CodexServiceImpl {
     prompt: string,
     workingDir: string,
     apiKey: string,
+    codexModel?: string,
   ): AsyncGenerator<CodexJsonEvent> {
     let binary: string;
     try {
@@ -352,6 +353,9 @@ class CodexServiceImpl {
       '--skip-git-repo-check',
       '--config', 'approval_policy="never"',
     ];
+    if (codexModel) {
+      args.push('--model', codexModel);
+    }
 
     const env: Record<string, string> = { ...process.env as Record<string, string> };
     env.CODEX_API_KEY = apiKey;
@@ -429,6 +433,7 @@ class CodexServiceImpl {
     workingDir: string,
     apiKey: string,
     sshConfig: any,
+    codexModel?: string,
   ): AsyncGenerator<CodexJsonEvent> {
     console.log(`[Codex Service] Spawning Codex via SSH on ${sshConfig.host}`);
 
@@ -441,7 +446,7 @@ class CodexServiceImpl {
     const cmd = `export PATH="$HOME/.local/bin:$HOME/.nvm/versions/node/*/bin:$HOME/.cargo/bin:/usr/local/bin:$PATH" && ` +
       `cd '${workingDir}' && ` +
       `CODEX_API_KEY='${apiKey}' ` +
-      `codex exec --experimental-json --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox <<'CODEX_EOF'\n${prompt}\nCODEX_EOF`;
+      `codex exec --experimental-json --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox${codexModel ? ` --model '${codexModel}'` : ''} <<'CODEX_EOF'\n${prompt}\nCODEX_EOF`;
 
     const channel = await new Promise<import('ssh2').ClientChannel>((resolve, reject) => {
       client.exec(cmd, (err, channel) => {
@@ -479,7 +484,7 @@ class CodexServiceImpl {
    * Stream Codex events for direct /codex invocation.
    */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  async *streamDirect(sessionId: string, prompt: string, workingDir: string, sshConfig?: any): AsyncGenerator<CodexStreamEvent> {
+  async *streamDirect(sessionId: string, prompt: string, workingDir: string, sshConfig?: any, codexModel?: string): AsyncGenerator<CodexStreamEvent> {
     const apiKey = this.getOpenAiApiKey();
     if (!apiKey) {
       yield { type: 'error', error: 'No OpenAI API key configured. Please set your OpenAI API key in Settings.' };
@@ -495,8 +500,8 @@ class CodexServiceImpl {
 
     // Choose local or SSH spawn
     const eventSource = sshConfig
-      ? this.spawnCodexSSH(sessionId, safePrompt, workingDir, apiKey, sshConfig)
-      : this.spawnCodex(sessionId, safePrompt, workingDir, apiKey);
+      ? this.spawnCodexSSH(sessionId, safePrompt, workingDir, apiKey, sshConfig, codexModel)
+      : this.spawnCodex(sessionId, safePrompt, workingDir, apiKey, codexModel);
 
     try {
       // Track whether we've seen item.updated for agent_message — if so, skip item.completed
@@ -535,7 +540,7 @@ class CodexServiceImpl {
    * Stream Codex as Claude-compatible StreamEvents so it works in the existing chat pipeline.
    */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  async *streamAsChat(sessionId: string, prompt: string, workingDir: string, sshConfig?: any, conversationContext?: string): AsyncGenerator<{
+  async *streamAsChat(sessionId: string, prompt: string, workingDir: string, sshConfig?: any, conversationContext?: string, codexModel?: string): AsyncGenerator<{
     type: string;
     content?: string;
     toolCall?: { id: string; name: string; input: Record<string, unknown>; status: string; result?: string };
@@ -544,13 +549,13 @@ class CodexServiceImpl {
   }> {
     yield {
       type: 'system',
-      systemInfo: { tools: ['Bash', 'Edit', 'Read', 'Write', 'Glob', 'Grep'], model: 'codex' },
+      systemInfo: { tools: ['Bash', 'Edit', 'Read', 'Write', 'Glob', 'Grep'], model: codexModel || 'codex' },
     };
 
     // Prepend conversation context from prior Claude turns if available
     const fullPrompt = conversationContext ? conversationContext + prompt : prompt;
 
-    for await (const event of this.streamDirect(sessionId, fullPrompt, workingDir, sshConfig)) {
+    for await (const event of this.streamDirect(sessionId, fullPrompt, workingDir, sshConfig, codexModel)) {
       switch (event.type) {
         case 'text_start':
           break;
