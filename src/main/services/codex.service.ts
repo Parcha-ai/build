@@ -196,14 +196,9 @@ class CodexServiceImpl {
       case 'item.completed': {
         const item = event.item;
         if (!item) return null;
-        if (item.type === 'agent_message') {
-          // Only emit if we haven't seen this text via item.updated already
-          // Track via _lastEmittedText on the event (set by streamDirect)
-          return { type: 'text_delta', content: item.text };
-        }
-        if (item.type === 'reasoning') {
-          return { type: 'thinking_delta', content: item.text };
-        }
+        // agent_message and reasoning handled directly in streamDirect — skip here
+        if (item.type === 'agent_message') return null;
+        if (item.type === 'reasoning') return null;
         if (item.type === 'command_execution') {
           return {
             type: 'tool_result',
@@ -504,21 +499,28 @@ class CodexServiceImpl {
       : this.spawnCodex(sessionId, safePrompt, workingDir, apiKey, codexModel);
 
     try {
-      // Track whether we've seen item.updated for agent_message — if so, skip item.completed
-      let hadUpdatedMessage = false;
+      // Codex --experimental-json emits multiple item.completed agent_message per turn
+      // (no item.updated streaming). Collect text and emit as text_deltas with separators.
+      let emittedMessageCount = 0;
 
       for await (const event of eventSource) {
-        if (event.type === 'item.updated' && event.item?.type === 'agent_message') {
-          hadUpdatedMessage = true;
+        // For agent_message items, emit as text_delta with newline separator between items
+        if (event.type === 'item.completed' && event.item?.type === 'agent_message' && event.item.text) {
+          const prefix = emittedMessageCount > 0 ? '\n\n' : '';
+          emittedMessageCount++;
+          yield { type: 'text_delta', content: prefix + event.item.text };
+          continue;
         }
 
-        // Skip item.completed for agent_message/reasoning if we already streamed via item.updated
-        if (event.type === 'item.completed' && event.item) {
-          if ((event.item.type === 'agent_message' || event.item.type === 'reasoning') && hadUpdatedMessage) {
-            hadUpdatedMessage = false;
-            continue;
-          }
+        // For reasoning items, emit as thinking_delta
+        if (event.type === 'item.completed' && event.item?.type === 'reasoning' && event.item.text) {
+          yield { type: 'thinking_delta', content: event.item.text };
+          continue;
         }
+
+        // Skip item.updated for agent_message/reasoning (avoid duplicates if they appear)
+        if (event.type === 'item.updated' && event.item?.type === 'agent_message') continue;
+        if (event.type === 'item.updated' && event.item?.type === 'reasoning') continue;
 
         const translated = this.translateEvent(event);
         if (!translated) continue;
