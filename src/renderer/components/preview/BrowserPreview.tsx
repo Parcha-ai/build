@@ -5,6 +5,7 @@ import {
   RotateCw,
   ExternalLink,
   Target,
+  Camera,
   Code,
   X,
   Trash2,
@@ -1490,6 +1491,32 @@ ${data.textContent ? `**Text Content:** "${data.textContent.slice(0, 100)}${data
           title="Select element"
         >
           <Target size={16} />
+        </button>
+        <button
+          onClick={async () => {
+            const webview = webviewRef.current;
+            if (!webview) return;
+            try {
+              const image = await webview.capturePage();
+              const dataUrl = image.toDataURL();
+              const base64 = dataUrl.split(',')[1] || '';
+              // Dispatch to InputArea as an image attachment
+              window.dispatchEvent(new CustomEvent('grep-insert-chat', {
+                detail: {
+                  sessionId: session.id,
+                  screenshot: base64,
+                  content: '',
+                },
+              }));
+              console.log('[BrowserPreview] Screenshot captured and attached to input');
+            } catch (err) {
+              console.error('[BrowserPreview] Screenshot capture failed:', err);
+            }
+          }}
+          className="p-1.5 rounded hover:bg-claude-bg transition-colors"
+          title="Screenshot viewport and attach to input"
+        >
+          <Camera size={16} />
         </button>
         <button
           onClick={() => webviewRef.current?.openDevTools()}

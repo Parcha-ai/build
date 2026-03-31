@@ -63,6 +63,7 @@ import { getGStackModes, getGStackModePrompt } from './services/gstack.service';
 import { IPC_CHANNELS } from '../shared/constants/channels';
 import { cdpProxyService } from './services/cdp-proxy.service';
 import { powerService } from './services/power.service';
+import { maybeRunRendererCdpScript } from './services/renderer-cdp.service';
 
 // Global error handlers to prevent crashes from broken pipes and other uncaught errors
 process.on('uncaughtException', (error: Error) => {
@@ -125,6 +126,25 @@ declare const MAIN_WINDOW_WEBPACK_ENTRY: string;
 declare const MAIN_WINDOW_PRELOAD_WEBPACK_ENTRY: string;
 
 let mainWindow: BrowserWindow | null = null;
+
+if (process.env.GREP_DISABLE_SINGLE_INSTANCE !== '1') {
+  const gotSingleInstanceLock = app.requestSingleInstanceLock();
+  if (!gotSingleInstanceLock) {
+    console.log('[Main] Another G-Build instance is already running, exiting');
+    app.quit();
+  } else {
+    app.on('second-instance', () => {
+      if (!mainWindow) return;
+      if (mainWindow.isMinimized()) {
+        mainWindow.restore();
+      }
+      if (!mainWindow.isVisible()) {
+        mainWindow.show();
+      }
+      mainWindow.focus();
+    });
+  }
+}
 
 const createWindow = (): void => {
   // Create the browser window.
@@ -232,6 +252,10 @@ const createWindow = (): void => {
   console.log('[Main] Loading renderer from:', MAIN_WINDOW_WEBPACK_ENTRY);
   console.log('[Main] __dirname:', __dirname);
   console.log('[Main] process.resourcesPath:', process.resourcesPath);
+
+  mainWindow.webContents.once('did-finish-load', () => {
+    void maybeRunRendererCdpScript(mainWindow as BrowserWindow);
+  });
 
   mainWindow.loadURL(MAIN_WINDOW_WEBPACK_ENTRY)
     .then(() => console.log('[Main] Renderer loaded successfully'))

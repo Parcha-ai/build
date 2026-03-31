@@ -599,12 +599,26 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   // Chat methods
   addMessage: (sessionId, message) => {
-    set((state) => ({
-      messages: {
-        ...state.messages,
-        [sessionId]: [...(state.messages[sessionId] || []), message],
-      },
-    }));
+    set((state) => {
+      const existingMessages = state.messages[sessionId] || [];
+      const lastMessage = existingMessages[existingMessages.length - 1];
+      const isDuplicateAssistantMessage =
+        message.role === 'assistant' &&
+        lastMessage?.role === 'assistant' &&
+        (lastMessage.id === message.id || lastMessage.content === message.content);
+
+      if (isDuplicateAssistantMessage) {
+        console.warn(`[SessionStore] Ignoring duplicate assistant message for ${sessionId}`);
+        return state;
+      }
+
+      return {
+        messages: {
+          ...state.messages,
+          [sessionId]: [...existingMessages, message],
+        },
+      };
+    });
   },
 
   updateStreamContent: (sessionId, content, agentId?) => {

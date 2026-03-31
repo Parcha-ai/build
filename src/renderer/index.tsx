@@ -5,6 +5,9 @@ import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import App from './App';
+import { useAuthStore } from './stores/auth.store';
+import { useSessionStore } from './stores/session.store';
+import { useUIStore } from './stores/ui.store';
 import './styles/globals.css';
 
 // Create React Query client
@@ -33,9 +36,23 @@ root.render(
   </React.StrictMode>
 );
 
+// Expose a minimal test bridge for renderer smoke tests driven via Electron CDP.
+if (typeof window !== 'undefined') {
+  window.__GREP_TEST__ = {
+    useAuthStore,
+    useSessionStore,
+    useUIStore,
+  };
+}
+
 // Declare the global electron API type
 declare global {
   interface Window {
     electronAPI: import('../main/preload').ElectronAPI;
+    __GREP_TEST__?: {
+      useAuthStore: typeof useAuthStore;
+      useSessionStore: typeof useSessionStore;
+      useUIStore: typeof useUIStore;
+    };
   }
 }

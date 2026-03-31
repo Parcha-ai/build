@@ -43,6 +43,12 @@ interface UIState {
   viewportMode: ViewportMode;
   mobileBrowserHeight: number; // Height of mobile browser frame, persisted
 
+  // New Session Dialog — global so it can be triggered from keyboard shortcuts
+  isNewSessionDialogOpen: boolean;
+  setNewSessionDialogOpen: (open: boolean) => void;
+  openNewSessionDialog: () => void;
+  closeNewSessionDialog: () => void;
+
   // Command Center — multi-session grid view
   isCommandCenterActive: boolean;
   commandCenterFocusedSessionId: string | null;
@@ -113,6 +119,12 @@ export const useUIStore = create<UIState>((set, get) => ({
   splitRatio: 'equal',
   viewportMode: 'desktop',
   mobileBrowserHeight: getPersistedMobileBrowserHeight(),
+
+  // New Session Dialog state
+  isNewSessionDialogOpen: false,
+  setNewSessionDialogOpen: (open: boolean) => set({ isNewSessionDialogOpen: open }),
+  openNewSessionDialog: () => set({ isNewSessionDialogOpen: true }),
+  closeNewSessionDialog: () => set({ isNewSessionDialogOpen: false }),
 
   // Command Center state — persisted via localStorage
   isCommandCenterActive: (() => {

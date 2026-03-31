@@ -888,6 +888,9 @@ export default function ToolCallCard({ toolCall, isLatest = false, isLatestToolC
 
   // Extract base tool name from MCP prefixed names (e.g., mcp__claudette-browser__BrowserNavigate -> BrowserNavigate)
   const baseToolName = toolCall.name.includes('__') ? toolCall.name.split('__').pop() || toolCall.name : toolCall.name;
+  if (!TOOL_CONFIG[baseToolName]) {
+    console.warn('[ToolCallCard] Unknown tool name:', toolCall.name, '→ baseToolName:', baseToolName);
+  }
   const config = TOOL_CONFIG[baseToolName] || DEFAULT_CONFIG;
   const Icon = config.icon;
 

@@ -7,8 +7,7 @@ import { Plus, LogOut, GripVertical, LayoutGrid } from 'lucide-react';
 
 export default function Sidebar() {
   const { logout } = useAuthStore();
-  const { sidebarWidth, setSidebarWidth, isCommandCenterActive, toggleCommandCenter } = useUIStore();
-  const [isNewSessionOpen, setIsNewSessionOpen] = useState(false);
+  const { sidebarWidth, setSidebarWidth, isCommandCenterActive, toggleCommandCenter, isNewSessionDialogOpen, setNewSessionDialogOpen } = useUIStore();
   const [isResizing, setIsResizing] = useState(false);
 
   const handleResizeMouseDown = useCallback((e: React.MouseEvent) => {
@@ -62,7 +61,7 @@ export default function Sidebar() {
             <LayoutGrid size={14} />
           </button>
           <button
-            onClick={() => setIsNewSessionOpen(true)}
+            onClick={() => setNewSessionDialogOpen(true)}
             className="p-1 transition-colors hover:bg-claude-bg text-claude-text-secondary"
             style={{ borderRadius: 0 }}
             title="New Session"
@@ -91,8 +90,8 @@ export default function Sidebar() {
 
       {/* New Session Dialog */}
       <NewSessionDialog
-        isOpen={isNewSessionOpen}
-        onClose={() => setIsNewSessionOpen(false)}
+        isOpen={isNewSessionDialogOpen}
+        onClose={() => setNewSessionDialogOpen(false)}
       />
       </div>
 

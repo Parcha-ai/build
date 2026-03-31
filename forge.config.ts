@@ -8,6 +8,8 @@ import { AutoUnpackNativesPlugin } from '@electron-forge/plugin-auto-unpack-nati
 import { WebpackPlugin } from '@electron-forge/plugin-webpack';
 import { FusesPlugin } from '@electron-forge/plugin-fuses';
 import { FuseV1Options, FuseVersion } from '@electron/fuses';
+import * as os from 'os';
+import * as path from 'path';
 
 import { mainConfig } from './webpack.main.config';
 import { rendererConfig } from './webpack.renderer.config';
@@ -15,6 +17,9 @@ import { rendererConfig } from './webpack.renderer.config';
 // Get version for output directory
 const packageJson = require('./package.json');
 const version = packageJson.version || '0.0.0';
+const offlineElectronZipDir = process.env.GREP_ELECTRON_ZIP_DIR || null;
+const offlineElectronCacheRoot = process.env.GREP_ELECTRON_CACHE_ROOT || path.join(os.homedir(), 'Library', 'Caches', 'electron');
+const skipElectronChecksums = process.env.GREP_SKIP_ELECTRON_CHECKSUMS === '1';
 
 const config: ForgeConfig = {
   // Output to versioned folder
@@ -34,6 +39,13 @@ const config: ForgeConfig = {
     // For development builds, adhoc signing is sufficient.
     // For distribution, sign manually after postPackage completes.
     osxSign: false as any,
+    ...(offlineElectronZipDir ? { electronZipDir: offlineElectronZipDir } : {}),
+    ...(skipElectronChecksums ? {
+      download: {
+        cacheRoot: offlineElectronCacheRoot,
+        unsafelyDisableChecksums: true,
+      },
+    } : {}),
   },
   rebuildConfig: {},
   hooks: {

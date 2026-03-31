@@ -108,26 +108,31 @@ if (typeof window !== 'undefined') {
 
 import { loader } from '@monaco-editor/react';
 
-// Configure loader to use our custom protocol that serves Monaco from node_modules
-// The main process handles 'monaco-asset://' requests and serves files from disk
-loader.config({
-  paths: {
-    vs: 'monaco-asset://app/node_modules/monaco-editor/min/vs',
-  },
-});
+const hasElectronAPI = typeof window !== 'undefined' && !!window.electronAPI;
 
-// Initialize Monaco and configure custom theme
-loader.init().then((monaco) => {
-  monaco.editor.defineTheme('claudette-dark', {
-    base: 'vs-dark',
-    inherit: true,
-    rules: [],
-    colors: {
-      'editor.background': '#1a1a2e',
+if (hasElectronAPI) {
+  // Electron serves Monaco from the custom monaco-asset:// protocol.
+  // In plain browser mode this protocol does not exist, so configuring it
+  // during startup can break the production web build before React renders.
+  loader.config({
+    paths: {
+      vs: 'monaco-asset://app/node_modules/monaco-editor/min/vs',
     },
   });
-}).catch((err) => {
-  console.error('[Monaco] Failed to initialize:', err);
-});
+
+  // Initialize Monaco and configure custom theme.
+  loader.init().then((monaco) => {
+    monaco.editor.defineTheme('claudette-dark', {
+      base: 'vs-dark',
+      inherit: true,
+      rules: [],
+      colors: {
+        'editor.background': '#1a1a2e',
+      },
+    });
+  }).catch((err) => {
+    console.error('[Monaco] Failed to initialize:', err);
+  });
+}
 
 export {};

@@ -699,8 +699,9 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
 
       if (itemType === 'codex') {
         // Switch to Codex model — messages route through Codex SDK in the same chat
-        const { setSelectedModel } = useSessionStore.getState();
-        setSelectedModel(sessionId, 'codex');
+        const { availableModels, setSelectedModel } = useSessionStore.getState();
+        const defaultCodexModel = availableModels.find((model) => model.id.startsWith('codex:'))?.id || 'codex:gpt-5.4';
+        setSelectedModel(sessionId, defaultCodexModel);
         const beforeCommand = message.slice(0, commandStartIndex);
         setMessage(beforeCommand.trim());
       } else if (itemType === 'gstack') {
