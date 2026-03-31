@@ -525,9 +525,16 @@ class CodexServiceImpl {
         const translated = this.translateEvent(event);
         if (!translated) continue;
 
+        // If translateEvent returns 'complete' (from turn.completed), yield it and stop
+        if (translated.type === 'complete') {
+          yield translated;
+          return; // Don't yield a second complete after the loop
+        }
+
         yield translated;
       }
 
+      // Fallback complete if no turn.completed was received
       yield { type: 'complete' };
     } catch (error) {
       if ((error as Error).name === 'AbortError') {
