@@ -333,19 +333,24 @@ export class ClaudeService {
         description: 'Fastest model - best for simple tasks'
       },
       {
+        id: 'codex:gpt-5.4',
+        name: 'GPT-5.4 (Codex)',
+        description: 'OpenAI flagship — best for complex coding tasks'
+      },
+      {
+        id: 'codex:gpt-5.4-mini',
+        name: 'GPT-5.4 Mini (Codex)',
+        description: 'OpenAI fast — good balance of speed and capability'
+      },
+      {
+        id: 'codex:gpt-5.3-codex',
+        name: 'GPT-5.3 Codex (Codex)',
+        description: 'OpenAI coding-optimised — purpose-built for agents'
+      },
+      {
         id: 'codex:o3',
         name: 'o3 (Codex)',
-        description: 'OpenAI o3 — most capable reasoning model'
-      },
-      {
-        id: 'codex:o4-mini',
-        name: 'o4-mini (Codex)',
-        description: 'OpenAI o4-mini — fast and efficient'
-      },
-      {
-        id: 'codex:gpt-4.1',
-        name: 'GPT-4.1 (Codex)',
-        description: 'OpenAI GPT-4.1 — strong general model'
+        description: 'OpenAI o3 — deep reasoning model'
       },
     ];
   }
