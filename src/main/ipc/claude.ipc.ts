@@ -115,6 +115,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
       let hadError = false;
       let sentStreamEnd = false;
       let needsCompactionRetry = false;
+      const accumulatedToolCalls: Array<{ id: string; name: string; input: Record<string, unknown>; status: string; result?: string }> = [];
 
         try {
           // Stream the response (Stop hook handles Ralph Loop iteration)
@@ -130,6 +131,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
                 break;
 
               case 'tool_use':
+                if (event.toolCall) accumulatedToolCalls.push(event.toolCall as typeof accumulatedToolCalls[0]);
                 mainWindow.webContents.send(IPC_CHANNELS.CLAUDE_TOOL_CALL, {
                   sessionId,
                   toolCall: event.toolCall,
@@ -138,6 +140,15 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
                 break;
 
               case 'tool_result':
+                // Update the accumulated tool call with result
+                if (event.toolCall) {
+                  const idx = accumulatedToolCalls.findIndex(tc => tc.id === (event.toolCall as { id: string }).id);
+                  if (idx >= 0) {
+                    accumulatedToolCalls[idx] = event.toolCall as typeof accumulatedToolCalls[0];
+                  } else {
+                    accumulatedToolCalls.push(event.toolCall as typeof accumulatedToolCalls[0]);
+                  }
+                }
                 mainWindow.webContents.send(IPC_CHANNELS.CLAUDE_TOOL_RESULT, {
                   sessionId,
                   toolCall: event.toolCall,
@@ -243,16 +254,19 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
               case 'message_complete':
                 // Flush any remaining batched content
                 batcher.flush();
+                console.log(`[Claude IPC] message_complete for ${sessionId}. fullMessageContent length: ${fullMessageContent.length}, sentStreamEnd was: ${sentStreamEnd}`);
 
                 // Send STREAM_END (Stop hook handles Ralph Loop iteration)
                 const finalMessage = event.message ? {
                   ...event.message,
                   content: event.message.content || fullMessageContent,
+                  toolCalls: event.message.toolCalls || (accumulatedToolCalls.length > 0 ? accumulatedToolCalls : undefined),
                 } : {
                   id: Date.now().toString(),
                   role: 'assistant' as const,
                   content: fullMessageContent,
                   timestamp: new Date(),
+                  toolCalls: accumulatedToolCalls.length > 0 ? accumulatedToolCalls : undefined,
                 };
                 sentStreamEnd = true;
                 mainWindow.webContents.send(IPC_CHANNELS.CLAUDE_STREAM_END, {
@@ -305,7 +319,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
           // send a synthetic STREAM_END so the renderer clears isStreaming.
           // Without this, the UI gets permanently stuck in "thinking..." state.
           if (!hadError && !sentStreamEnd) {
-            console.log('[Claude IPC] Safety net: generator exited without STREAM_END or error for', sessionId);
+            console.log('[Claude IPC] Safety net: generator exited without STREAM_END or error for', sessionId, 'fullMessageContent:', fullMessageContent.length);
             mainWindow.webContents.send(IPC_CHANNELS.CLAUDE_STREAM_END, {
               sessionId,
               message: {
@@ -313,6 +327,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
                 role: 'assistant' as const,
                 content: fullMessageContent || '',
                 timestamp: new Date(),
+                toolCalls: accumulatedToolCalls.length > 0 ? accumulatedToolCalls : undefined,
               },
             });
           }
