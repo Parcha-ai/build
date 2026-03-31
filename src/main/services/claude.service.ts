@@ -21,6 +21,7 @@ import { memoryService, MemoryCategory } from './memory.service';
 import { qmdService } from './qmd.service';
 import { mcpService } from './mcp.service';
 import { codexService } from './codex.service';
+import { formatConversationContext } from './codex-context';
 
 interface StreamEvent {
   type: 'text_delta' | 'thinking_delta' | 'tool_use' | 'tool_result' | 'message_complete' | 'error' | 'system' | 'permission_request' | 'compaction_status' | 'compaction_complete' | 'plan_content' | 'context_usage';
@@ -2520,7 +2521,25 @@ ${memoriesPrompt}
       if (selectedModel === 'codex') {
         console.log(`[Claude Service] Routing to Codex${session.sshConfig ? ' (SSH)' : ' (local)'}`);
         const projectPath = session.sshConfig?.remoteWorkdir || session.worktreePath || session.repoPath || process.cwd();
-        for await (const event of codexService.streamAsChat(sessionId, userMessage, projectPath, session.sshConfig)) {
+
+        // Load conversation history to give Codex context from prior Claude turns
+        let conversationContext = '';
+        try {
+          const chatMessages = await this.getMessages(sessionId);
+          if (chatMessages.length > 0) {
+            const CODEX_MAX_CHARS = 50000;
+            const promptBudget = userMessage.length + 2000;
+            const contextBudget = Math.min(30000, CODEX_MAX_CHARS - promptBudget);
+            if (contextBudget > 1000) {
+              conversationContext = formatConversationContext(chatMessages, contextBudget);
+              console.log(`[Claude Service] Codex context: ${conversationContext.length} chars from ${chatMessages.length} messages`);
+            }
+          }
+        } catch (e) {
+          console.warn('[Claude Service] Could not load messages for Codex context:', e);
+        }
+
+        for await (const event of codexService.streamAsChat(sessionId, userMessage, projectPath, session.sshConfig, conversationContext)) {
           yield event as StreamEvent;
         }
         return;

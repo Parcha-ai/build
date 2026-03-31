@@ -535,7 +535,7 @@ class CodexServiceImpl {
    * Stream Codex as Claude-compatible StreamEvents so it works in the existing chat pipeline.
    */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  async *streamAsChat(sessionId: string, prompt: string, workingDir: string, sshConfig?: any): AsyncGenerator<{
+  async *streamAsChat(sessionId: string, prompt: string, workingDir: string, sshConfig?: any, conversationContext?: string): AsyncGenerator<{
     type: string;
     content?: string;
     toolCall?: { id: string; name: string; input: Record<string, unknown>; status: string; result?: string };
@@ -547,7 +547,10 @@ class CodexServiceImpl {
       systemInfo: { tools: ['Bash', 'Edit', 'Read', 'Write', 'Glob', 'Grep'], model: 'codex' },
     };
 
-    for await (const event of this.streamDirect(sessionId, prompt, workingDir, sshConfig)) {
+    // Prepend conversation context from prior Claude turns if available
+    const fullPrompt = conversationContext ? conversationContext + prompt : prompt;
+
+    for await (const event of this.streamDirect(sessionId, fullPrompt, workingDir, sshConfig)) {
       switch (event.type) {
         case 'text_start':
           break;
