@@ -29,6 +29,9 @@ export NODE_ENV=development
   // Lunch reminder - disabled by default
   lunchReminderEnabled: false,
   lunchReminderTime: '12:00', // Default time, only used if enabled
+  // Bedtime reminder - disabled by default
+  bedtimeReminderEnabled: false,
+  bedtimeReminderTime: '23:00', // Default time, only used if enabled
   // Foundry - disabled by default
   foundryEnabled: false,
 };

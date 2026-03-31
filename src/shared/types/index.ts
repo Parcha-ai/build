@@ -242,6 +242,9 @@ export interface AppSettings {
   // Lunch reminder settings
   lunchReminderEnabled: boolean; // Enable/disable lunch reminders
   lunchReminderTime?: string; // Time in HH:MM format (only used if enabled)
+  // Bedtime reminder settings
+  bedtimeReminderEnabled: boolean; // Enable/disable bedtime reminders
+  bedtimeReminderTime?: string; // Time in HH:MM format (only used if enabled)
   // Foundry settings (Azure-hosted Claude)
   foundryEnabled?: boolean;
   foundryBaseUrl?: string;

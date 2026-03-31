@@ -15,6 +15,7 @@ import FileContentSearch from './components/editor/FileContentSearch';
 import SessionSwitcher from './components/session/SessionSwitcher';
 import QMDPrompt from './components/qmd/QMDPrompt';
 import LunchLockModal from './components/layout/LunchLockModal';
+import BedtimeLockModal from './components/layout/BedtimeLockModal';
 import { Terminal, Globe, PanelRight, Settings, PanelLeftClose, Monitor, AlertTriangle, Package, FileText, FileCode, ClipboardList, GitBranch } from 'lucide-react';
 
 // Check if we're running in Electron (has electronAPI) or browser preview mode
@@ -119,8 +120,36 @@ function PreviewMode() {
   );
 }
 
+// Helper: compute countdown state for a target time
+function useCountdown(enabled: boolean, targetTime: string, loggedKey: string, windowMinutes: number) {
+  const now = new Date();
+  const today = now.toDateString();
+  const logged = localStorage.getItem(loggedKey) === today;
+
+  if (!enabled || logged) return null;
+
+  const [targetHour, targetMinute] = targetTime.split(':').map(Number);
+  const targetDate = new Date();
+  targetDate.setHours(targetHour, targetMinute, 0, 0);
+  const msUntil = targetDate.getTime() - now.getTime();
+  const minutesUntil = Math.floor(msUntil / 60000);
+
+  if (minutesUntil > windowMinutes || minutesUntil < 0) return null;
+
+  const secondsUntil = Math.floor(msUntil / 1000);
+  const minsLeft = Math.floor(secondsUntil / 60);
+  const secsLeft = secondsUntil % 60;
+  return { secondsUntil, display: `${minsLeft}:${secsLeft.toString().padStart(2, '0')}` };
+}
+
 // Isolated clock component — ticks every second without re-rendering the rest of the app
-const StatusBarClock = memo(function StatusBarClock({ lunchReminderEnabled, lunchTime }: { lunchReminderEnabled: boolean; lunchTime: string }) {
+const StatusBarClock = memo(function StatusBarClock({
+  lunchReminderEnabled, lunchTime,
+  bedtimeReminderEnabled, bedtimeTime,
+}: {
+  lunchReminderEnabled: boolean; lunchTime: string;
+  bedtimeReminderEnabled: boolean; bedtimeTime: string;
+}) {
   const [currentTime, setCurrentTime] = useState(new Date());
 
   useEffect(() => {
@@ -133,45 +162,45 @@ const StatusBarClock = memo(function StatusBarClock({ lunchReminderEnabled, lunc
   const seconds = currentTime.getSeconds();
   const normalTime = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
 
-  const today = new Date().toDateString();
-  const lunchLogged = localStorage.getItem('lunch-logged-date') === today;
+  // Check lunch countdown
+  const lunch = useCountdown(lunchReminderEnabled, lunchTime, 'lunch-logged-date', 30);
 
-  if (!lunchReminderEnabled || lunchLogged) {
+  // Check bedtime countdown (1 hour window)
+  const bedtime = useCountdown(bedtimeReminderEnabled, bedtimeTime, 'bedtime-logged-date', 60);
+
+  // Bedtime takes priority if both are active
+  if (bedtime) {
+    let color = 'text-white';
+    if (bedtime.secondsUntil <= 60) color = 'text-red-500 font-bold';
+    else if (bedtime.secondsUntil <= 300) color = 'text-red-500 font-bold';
+    else if (bedtime.secondsUntil <= 1800) color = 'text-amber-500 font-bold';
+    else color = 'text-indigo-400 font-bold';
+
     return (
-      <div className="flex items-center gap-2 font-mono text-base text-white transition-colors">
-        <span className="font-bold tabular-nums" style={{ letterSpacing: '0.05em' }}>{normalTime}</span>
+      <div className={`flex items-center gap-2 font-mono text-base ${color} transition-colors`}>
+        <span className="text-xs uppercase font-bold" style={{ letterSpacing: '0.1em' }}>BED IN</span>
+        <span className="font-bold tabular-nums" style={{ letterSpacing: '0.05em' }}>{bedtime.display}</span>
       </div>
     );
   }
 
-  const [lunchHour, lunchMinute] = lunchTime.split(':').map(Number);
-  const lunchDate = new Date();
-  lunchDate.setHours(lunchHour, lunchMinute, 0, 0);
-  const msUntilLunch = lunchDate.getTime() - currentTime.getTime();
-  const minutesUntilLunch = Math.floor(msUntilLunch / 60000);
+  if (lunch) {
+    let color = 'text-white';
+    if (lunch.secondsUntil <= 60) color = 'text-red-500 font-bold';
+    else if (lunch.secondsUntil <= 300) color = 'text-red-500 font-bold';
+    else if (lunch.secondsUntil <= 1800) color = 'text-amber-500 font-bold';
 
-  if (minutesUntilLunch > 30 || minutesUntilLunch < 0) {
     return (
-      <div className="flex items-center gap-2 font-mono text-base text-white transition-colors">
-        <span className="font-bold tabular-nums" style={{ letterSpacing: '0.05em' }}>{normalTime}</span>
+      <div className={`flex items-center gap-2 font-mono text-base ${color} transition-colors`}>
+        <span className="text-xs uppercase font-bold" style={{ letterSpacing: '0.1em' }}>LUNCH IN</span>
+        <span className="font-bold tabular-nums" style={{ letterSpacing: '0.05em' }}>{lunch.display}</span>
       </div>
     );
   }
-
-  const secondsUntilLunch = Math.floor(msUntilLunch / 1000);
-  const minsLeft = Math.floor(secondsUntilLunch / 60);
-  const secsLeft = secondsUntilLunch % 60;
-  const countdownDisplay = `${minsLeft}:${secsLeft.toString().padStart(2, '0')}`;
-
-  let color = 'text-white';
-  if (secondsUntilLunch <= 60) color = 'text-red-500 font-bold';
-  else if (secondsUntilLunch <= 300) color = 'text-red-500 font-bold';
-  else if (secondsUntilLunch <= 1800) color = 'text-amber-500 font-bold';
 
   return (
-    <div className={`flex items-center gap-2 font-mono text-base ${color} transition-colors`}>
-      <span className="text-xs uppercase font-bold" style={{ letterSpacing: '0.1em' }}>LUNCH IN</span>
-      <span className="font-bold tabular-nums" style={{ letterSpacing: '0.05em' }}>{countdownDisplay}</span>
+    <div className="flex items-center gap-2 font-mono text-base text-white transition-colors">
+      <span className="font-bold tabular-nums" style={{ letterSpacing: '0.05em' }}>{normalTime}</span>
     </div>
   );
 });
@@ -209,18 +238,23 @@ function ElectronApp() {
   };
   const [isInitialized, setIsInitialized] = useState(false);
 
-  // Clock and lunch enforcement system
+  // Clock and lunch/bedtime enforcement system
   const [showLunchModal, setShowLunchModal] = useState(false);
   const [lunchReminderEnabled, setLunchReminderEnabled] = useState(false);
   const [lunchTime, setLunchTime] = useState('12:00');
+  const [showBedtimeModal, setShowBedtimeModal] = useState(false);
+  const [bedtimeReminderEnabled, setBedtimeReminderEnabled] = useState(false);
+  const [bedtimeTime, setBedtimeTime] = useState('23:00');
 
   const activeSession = sessions.find((s) => s.id === activeSessionId);
 
-  // Load lunch settings
+  // Load lunch + bedtime settings
   useEffect(() => {
     window.electronAPI.settings.get().then((settings) => {
       setLunchReminderEnabled(settings.lunchReminderEnabled || false);
       setLunchTime(settings.lunchReminderTime || '12:00');
+      setBedtimeReminderEnabled(settings.bedtimeReminderEnabled || false);
+      setBedtimeTime(settings.bedtimeReminderTime || '23:00');
     });
   }, []);
 
@@ -276,6 +310,54 @@ function ElectronApp() {
     }
 
     setShowLunchModal(false);
+  };
+
+  // Bedtime enforcement check — runs every 60s
+  useEffect(() => {
+    const checkBedtimeStatus = async () => {
+      const today = new Date().toDateString();
+      const bedtimeLogged = localStorage.getItem('bedtime-logged-date');
+      const bedtimeSnoozed = localStorage.getItem('bedtime-snooze-until');
+
+      const settings = await window.electronAPI.settings.get();
+      if (!settings.bedtimeReminderEnabled) return;
+
+      const configuredTime = settings.bedtimeReminderTime || '23:00';
+      const [bedHour, bedMinute] = configuredTime.split(':').map(Number);
+
+      const now = new Date();
+
+      // Check if snoozed and snooze hasn't expired
+      if (bedtimeSnoozed) {
+        const snoozeExpiry = new Date(bedtimeSnoozed);
+        if (now < snoozeExpiry) return; // Still in snooze period
+      }
+
+      // Trigger if we're at or past bedtime and haven't logged today
+      if (now.getHours() === bedHour && now.getMinutes() >= bedMinute && bedtimeLogged !== today) {
+        setShowBedtimeModal(true);
+      } else if (now.getHours() > bedHour && bedtimeLogged !== today) {
+        setShowBedtimeModal(true);
+      }
+    };
+
+    const interval = setInterval(checkBedtimeStatus, 60000);
+    checkBedtimeStatus();
+
+    return () => clearInterval(interval);
+  }, []);
+
+  const handleBedtimeDismiss = () => {
+    const today = new Date().toDateString();
+    localStorage.setItem('bedtime-logged-date', today);
+    setShowBedtimeModal(false);
+  };
+
+  const handleBedtimeSnooze = () => {
+    // Snooze for 5 minutes
+    const snoozeUntil = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+    localStorage.setItem('bedtime-snooze-until', snoozeUntil);
+    setShowBedtimeModal(false);
   };
 
   useEffect(() => {
@@ -446,7 +528,7 @@ function ElectronApp() {
 
         {/* Center: Clock with lunch countdown — isolated component to avoid re-rendering entire app */}
         <div className="absolute left-1/2 transform -translate-x-1/2 flex items-center">
-          <StatusBarClock lunchReminderEnabled={lunchReminderEnabled} lunchTime={lunchTime} />
+          <StatusBarClock lunchReminderEnabled={lunchReminderEnabled} lunchTime={lunchTime} bedtimeReminderEnabled={bedtimeReminderEnabled} bedtimeTime={bedtimeTime} />
         </div>
 
         {/* Right: panel toggle buttons */}
@@ -553,6 +635,9 @@ function ElectronApp() {
       <SessionSwitcher />
 
       {/* Lunch Lock Modal */}
+      {showBedtimeModal && (
+        <BedtimeLockModal onDismiss={handleBedtimeDismiss} onSnooze={handleBedtimeSnooze} />
+      )}
       {showLunchModal && (
         <LunchLockModal onConfirm={handleLunchConfirmed} />
       )}

@@ -96,6 +96,8 @@ export default function SettingsDialog() {
   const [ultraPlanMode, setUltraPlanMode] = useState(false);
   const [lunchReminderEnabled, setLunchReminderEnabled] = useState(false);
   const [lunchReminderTime, setLunchReminderTime] = useState('12:00');
+  const [bedtimeReminderEnabled, setBedtimeReminderEnabled] = useState(false);
+  const [bedtimeReminderTime, setBedtimeReminderTime] = useState('23:00');
 
   // Foundry settings
   const [foundryEnabled, setFoundryEnabled] = useState(false);
@@ -129,7 +131,7 @@ export default function SettingsDialog() {
   }, []);
 
   // Auto-save app settings (toggles and time picker)
-  const autoSaveAppSettings = useCallback(async (updates: { qmdEnabled?: boolean; ultraPlanMode?: boolean; lunchReminderEnabled?: boolean; lunchReminderTime?: string; foundryEnabled?: boolean; foundryBaseUrl?: string; foundryApiKey?: string; foundryDefaultSonnetModel?: string; foundryDefaultHaikuModel?: string; foundryDefaultOpusModel?: string }) => {
+  const autoSaveAppSettings = useCallback(async (updates: { qmdEnabled?: boolean; ultraPlanMode?: boolean; lunchReminderEnabled?: boolean; lunchReminderTime?: string; bedtimeReminderEnabled?: boolean; bedtimeReminderTime?: string; foundryEnabled?: boolean; foundryBaseUrl?: string; foundryApiKey?: string; foundryDefaultSonnetModel?: string; foundryDefaultHaikuModel?: string; foundryDefaultOpusModel?: string }) => {
     showSaveIndicator();
     try {
       await window.electronAPI.settings.set(updates);
@@ -209,6 +211,8 @@ export default function SettingsDialog() {
           setUltraPlanMode(appSettings.ultraPlanMode || false);
           setLunchReminderEnabled(appSettings.lunchReminderEnabled || false);
           setLunchReminderTime(appSettings.lunchReminderTime || '12:00');
+          setBedtimeReminderEnabled(appSettings.bedtimeReminderEnabled || false);
+          setBedtimeReminderTime(appSettings.bedtimeReminderTime || '23:00');
           // Foundry settings
           setFoundryEnabled(appSettings.foundryEnabled || false);
           setFoundryBaseUrl(appSettings.foundryBaseUrl || '');
@@ -418,6 +422,50 @@ export default function SettingsDialog() {
           />
           <p className="text-[10px] font-mono text-claude-text-secondary">
             Time to remind you to take a lunch break
+          </p>
+        </div>
+      </div>
+
+      {/* Bedtime Reminder */}
+      <div className="space-y-4 pt-4 border-t border-claude-border">
+        <div className="flex items-center justify-between">
+          <div>
+            <label className="block text-xs font-mono text-claude-text-secondary uppercase tracking-wider">
+              Bedtime Reminder
+            </label>
+            <p className="text-[10px] font-mono text-claude-text-secondary mt-1">
+              Get reminded to go to bed — with 5-minute snooze
+            </p>
+          </div>
+          <Toggle
+            enabled={bedtimeReminderEnabled}
+            onChange={(value) => {
+              setBedtimeReminderEnabled(value);
+              autoSaveAppSettings({ bedtimeReminderEnabled: value });
+            }}
+            disabled={isLoading}
+            color="bg-indigo-500"
+          />
+        </div>
+
+        <div className="space-y-2">
+          <label className="block text-xs font-mono text-claude-text-secondary uppercase tracking-wider">
+            Bedtime
+          </label>
+          <input
+            type="time"
+            value={bedtimeReminderTime}
+            onChange={(e) => {
+              const value = e.target.value;
+              setBedtimeReminderTime(value);
+              autoSaveAppSettings({ bedtimeReminderTime: value });
+            }}
+            disabled={isLoading || !bedtimeReminderEnabled}
+            className="w-full px-3 py-2 bg-claude-bg border border-claude-border text-claude-text font-mono text-sm focus:outline-none focus:border-claude-accent disabled:opacity-50"
+            style={{ borderRadius: 0 }}
+          />
+          <p className="text-[10px] font-mono text-claude-text-secondary">
+            Clock turns indigo → amber → red as bedtime approaches. Dialog locks the app at bedtime.
           </p>
         </div>
       </div>
