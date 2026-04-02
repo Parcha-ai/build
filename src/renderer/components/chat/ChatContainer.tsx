@@ -334,21 +334,40 @@ export default function ChatContainer({ session }: ChatContainerProps) {
   handleBackgroundTaskRef.current = handleBackgroundTask;
 
   useEffect(() => {
+    const runBackgroundShortcut = () => {
+      const runningBash = streamingToolCallsRef.current.find(
+        (tc) => tc.name === 'Bash' && (tc.status === 'running' || tc.status === 'pending')
+      );
+      if (runningBash) {
+        handleBackgroundTaskRef.current(runningBash);
+      }
+    };
+
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.metaKey && e.key === 'b') {
-        // Find the first running Bash command
         const runningBash = streamingToolCallsRef.current.find(
           (tc) => tc.name === 'Bash' && (tc.status === 'running' || tc.status === 'pending')
         );
         if (runningBash) {
           e.preventDefault();
-          handleBackgroundTaskRef.current(runningBash);
+          runBackgroundShortcut();
         }
       }
     };
 
+    const handleShortcut = (event: Event) => {
+      const detail = (event as CustomEvent<{ action: string; sessionId?: string }>).detail;
+      if (detail?.action === 'background-task' && detail.sessionId === session.id) {
+        runBackgroundShortcut();
+      }
+    };
+
     window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+    window.addEventListener('grep-shortcut', handleShortcut as EventListener);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('grep-shortcut', handleShortcut as EventListener);
+    };
   }, []);
 
   // Track programmatic scrolls to avoid re-triggering scroll effects
@@ -443,19 +462,18 @@ export default function ChatContainer({ session }: ChatContainerProps) {
     return () => container.removeEventListener('scroll', handleScroll);
   }, [checkIfAtBottom]);
 
-  // Auto-scroll only if user is at bottom
-  // NOTE: Deliberately exclude streamingToolCalls from dependencies to avoid scroll spam
-  // Tool call updates (status, output) shouldn't trigger scrolls - only new content should
-  // Throttle scroll to avoid excessive DOM operations during fast streaming
+  // Auto-scroll: always scroll during active streaming, or when at bottom
+  // During streaming the user wants to follow output — don't require them to be exactly at the bottom
   const scrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
-    if (isAtBottom) {
+    const shouldAutoScroll = isAtBottom || isSessionStreaming;
+
+    if (shouldAutoScroll) {
       // Throttle scrollIntoView to at most once per 100ms during streaming
       if (!scrollTimerRef.current) {
         scrollTimerRef.current = setTimeout(() => {
           isProgrammaticScroll.current = true;
           messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-          // Reset after smooth scroll animation completes
           setTimeout(() => { isProgrammaticScroll.current = false; }, 500);
           scrollTimerRef.current = null;
         }, 100);
@@ -468,7 +486,7 @@ export default function ChatContainer({ session }: ChatContainerProps) {
       }
     }
     lastMessageCountRef.current = sessionMessages.length;
-  }, [sessionMessages, streamContent, thinkingContent, isAtBottom]);
+  }, [sessionMessages, streamContent, thinkingContent, isAtBottom, isSessionStreaming]);
 
   // Scroll to bottom function for FAB
   const scrollToBottom = useCallback(() => {
@@ -479,6 +497,22 @@ export default function ChatContainer({ session }: ChatContainerProps) {
     setShowScrollButton(false);
     setHasNewContent(false);
   }, []);
+
+  // Scroll to bottom when session changes or messages first load
+  const prevSessionId = useRef(session.id);
+  useEffect(() => {
+    if (session.id !== prevSessionId.current) {
+      prevSessionId.current = session.id;
+      // Delay to let DOM render the messages first
+      setTimeout(() => {
+        isProgrammaticScroll.current = true;
+        messagesEndRef.current?.scrollIntoView({ behavior: 'instant' });
+        setTimeout(() => { isProgrammaticScroll.current = false; }, 100);
+        setIsAtBottom(true);
+        setShowScrollButton(false);
+      }, 50);
+    }
+  }, [session.id, sessionMessages.length]);
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden font-mono bg-claude-bg min-w-0">
