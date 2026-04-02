@@ -141,12 +141,24 @@ function TextContentBlock({
               return <h3 className="text-sm font-bold mt-2 mb-1">{children}</h3>;
             },
             a({ href, children }) {
+              // Check if the link text or href looks like a file path
+              const linkText = typeof children === 'string' ? children : String(children);
+              const looksLikeFile = /\.(tsx?|jsx?|py|md|rs|go|css|html|json|toml|yaml|yml|sh|sql|rb|c|cpp|h|java|kt|swift)$/i.test(href || '') ||
+                /\.(tsx?|jsx?|py|md|rs|go|css|html|json|toml|yaml|yml|sh|sql|rb|c|cpp|h|java|kt|swift)$/i.test(linkText);
+
               return (
                 <a
                   href={href}
                   onClick={(e) => {
                     e.preventDefault();
                     if (!href) return;
+
+                    // File path links → open in editor
+                    if (looksLikeFile) {
+                      const filePath = href.startsWith('/') ? href : href;
+                      openFile(filePath);
+                      return;
+                    }
 
                     if (href.includes('localhost') || href.includes('127.0.0.1')) {
                       const store = useSessionStore.getState();
@@ -162,7 +174,8 @@ function TextContentBlock({
                       window.electronAPI.app.openExternal(href);
                     }
                   }}
-                  className="text-claude-accent underline hover:no-underline cursor-pointer"
+                  className={`${looksLikeFile ? 'text-cyan-400 hover:text-cyan-300' : 'text-claude-accent'} underline hover:no-underline cursor-pointer`}
+                  title={looksLikeFile ? `Open ${href} in editor` : undefined}
                 >
                   {children}
                 </a>
@@ -468,6 +481,10 @@ function MessageBubble({ message, isStreaming, streamingToolCalls, isLatestMessa
                     },
                     // Style links
                     a({ href, children }) {
+                      const linkText = typeof children === 'string' ? children : String(children);
+                      const looksLikeFile = /\.(tsx?|jsx?|py|md|rs|go|css|html|json|toml|yaml|yml|sh|sql|rb|c|cpp|h|java|kt|swift)$/i.test(href || '') ||
+                        /\.(tsx?|jsx?|py|md|rs|go|css|html|json|toml|yaml|yml|sh|sql|rb|c|cpp|h|java|kt|swift)$/i.test(linkText);
+
                       return (
                         <a
                           href={href}
@@ -475,27 +492,28 @@ function MessageBubble({ message, isStreaming, streamingToolCalls, isLatestMessa
                             e.preventDefault();
                             if (!href) return;
 
-                            // Check if it's a localhost URL
+                            // File path links → open in editor
+                            if (looksLikeFile) {
+                              openFile(href);
+                              return;
+                            }
+
                             if (href.includes('localhost') || href.includes('127.0.0.1')) {
-                              // Open in internal browser preview
                               const store = useSessionStore.getState();
                               const session = store.sessions.find(s => s.id === store.activeSessionId);
                               if (session) {
-                                // Update session's last browser URL
                                 store.updateSession(session.id, { lastBrowserUrl: href });
-                                // Open browser panel if not already open
                                 if (!isBrowserPanelOpen) {
                                   toggleBrowserPanel();
                                 }
-                                // Navigate browser to URL
                                 window.electronAPI.browser.navigateTo(session.id, href);
                               }
                             } else {
-                              // Open external URLs in default browser
                               window.electronAPI.app.openExternal(href);
                             }
                           }}
-                          className="text-claude-accent underline hover:no-underline cursor-pointer"
+                          className={`${looksLikeFile ? 'text-cyan-400 hover:text-cyan-300' : 'text-claude-accent'} underline hover:no-underline cursor-pointer`}
+                          title={looksLikeFile ? `Open ${href} in editor` : undefined}
                         >
                           {children}
                         </a>
