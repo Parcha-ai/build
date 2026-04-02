@@ -8,6 +8,7 @@ import { useEditorStore } from '../../stores/editor.store';
 
 // Track created model URIs for proper cleanup
 const createdModelUris = new Set<string>();
+const PRIMARY_MODIFIER_KEY: 'metaKey' | 'ctrlKey' = /mac/i.test(navigator.platform) ? 'metaKey' : 'ctrlKey';
 
 interface EditorPanelProps {
   onClose?: () => void;
@@ -50,15 +51,17 @@ export default function EditorPanel({ onClose }: EditorPanelProps) {
   // Handle keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      const primaryModifierPressed = e[PRIMARY_MODIFIER_KEY];
+
       // Cmd/Ctrl + S to save
-      if ((e.metaKey || e.ctrlKey) && e.key === 's') {
+      if (primaryModifierPressed && e.key === 's') {
         e.preventDefault();
         if (activeTabId) {
           saveTab(activeTabId);
         }
       }
       // Cmd/Ctrl + W to close tab
-      if ((e.metaKey || e.ctrlKey) && e.key === 'w') {
+      if (primaryModifierPressed && e.key === 'w') {
         e.preventDefault();
         if (activeTabId) {
           closeTab(activeTabId);
@@ -72,6 +75,21 @@ export default function EditorPanel({ onClose }: EditorPanelProps) {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [activeTabId, saveTab, closeTab]);
+
+  useEffect(() => {
+    const handleShortcut = (event: Event) => {
+      const action = (event as CustomEvent<{ action: string }>).detail?.action;
+      if (action === 'save' && activeTabId) {
+        saveTab(activeTabId);
+      }
+      if (action === 'close-tab' && activeTabId) {
+        closeTab(activeTabId);
+      }
+    };
+
+    window.addEventListener('grep-shortcut', handleShortcut as EventListener);
+    return () => window.removeEventListener('grep-shortcut', handleShortcut as EventListener);
   }, [activeTabId, saveTab, closeTab]);
 
   // Jump to line number when tab changes or opens with lineNumber
@@ -263,7 +281,7 @@ export default function EditorPanel({ onClose }: EditorPanelProps) {
       )}
 
       {/* Editor area */}
-      <div className="flex-1 relative">
+      <div className="flex-1 relative overflow-hidden">
         {isLoading ? (
           <div className="absolute inset-0 flex items-center justify-center">
             <Loader2 className="w-8 h-8 animate-spin text-claude-accent" />
@@ -294,7 +312,7 @@ export default function EditorPanel({ onClose }: EditorPanelProps) {
           ) :
           // Show markdown preview or Monaco editor based on mode
           activeTab.isPreviewMode && activeTab.language === 'markdown' ? (
-            <div className="flex-1 overflow-auto p-6 bg-claude-bg">
+            <div className="absolute inset-0 overflow-auto p-6 bg-claude-bg">
               <div className="max-w-4xl mx-auto prose prose-invert prose-sm">
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>{activeTab.content}</ReactMarkdown>
               </div>
