@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { X, Image, FileCode, Target, File, Folder, AtSign, Brain, Square, Code, Smartphone, RefreshCw } from 'lucide-react';
-import { useSessionStore, type PermissionMode, type ThinkingMode, type EffortLevel, type ModelInfo, migrateThinkingMode } from '../../stores/session.store';
+import { useSessionStore, type PermissionMode, type ThinkingMode, type EffortLevel, migrateThinkingMode, normalizePermissionModeForModel } from '../../stores/session.store';
 import { useUIStore } from '../../stores/ui.store';
 import { useAudioStore } from '../../stores/audio.store';
 import MentionAutocomplete, { type Mention } from './MentionAutocomplete';
@@ -9,7 +9,8 @@ import { MicrophoneButton, type VoiceModeHandle } from './MicrophoneButton';
 import { MessageQueuePanel } from './MessageQueuePanel';
 import { VoiceModeErrorBoundary } from './VoiceModeErrorBoundary';
 import SecureInput from './SecureInput';
-import { GSTACK_MODE_META, type GStackMode } from '../../../shared/types';
+import CompactionSwitchNotice from './CompactionSwitchNotice';
+import { GSTACK_MODE_META } from '../../../shared/types';
 
 // Permission mode config for UI - using terminal-style prompts
 const PERMISSION_MODE_CONFIG: Record<PermissionMode, { prompt: string; label: string; color: string; description: string }> = {
@@ -213,6 +214,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
   const containerRef = useRef<HTMLDivElement>(null);
   const commandAutocompleteRef = useRef<CommandAutocompleteHandle>(null);
   const voiceModeRef = useRef<VoiceModeHandle>(null);
+  const blurFromBrowserEditRef = useRef(false);
 
   // Helper to safely get selection position
   const getSelectionStart = (): number | undefined => {
@@ -221,12 +223,16 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
 
   // Per-session data selectors — only re-render when THIS session's data changes
   const isStreamingState = useSessionStore(useCallback((s) => s.isStreaming[sessionId] || false, [sessionId]));
-  const currentMode = useSessionStore(useCallback((s) => s.permissionMode[sessionId] || 'bypassPermissions', [sessionId]));
+  const currentMode = useSessionStore(useCallback((s) => normalizePermissionModeForModel(
+    s.selectedModel[sessionId] || 'claude-opus-4-5-20251101',
+    s.permissionMode[sessionId],
+  ), [sessionId]));
   const contextUsage = useSessionStore(useCallback((s) => s.contextUsage[sessionId] || null, [sessionId]));
   const currentThinkingMode = useSessionStore(useCallback((s) => s.thinkingMode[sessionId] || 'thinking', [sessionId]));
   const activeGStackMode = useSessionStore(useCallback((s) => s.gstackMode[sessionId] || null, [sessionId]));
   const queuedMessages = useSessionStore(useCallback((s) => s.messageQueue[sessionId] || EMPTY_QUEUE, [sessionId]));
   const currentModel = useSessionStore(useCallback((s) => s.selectedModel[sessionId] || 'claude-opus-4-5-20251101', [sessionId]));
+  const compactionSwitch = useSessionStore(useCallback((s) => s.compactionSwitch[sessionId] || null, [sessionId]));
   const availableModels = useSessionStore((s) => s.availableModels || EMPTY_MODELS);
 
   // Action selectors — stable references, never cause re-renders
@@ -241,6 +247,8 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
   const cycleThinkingMode = useSessionStore((s) => s.cycleThinkingMode);
   const setThinkingMode = useSessionStore((s) => s.setThinkingMode);
   const setSelectedModel = useSessionStore((s) => s.setSelectedModel);
+  const dismissCompactionSwitch = useSessionStore((s) => s.dismissCompactionSwitch);
+  const restoreCompactionModel = useSessionStore((s) => s.restoreCompactionModel);
   const loadAvailableModels = useSessionStore((s) => s.loadAvailableModels);
 
   // UI store — fine-grained selectors
@@ -283,6 +291,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
   const triggerWord = audioSettings?.voiceTriggerWord || 'please';
 
   const modeConfig = PERMISSION_MODE_CONFIG[currentMode];
+  const permissionModeTitle = `${modeConfig.description} (click to change)`;
   // Apply migration for legacy thinking mode values
   const migratedThinkingMode = migrateThinkingMode(currentThinkingMode);
   const effortConfig = EFFORT_LEVEL_CONFIG[migratedThinkingMode] || EFFORT_LEVEL_CONFIG['high'];
@@ -365,16 +374,24 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
 
   // Listen for text edit events to blur/disable input while editing in browser
   useEffect(() => {
-    const handleTextEditActive = (event: CustomEvent<{ active: boolean }>) => {
+    const handleTextEditActive = (event: CustomEvent<{ active: boolean; sessionId?: string }>) => {
+      if (event.detail.sessionId && event.detail.sessionId !== sessionId) {
+        return;
+      }
+
       if (event.detail.active) {
         // Blur the textarea when text editing starts
+        blurFromBrowserEditRef.current = document.activeElement === textareaRef.current;
         textareaRef.current?.blur();
+      } else if (blurFromBrowserEditRef.current) {
+        blurFromBrowserEditRef.current = false;
+        textareaRef.current?.focus();
       }
     };
 
     window.addEventListener('grep-text-edit-active', handleTextEditActive as EventListener);
     return () => window.removeEventListener('grep-text-edit-active', handleTextEditActive as EventListener);
-  }, []);
+  }, [sessionId]);
 
   // Listen for insert-chat events from browser preview - adds element context as attachments (chips)
   useEffect(() => {
@@ -1207,6 +1224,15 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
         ref={containerRef}
         className="px-4 py-2 relative font-mono border-t border-claude-border"
       >
+        {compactionSwitch && (
+          <CompactionSwitchNotice
+            notice={compactionSwitch}
+            availableModels={availableModels}
+            onDismiss={() => dismissCompactionSwitch(sessionId)}
+            onSwitchBack={() => restoreCompactionModel(sessionId)}
+          />
+        )}
+
         {/* Mention Autocomplete */}
         {showMentions && (
         <MentionAutocomplete
@@ -1400,10 +1426,12 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
       <div className="flex items-center gap-2">
         {/* Permission mode selector - clickable prompt indicator */}
         <button
-          onClick={() => cyclePermissionMode(sessionId)}
-          disabled={disabled || isSending}
-          className={`font-bold text-base select-none transition-colors hover:opacity-80 disabled:opacity-40 ${modeConfig.color}`}
-          title={`${modeConfig.description} (click to change)`}
+          onClick={() => {
+            cyclePermissionMode(sessionId);
+          }}
+          disabled={disabled}
+          className={`font-bold text-base select-none transition-colors disabled:opacity-40 ${!disabled ? 'hover:opacity-80' : ''} ${modeConfig.color}`}
+          title={permissionModeTitle}
         >
           {modeConfig.prompt}
         </button>
@@ -1420,7 +1448,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
             disabled={disabled}
             className={`w-full py-0 resize-none focus:outline-none disabled:opacity-40 disabled:cursor-not-allowed min-h-[24px] max-h-[200px] font-mono bg-transparent text-base text-claude-text placeholder:text-claude-text-secondary leading-6 caret-claude-accent ${
               useAudioStore.getState().recordingStates[sessionId]?.isRecording ? 'border-l-2 border-red-500 pl-2' : ''
-            } ${isSending ? 'opacity-60' : ''}`}
+            }`}
             rows={1}
           />
         </div>
@@ -1457,7 +1485,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
           </div>
           <button
             onClick={handleAtButtonClick}
-            disabled={disabled || isSending}
+            disabled={disabled}
             className="p-1 transition-colors hover:bg-claude-bg disabled:opacity-40 disabled:cursor-not-allowed text-claude-text-secondary hover:text-claude-accent"
             style={{ borderRadius: 0 }}
             title="@ mention file"
@@ -1480,7 +1508,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
               const { sendMessage } = useSessionStore.getState();
               sendMessage(sessionId, 'continue');
             }}
-            disabled={disabled || isSending}
+            disabled={disabled}
             className="p-1 transition-colors hover:bg-claude-bg disabled:opacity-40 disabled:cursor-not-allowed text-claude-text-secondary hover:text-claude-accent"
             style={{ borderRadius: 0 }}
             title="Ping for update (sends 'continue')"
@@ -1616,7 +1644,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
         <div className="relative" ref={effortDropdownRef}>
           <button
             onClick={() => setShowEffortDropdown(!showEffortDropdown)}
-            disabled={disabled || isSending}
+            disabled={disabled}
             className={`flex items-center gap-1 hover:opacity-80 transition-opacity disabled:opacity-40 ${effortConfig.color}`}
             title={`${effortConfig.description} (click to change)`}
           >
@@ -1659,7 +1687,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
         <div className="relative" ref={modelDropdownRef}>
           <button
             onClick={() => setShowModelDropdown(!showModelDropdown)}
-            disabled={disabled || isSending}
+            disabled={disabled}
             className="text-claude-text-secondary hover:text-claude-text transition-colors disabled:opacity-40"
             title={`${currentModelInfo.description} (click to change)`}
           >
