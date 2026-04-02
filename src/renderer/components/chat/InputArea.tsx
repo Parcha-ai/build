@@ -997,7 +997,24 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
       return;
     }
 
-    // Regular Enter (without Alt): Send message
+    // Cmd+Enter: Force send — interrupt current stream and send immediately
+    if (e.key === 'Enter' && e.metaKey && !e.shiftKey && !e.altKey) {
+      e.preventDefault();
+      const trimmedMessage = message.trim();
+      if (!trimmedMessage && attachments.length === 0) return;
+      if (isSending) {
+        // Interrupt and send
+        const { interruptAndSend } = useSessionStore.getState();
+        setMessage('');
+        setAttachments([]);
+        interruptAndSend(sessionId, trimmedMessage, attachments);
+      } else {
+        handleSubmit();
+      }
+      return;
+    }
+
+    // Regular Enter (without Alt): Send message (queues if streaming)
     if (e.key === 'Enter' && !e.shiftKey && !e.altKey) {
       e.preventDefault();
       handleSubmit();
