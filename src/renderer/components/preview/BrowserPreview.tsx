@@ -159,6 +159,12 @@ export default function BrowserPreview({ session, isVisible = true }: BrowserPre
     sessionEditingText,
   } = useUIStore();
 
+  // Inspector drag-to-select region state (works within existing inspector mode)
+  const [regionStart, setRegionStart] = useState<{ x: number; y: number } | null>(null);
+  const [regionEnd, setRegionEnd] = useState<{ x: number; y: number } | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const regionOverlayRef = useRef<HTMLDivElement>(null);
+
   // Get this session's inspector state
   const isInspectorActive = sessionInspectorActive[session.id] || false;
   const setInspectorActive = useCallback(
@@ -686,11 +692,15 @@ export default function BrowserPreview({ session, isVisible = true }: BrowserPre
 
       // Handle text edit start/end to blur/focus chat input
       if (event.message.startsWith('GREP_TEXT_EDIT_START:')) {
-        window.dispatchEvent(new CustomEvent('grep-text-edit-active', { detail: { active: true } }));
+        window.dispatchEvent(new CustomEvent('grep-text-edit-active', {
+          detail: { active: true, sessionId: session.id }
+        }));
         return;
       }
       if (event.message.startsWith('GREP_TEXT_EDIT_END:')) {
-        window.dispatchEvent(new CustomEvent('grep-text-edit-active', { detail: { active: false } }));
+        window.dispatchEvent(new CustomEvent('grep-text-edit-active', {
+          detail: { active: false, sessionId: session.id }
+        }));
         return;
       }
 
@@ -1538,7 +1548,7 @@ ${data.textContent ? `**Text Content:** "${data.textContent.slice(0, 100)}${data
       {isInspectorActive && (
         <div className="h-8 flex items-center justify-center gap-2 text-white text-sm" style={{ backgroundColor: '#5D5FEF' }}>
           <Target size={14} />
-          <span>Click any element to select it</span>
+          <span>Click to select element · Drag to select region</span>
           <button
             onClick={cancelInspector}
             className="ml-2 p-0.5 rounded hover:opacity-80"
@@ -1574,6 +1584,216 @@ ${data.textContent ? `**Text Content:** "${data.textContent.slice(0, 100)}${data
             webpreferences="contextIsolation=no"
           />
         </div>
+
+        {/* Inspector drag overlay — enables drag-to-select-region within inspector mode */}
+        {isInspectorActive && (
+          <div
+            ref={regionOverlayRef}
+            className="absolute inset-0 z-40 cursor-crosshair"
+            style={{ backgroundColor: isDragging ? 'rgba(0,0,0,0.1)' : 'transparent' }}
+            onMouseDown={(e) => {
+              const rect = regionOverlayRef.current?.getBoundingClientRect();
+              if (!rect) return;
+              const x = e.clientX - rect.left;
+              const y = e.clientY - rect.top;
+              setRegionStart({ x, y });
+              setRegionEnd({ x, y });
+              setIsDragging(true);
+            }}
+            onMouseMove={(e) => {
+              const rect = regionOverlayRef.current?.getBoundingClientRect();
+              if (!rect) return;
+              const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
+              const y = Math.max(0, Math.min(e.clientY - rect.top, rect.height));
+
+              if (isDragging) {
+                setRegionEnd({ x, y });
+              } else {
+                // Forward mousemove to webview for inspector hover highlight
+                const webview = webviewRef.current;
+                if (webview) {
+                  try {
+                    webview.sendInputEvent({ type: 'mouseMove', x: Math.round(x), y: Math.round(y) });
+                  } catch { /* ignore */ }
+                }
+              }
+            }}
+            onMouseUp={async (e) => {
+              if (!isDragging || !regionStart || !regionEnd) {
+                setIsDragging(false);
+                return;
+              }
+              setIsDragging(false);
+
+              const x1 = Math.min(regionStart.x, regionEnd.x);
+              const y1 = Math.min(regionStart.y, regionEnd.y);
+              const x2 = Math.max(regionStart.x, regionEnd.x);
+              const y2 = Math.max(regionStart.y, regionEnd.y);
+              const width = x2 - x1;
+              const height = y2 - y1;
+
+              // Small selection = click — forward to the webview for inspector element selection
+              if (width < 15 && height < 15) {
+                setRegionStart(null);
+                setRegionEnd(null);
+                const webview = webviewRef.current;
+                if (webview) {
+                  const clickX = Math.round(regionStart.x);
+                  const clickY = Math.round(regionStart.y);
+                  // Use Electron's sendInputEvent to simulate a real click inside the webview
+                  try {
+                    webview.sendInputEvent({ type: 'mouseDown', x: clickX, y: clickY, button: 'left', clickCount: 1 });
+                    webview.sendInputEvent({ type: 'mouseUp', x: clickX, y: clickY, button: 'left', clickCount: 1 });
+                  } catch (err) {
+                    console.warn('[BrowserPreview] Failed to forward click to webview:', err);
+                  }
+                }
+                return;
+              }
+
+              const webview = webviewRef.current;
+              if (!webview) return;
+
+              try {
+                // 1. Capture screenshot of the region
+                const image = await webview.capturePage({
+                  x: Math.round(x1),
+                  y: Math.round(y1),
+                  width: Math.round(width),
+                  height: Math.round(height),
+                } as Electron.Rectangle);
+                const screenshotBase64 = image.toDataURL().split(',')[1] || '';
+
+                // 2. Find elements and React components in the region
+                const elementsScript = `
+                  (function() {
+                    const x1 = ${Math.round(x1)}, y1 = ${Math.round(y1)};
+                    const x2 = ${Math.round(x2)}, y2 = ${Math.round(y2)};
+                    const results = [];
+                    const seen = new Set();
+
+                    // Sample points in a grid across the region
+                    const stepX = Math.max(10, (x2 - x1) / 10);
+                    const stepY = Math.max(10, (y2 - y1) / 10);
+
+                    for (let x = x1; x <= x2; x += stepX) {
+                      for (let y = y1; y <= y2; y += stepY) {
+                        const els = document.elementsFromPoint(x, y);
+                        for (const el of els) {
+                          if (seen.has(el) || el === document.body || el === document.documentElement) continue;
+                          const rect = el.getBoundingClientRect();
+                          // Element must overlap the selection region
+                          if (rect.right < x1 || rect.left > x2 || rect.bottom < y1 || rect.top > y2) continue;
+                          seen.add(el);
+
+                          // Get React component name
+                          let reactComponent = null;
+                          const fiberKey = Object.keys(el).find(k => k.startsWith('__reactFiber$') || k.startsWith('__reactInternalInstance$'));
+                          if (fiberKey) {
+                            let fiber = el[fiberKey];
+                            for (let i = 0; i < 10 && fiber; i++) {
+                              if (typeof fiber.type === 'function' || typeof fiber.type === 'object') {
+                                const name = fiber.type?.displayName || fiber.type?.name;
+                                if (name && !name.startsWith('_') && name.length > 1) {
+                                  reactComponent = name;
+                                  break;
+                                }
+                              }
+                              fiber = fiber.return;
+                            }
+                          }
+
+                          // Get computed styles (key properties only)
+                          const style = window.getComputedStyle(el);
+                          const styles = {
+                            display: style.display,
+                            position: style.position,
+                            fontSize: style.fontSize,
+                            color: style.color,
+                            backgroundColor: style.backgroundColor,
+                          };
+
+                          results.push({
+                            tagName: el.tagName.toLowerCase(),
+                            id: el.id || undefined,
+                            className: el.className?.toString()?.slice(0, 200) || undefined,
+                            reactComponent,
+                            textContent: el.textContent?.slice(0, 150) || undefined,
+                            rect: { x: Math.round(rect.x), y: Math.round(rect.y), w: Math.round(rect.width), h: Math.round(rect.height) },
+                            styles,
+                          });
+                        }
+                      }
+                    }
+
+                    // Sort by area (largest first) and limit
+                    results.sort((a, b) => (b.rect.w * b.rect.h) - (a.rect.w * a.rect.h));
+                    return JSON.stringify(results.slice(0, 30));
+                  })()
+                `;
+
+                const elementsJson = await webview.executeJavaScript(elementsScript);
+                const elements = JSON.parse(elementsJson || '[]');
+
+                // 3. Build structured context
+                const reactComponents = elements.filter((e: { reactComponent?: string }) => e.reactComponent).map((e: { reactComponent: string }) => e.reactComponent);
+                const uniqueComponents = [...new Set(reactComponents)];
+
+                // Build markdown summary
+                const mdLines = [
+                  '## Region Selection',
+                  '',
+                  '**Region:** x=' + Math.round(x1) + ', y=' + Math.round(y1) + ', ' + Math.round(width) + '×' + Math.round(height) + 'px',
+                  '**Page:** ' + url,
+                ];
+                if (uniqueComponents.length > 0) {
+                  mdLines.push('**React Components:** ' + uniqueComponents.join(', '));
+                }
+                mdLines.push('**Elements found:** ' + elements.length, '');
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                elements.slice(0, 15).forEach((el: any) => {
+                  const name = el.reactComponent ? '<' + el.reactComponent + '>' : '<' + el.tagName + '>';
+                  const idStr = el.id ? ' #' + el.id : '';
+                  const textStr = el.textContent ? ' "' + el.textContent.slice(0, 60) + '"' : '';
+                  mdLines.push('- ' + name + idStr + textStr);
+                });
+                mdLines.push('', '---');
+                const markdown = mdLines.join('\n');
+
+                // 4. Dispatch to chat input
+                window.dispatchEvent(new CustomEvent('grep-insert-chat', {
+                  detail: {
+                    sessionId: session.id,
+                    screenshot: screenshotBase64,
+                    content: markdown,
+                  },
+                }));
+
+                console.log('[BrowserPreview] Region captured:', { width: Math.round(width), height: Math.round(height), elements: elements.length, reactComponents: uniqueComponents });
+              } catch (err) {
+                console.error('[BrowserPreview] Region capture failed:', err);
+              }
+
+              // Reset region (stay in inspector mode)
+              setRegionStart(null);
+              setRegionEnd(null);
+            }}
+          >
+            {/* Selection rectangle */}
+            {isDragging && regionStart && regionEnd && (
+              <div
+                className="absolute border-2 border-teal-400 pointer-events-none"
+                style={{
+                  left: Math.min(regionStart.x, regionEnd.x),
+                  top: Math.min(regionStart.y, regionEnd.y),
+                  width: Math.abs(regionEnd.x - regionStart.x),
+                  height: Math.abs(regionEnd.y - regionStart.y),
+                  backgroundColor: 'rgba(13, 148, 136, 0.15)',
+                }}
+              />
+            )}
+          </div>
+        )}
 
         {/* Automation indicator overlay */}
         {isAutomationActive && (

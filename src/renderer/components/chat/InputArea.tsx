@@ -1241,14 +1241,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
         ref={containerRef}
         className="px-4 py-2 relative font-mono border-t border-claude-border"
       >
-        {compactionSwitch && (
-          <CompactionSwitchNotice
-            notice={compactionSwitch}
-            availableModels={availableModels}
-            onDismiss={() => dismissCompactionSwitch(sessionId)}
-            onSwitchBack={() => restoreCompactionModel(sessionId)}
-          />
-        )}
+        {/* Compaction switch notice disabled — too disruptive */}
 
         {/* Mention Autocomplete */}
         {showMentions && (
