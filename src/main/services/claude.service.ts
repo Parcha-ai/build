@@ -682,9 +682,8 @@ Read or source that file if you need the actual values. Do not print secret valu
 
   // Get or create MCP server with browser snapshot tool for session
   private getBrowserMcpServer(sessionId: string) {
-    if (this.browserMcpServers.has(sessionId)) {
-      return this.browserMcpServers.get(sessionId);
-    }
+    // Create a fresh MCP server for each query — the SDK connects a transport
+    // that can't be reused across queries ("Already connected to a transport" error)
 
     // Initialize Stagehand with API keys
     const apiKey = this.getApiKey();
@@ -1873,7 +1872,6 @@ Read or source that file if you need the actual values. Do not print secret valu
       ],
     });
 
-    this.browserMcpServers.set(sessionId, mcpServer);
     return mcpServer;
   }
 
@@ -3248,9 +3246,10 @@ Begin by creating the task structure now.
           includePartialMessages: true,
           // Use computed model (respects UI selection → session saved model → Foundry → default)
           model: selectedModel,
-          // Always request 1M context — without the beta flag, models default to 200K
-          // Skip betas only for Foundry (custom betas not supported)
-          ...(!settings.foundryEnabled
+          // 1M context is native for Opus 4.6/Sonnet 4.6 (no beta needed since Mar 13 2026)
+          // Legacy models (Sonnet 4.5, Sonnet 4) still need the beta until Apr 30 2026
+          // Skip betas for Foundry (custom betas not supported)
+          ...(!settings.foundryEnabled && !selectedModel.includes('opus-4-6') && !selectedModel.includes('sonnet-4-6')
             ? { betas: ['context-1m-2025-08-07' as const] }
             : {}),
           ...(maxThinkingTokens ? { maxThinkingTokens } : {}),
