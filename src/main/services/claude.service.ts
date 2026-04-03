@@ -1,5 +1,5 @@
 import { query, tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
-import type { SDKMessage, SDKUserMessage, Query } from '@anthropic-ai/claude-agent-sdk';
+import type { SDKMessage, SDKUserMessage, Query, SpawnedProcess } from '@anthropic-ai/claude-agent-sdk';
 import type { ImageBlockParam, TextBlockParam } from '@anthropic-ai/sdk/resources';
 import { z } from 'zod';
 import Store from 'electron-store';
@@ -7,6 +7,7 @@ import { getSessionStoreName } from '../store-names';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { spawn } from 'child_process';
 import type { ChatMessage, ToolCall, Session, QuestionRequest, QuestionResponse, Attachment, ContentBlock, CompactionStatus, CompactionComplete, PlanApprovalRequest, PlanApprovalResponse } from '../../shared/types';
 import { powerService } from './power.service';
 import { BrowserWindow, nativeImage } from 'electron';
@@ -21,7 +22,10 @@ import { memoryService, MemoryCategory } from './memory.service';
 import { qmdService } from './qmd.service';
 import { mcpService } from './mcp.service';
 import { codexService } from './codex.service';
-import { formatConversationContext } from './codex-context';
+import { formatConversationContext, mergeConversationMessages } from './codex-context';
+import { secureKeysService } from './secure-keys.service';
+
+const STREAM_DEBUG = process.env.GREP_DEBUG_STREAMING === '1';
 
 interface StreamEvent {
   type: 'text_delta' | 'thinking_delta' | 'tool_use' | 'tool_result' | 'message_complete' | 'error' | 'system' | 'permission_request' | 'compaction_status' | 'compaction_complete' | 'plan_content' | 'context_usage';
@@ -387,7 +391,13 @@ export class ClaudeService {
    * Build the system prompt append section based on session type
    * Includes SSH context for remote sessions and agent memories
    */
-  private buildSystemPromptAppend(session: Session, memoriesPrompt?: string, gstackMode?: string): string {
+  private buildSystemPromptAppend(
+    session: Session,
+    memoriesPrompt?: string,
+    gstackMode?: string,
+    secureEnvContext?: string,
+    supplementalConversationContext?: string,
+  ): string {
     let append = `
 ## G-Build Agent
 
@@ -413,6 +423,10 @@ If the user agrees:
 
 You are intelligent enough to determine what URLs to test based on the project structure, development server configuration, and the specific files being modified.
 `;
+
+    if (secureEnvContext) {
+      append += `\n\n${secureEnvContext}`;
+    }
 
     // Add SSH remote execution context if this is an SSH session
     if (session.sshConfig) {
@@ -483,7 +497,187 @@ ${memoriesPrompt}
 `;
     }
 
+    if (supplementalConversationContext && supplementalConversationContext.trim()) {
+      append += `
+
+## Recent Session Context From Other Models
+
+The following recent turns happened in this same session, but may not be present in the current Claude transcript because they were produced while another model was active.
+Use them to preserve continuity and avoid repeating work.
+
+${supplementalConversationContext}
+`;
+    }
+
     return append;
+  }
+
+  private getSecureEnvFilePath(sessionId: string, session: Session): string {
+    return session.sshConfig
+      ? `/tmp/g-build-secure-env-${sessionId}.sh`
+      : path.join(os.tmpdir(), `g-build-secure-env-${sessionId}.sh`);
+  }
+
+  private createLocalClaudeCodeProcess(
+    nodeExecutable: string | undefined,
+    options: { command: string; args: string[]; cwd?: string; env: Record<string, string | undefined>; signal: AbortSignal }
+  ): SpawnedProcess {
+    const child = spawn(nodeExecutable || options.command, options.args, {
+      cwd: options.cwd,
+      env: options.env,
+      stdio: ['pipe', 'pipe', options.env.DEBUG_CLAUDE_AGENT_SDK ? 'pipe' : 'ignore'],
+      signal: options.signal,
+      windowsHide: true,
+    });
+
+    if (!child.stdin || !child.stdout) {
+      throw new Error('Failed to create local Claude Code process stdio');
+    }
+
+    return {
+      stdin: child.stdin,
+      stdout: child.stdout,
+      get killed() {
+        return child.killed;
+      },
+      get exitCode() {
+        return child.exitCode;
+      },
+      kill: child.kill.bind(child),
+      on: child.on.bind(child) as SpawnedProcess['on'],
+      once: child.once.bind(child) as SpawnedProcess['once'],
+      off: child.off.bind(child) as SpawnedProcess['off'],
+    };
+  }
+
+  private resolveLocalNodeExecutable(): string | undefined {
+    const homeDir = os.homedir();
+    const candidates = new Set<string>();
+    const addCandidate = (candidate?: string | null) => {
+      if (!candidate) return;
+      const trimmed = candidate.trim();
+      if (!trimmed) return;
+      candidates.add(trimmed);
+    };
+
+    addCandidate(process.env.CLAUDE_CODE_NODE_PATH);
+    addCandidate(process.env.NODE);
+    addCandidate(process.env.npm_node_execpath);
+
+    for (const dir of (process.env.PATH || '').split(path.delimiter)) {
+      if (!dir) continue;
+      addCandidate(path.join(dir, 'node'));
+    }
+
+    addCandidate('/opt/homebrew/bin/node');
+    addCandidate('/usr/local/bin/node');
+    addCandidate('/opt/local/bin/node');
+    addCandidate(path.join(homeDir, '.nodenv', 'shims', 'node'));
+    addCandidate(path.join(homeDir, '.asdf', 'shims', 'node'));
+    addCandidate(path.join(homeDir, '.volta', 'bin', 'node'));
+
+    const nvmVersionsDir = path.join(homeDir, '.nvm', 'versions', 'node');
+    if (fs.existsSync(nvmVersionsDir)) {
+      const versionDirs = fs.readdirSync(nvmVersionsDir)
+        .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+      for (const versionDir of versionDirs) {
+        addCandidate(path.join(nvmVersionsDir, versionDir, 'bin', 'node'));
+      }
+    }
+
+    for (const candidate of candidates) {
+      try {
+        if (fs.existsSync(candidate)) {
+          return candidate;
+        }
+      } catch {
+        // Ignore invalid candidates and continue scanning.
+      }
+    }
+
+    return undefined;
+  }
+
+  private formatSecureEnvFileContent(sessionId: string): string {
+    const envVars = secureKeysService.getSessionEnvVars(sessionId);
+    const lines = [
+      `# Temporary secure environment variables for G-Build session ${sessionId}`,
+      ...envVars.map(({ name, value }) => `export ${name}='${value.replace(/'/g, `'\\''`)}'`),
+      '',
+    ];
+
+    return lines.join('\n');
+  }
+
+  private async prepareSecureEnvContext(sessionId: string, session: Session): Promise<string | undefined> {
+    const envVars = secureKeysService.getSessionEnvVars(sessionId);
+    if (envVars.length === 0) {
+      return undefined;
+    }
+
+    const envFilePath = this.getSecureEnvFilePath(sessionId, session);
+    const envFileContent = this.formatSecureEnvFileContent(sessionId);
+
+    if (session.sshConfig) {
+      await sshService.writeRemoteFile(sessionId, session.sshConfig, envFilePath, envFileContent);
+    } else {
+      fs.writeFileSync(envFilePath, envFileContent, { mode: 0o600 });
+      try {
+        fs.chmodSync(envFilePath, 0o600);
+      } catch {
+        // best-effort permission tightening
+      }
+    }
+
+    const envVarNames = envVars.map(({ name }) => `- ${name}`).join('\n');
+
+    return `## Secure Environment Variables
+
+The user provided sensitive environment variables. They are available in a temporary shell file at \`${envFilePath}\`.
+
+Available variable names:
+${envVarNames}
+
+Read or source that file if you need the actual values. Do not print secret values into chat, logs, diffs, or committed files unless the user explicitly asks for that.`;
+  }
+
+  private normalizeConversationMessages(messages?: ChatMessage[]): ChatMessage[] {
+    if (!messages || messages.length === 0) {
+      return [];
+    }
+
+    return messages
+      .map((message) => ({
+        ...message,
+        timestamp: message.timestamp instanceof Date ? message.timestamp : new Date(message.timestamp),
+      }))
+      .filter((message) => !Number.isNaN(message.timestamp.getTime()));
+  }
+
+  private buildSupplementalClaudeContext(transcriptMessages: ChatMessage[], supplementalMessages: ChatMessage[], userMessage: string): string {
+    if (supplementalMessages.length === 0) {
+      return '';
+    }
+
+    const lastTranscriptTimestamp = transcriptMessages.length > 0
+      ? Math.max(...transcriptMessages.map((message) => message.timestamp.getTime()))
+      : -Infinity;
+
+    const deltaMessages = supplementalMessages.filter((message) => message.timestamp.getTime() > lastTranscriptTimestamp);
+    const relevantMessages = transcriptMessages.length === 0 ? supplementalMessages : deltaMessages;
+    if (relevantMessages.length === 0) {
+      return '';
+    }
+
+    const CLAUDE_CONTEXT_MAX_CHARS = 20000;
+    const promptBudget = userMessage.length + 2000;
+    const contextBudget = Math.min(14000, CLAUDE_CONTEXT_MAX_CHARS - promptBudget);
+
+    if (contextBudget <= 1000) {
+      return '';
+    }
+
+    return formatConversationContext(relevantMessages, contextBudget);
   }
 
   // Get or create MCP server with browser snapshot tool for session
@@ -2424,7 +2618,8 @@ ${memoriesPrompt}
     permissionMode?: string,
     thinkingMode?: string,
     model?: string,
-    gstackMode?: string
+    gstackMode?: string,
+    supplementalMessages?: ChatMessage[],
   ): AsyncGenerator<StreamEvent> {
     const apiKey = this.getApiKey();
 
@@ -2532,6 +2727,15 @@ ${memoriesPrompt}
         console.log('[Claude Service] Using Anthropic default:', selectedModel);
       }
 
+      let secureEnvContext: string | undefined;
+      try {
+        secureEnvContext = await this.prepareSecureEnvContext(sessionId, session);
+      } catch (error) {
+        console.warn('[Claude Service] Failed to prepare secure environment variable handoff:', error);
+      }
+
+      const normalizedSupplementalMessages = this.normalizeConversationMessages(supplementalMessages);
+
       // Route to Codex when a codex:* model is selected
       if (selectedModel?.startsWith('codex:')) {
         const codexModel = selectedModel.split(':')[1]; // e.g. "o3", "o4-mini", "gpt-4.1"
@@ -2541,24 +2745,44 @@ ${memoriesPrompt}
         // Load conversation history to give Codex context from prior Claude turns
         let conversationContext = '';
         try {
-          const chatMessages = await this.getMessages(sessionId);
-          if (chatMessages.length > 0) {
+          const transcriptMessages = await this.getMessages(sessionId);
+          const mergedMessages = mergeConversationMessages(transcriptMessages, normalizedSupplementalMessages);
+          if (mergedMessages.length > 0) {
             const CODEX_MAX_CHARS = 50000;
             const promptBudget = userMessage.length + 2000;
             const contextBudget = Math.min(30000, CODEX_MAX_CHARS - promptBudget);
             if (contextBudget > 1000) {
-              conversationContext = formatConversationContext(chatMessages, contextBudget);
-              console.log(`[Claude Service] Codex context: ${conversationContext.length} chars from ${chatMessages.length} messages`);
+              conversationContext = formatConversationContext(mergedMessages, contextBudget);
+              console.log(`[Claude Service] Codex context: ${conversationContext.length} chars from ${mergedMessages.length} merged messages`);
             }
           }
         } catch (e) {
           console.warn('[Claude Service] Could not load messages for Codex context:', e);
         }
 
-        for await (const event of codexService.streamAsChat(sessionId, userMessage, projectPath, session.sshConfig, conversationContext, codexModel)) {
+        const codexContext = [secureEnvContext, conversationContext].filter(Boolean).join('\n\n');
+
+        for await (const event of codexService.streamAsChat(sessionId, userMessage, projectPath, session.sshConfig, codexContext, codexModel, attachments, sdkPermissionMode)) {
           yield event as StreamEvent;
         }
         return;
+      }
+
+      let supplementalConversationContext = '';
+      if (normalizedSupplementalMessages.length > 0) {
+        try {
+          const transcriptMessages = await this.getMessages(sessionId);
+          supplementalConversationContext = this.buildSupplementalClaudeContext(
+            transcriptMessages,
+            normalizedSupplementalMessages,
+            userMessage
+          );
+          if (supplementalConversationContext) {
+            console.log(`[Claude Service] Claude supplemental context: ${supplementalConversationContext.length} chars from ${normalizedSupplementalMessages.length} supplemental messages`);
+          }
+        } catch (error) {
+          console.warn('[Claude Service] Could not load transcript messages for Claude supplemental context:', error);
+        }
       }
 
       const isOpus = selectedModel.includes('opus');
@@ -3007,6 +3231,15 @@ Begin by creating the task structure now.
       if (session.sshConfig) {
         console.log('[Claude Service] SSH config:', { host: session.sshConfig.host, user: session.sshConfig.username, remoteWorkdir: session.sshConfig.remoteWorkdir });
       }
+      const sshConfig = session.sshConfig;
+      const localNodeExecutable = session.sshConfig ? undefined : this.resolveLocalNodeExecutable();
+      if (!session.sshConfig) {
+        if (localNodeExecutable) {
+          console.log('[Claude Service] Using local Node executable for Claude Code:', localNodeExecutable);
+        } else {
+          console.warn('[Claude Service] Could not resolve a local Node executable explicitly; falling back to PATH lookup');
+        }
+      }
       const messages = query({
         prompt,
         options: {
@@ -3029,7 +3262,7 @@ Begin by creating the task structure now.
           systemPrompt: {
             type: 'preset',
             preset: 'claude_code',
-            append: this.buildSystemPromptAppend(session, memoriesPrompt, gstackMode),
+            append: this.buildSystemPromptAppend(session, memoriesPrompt, gstackMode, secureEnvContext, supplementalConversationContext),
           },
           // Enable CLAUDE.md and Skills from both user (~/.claude/) and project (.claude/)
           // Skills are discovered automatically by the SDK from these filesystem locations
@@ -3046,18 +3279,20 @@ Begin by creating the task structure now.
           ...(sdkSessionId ? { resume: sdkSessionId } : {}),
           // Add MCP servers (browser tools + QMD semantic search if available)
           mcpServers: mcpServersConfig,
-          // SSH remote execution: spawn Claude Code on remote machine via direct SSH exec.
-          ...(session.sshConfig ? {
-            spawnClaudeCodeProcess: (options: { command: string; args: string[]; cwd?: string; env: Record<string, string | undefined>; signal: AbortSignal }) => {
+          // Spawn Claude Code either locally via a resolved Node binary or remotely over SSH.
+          spawnClaudeCodeProcess: (options: { command: string; args: string[]; cwd?: string; env: Record<string, string | undefined>; signal: AbortSignal }) => {
+            if (sshConfig) {
               console.log('[Claude Service] Creating SSH remote process for session:', sessionId);
               console.log('[Claude Service] SDK spawn options:', { command: options.command, args: options.args, cwd: options.cwd });
               return sshService.createRemoteProcess(
                 sessionId,
-                session.sshConfig!,
+                sshConfig,
                 options
               );
-            },
-          } : {}),
+            }
+
+            return this.createLocalClaudeCodeProcess(localNodeExecutable, options);
+          },
           // Handle tool permission requests
           canUseTool: async (toolName: string, input: Record<string, unknown>, _options: any) => {
             console.log(`[Claude Service] canUseTool called for: ${toolName}, mode: ${sdkPermissionMode}`);
@@ -3382,8 +3617,9 @@ Begin by creating the task structure now.
           return;
         }
 
-        // Log all message types with more detail to debug streaming
-        console.log('[Claude SDK] Message:', msg.type, JSON.stringify(msg).slice(0, 200));
+        if (STREAM_DEBUG) {
+          console.log('[Claude SDK] Message:', msg.type, JSON.stringify(msg).slice(0, 200));
+        }
 
         // Handle different message types from the SDK
         switch (msg.type) {
@@ -3470,8 +3706,10 @@ Begin by creating the task structure now.
 
             if (assistantMsg.message?.content) {
               // Log all block types to debug tool detection
-              const blockTypes = assistantMsg.message.content.map(b => `${b.type}${b.type === 'tool_use' ? ':' + (b.name || '?') : ''}`).join(', ');
-              console.log('[Claude SDK] Assistant content blocks:', blockTypes);
+              if (STREAM_DEBUG) {
+                const blockTypes = assistantMsg.message.content.map(b => `${b.type}${b.type === 'tool_use' ? ':' + (b.name || '?') : ''}`).join(', ');
+                console.log('[Claude SDK] Assistant content blocks:', blockTypes);
+              }
 
               for (const block of assistantMsg.message.content) {
                 if (block.type === 'text' && block.text) {
@@ -3566,7 +3804,9 @@ Begin by creating the task structure now.
                   // Check if we already have this tool call (from assistant message)
                   const existingTool = toolCalls.find(tc => tc.id === event.content_block.id);
                   if (!existingTool) {
-                    console.log('[Claude SDK] Tool start:', event.content_block.name, currentAgentId ? `(agent: ${currentAgentId.slice(0, 8)})` : '(lead)');
+                    if (STREAM_DEBUG) {
+                      console.log('[Claude SDK] Tool start:', event.content_block.name, currentAgentId ? `(agent: ${currentAgentId.slice(0, 8)})` : '(lead)');
+                    }
                     const toolCall: ToolCall = {
                       id: event.content_block.id || `tool-${Date.now()}`,
                       name: event.content_block.name,
@@ -3590,7 +3830,9 @@ Begin by creating the task structure now.
             // Tool execution progress - may contain tool details we need
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             const progressMsg = msg as SDKMessage & { tool_use_id?: string; tool_name?: string; parent_tool_use_id?: string | null; content?: any };
-            console.log('[Claude SDK] Tool progress:', JSON.stringify(progressMsg).slice(0, 300));
+            if (STREAM_DEBUG) {
+              console.log('[Claude SDK] Tool progress:', JSON.stringify(progressMsg).slice(0, 300));
+            }
 
             // Track agent from tool_progress messages too
             const progressAgentId = progressMsg.parent_tool_use_id || undefined;
@@ -3599,7 +3841,9 @@ Begin by creating the task structure now.
             if (progressMsg.tool_name && progressMsg.tool_use_id) {
               const existingTool = toolCalls.find(tc => tc.id === progressMsg.tool_use_id);
               if (!existingTool) {
-                console.log('[Claude SDK] Tool from progress:', progressMsg.tool_name, progressAgentId ? `(agent: ${progressAgentId.slice(0, 8)})` : '(lead)');
+                if (STREAM_DEBUG) {
+                  console.log('[Claude SDK] Tool from progress:', progressMsg.tool_name, progressAgentId ? `(agent: ${progressAgentId.slice(0, 8)})` : '(lead)');
+                }
                 const toolCall: ToolCall = {
                   id: progressMsg.tool_use_id,
                   name: progressMsg.tool_name,
@@ -3972,6 +4216,8 @@ Begin by creating the task structure now.
       this.activeQueryObjects.delete(sessionId);
       powerService.sessionEnded();
     }
+    // Also kill any active Codex process for this session
+    codexService.cancel(sessionId);
   }
 
   /**
@@ -4659,7 +4905,7 @@ Begin by creating the task structure now.
           );
           if (transcripts.length > 0) {
             // Use the most recent transcript (last modified)
-            const latest = transcripts[transcripts.length - 1];
+            const latest = transcripts[0];
             console.log('[Claude] Found orphaned transcript, restoring mapping:', latest.sessionId);
             // Restore the mapping so future loads don't need to search
             this.sessionStore.set(`sdkSessionMappings.${sessionId}`, latest.sessionId);

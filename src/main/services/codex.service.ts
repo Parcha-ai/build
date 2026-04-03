@@ -2,8 +2,11 @@ import Store from 'electron-store';
 import { spawn, ChildProcess } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as readline from 'readline';
+import type { Client, ClientChannel, SFTPWrapper } from 'ssh2';
 import { sshService } from './ssh.service';
+import type { Attachment, SSHConfig } from '../../shared/types';
 
 // Stream event types for Codex (parallel to Claude's StreamEvent but separate)
 export interface CodexStreamEvent {
@@ -102,6 +105,21 @@ interface CodexJsonEvent {
   };
   error?: { message: string };
   message?: string;
+}
+
+interface PreparedCodexAssets {
+  imagePaths: string[];
+  cleanup: () => Promise<void>;
+}
+
+type CodexApprovalPolicy = 'never' | 'on-request' | 'on-failure' | 'untrusted';
+type CodexSandboxMode = 'read-only' | 'workspace-write' | 'danger-full-access';
+
+interface CodexExecutionMode {
+  approvalPolicy?: CodexApprovalPolicy;
+  sandboxMode?: CodexSandboxMode;
+  useDangerouslyBypass: boolean;
+  promptPreamble?: string;
 }
 
 class CodexServiceImpl {
@@ -332,6 +350,8 @@ class CodexServiceImpl {
     workingDir: string,
     apiKey: string,
     codexModel?: string,
+    imagePaths: string[] = [],
+    executionMode?: CodexExecutionMode,
   ): AsyncGenerator<CodexJsonEvent> {
     let binary: string;
     try {
@@ -343,13 +363,15 @@ class CodexServiceImpl {
     const args = [
       'exec',
       '--experimental-json',
-      '--sandbox', 'workspace-write',
       '--cd', workingDir,
       '--skip-git-repo-check',
-      '--config', 'approval_policy="never"',
     ];
+    this.appendExecutionModeArgs(args, executionMode);
     if (codexModel) {
       args.push('--model', codexModel);
+    }
+    for (const imagePath of imagePaths) {
+      args.push('--image', imagePath);
     }
 
     const env: Record<string, string> = { ...process.env as Record<string, string> };
@@ -429,21 +451,33 @@ class CodexServiceImpl {
     apiKey: string,
     sshConfig: any,
     codexModel?: string,
+    imagePaths: string[] = [],
+    executionMode?: CodexExecutionMode,
   ): AsyncGenerator<CodexJsonEvent> {
     console.log(`[Codex Service] Spawning Codex via SSH on ${sshConfig.host}`);
 
     const client = await sshService.getConnectionForCodex(sessionId, sshConfig);
-
-    // Escape the prompt for shell (replace single quotes)
-    const escapedPrompt = prompt.replace(/'/g, "'\\''");
+    const escapedWorkingDir = this.escapeShellSingleQuoted(workingDir);
+    const escapedApiKey = this.escapeShellSingleQuoted(apiKey);
+    const codexArgs = ['codex', 'exec', '--experimental-json', '--skip-git-repo-check'];
+    this.appendExecutionModeArgs(codexArgs, executionMode);
+    if (codexModel) {
+      codexArgs.push('--model', codexModel);
+    }
+    for (const imagePath of imagePaths) {
+      codexArgs.push('--image', imagePath);
+    }
+    const escapedCodexCommand = codexArgs
+      .map((arg) => `'${this.escapeShellSingleQuoted(arg)}'`)
+      .join(' ');
 
     // Build the remote command — codex must be in PATH on the server
     const cmd = `export PATH="$HOME/.local/bin:$HOME/.nvm/versions/node/*/bin:$HOME/.cargo/bin:/usr/local/bin:$PATH" && ` +
-      `cd '${workingDir}' && ` +
-      `CODEX_API_KEY='${apiKey}' ` +
-      `codex exec --experimental-json --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox${codexModel ? ` --model '${codexModel}'` : ''} <<'CODEX_EOF'\n${prompt}\nCODEX_EOF`;
+      `cd '${escapedWorkingDir}' && ` +
+      `CODEX_API_KEY='${escapedApiKey}' ` +
+      `${escapedCodexCommand} <<'CODEX_EOF'\n${prompt}\nCODEX_EOF`;
 
-    const channel = await new Promise<import('ssh2').ClientChannel>((resolve, reject) => {
+    const channel = await new Promise<ClientChannel>((resolve, reject) => {
       client.exec(cmd, (err, channel) => {
         if (err) reject(err);
         else resolve(channel);
@@ -479,24 +513,42 @@ class CodexServiceImpl {
    * Stream Codex events for direct /codex invocation.
    */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  async *streamDirect(sessionId: string, prompt: string, workingDir: string, sshConfig?: any, codexModel?: string): AsyncGenerator<CodexStreamEvent> {
+  async *streamDirect(sessionId: string, prompt: string, workingDir: string, sshConfig?: any, codexModel?: string, attachments?: Attachment[], permissionMode?: string): AsyncGenerator<CodexStreamEvent> {
     const apiKey = this.getOpenAiApiKey();
     if (!apiKey) {
       yield { type: 'error', error: 'No OpenAI API key configured. Please set your OpenAI API key in Settings.' };
       return;
     }
 
+    const executionMode = this.getExecutionMode(permissionMode);
+    const promptWithModeContext = this.buildPromptWithExecutionMode(prompt, executionMode);
     const MAX_PROMPT_CHARS = 50000;
     let safePrompt = prompt;
-    if (prompt.length > MAX_PROMPT_CHARS) {
-      console.warn(`[Codex Service] Prompt too long (${prompt.length} chars), truncating to ${MAX_PROMPT_CHARS}`);
-      safePrompt = prompt.substring(0, MAX_PROMPT_CHARS) + '\n\n[... truncated due to length]';
+    if (promptWithModeContext.length > MAX_PROMPT_CHARS) {
+      console.warn(`[Codex Service] Prompt too long (${promptWithModeContext.length} chars), truncating to ${MAX_PROMPT_CHARS}`);
+      safePrompt = promptWithModeContext.substring(0, MAX_PROMPT_CHARS) + '\n\n[... truncated due to length]';
+    } else {
+      safePrompt = promptWithModeContext;
+    }
+
+    let preparedAssets: PreparedCodexAssets = {
+      imagePaths: [],
+      cleanup: async () => undefined,
+    };
+    try {
+      preparedAssets = await this.prepareCodexAssets(sessionId, attachments || [], sshConfig);
+    } catch (error) {
+      yield {
+        type: 'error',
+        error: `Failed to prepare Codex attachments: ${error instanceof Error ? error.message : String(error)}`,
+      };
+      return;
     }
 
     // Choose local or SSH spawn
     const eventSource = sshConfig
-      ? this.spawnCodexSSH(sessionId, safePrompt, workingDir, apiKey, sshConfig, codexModel)
-      : this.spawnCodex(sessionId, safePrompt, workingDir, apiKey, codexModel);
+      ? this.spawnCodexSSH(sessionId, safePrompt, workingDir, apiKey, sshConfig, codexModel, preparedAssets.imagePaths, executionMode)
+      : this.spawnCodex(sessionId, safePrompt, workingDir, apiKey, codexModel, preparedAssets.imagePaths, executionMode);
 
     try {
       // Codex --experimental-json emits multiple item.completed agent_message per turn
@@ -542,6 +594,10 @@ class CodexServiceImpl {
       } else {
         yield { type: 'error', error: error instanceof Error ? error.message : String(error) };
       }
+    } finally {
+      await preparedAssets.cleanup().catch((error) => {
+        console.warn('[Codex Service] Failed to clean up prepared assets:', error);
+      });
     }
   }
 
@@ -549,7 +605,7 @@ class CodexServiceImpl {
    * Stream Codex as Claude-compatible StreamEvents so it works in the existing chat pipeline.
    */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  async *streamAsChat(sessionId: string, prompt: string, workingDir: string, sshConfig?: any, conversationContext?: string, codexModel?: string): AsyncGenerator<{
+  async *streamAsChat(sessionId: string, prompt: string, workingDir: string, sshConfig?: any, conversationContext?: string, codexModel?: string, attachments?: Attachment[], permissionMode?: string): AsyncGenerator<{
     type: string;
     content?: string;
     toolCall?: { id: string; name: string; input: Record<string, unknown>; status: string; result?: string };
@@ -561,10 +617,11 @@ class CodexServiceImpl {
       systemInfo: { tools: ['Bash', 'Edit', 'Read', 'Write', 'Glob', 'Grep'], model: codexModel || 'codex' },
     };
 
+    const promptWithAttachmentContext = this.buildPromptWithAttachmentContext(prompt, attachments);
     // Prepend conversation context from prior Claude turns if available
-    const fullPrompt = conversationContext ? conversationContext + prompt : prompt;
+    const fullPrompt = conversationContext ? `${conversationContext}\n\n${promptWithAttachmentContext}` : promptWithAttachmentContext;
 
-    for await (const event of this.streamDirect(sessionId, fullPrompt, workingDir, sshConfig, codexModel)) {
+    for await (const event of this.streamDirect(sessionId, fullPrompt, workingDir, sshConfig, codexModel, attachments, permissionMode)) {
       switch (event.type) {
         case 'text_start':
           break;
@@ -608,10 +665,231 @@ class CodexServiceImpl {
       if (active) {
         console.log(`[Codex Service] Cancelling run for ${key}`);
         active.abortController.abort();
+        // SIGTERM first, then SIGKILL after 1s if still alive
         active.process.kill('SIGTERM');
+        const proc = active.process;
+        setTimeout(() => {
+          try { if (!proc.killed) proc.kill('SIGKILL'); } catch { /* already dead */ }
+        }, 1000);
         this.activeProcesses.delete(key);
       }
     }
+  }
+
+  private escapeShellSingleQuoted(value: string): string {
+    return value.replace(/'/g, "'\\''");
+  }
+
+  private getExecutionMode(permissionMode?: string): CodexExecutionMode {
+    switch (permissionMode) {
+      case 'plan':
+        return {
+          approvalPolicy: 'never',
+          sandboxMode: 'read-only',
+          useDangerouslyBypass: false,
+          promptPreamble: [
+            'You are in PLAN mode.',
+            'Do not modify files, apply patches, or run commands that require write access.',
+            'Inspect the codebase as needed and return a concrete implementation plan only.',
+          ].join(' '),
+        };
+      case 'acceptEdits':
+        return {
+          approvalPolicy: 'never',
+          sandboxMode: 'workspace-write',
+          useDangerouslyBypass: false,
+        };
+      case 'default':
+        return {
+          approvalPolicy: 'on-request',
+          sandboxMode: 'workspace-write',
+          useDangerouslyBypass: false,
+        };
+      case 'dontAsk':
+        return {
+          approvalPolicy: 'never',
+          sandboxMode: 'read-only',
+          useDangerouslyBypass: false,
+        };
+      case 'bypassPermissions':
+      default:
+        return {
+          useDangerouslyBypass: true,
+        };
+    }
+  }
+
+  private appendExecutionModeArgs(args: string[], executionMode?: CodexExecutionMode): void {
+    if (executionMode?.useDangerouslyBypass) {
+      args.push('--dangerously-bypass-approvals-and-sandbox');
+      return;
+    }
+
+    args.push('--sandbox', executionMode?.sandboxMode || 'workspace-write');
+    args.push('--config', `approval_policy="${executionMode?.approvalPolicy || 'never'}"`);
+  }
+
+  private buildPromptWithExecutionMode(prompt: string, executionMode: CodexExecutionMode): string {
+    if (!executionMode.promptPreamble) {
+      return prompt;
+    }
+
+    return `${executionMode.promptPreamble}\n\n${prompt}`;
+  }
+
+  private buildPromptWithAttachmentContext(prompt: string, attachments?: Attachment[]): string {
+    const domElementAttachments = attachments?.filter((attachment) => attachment.type === 'dom_element') || [];
+    if (domElementAttachments.length === 0) {
+      return prompt;
+    }
+
+    const domContext = domElementAttachments
+      .map((attachment, index) => `<selected-element index="${index + 1}" selector="${attachment.name}">\n${attachment.content}\n</selected-element>`)
+      .join('\n\n');
+
+    return `${domContext}\n\n${prompt}`;
+  }
+
+  private getImageFileExtension(fileName: string): string {
+    const ext = path.extname(fileName).toLowerCase();
+    switch (ext) {
+      case '.jpg':
+      case '.jpeg':
+      case '.png':
+      case '.gif':
+      case '.webp':
+        return ext;
+      default:
+        return '.png';
+    }
+  }
+
+  private async prepareLocalImageFiles(sessionId: string, attachments: Attachment[]): Promise<PreparedCodexAssets> {
+    const imageAttachments = attachments.filter((attachment) => attachment.type === 'image');
+    if (imageAttachments.length === 0) {
+      return { imagePaths: [], cleanup: async () => undefined };
+    }
+
+    const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), `claudette-codex-${sessionId}-`));
+    const imagePaths: string[] = [];
+
+    try {
+      for (const [index, attachment] of imageAttachments.entries()) {
+        const imagePath = path.join(tempDir, `image-${index}${this.getImageFileExtension(attachment.name)}`);
+        await fs.promises.writeFile(imagePath, attachment.content, 'base64');
+        imagePaths.push(imagePath);
+      }
+    } catch (error) {
+      await fs.promises.rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
+      throw error;
+    }
+
+    return {
+      imagePaths,
+      cleanup: async () => {
+        await fs.promises.rm(tempDir, { recursive: true, force: true });
+      },
+    };
+  }
+
+  private async getSftp(client: Client): Promise<SFTPWrapper> {
+    return new Promise<SFTPWrapper>((resolve, reject) => {
+      client.sftp((error, sftp) => {
+        if (error) reject(error);
+        else resolve(sftp);
+      });
+    });
+  }
+
+  private async fastPut(sftp: SFTPWrapper, localPath: string, remotePath: string): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      sftp.fastPut(localPath, remotePath, (error) => {
+        if (error) reject(error);
+        else resolve();
+      });
+    });
+  }
+
+  private async execRemoteCommand(client: Client, command: string): Promise<string> {
+    return new Promise<string>((resolve, reject) => {
+      client.exec(command, (error, channel) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+
+        let stdout = '';
+        let stderr = '';
+
+        channel.on('data', (data: Buffer) => {
+          stdout += data.toString();
+        });
+        channel.stderr.on('data', (data: Buffer) => {
+          stderr += data.toString();
+        });
+        channel.on('close', (code: number | null) => {
+          if (code === 0 || code === null) {
+            resolve(stdout);
+          } else {
+            reject(new Error(stderr.trim() || `Remote command failed with exit code ${code}`));
+          }
+        });
+      });
+    });
+  }
+
+  private async prepareRemoteImageFiles(sessionId: string, attachments: Attachment[], sshConfig: SSHConfig): Promise<PreparedCodexAssets> {
+    const localAssets = await this.prepareLocalImageFiles(sessionId, attachments);
+    if (localAssets.imagePaths.length === 0) {
+      return localAssets;
+    }
+
+    const client = await sshService.getConnectionForCodex(sessionId, sshConfig);
+    const remoteDir = `/tmp/claudette-codex-${sessionId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const escapedRemoteDir = this.escapeShellSingleQuoted(remoteDir);
+    await this.execRemoteCommand(client, `mkdir -p '${escapedRemoteDir}'`);
+
+    const sftp = await this.getSftp(client);
+    const remotePaths: string[] = [];
+
+    try {
+      for (const [index, localPath] of localAssets.imagePaths.entries()) {
+        const remotePath = `${remoteDir}/image-${index}${path.extname(localPath) || '.png'}`;
+        await this.fastPut(sftp, localPath, remotePath);
+        remotePaths.push(remotePath);
+      }
+    } catch (error) {
+      try {
+        await this.execRemoteCommand(client, `rm -rf '${escapedRemoteDir}'`);
+      } catch (cleanupError) {
+        console.warn('[Codex Service] Failed to clean remote Codex temp dir after upload error:', cleanupError);
+      }
+      throw error;
+    } finally {
+      try {
+        sftp.end();
+      } catch {
+        // ignore close errors
+      }
+      await localAssets.cleanup().catch(() => undefined);
+    }
+
+    return {
+      imagePaths: remotePaths,
+      cleanup: async () => {
+        await this.execRemoteCommand(client, `rm -rf '${escapedRemoteDir}'`);
+      },
+    };
+  }
+
+  private async prepareCodexAssets(sessionId: string, attachments: Attachment[], sshConfig?: SSHConfig): Promise<PreparedCodexAssets> {
+    if (!attachments.some((attachment) => attachment.type === 'image')) {
+      return { imagePaths: [], cleanup: async () => undefined };
+    }
+
+    return sshConfig
+      ? this.prepareRemoteImageFiles(sessionId, attachments, sshConfig)
+      : this.prepareLocalImageFiles(sessionId, attachments);
   }
 }
 
