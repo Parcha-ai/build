@@ -462,13 +462,11 @@ export default function ChatContainer({ session }: ChatContainerProps) {
     return () => container.removeEventListener('scroll', handleScroll);
   }, [checkIfAtBottom]);
 
-  // Auto-scroll: always scroll during active streaming, or when at bottom
-  // During streaming the user wants to follow output — don't require them to be exactly at the bottom
+  // Auto-scroll when user is at the bottom of the chat.
+  // Scrolling up always works — auto-scroll only resumes when you scroll back to the bottom.
   const scrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
-    const shouldAutoScroll = isAtBottom || isSessionStreaming;
-
-    if (shouldAutoScroll) {
+    if (isAtBottom) {
       // Throttle scrollIntoView to at most once per 100ms during streaming
       if (!scrollTimerRef.current) {
         scrollTimerRef.current = setTimeout(() => {
@@ -486,7 +484,7 @@ export default function ChatContainer({ session }: ChatContainerProps) {
       }
     }
     lastMessageCountRef.current = sessionMessages.length;
-  }, [sessionMessages, streamContent, thinkingContent, isAtBottom, isSessionStreaming]);
+  }, [sessionMessages, streamContent, thinkingContent, isAtBottom]);
 
   // Scroll to bottom function for FAB
   const scrollToBottom = useCallback(() => {
