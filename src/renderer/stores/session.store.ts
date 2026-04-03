@@ -1,6 +1,7 @@
 import { create } from 'zustand';
-import type { Session, ChatMessage, ToolCall, PermissionRequest, PermissionResponse, QuestionRequest, QuestionResponse, SetupProgressEvent, CompactionStatus, CompactionComplete, PlanApprovalRequest, PlanApprovalResponse, GStackMode } from '../../shared/types';
+import type { Session, ChatMessage, ToolCall, PermissionRequest, PermissionResponse, QuestionRequest, QuestionResponse, SetupProgressEvent, CompactionStatus, PlanApprovalRequest, PlanApprovalResponse, GStackMode } from '../../shared/types';
 import { AGENT_COLORS } from '../../shared/types';
+import { useAudioStore } from './audio.store';
 
 // Check if running in Electron environment
 const hasElectronAPI = typeof window !== 'undefined' && !!window.electronAPI;
@@ -12,6 +13,13 @@ interface SystemInfo {
 
 // Permission modes from Claude Agent SDK
 export type PermissionMode = 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'dontAsk';
+
+const ALL_PERMISSION_MODES: PermissionMode[] = ['acceptEdits', 'default', 'bypassPermissions', 'plan', 'dontAsk'];
+const DEFAULT_PERMISSION_MODE: PermissionMode = 'bypassPermissions';
+const CODEX_PERMISSION_MODES: PermissionMode[] = ALL_PERMISSION_MODES.filter(
+  (mode): mode is PermissionMode => mode === 'acceptEdits' || mode === 'bypassPermissions' || mode === 'plan',
+);
+const SUPPLEMENTAL_MESSAGES_STORAGE_PREFIX = 'grep-supplemental-messages-';
 
 // Effort levels: maps to Claude API's effort parameter
 // low = fast/efficient, medium = balanced, high = full capability (default), max = maximum (Opus only)
@@ -61,6 +69,17 @@ export interface ModelInfo {
   description: string;
 }
 
+export interface CompactionSwitchState {
+  status: 'compacting' | 'complete';
+  originalModel: string;
+  fallbackModel?: string;
+  autoSwitched: boolean;
+  startedAt: number;
+  completedAt?: number;
+  preTokens?: number;
+  postTokens?: number;
+}
+
 // SSH streaming watchdog — DISABLED.
 // The 60s timeout was too aggressive: Claude routinely spends >60s executing tools
 // (bash commands, research, etc.) without sending text deltas back to the renderer.
@@ -90,6 +109,7 @@ interface SessionState {
   currentThinkingContent: Record<string, string>;
   currentToolCalls: Record<string, ToolCall[]>;
   currentSystemInfo: Record<string, SystemInfo | null>;
+  activeStreamModel: Record<string, string | undefined>;
   permissionMode: Record<string, PermissionMode>;
   thinkingMode: Record<string, ThinkingMode>;
   selectedModel: Record<string, string>;
@@ -99,6 +119,7 @@ interface SessionState {
   pendingPlanApproval: Record<string, PlanApprovalRequest | null>;
   setupProgress: Record<string, SetupProgressEvent | null>;
   compactionStatus: Record<string, CompactionStatus | null>;
+  compactionSwitch: Record<string, CompactionSwitchState | null>;
   contextUsage: Record<string, { inputTokens: number; contextWindowSize: number; percentage: number } | null>;
   messageQueue: Record<string, Array<{
     id: string;
@@ -197,6 +218,8 @@ interface SessionState {
   subscribeToBackgroundTasks: () => () => void;
   // Compaction status (Smart Compact feature)
   setCompactionStatus: (sessionId: string, status: CompactionStatus | null) => void;
+  dismissCompactionSwitch: (sessionId: string) => void;
+  restoreCompactionModel: (sessionId: string) => void;
   subscribeToCompaction: () => () => void;
   // Auto-resume for Grep It mode
   saveAutoResumeState: (sessionId: string) => Promise<void>;
@@ -234,6 +257,221 @@ interface SessionState {
   subscribeToRemoteControl: () => () => void;
 }
 
+export function isCodexModel(model?: string | null): boolean {
+  return model?.startsWith('codex:') ?? false;
+}
+
+export function getSupportedPermissionModes(model?: string | null): PermissionMode[] {
+  return isCodexModel(model) ? CODEX_PERMISSION_MODES : ALL_PERMISSION_MODES;
+}
+
+export function normalizePermissionModeForModel(model?: string | null, mode?: PermissionMode | null): PermissionMode {
+  const supportedModes = getSupportedPermissionModes(model);
+  if (mode && supportedModes.includes(mode)) {
+    return mode;
+  }
+  return supportedModes.includes(DEFAULT_PERMISSION_MODE) ? DEFAULT_PERMISSION_MODE : supportedModes[0];
+}
+
+const PREFERRED_CLAUDE_FALLBACK_MODELS = [
+  'claude-opus-4-6',
+  'claude-opus-4-5-20251101',
+  'claude-sonnet-4-6',
+  'claude-sonnet-4-5-20250929',
+  'claude-sonnet-4-20250514',
+  'claude-haiku-4-5-20251001',
+];
+
+const PREFERRED_CODEX_FALLBACK_MODELS = [
+  'codex:gpt-5.4',
+  'codex:gpt-5.3-codex',
+  'codex:o3',
+  'codex:gpt-5.4-mini',
+];
+
+function getPreferredCompactionFallbackModel(availableModels: ModelInfo[], sourceModel?: string): string | undefined {
+  const preferredModels = isCodexModel(sourceModel)
+    ? PREFERRED_CLAUDE_FALLBACK_MODELS
+    : PREFERRED_CODEX_FALLBACK_MODELS;
+
+  if (availableModels.length === 0) {
+    return preferredModels[0];
+  }
+
+  const availableIds = new Set(availableModels.map((model) => model.id));
+  return preferredModels.find((modelId) => availableIds.has(modelId));
+}
+
+function persistModelSelection(sessionId: string, model: string, permissionMode: PermissionMode) {
+  if (!hasElectronAPI) return;
+
+  window.electronAPI.sessions.update(sessionId, { model, permissionMode } as any).catch((err: Error) => {
+    console.error('[SessionStore] Failed to persist model selection:', err);
+  });
+  window.electronAPI.claude.setPermissionMode(sessionId, permissionMode).catch((err) => {
+    console.error('[SessionStore] Failed to sync permission mode after model change:', err);
+  });
+}
+
+function getSessionModel(state: Pick<SessionState, 'selectedModel' | 'sessions'>, sessionId: string): string | undefined {
+  return state.selectedModel[sessionId] || state.sessions.find((session) => session.id === sessionId)?.model;
+}
+
+function persistPermissionMode(sessionId: string, mode: PermissionMode) {
+  if (!hasElectronAPI) return;
+
+  window.electronAPI.claude.setPermissionMode(sessionId, mode).catch((err) => {
+    console.error('[SessionStore] Failed to set permission mode on backend:', err);
+  });
+  window.electronAPI.sessions.update(sessionId, { permissionMode: mode } as any).catch((err: Error) => {
+    console.error('[SessionStore] Failed to persist permissionMode:', err);
+  });
+}
+
+type PersistedChatMessage = Omit<ChatMessage, 'timestamp'> & { timestamp: string };
+
+export function getSupplementalStorageKey(sessionId: string): string {
+  return `${SUPPLEMENTAL_MESSAGES_STORAGE_PREFIX}${sessionId}`;
+}
+
+function normalizeChatMessageTimestamp(message: ChatMessage): ChatMessage {
+  const timestamp = message.timestamp instanceof Date ? message.timestamp : new Date(message.timestamp);
+  return {
+    ...message,
+    timestamp,
+  };
+}
+
+function serializeChatMessage(message: ChatMessage): PersistedChatMessage {
+  const normalized = normalizeChatMessageTimestamp(message);
+  return {
+    ...normalized,
+    timestamp: normalized.timestamp.toISOString(),
+  };
+}
+
+function deserializeChatMessage(message: PersistedChatMessage): ChatMessage | null {
+  const timestamp = new Date(message.timestamp);
+  if (Number.isNaN(timestamp.getTime())) {
+    return null;
+  }
+
+  return {
+    ...message,
+    timestamp,
+  };
+}
+
+function compareChatMessages(a: ChatMessage, b: ChatMessage): number {
+  const aTime = normalizeChatMessageTimestamp(a).timestamp.getTime();
+  const bTime = normalizeChatMessageTimestamp(b).timestamp.getTime();
+  if (aTime !== bTime) {
+    return aTime - bTime;
+  }
+
+  const roleOrder = { system: 0, user: 1, assistant: 2 };
+  const roleDelta = roleOrder[a.role] - roleOrder[b.role];
+  if (roleDelta !== 0) {
+    return roleDelta;
+  }
+
+  return a.id.localeCompare(b.id);
+}
+
+function buildMessageFingerprint(message: ChatMessage): string {
+  const normalized = normalizeChatMessageTimestamp(message);
+  const toolFingerprint = (normalized.toolCalls || [])
+    .map((toolCall) => `${toolCall.id}:${toolCall.name}:${toolCall.status}:${toolCall.result || ''}`)
+    .join('|');
+
+  return [
+    normalized.role,
+    normalized.timestamp.getTime(),
+    normalized.content,
+    toolFingerprint,
+    normalized.interrupted ? '1' : '0',
+  ].join('::');
+}
+
+function mergeTimelineMessages(primary: ChatMessage[], supplemental: ChatMessage[]): ChatMessage[] {
+  const merged = [...primary, ...supplemental]
+    .map(normalizeChatMessageTimestamp)
+    .sort(compareChatMessages);
+
+  const seenIds = new Set<string>();
+  const seenFingerprints = new Set<string>();
+  const deduped: ChatMessage[] = [];
+
+  for (const message of merged) {
+    if (seenIds.has(message.id)) {
+      continue;
+    }
+
+    const fingerprint = buildMessageFingerprint(message);
+    if (seenFingerprints.has(fingerprint)) {
+      continue;
+    }
+
+    seenIds.add(message.id);
+    seenFingerprints.add(fingerprint);
+    deduped.push(message);
+  }
+
+  return deduped;
+}
+
+function loadSupplementalMessages(sessionId: string): ChatMessage[] {
+  if (typeof window === 'undefined') return [];
+
+  try {
+    const raw = window.localStorage.getItem(getSupplementalStorageKey(sessionId));
+    if (!raw) return [];
+
+    const parsed = JSON.parse(raw) as PersistedChatMessage[];
+    if (!Array.isArray(parsed)) return [];
+
+    return parsed
+      .map(deserializeChatMessage)
+      .filter((message): message is ChatMessage => !!message)
+      .sort(compareChatMessages);
+  } catch (error) {
+    console.warn('[SessionStore] Failed to load supplemental messages:', error);
+    return [];
+  }
+}
+
+function saveSupplementalMessages(sessionId: string, messages: ChatMessage[]): void {
+  if (typeof window === 'undefined') return;
+
+  try {
+    const serialized = messages
+      .map(serializeChatMessage)
+      .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+    window.localStorage.setItem(getSupplementalStorageKey(sessionId), JSON.stringify(serialized));
+  } catch (error) {
+    console.warn('[SessionStore] Failed to save supplemental messages:', error);
+  }
+}
+
+function persistSupplementalMessage(sessionId: string, message: ChatMessage): void {
+  const merged = mergeTimelineMessages(loadSupplementalMessages(sessionId), [message]);
+  saveSupplementalMessages(sessionId, merged);
+}
+
+export function cloneSupplementalMessages(fromSessionId: string, toSessionId: string): void {
+  if (typeof window === 'undefined' || fromSessionId === toSessionId) return;
+
+  try {
+    const raw = window.localStorage.getItem(getSupplementalStorageKey(fromSessionId));
+    if (!raw) {
+      return;
+    }
+    window.localStorage.setItem(getSupplementalStorageKey(toSessionId), raw);
+  } catch (error) {
+    console.warn('[SessionStore] Failed to clone supplemental messages:', error);
+  }
+}
+
 export const useSessionStore = create<SessionState>((set, get) => ({
   sessions: [],
   activeSessionId: null,
@@ -248,6 +486,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   currentThinkingContent: {},
   currentToolCalls: {},
   currentSystemInfo: {},
+  activeStreamModel: {},
   permissionMode: {},
   thinkingMode: {},
   selectedModel: {},
@@ -257,6 +496,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   pendingPlanApproval: {},
   setupProgress: {},
   compactionStatus: {},
+  compactionSwitch: {},
   contextUsage: {},
   messageQueue: {},
   backgroundTasks: {},
@@ -305,9 +545,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
       // Restore the session's model + permission mode from persisted session data
       const session = sessionId ? state.sessions.find(s => s.id === sessionId) : null;
-      const restoredModel = (session?.model && sessionId) ? { [sessionId]: session.model } : {};
-      const restoredPermission = (session as any)?.permissionMode && sessionId
-        ? { [sessionId]: (session as any).permissionMode }
+      const sessionModel = session?.model;
+      const restoredModel = (sessionModel && sessionId) ? { [sessionId]: sessionModel } : {};
+      const normalizedPermissionMode = sessionId
+        ? normalizePermissionModeForModel(sessionModel, (session as any)?.permissionMode)
+        : undefined;
+      const restoredPermission = sessionId && normalizedPermissionMode
+        ? { [sessionId]: normalizedPermissionMode }
         : {};
 
       return {
@@ -414,12 +658,21 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       const restoredModel = activeSession?.model
         ? { [validActiveSessionId!]: activeSession.model }
         : {};
+      const restoredPermission = validActiveSessionId
+        ? {
+            [validActiveSessionId]: normalizePermissionModeForModel(
+              activeSession?.model,
+              (activeSession as any)?.permissionMode,
+            ),
+          }
+        : {};
 
       set({
         sessions,
         activeSessionId: validActiveSessionId,
         isLoadingSessions: false,
         selectedModel: restoredModel,
+        permissionMode: restoredPermission,
       });
 
       // Persist auto-selected session
@@ -491,6 +744,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         pendingPlanApproval: clean(state.pendingPlanApproval),
         setupProgress: clean(state.setupProgress),
         compactionStatus: clean(state.compactionStatus),
+        compactionSwitch: clean(state.compactionSwitch),
         messageQueue: clean(state.messageQueue),
         backgroundTasks: clean(state.backgroundTasks),
         securedKeys: clean(state.securedKeys),
@@ -674,7 +928,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     // Send thinking updates to ElevenLabs agent (if voice mode active)
     // Format as [THINKING] so agent knows to narrate it
-    if (window.electronAPI?.voice) {
+    const audioState = useAudioStore.getState();
+    const voiceModeEnabled = !!audioState.settings?.voiceModeEnabled;
+    const voiceConnected = !!audioState.voiceModeStates[sessionId]?.isConnected;
+
+    if (window.electronAPI?.voice && voiceModeEnabled && voiceConnected) {
       window.electronAPI.voice.sendContextUpdate(`[THINKING] ${content}`).catch((err: Error) => {
         console.error('[SessionStore] Failed to send thinking to voice:', err);
       });
@@ -747,6 +1005,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         ...state.sessionActivity,
         [sessionId]: isStreaming ? 'active' : 'waiting',
       },
+      activeStreamModel: isStreaming
+        ? state.activeStreamModel
+        : { ...state.activeStreamModel, [sessionId]: undefined },
       streamEvents: isStreaming
         ? { ...state.streamEvents, [sessionId]: [] }
         : state.streamEvents,
@@ -852,23 +1113,20 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
 
   setPermissionMode: (sessionId, mode) => {
+    const state = get();
+    const model = getSessionModel(state, sessionId);
+    const normalizedMode = normalizePermissionModeForModel(model, mode);
+
     // Update local state
     set((state) => ({
       permissionMode: {
         ...state.permissionMode,
-        [sessionId]: mode,
+        [sessionId]: normalizedMode,
       },
     }));
+
     // Notify backend for active queries (JUST BUILD IT button mid-stream)
-    if (hasElectronAPI) {
-      window.electronAPI.claude.setPermissionMode(sessionId, mode).catch((err) => {
-        console.error('[SessionStore] Failed to set permission mode on backend:', err);
-      });
-      // Persist to session so it survives app restarts
-      window.electronAPI.sessions.update(sessionId, { permissionMode: mode } as any).catch((err: Error) => {
-        console.error('[SessionStore] Failed to persist permissionMode:', err);
-      });
-    }
+    persistPermissionMode(sessionId, normalizedMode);
   },
 
   // Command Center management
@@ -936,18 +1194,21 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
 
   cyclePermissionMode: (sessionId) => {
-    const modes: PermissionMode[] = ['acceptEdits', 'default', 'bypassPermissions', 'plan', 'dontAsk'];
-    set((state) => {
-      const currentMode = state.permissionMode[sessionId] || 'bypassPermissions';
-      const currentIndex = modes.indexOf(currentMode);
-      const nextIndex = (currentIndex + 1) % modes.length;
-      return {
-        permissionMode: {
-          ...state.permissionMode,
-          [sessionId]: modes[nextIndex],
-        },
-      };
-    });
+    const state = get();
+    const model = getSessionModel(state, sessionId);
+    const modes = getSupportedPermissionModes(model);
+    const currentMode = normalizePermissionModeForModel(model, state.permissionMode[sessionId]);
+    const currentIndex = modes.indexOf(currentMode);
+    const nextMode = modes[(currentIndex + 1) % modes.length];
+
+    set((state) => ({
+      permissionMode: {
+        ...state.permissionMode,
+        [sessionId]: nextMode,
+      },
+    }));
+
+    persistPermissionMode(sessionId, nextMode);
   },
 
   setThinkingMode: (sessionId, mode) => {
@@ -977,16 +1238,32 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
 
   setSelectedModel: (sessionId, model) => {
+    const state = get();
+
+    // If currently streaming, cancel the active stream before switching models
+    // This prevents Codex processes from running orphaned after switching to Claude
+    if (state.isStreaming[sessionId]) {
+      console.log(`[SessionStore] Model switch while streaming — cancelling current stream for ${sessionId}`);
+      state.cancelStream(sessionId);
+    }
+
+    const normalizedPermissionMode = normalizePermissionModeForModel(model, state.permissionMode[sessionId]);
+
     set((state) => ({
       selectedModel: {
         ...state.selectedModel,
         [sessionId]: model,
       },
+      permissionMode: {
+        ...state.permissionMode,
+        [sessionId]: normalizedPermissionMode,
+      },
+      compactionSwitch: state.compactionSwitch[sessionId]
+        ? { ...state.compactionSwitch, [sessionId]: null }
+        : state.compactionSwitch,
     }));
-    // Persist the model selection to the session
-    if (hasElectronAPI) {
-      window.electronAPI.sessions.update(sessionId, { model });
-    }
+
+    persistModelSelection(sessionId, model, normalizedPermissionMode);
   },
 
   loadAvailableModels: async () => {
@@ -1063,10 +1340,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
 
     const { addMessage, setStreaming, permissionMode, thinkingMode, selectedModel, gstackMode } = state;
-    const mode = permissionMode[sessionId] || 'bypassPermissions';
+    const model = selectedModel[sessionId]; // undefined = use default
+    const mode = normalizePermissionModeForModel(model, permissionMode[sessionId]);
     // Apply migration to handle old thinking mode values, default to 'high' (full capability)
     const thinking = migrateThinkingMode(thinkingMode[sessionId] || 'high');
-    const model = selectedModel[sessionId]; // undefined = use default
     const activeGStackMode = gstackMode[sessionId] || undefined; // Pass GStack mode directly
     console.log('[SessionStore] sendMessage - sessionId:', sessionId, 'permissionMode:', mode, 'gstackMode:', activeGStackMode, 'raw:', permissionMode[sessionId]);
 
@@ -1095,6 +1372,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }));
     }
 
+    const supplementalMessagesForContext = loadSupplementalMessages(sessionId);
+
     // Add user message (with keys replaced by placeholders)
     const userMessage: ChatMessage = {
       id: Date.now().toString(),
@@ -1103,15 +1382,33 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       timestamp: new Date(),
     };
     addMessage(sessionId, userMessage);
+    if (isCodexModel(model)) {
+      persistSupplementalMessage(sessionId, userMessage);
+    }
 
     // Start streaming
     setStreaming(sessionId, true);
+    set((state) => ({
+      activeStreamModel: {
+        ...state.activeStreamModel,
+        [sessionId]: model,
+      },
+    }));
 
     try {
       console.log('[SessionStore] Calling electronAPI.claude.sendMessage with', attachments?.length || 0, 'attachments, model:', model);
       console.log('[SessionStore] sendMessage params:', { sessionId: sessionId.substring(0, 8), messageLen: message.length, mode, thinking, model });
 
-      const result = await window.electronAPI.claude.sendMessage(sessionId, message, attachments, mode, thinking, model, activeGStackMode);
+      const result = await window.electronAPI.claude.sendMessage(
+        sessionId,
+        modifiedText,
+        attachments,
+        mode,
+        thinking,
+        model,
+        activeGStackMode,
+        supplementalMessagesForContext
+      );
       console.log('[SessionStore] sendMessage returned:', result);
 
       // Update timestamp in backend as well
@@ -1127,20 +1424,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     if (!hasElectronAPI) return;
 
     const perfStart = performance.now();
+    const RECENT_MESSAGE_LIMIT = 100;
 
-    // Signal loading start (only if we don't already have messages)
-    const existingCount = (get().messages[sessionId] || []).length;
-    if (existingCount === 0) {
-      set((state) => ({
-        isLoadingMessages: { ...state.isLoadingMessages, [sessionId]: true },
-      }));
-    }
+    const applyLoadedMessages = (transcriptMessages: ChatMessage[]) => {
+      const supplementalMessages = loadSupplementalMessages(sessionId);
+      const mergedMessages = mergeTimelineMessages(transcriptMessages || [], supplementalMessages);
+      console.log(`[Perf] Message load took ${performance.now() - perfStart}ms (${mergedMessages.length} merged messages)`);
 
-    try {
-      const transcriptMessages = await window.electronAPI.claude.getMessages(sessionId);
-      console.log(`[Perf] Message load took ${performance.now() - perfStart}ms (${transcriptMessages?.length || 0} messages)`);
-
-      if (transcriptMessages && transcriptMessages.length > 0) {
+      if (mergedMessages.length > 0) {
         set((state) => {
           const existingMessages = state.messages[sessionId] || [];
 
@@ -1153,15 +1444,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           // If existing in-memory messages outnumber transcript messages,
           // the transcript may be stale (SDK hasn't flushed yet). Keep the longer list
           // to prevent the chat from appearing to lose messages.
-          if (existingMessages.length > transcriptMessages.length) {
-            console.log(`[SessionStore] loadMessages: Keeping ${existingMessages.length} in-memory messages (transcript has ${transcriptMessages.length})`);
+          if (existingMessages.length > mergedMessages.length) {
+            console.log(`[SessionStore] loadMessages: Keeping ${existingMessages.length} in-memory messages (merged history has ${mergedMessages.length})`);
             return { isLoadingMessages: { ...state.isLoadingMessages, [sessionId]: false } };
           }
 
           return {
             messages: {
               ...state.messages,
-              [sessionId]: transcriptMessages,
+              [sessionId]: mergedMessages,
             },
             isLoadingMessages: { ...state.isLoadingMessages, [sessionId]: false },
           };
@@ -1171,6 +1462,33 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         set((state) => ({
           isLoadingMessages: { ...state.isLoadingMessages, [sessionId]: false },
         }));
+      }
+
+      return mergedMessages;
+    };
+
+    set((state) => ({
+      isLoadingMessages: { ...state.isLoadingMessages, [sessionId]: true },
+    }));
+
+    try {
+      // Show the newest slice first so the latest messages appear immediately.
+      const recentTranscriptMessages = await window.electronAPI.claude.getMessages(sessionId, RECENT_MESSAGE_LIMIT);
+      applyLoadedMessages(recentTranscriptMessages || []);
+
+      // Then backfill older transcript history above the fold.
+      if ((recentTranscriptMessages?.length || 0) >= RECENT_MESSAGE_LIMIT) {
+        set((state) => ({
+          isLoadingMessages: { ...state.isLoadingMessages, [sessionId]: true },
+        }));
+        const fullTranscriptMessages = await window.electronAPI.claude.getMessages(sessionId, 0);
+        if ((fullTranscriptMessages?.length || 0) > (recentTranscriptMessages?.length || 0)) {
+          applyLoadedMessages(fullTranscriptMessages || []);
+        } else {
+          set((state) => ({
+            isLoadingMessages: { ...state.isLoadingMessages, [sessionId]: false },
+          }));
+        }
       }
     } catch (error) {
       console.error('Failed to load messages:', error);
@@ -1248,6 +1566,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       const currentState = get();
       const queue = currentState.messageQueue[sessionId] || [];
       if (queue.length > 0) {
+        const activeStreamModel = currentState.activeStreamModel[sessionId];
+        if (isCodexModel(activeStreamModel)) {
+          console.log('[SessionStore] Tool completed during Codex run - queued message will wait for stream end');
+          return;
+        }
+
         const nextMessage = queue[0];
         console.log(`[SessionStore] Tool completed, injecting queued message: "${nextMessage.message.slice(0, 50)}..."`);
 
@@ -1283,9 +1607,55 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           console.log(`[SessionStore] Message injection result:`, success);
           if (!success) {
             console.warn('[SessionStore] Message injection returned false - query may have ended');
+            set((state) => ({
+              messages: {
+                ...state.messages,
+                [sessionId]: (state.messages[sessionId] || []).filter((message) => message.id !== nextMessage.id),
+              },
+              messageQueue: {
+                ...state.messageQueue,
+                [sessionId]: [nextMessage, ...(state.messageQueue[sessionId] || [])],
+              },
+            }));
+
+            if (!get().isStreaming[sessionId]) {
+              console.log('[SessionStore] Active query ended before injection completed - sending queued message as a new turn');
+              set((state) => ({
+                messageQueue: {
+                  ...state.messageQueue,
+                  [sessionId]: (state.messageQueue[sessionId] || []).slice(1),
+                },
+              }));
+              setTimeout(() => {
+                get().sendMessage(sessionId, nextMessage.message, nextMessage.attachments);
+              }, 0);
+            }
           }
         } catch (error) {
           console.error('[SessionStore] Failed to inject message:', error);
+          set((state) => ({
+            messages: {
+              ...state.messages,
+              [sessionId]: (state.messages[sessionId] || []).filter((message) => message.id !== nextMessage.id),
+            },
+            messageQueue: {
+              ...state.messageQueue,
+              [sessionId]: [nextMessage, ...(state.messageQueue[sessionId] || [])],
+            },
+          }));
+
+          if (!get().isStreaming[sessionId]) {
+            console.log('[SessionStore] Stream already ended after injection error - sending queued message as a new turn');
+            set((state) => ({
+              messageQueue: {
+                ...state.messageQueue,
+                [sessionId]: (state.messageQueue[sessionId] || []).slice(1),
+              },
+            }));
+            setTimeout(() => {
+              get().sendMessage(sessionId, nextMessage.message, nextMessage.attachments);
+            }, 0);
+          }
         }
       }
     });
@@ -1303,6 +1673,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const unsubEnd = window.electronAPI.claude.onStreamEnd(({ sessionId, message }) => {
       const currentState = get();
       const queueLength = (currentState.messageQueue[sessionId] || []).length;
+      const streamModel = currentState.activeStreamModel[sessionId];
 
       // Get the accumulated stream content - this is what was actually streamed
       const streamedContent = currentState.currentStreamContent[sessionId] || '';
@@ -1319,10 +1690,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         content: messageContent,
       };
 
+      if (isCodexModel(streamModel)) {
+        persistSupplementalMessage(sessionId, finalMessage);
+      }
+
       addMessage(sessionId, finalMessage);
 
       // Clear stream content after adding to messages
       set((state) => ({
+        activeStreamModel: { ...state.activeStreamModel, [sessionId]: undefined },
         currentStreamContent: { ...state.currentStreamContent, [sessionId]: '' },
         currentThinkingContent: { ...state.currentThinkingContent, [sessionId]: '' },
         streamEvents: { ...state.streamEvents, [sessionId]: [] },
@@ -1382,6 +1758,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     const unsubError = window.electronAPI.claude.onStreamError(({ sessionId, error }) => {
       const currentState = get();
+      const streamModel = currentState.activeStreamModel[sessionId];
 
       // Get any streamed content before the error
       const streamedContent = currentState.currentStreamContent[sessionId] || '';
@@ -1393,7 +1770,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           role: 'assistant',
           content: streamedContent,
           timestamp: new Date(),
+          interrupted: true,
         };
+        if (isCodexModel(streamModel)) {
+          persistSupplementalMessage(sessionId, partialMessage);
+        }
         addMessage(sessionId, partialMessage);
       }
 
@@ -1402,6 +1783,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // Set streaming to false directly without triggering queue drain.
       set((state) => ({
         isStreaming: { ...state.isStreaming, [sessionId]: false },
+        activeStreamModel: { ...state.activeStreamModel, [sessionId]: undefined },
         currentStreamContent: { ...state.currentStreamContent, [sessionId]: '' },
         currentThinkingContent: { ...state.currentThinkingContent, [sessionId]: '' },
         streamEvents: { ...state.streamEvents, [sessionId]: [] },
@@ -1413,6 +1795,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         content: `Error: ${error}`,
         timestamp: new Date(),
       };
+      if (isCodexModel(streamModel)) {
+        persistSupplementalMessage(sessionId, errorMessage);
+      }
       addMessage(sessionId, errorMessage);
 
       // Clear the queue — errored sessions shouldn't continue processing queued messages
@@ -1478,12 +1863,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // Subscribe to permission mode changes from main process (e.g., after plan approval)
     const unsubPermissionModeChanged = window.electronAPI.claude.onPermissionModeChanged((data) => {
       console.log('[Session Store] Permission mode changed from main:', data.sessionId, data.mode);
-      set((state) => ({
-        permissionMode: {
-          ...state.permissionMode,
-          [data.sessionId]: data.mode as PermissionMode,
-        },
-      }));
+      set((state) => {
+        const sessionModel = getSessionModel(state, data.sessionId);
+        return {
+          permissionMode: {
+            ...state.permissionMode,
+            [data.sessionId]: normalizePermissionModeForModel(sessionModel, data.mode as PermissionMode),
+          },
+        };
+      });
     });
 
     // Listen for SSH connection lost events — only notify if mid-stream
@@ -1955,6 +2343,44 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     });
   },
 
+  dismissCompactionSwitch: (sessionId) => {
+    set((state) => ({
+      compactionSwitch: state.compactionSwitch[sessionId]
+        ? { ...state.compactionSwitch, [sessionId]: null }
+        : state.compactionSwitch,
+    }));
+  },
+
+  restoreCompactionModel: (sessionId) => {
+    const currentState = get();
+    const currentNotice = currentState.compactionSwitch[sessionId];
+    if (!currentNotice?.autoSwitched) {
+      return;
+    }
+
+    const normalizedPermissionMode = normalizePermissionModeForModel(
+      currentNotice.originalModel,
+      currentState.permissionMode[sessionId],
+    );
+
+    set((state) => ({
+      selectedModel: {
+        ...state.selectedModel,
+        [sessionId]: currentNotice.originalModel,
+      },
+      permissionMode: {
+        ...state.permissionMode,
+        [sessionId]: normalizedPermissionMode,
+      },
+      compactionSwitch: {
+        ...state.compactionSwitch,
+        [sessionId]: null,
+      },
+    }));
+
+    persistModelSelection(sessionId, currentNotice.originalModel, normalizedPermissionMode);
+  },
+
   subscribeToCompaction: () => {
     if (!hasElectronAPI) return () => {};
 
@@ -1963,6 +2389,48 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // Subscribe to compaction status changes
     const unsubscribeStatus = window.electronAPI.claude.onCompactionStatus((status) => {
       console.log('[SessionStore] Compaction status received:', status);
+
+      if (status.isCompacting) {
+        const currentState = get();
+        const sourceModel = currentState.activeStreamModel[status.sessionId]
+          || getSessionModel(currentState, status.sessionId)
+          || 'claude-opus-4-6';
+        const fallbackModel = getPreferredCompactionFallbackModel(currentState.availableModels, sourceModel);
+        const normalizedPermissionMode = fallbackModel
+          ? normalizePermissionModeForModel(fallbackModel, currentState.permissionMode[status.sessionId])
+          : currentState.permissionMode[status.sessionId];
+        const shouldAutoSwitch = !!fallbackModel && currentState.selectedModel[status.sessionId] !== fallbackModel;
+
+        set((state) => {
+          const existingNotice = state.compactionSwitch[status.sessionId];
+
+          return {
+            selectedModel: shouldAutoSwitch && fallbackModel
+              ? { ...state.selectedModel, [status.sessionId]: fallbackModel }
+              : state.selectedModel,
+            permissionMode: shouldAutoSwitch
+              ? { ...state.permissionMode, [status.sessionId]: normalizedPermissionMode }
+              : state.permissionMode,
+            compactionSwitch: {
+              ...state.compactionSwitch,
+              [status.sessionId]: {
+                status: 'compacting',
+                originalModel: existingNotice?.originalModel || sourceModel,
+                fallbackModel: fallbackModel || existingNotice?.fallbackModel,
+                autoSwitched: existingNotice?.autoSwitched || shouldAutoSwitch,
+                startedAt: existingNotice?.status === 'compacting' ? existingNotice.startedAt : Date.now(),
+                preTokens: status.preTokens ?? existingNotice?.preTokens,
+                postTokens: existingNotice?.postTokens,
+              },
+            },
+          };
+        });
+
+        if (shouldAutoSwitch && fallbackModel) {
+          persistModelSelection(status.sessionId, fallbackModel, normalizedPermissionMode);
+        }
+      }
+
       setCompactionStatus(status.sessionId, status as CompactionStatus);
     });
 
@@ -1979,6 +2447,22 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           preTokens: complete.preTokens,
           postTokens: complete.postTokens,
         } as CompactionStatus & { startTime: number; postTokens: number });
+      }
+
+      const currentNotice = get().compactionSwitch[complete.sessionId];
+      if (currentNotice) {
+        set((state) => ({
+          compactionSwitch: {
+            ...state.compactionSwitch,
+            [complete.sessionId]: {
+              ...currentNotice,
+              status: 'complete',
+              completedAt: Date.now(),
+              preTokens: complete.preTokens ?? currentNotice.preTokens,
+              postTokens: complete.postTokens ?? currentNotice.postTokens,
+            },
+          },
+        }));
       }
 
       // Clear compaction status after showing completion briefly

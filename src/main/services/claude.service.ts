@@ -1863,13 +1863,13 @@ Read or source that file if you need the actual values. Do not print secret valu
         // ============ CODEX SECOND OPINION ============
         codexSecondOpinionTool,
 
-        // ============ DISABLED FOR STAGEHAND TESTING ============
-        // browserSnapshotTool,      // Mixed Stagehand/CDP
-        // browserClickTool,         // Selector-based (should use browserService)
-        // browserTypeTool,          // Selector-based (should use browserService)
-        // browserExtractTool,       // Uses Stagehand (redundant with ExtractData)
-        // browserGetInfoTool,       // Uses Stagehand (simple CDP operation)
-        // browserGetDOMTool,        // Uses Stagehand (simple CDP operation)
+        // ============ SELECTOR-BASED BROWSER TOOLS ============
+        browserSnapshotTool,
+        browserClickTool,
+        browserTypeTool,
+        browserExtractTool,
+        browserGetInfoTool,
+        browserGetDOMTool,
       ],
     });
 
@@ -2648,20 +2648,18 @@ Read or source that file if you need the actual values. Do not print secret valu
     this.activeQueries.set(sessionId, abortController);
     powerService.sessionStarted();
 
+    // Resolve the remote SDK session ID before invalidating transcript caches.
+    const rawSdkSessionId = this.sessionStore.get(`sdkSessionMappings.${sessionId}`) as string | undefined
+      || this.sessionStore.get(`sessions.${sessionId}.sdkSessionId`) as string | undefined;
+    const sdkSessionId = rawSdkSessionId === 'new' ? undefined : rawSdkSessionId;
+
     // Invalidate message cache - new message being sent (performance optimization)
     this.invalidateMessageCache(sessionId);
     if (session.sshConfig) {
-      sshService.invalidateTranscriptCache(sessionId);
+      sshService.invalidateTranscriptCache(sdkSessionId || sessionId);
     }
 
     try {
-      // Check if this session has been used before (has SDK session ID stored)
-      // Try new location first, then fall back to old location for backwards compatibility
-      // 'new' is a sentinel for brand-new sessions — don't resume those
-      const rawSdkSessionId = this.sessionStore.get(`sdkSessionMappings.${sessionId}`) as string | undefined
-        || this.sessionStore.get(`sessions.${sessionId}.sdkSessionId`) as string | undefined;
-      const sdkSessionId = rawSdkSessionId === 'new' ? undefined : rawSdkSessionId;
-
       // Validate and cast permission mode to SDK type
       const validModes = ['default', 'acceptEdits', 'bypassPermissions', 'plan', 'dontAsk'] as const;
       type SDKPermissionMode = typeof validModes[number];
@@ -4913,7 +4911,8 @@ Begin by creating the task structure now.
               sessionId,
               session.sshConfig,
               latest.sessionId,
-              session.sshConfig.remoteWorkdir
+              session.sshConfig.remoteWorkdir,
+              { full: limit <= 0 }
             );
             if (content) {
               const messages = this.parseTranscriptContent(content);
@@ -4942,7 +4941,8 @@ Begin by creating the task structure now.
           sessionId,
           session.sshConfig,
           sdkSessionId,
-          session.sshConfig.remoteWorkdir
+          session.sshConfig.remoteWorkdir,
+          { full: limit <= 0 }
         );
 
         if (remoteContent) {
@@ -4973,7 +4973,8 @@ Begin by creating the task structure now.
               sessionId,
               session.sshConfig,
               matching.sessionId,
-              session.sshConfig.remoteWorkdir
+              session.sshConfig.remoteWorkdir,
+              { full: limit <= 0 }
             );
             if (content) {
               const messages = this.parseTranscriptContent(content);
