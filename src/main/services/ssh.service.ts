@@ -1293,23 +1293,6 @@ export class SSHService {
     console.log('[SSH Service] SDK args (original):', sdkOptions.args);
     console.log('[SSH Service] SDK args (filtered):', filteredArgs);
 
-    // Kill any orphaned claude processes for this session's resume ID before spawning a new one.
-    // Each app restart/reconnect spawns a new process but the old one keeps running on the remote.
-    // Fire-and-forget — the kill runs in parallel with the new spawn.
-    // The new process will win the resume lock since the old ones are being killed.
-    const resumeIdx = filteredArgs.indexOf('--resume');
-    const resumeId = resumeIdx >= 0 ? filteredArgs[resumeIdx + 1] : null;
-    if (resumeId) {
-      this.getConnection(sessionId, config).then(client => {
-        const killCmd = `pkill -f "claude.*${resumeId}" 2>/dev/null || true`;
-        this.execCommand(client, killCmd).then(result => {
-          console.log('[SSH Service] Killed orphaned claude processes for resume:', resumeId);
-        }).catch(err => {
-          console.warn('[SSH Service] Failed to kill orphans:', err.message);
-        });
-      }).catch(() => {});
-    }
-
     return this.createDetachedCommandProcess(sessionId, config, {
       command: 'claude',
       args: filteredArgs,
