@@ -1293,7 +1293,10 @@ export class SSHService {
     console.log('[SSH Service] SDK args (original):', sdkOptions.args);
     console.log('[SSH Service] SDK args (filtered):', filteredArgs);
 
-    return this.createDetachedCommandProcess(sessionId, config, {
+    // Use direct SSH exec — the detached bridge is unreliable and causes
+    // orphaned processes, channel conflicts, and reconnection failures.
+    // TODO: Replace with tmux-based persistence when implemented.
+    return this.createDirectCommandProcess(sessionId, config, {
       command: 'claude',
       args: filteredArgs,
       cwd: config.remoteWorkdir,
