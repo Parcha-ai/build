@@ -1677,9 +1677,16 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
         </div>
       </div>
 
-      {/* Minimal hints + system info */}
-      <div className="flex items-center gap-4 mt-1 text-xs text-claude-text-secondary font-mono" style={{ letterSpacing: '0.05em' }}>
-        <span className={modeConfig.color}>{modeConfig.label}</span>
+      {/* Unified toolbar — mode, effort, model, context */}
+      <div className="flex items-center gap-3 mt-1 text-xs text-claude-text-secondary font-mono" style={{ letterSpacing: '0.05em' }}>
+        <button
+          onClick={() => cyclePermissionMode(sessionId)}
+          disabled={disabled}
+          className={`hover:opacity-80 transition-opacity disabled:opacity-40 ${modeConfig.color}`}
+          title={permissionModeTitle}
+        >
+          {modeConfig.label}
+        </button>
         {/* Effort level selector */}
         <div className="relative" ref={effortDropdownRef}>
           <button
@@ -1753,19 +1760,6 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
             </div>
           )}
         </div>
-        {isStreamingProp && systemInfo?.tools && systemInfo.tools.length > 0 && (
-          <span className="text-claude-text-secondary">{systemInfo.tools.length} TOOLS</span>
-        )}
-        {!isStreamingProp && (
-          <>
-            <span>@ FILE</span>
-            <span>ENTER SEND</span>
-            <span>⌘↵ FORCE</span>
-          </>
-        )}
-        {isStreamingProp && (
-          <span className="text-amber-400">⌘↵ INTERRUPT</span>
-        )}
         {/* Context usage indicator — pushed to far right */}
         {contextUsage && (
           <div className="ml-auto flex items-center gap-1.5" title={`${contextUsage.inputTokens.toLocaleString()} / ${contextUsage.contextWindowSize.toLocaleString()} tokens (${contextUsage.percentage}%)`}>
