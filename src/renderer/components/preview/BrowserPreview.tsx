@@ -1594,29 +1594,17 @@ ${data.textContent ? `**Text Content:** "${data.textContent.slice(0, 100)}${data
             onMouseDown={(e) => {
               const rect = regionOverlayRef.current?.getBoundingClientRect();
               if (!rect) return;
-              const x = e.clientX - rect.left;
-              const y = e.clientY - rect.top;
-              setRegionStart({ x, y });
-              setRegionEnd({ x, y });
+              setRegionStart({ x: e.clientX - rect.left, y: e.clientY - rect.top });
+              setRegionEnd({ x: e.clientX - rect.left, y: e.clientY - rect.top });
               setIsDragging(true);
             }}
             onMouseMove={(e) => {
-              const rect = regionOverlayRef.current?.getBoundingClientRect();
-              if (!rect) return;
-              const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
-              const y = Math.max(0, Math.min(e.clientY - rect.top, rect.height));
-
-              if (isDragging) {
-                setRegionEnd({ x, y });
-              } else {
-                // Forward mousemove to webview for inspector hover highlight
-                const webview = webviewRef.current;
-                if (webview) {
-                  try {
-                    webview.sendInputEvent({ type: 'mouseMove', x: Math.round(x), y: Math.round(y) });
-                  } catch { /* ignore */ }
-                }
-              }
+              if (!isDragging || !regionOverlayRef.current) return;
+              const rect = regionOverlayRef.current.getBoundingClientRect();
+              setRegionEnd({
+                x: Math.max(0, Math.min(e.clientX - rect.left, rect.width)),
+                y: Math.max(0, Math.min(e.clientY - rect.top, rect.height)),
+              });
             }}
             onMouseUp={async (e) => {
               if (!isDragging || !regionStart || !regionEnd) {
@@ -1760,12 +1748,18 @@ ${data.textContent ? `**Text Content:** "${data.textContent.slice(0, 100)}${data
                 mdLines.push('', '---');
                 const markdown = mdLines.join('\n');
 
-                // 4. Dispatch to chat input
+                // 4. Dispatch to chat input as attachment chip (like regular inspector)
                 window.dispatchEvent(new CustomEvent('grep-insert-chat', {
                   detail: {
                     sessionId: session.id,
+                    content: '', // No visible text — context is in attachments
                     screenshot: screenshotBase64,
-                    content: markdown,
+                    elementContext: {
+                      selector: 'region(' + Math.round(x1) + ',' + Math.round(y1) + ',' + Math.round(width) + 'x' + Math.round(height) + ')',
+                      outerHTML: markdown,
+                      tagName: 'region',
+                      reactComponent: uniqueComponents.length > 0 ? uniqueComponents[0] : undefined,
+                    },
                   },
                 }));
 
