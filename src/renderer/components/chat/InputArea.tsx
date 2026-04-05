@@ -1467,7 +1467,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
         </div>
 
         {/* Action icons row */}
-        <div className="flex items-center gap-0.5 pl-6">
+        <div className="flex items-center gap-0.5 justify-end">
           {/* GStack skill launcher */}
           <div className="relative">
             <button
