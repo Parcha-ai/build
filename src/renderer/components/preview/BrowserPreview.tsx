@@ -159,14 +159,25 @@ export default function BrowserPreview({ session, isVisible = true }: BrowserPre
     sessionEditingText,
   } = useUIStore();
 
-  // Inspector drag-to-select region state (works within existing inspector mode)
+  // Get this session's inspector state
+  const isInspectorActive = sessionInspectorActive[session.id] || false;
+
+  // Inspector drag-to-select region state (Shift+drag within inspector mode)
   const [regionStart, setRegionStart] = useState<{ x: number; y: number } | null>(null);
   const [regionEnd, setRegionEnd] = useState<{ x: number; y: number } | null>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [shiftHeld, setShiftHeld] = useState(false);
   const regionOverlayRef = useRef<HTMLDivElement>(null);
 
-  // Get this session's inspector state
-  const isInspectorActive = sessionInspectorActive[session.id] || false;
+  // Track Shift key for region select mode
+  useEffect(() => {
+    if (!isInspectorActive) { setShiftHeld(false); return; }
+    const down = (e: KeyboardEvent) => { if (e.key === 'Shift') setShiftHeld(true); };
+    const up = (e: KeyboardEvent) => { if (e.key === 'Shift') setShiftHeld(false); };
+    window.addEventListener('keydown', down);
+    window.addEventListener('keyup', up);
+    return () => { window.removeEventListener('keydown', down); window.removeEventListener('keyup', up); };
+  }, [isInspectorActive]);
   const setInspectorActive = useCallback(
     (active: boolean) => setSessionInspectorActive(session.id, active),
     [session.id, setSessionInspectorActive]
@@ -1548,7 +1559,7 @@ ${data.textContent ? `**Text Content:** "${data.textContent.slice(0, 100)}${data
       {isInspectorActive && (
         <div className="h-8 flex items-center justify-center gap-2 text-white text-sm" style={{ backgroundColor: '#5D5FEF' }}>
           <Target size={14} />
-          <span>Click to select element · Drag to select region</span>
+          <span>Click to select · Hold Shift + drag to select region</span>
           <button
             onClick={cancelInspector}
             className="ml-2 p-0.5 rounded hover:opacity-80"
@@ -1585,8 +1596,8 @@ ${data.textContent ? `**Text Content:** "${data.textContent.slice(0, 100)}${data
           />
         </div>
 
-        {/* Inspector drag overlay — enables drag-to-select-region within inspector mode */}
-        {isInspectorActive && (
+        {/* Inspector drag overlay — only active when Shift held or dragging */}
+        {isInspectorActive && (shiftHeld || isDragging) && (
           <div
             ref={regionOverlayRef}
             className="absolute inset-0 z-40 cursor-crosshair"
