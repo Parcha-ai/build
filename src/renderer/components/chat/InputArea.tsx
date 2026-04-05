@@ -1436,19 +1436,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
       <div className="flex flex-col gap-1">
         {/* Prompt + Input */}
         <div className="flex items-center gap-2">
-          {/* Permission mode selector - clickable prompt indicator */}
-          <button
-            onClick={() => {
-              cyclePermissionMode(sessionId);
-            }}
-            disabled={disabled}
-            className={`font-bold text-base select-none transition-colors disabled:opacity-40 ${!disabled ? 'hover:opacity-80' : ''} ${modeConfig.color}`}
-            title={permissionModeTitle}
-          >
-            {modeConfig.prompt}
-          </button>
-
-          {/* Secure Input - automatically masks API keys/tokens */}
+          {/* Secure Input */}
           <div className="flex-1 relative min-w-0">
             <SecureInput
               ref={textareaRef}
