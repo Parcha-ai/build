@@ -1433,9 +1433,9 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
       )}
 
       {/* Input row - CLI style - always visible */}
-      <div className="flex flex-wrap items-center gap-2">
-        {/* Prompt + Input on first line */}
-        <div className="flex items-center gap-2 flex-1 min-w-0">
+      <div className="flex flex-col gap-1">
+        {/* Prompt + Input */}
+        <div className="flex items-center gap-2">
           {/* Permission mode selector - clickable prompt indicator */}
           <button
             onClick={() => {
@@ -1466,8 +1466,8 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
           </div>
         </div>
 
-        {/* Action icons - wrap to next line when narrow */}
-        <div className="flex items-center gap-0.5">
+        {/* Action icons row */}
+        <div className="flex items-center gap-0.5 pl-6">
           {/* GStack skill launcher */}
           <div className="relative">
             <button
