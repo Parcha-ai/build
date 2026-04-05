@@ -1433,37 +1433,40 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
       )}
 
       {/* Input row - CLI style - always visible */}
-      <div className="flex items-center gap-2">
-        {/* Permission mode selector - clickable prompt indicator */}
-        <button
-          onClick={() => {
-            cyclePermissionMode(sessionId);
-          }}
-          disabled={disabled}
-          className={`font-bold text-base select-none transition-colors disabled:opacity-40 ${!disabled ? 'hover:opacity-80' : ''} ${modeConfig.color}`}
-          title={permissionModeTitle}
-        >
-          {modeConfig.prompt}
-        </button>
-
-        {/* Secure Input - automatically masks API keys/tokens */}
-        <div className="flex-1 relative min-w-0">
-          <SecureInput
-            ref={textareaRef}
-            value={message}
-            onChange={handleInputChange}
-            onKeyDown={handleKeyDown}
-            onPaste={handlePaste}
-            placeholder={disabled ? 'session inactive...' : isVoiceModeActive ? 'add context or type message...' : isSending ? `type to queue message${hasQueuedMessages ? ` (${queuedMessages.length} queued)` : ''}...` : 'type here... (@ to mention, paste images)'}
+      <div className="flex flex-wrap items-center gap-2">
+        {/* Prompt + Input on first line */}
+        <div className="flex items-center gap-2 flex-1 min-w-0">
+          {/* Permission mode selector - clickable prompt indicator */}
+          <button
+            onClick={() => {
+              cyclePermissionMode(sessionId);
+            }}
             disabled={disabled}
-            className={`w-full py-0 resize-none focus:outline-none disabled:opacity-40 disabled:cursor-not-allowed min-h-[24px] max-h-[200px] font-mono bg-transparent text-base text-claude-text placeholder:text-claude-text-secondary leading-6 caret-claude-accent ${
-              useAudioStore.getState().recordingStates[sessionId]?.isRecording ? 'border-l-2 border-red-500 pl-2' : ''
-            }`}
-            rows={1}
-          />
+            className={`font-bold text-base select-none transition-colors disabled:opacity-40 ${!disabled ? 'hover:opacity-80' : ''} ${modeConfig.color}`}
+            title={permissionModeTitle}
+          >
+            {modeConfig.prompt}
+          </button>
+
+          {/* Secure Input - automatically masks API keys/tokens */}
+          <div className="flex-1 relative min-w-0">
+            <SecureInput
+              ref={textareaRef}
+              value={message}
+              onChange={handleInputChange}
+              onKeyDown={handleKeyDown}
+              onPaste={handlePaste}
+              placeholder={disabled ? 'session inactive...' : isVoiceModeActive ? 'add context or type message...' : isSending ? `type to queue message${hasQueuedMessages ? ` (${queuedMessages.length} queued)` : ''}...` : 'type here... (@ to mention, paste images)'}
+              disabled={disabled}
+              className={`w-full py-0 resize-none focus:outline-none disabled:opacity-40 disabled:cursor-not-allowed min-h-[24px] max-h-[200px] font-mono bg-transparent text-base text-claude-text placeholder:text-claude-text-secondary leading-6 caret-claude-accent ${
+                useAudioStore.getState().recordingStates[sessionId]?.isRecording ? 'border-l-2 border-red-500 pl-2' : ''
+              }`}
+              rows={1}
+            />
+          </div>
         </div>
 
-        {/* Compact attachment buttons */}
+        {/* Action icons - wrap to next line when narrow */}
         <div className="flex items-center gap-0.5">
           {/* GStack skill launcher */}
           <div className="relative">
