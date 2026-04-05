@@ -1477,11 +1477,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       applyLoadedMessages(recentTranscriptMessages || []);
 
       // Then backfill older transcript history above the fold.
+      // Cap at 500 messages — fetching unlimited (limit: 0) downloads entire
+      // transcript files which can be 200MB+ for SSH sessions, freezing the app.
+      const BACKFILL_LIMIT = 500;
       if ((recentTranscriptMessages?.length || 0) >= RECENT_MESSAGE_LIMIT) {
         set((state) => ({
           isLoadingMessages: { ...state.isLoadingMessages, [sessionId]: true },
         }));
-        const fullTranscriptMessages = await window.electronAPI.claude.getMessages(sessionId, 0);
+        const fullTranscriptMessages = await window.electronAPI.claude.getMessages(sessionId, BACKFILL_LIMIT);
         if ((fullTranscriptMessages?.length || 0) > (recentTranscriptMessages?.length || 0)) {
           applyLoadedMessages(fullTranscriptMessages || []);
         } else {
