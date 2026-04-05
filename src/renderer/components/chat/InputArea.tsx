@@ -1493,8 +1493,17 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
           </div>
         </div>
 
-        {/* Unified toolbar: mode + effort + model + icons + context */}
+        {/* Unified toolbar: mode/effort/model left, icons right */}
         <div className="flex items-center gap-2 text-xs text-claude-text-secondary font-mono" style={{ letterSpacing: '0.03em' }}>
+          {/* Left: mode */}
+          <button
+            onClick={() => cyclePermissionMode(sessionId)}
+            disabled={disabled}
+            className={`hover:opacity-80 transition-opacity disabled:opacity-40 text-[10px] ${modeConfig.color}`}
+            title={permissionModeTitle}
+          >
+            {modeConfig.label}
+          </button>
           {/* GStack skill launcher */}
           <div className="relative ml-auto">
             <button
@@ -1675,17 +1684,8 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
           />
           </VoiceModeErrorBoundary>
 
-          {/* Mode, effort, model inline */}
-          <button
-            onClick={() => cyclePermissionMode(sessionId)}
-            disabled={disabled}
-            className={`hover:opacity-80 transition-opacity disabled:opacity-40 text-[10px] ${modeConfig.color}`}
-            title={permissionModeTitle}
-          >
-            {modeConfig.label}
-          </button>
         {/* Effort level selector */}
-        <div className="relative" ref={effortDropdownRef}>
+        <div className="relative order-first" ref={effortDropdownRef}>
           <button
             onClick={() => setShowEffortDropdown(!showEffortDropdown)}
             disabled={disabled}
@@ -1728,7 +1728,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
           )}
         </div>
         {/* Model selector - always visible */}
-        <div className="relative" ref={modelDropdownRef}>
+        <div className="relative order-first" ref={modelDropdownRef}>
           <button
             onClick={() => setShowModelDropdown(!showModelDropdown)}
             disabled={disabled}
