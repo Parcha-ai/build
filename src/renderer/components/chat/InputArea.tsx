@@ -1496,7 +1496,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
         {/* Unified toolbar: mode + effort + model + icons + context */}
         <div className="flex items-center gap-2 text-xs text-claude-text-secondary font-mono" style={{ letterSpacing: '0.03em' }}>
           {/* GStack skill launcher */}
-          <div className="relative">
+          <div className="relative ml-auto">
             <button
               onClick={() => setShowGStack(!showGStack)}
               disabled={disabled}
@@ -1674,9 +1674,6 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
             disabled={disabled}
           />
           </VoiceModeErrorBoundary>
-
-          {/* Spacer pushes mode/effort/model to the right */}
-          <div className="flex-1" />
 
           {/* Mode, effort, model inline */}
           <button
