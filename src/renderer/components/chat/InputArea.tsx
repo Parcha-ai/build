@@ -1493,8 +1493,22 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
           </div>
         </div>
 
-        {/* Unified toolbar: mode + effort + model + icons + context */}
-        <div className="flex items-center gap-2 text-xs text-claude-text-secondary font-mono" style={{ letterSpacing: '0.03em' }}>
+        {/* Unified toolbar: mode/effort/model left, icons right */}
+        <div className="flex items-center gap-3 text-xs text-claude-text-secondary font-mono" style={{ letterSpacing: '0.03em' }}>
+          {/* Left: mode, effort, model */}
+          <button
+            onClick={() => cyclePermissionMode(sessionId)}
+            disabled={disabled}
+            className={`hover:opacity-80 transition-opacity disabled:opacity-40 ${modeConfig.color}`}
+            title={permissionModeTitle}
+          >
+            {modeConfig.label}
+          </button>
+
+          {/* Spacer */}
+          <div className="flex-1" />
+
+          {/* Right: icons */}
           {/* GStack skill launcher */}
           <div className="relative">
             <button
@@ -1674,19 +1688,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
             disabled={disabled}
           />
           </VoiceModeErrorBoundary>
-
-          {/* Spacer pushes mode/effort/model to the right */}
-          <div className="flex-1" />
-
-          {/* Mode, effort, model inline */}
-          <button
-            onClick={() => cyclePermissionMode(sessionId)}
-            disabled={disabled}
-            className={`hover:opacity-80 transition-opacity disabled:opacity-40 text-[10px] ${modeConfig.color}`}
-            title={permissionModeTitle}
-          >
-            {modeConfig.label}
-          </button>
+        </div>
         {/* Effort level selector */}
         <div className="relative" ref={effortDropdownRef}>
           <button
@@ -1783,7 +1785,6 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
           </div>
         )}
         </div>
-      </div>
       </div>
     </>
   );
