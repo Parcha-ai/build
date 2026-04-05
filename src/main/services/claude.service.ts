@@ -93,6 +93,10 @@ export class ClaudeService {
   private mainWindow: BrowserWindow | null = null;
   private browserMcpServers: Map<string, any> = new Map();
 
+  // Proactive compaction: track context usage per session and compact idle sessions in background
+  private sessionContextPercentage: Map<string, number> = new Map();
+  private sessionLastMessageTime: Map<string, number> = new Map();
+
   // Performance optimization: Cache parsed messages and transcript paths
   private messageCache = new Map<string, {
     messages: ChatMessage[];
@@ -198,6 +202,34 @@ export class ClaudeService {
     } catch (error) {
       console.error('[Claude Service] Failed to trigger compaction:', error);
       return false;
+    }
+  }
+
+  /**
+   * Proactive compaction: when the user sends a message to one session,
+   * compact any OTHER sessions that are above 60% context and idle (>30s since last message).
+   * This runs compaction invisibly while the user is focused elsewhere.
+   */
+  private compactIdleSessions(activeSessionId: string): void {
+    const COMPACT_THRESHOLD = 60; // percentage
+    const IDLE_THRESHOLD = 30_000; // 30 seconds
+    const now = Date.now();
+
+    for (const [sessionId, percentage] of this.sessionContextPercentage.entries()) {
+      if (sessionId === activeSessionId) continue; // skip the session user is actively using
+      if (percentage < COMPACT_THRESHOLD) continue;
+      if (!this.activeQueryObjects.has(sessionId)) continue; // no active query to compact
+
+      const lastMessage = this.sessionLastMessageTime.get(sessionId) || 0;
+      if (now - lastMessage < IDLE_THRESHOLD) continue; // user was recently active here
+
+      console.log(`[Claude Service] Proactive compaction: session ${sessionId.substring(0, 8)} at ${percentage}%, idle for ${Math.round((now - lastMessage) / 1000)}s`);
+      this.triggerManualCompaction(sessionId).catch(err => {
+        console.warn(`[Claude Service] Proactive compaction failed for ${sessionId.substring(0, 8)}:`, err.message);
+      });
+
+      // Only compact one session at a time to avoid overloading
+      break;
     }
   }
 
@@ -2641,6 +2673,12 @@ Read or source that file if you need the actual values. Do not print secret valu
       return;
     }
 
+    // Track when user last interacted with this session (for proactive compaction)
+    this.sessionLastMessageTime.set(sessionId, Date.now());
+
+    // Proactive compaction: compact OTHER idle sessions that are above 60% context
+    this.compactIdleSessions(sessionId);
+
     // Create abort controller for cancellation
     const abortController = new AbortController();
     this.activeQueries.set(sessionId, abortController);
@@ -4052,6 +4090,7 @@ Begin by creating the task structure now.
               const percentage = Math.round((inputTokens / contextWindowSize) * 100);
 
               console.log(`[Claude SDK] Conversation tokens: ${inputTokens}/${contextWindowSize} (${percentage}%)`);
+              this.sessionContextPercentage.set(sessionId, percentage);
 
               if (inputTokens >= contextWindowSize * 0.75) {
                 console.warn(`[Claude SDK] ⚠️ Conversation approaching context limit: ${percentage}%`);
@@ -4191,6 +4230,8 @@ Begin by creating the task structure now.
     // Session-keyed maps
     this.sessionPermissionModes.delete(sessionId);
     this.prePlanPermissionModes.delete(sessionId);
+    this.sessionContextPercentage.delete(sessionId);
+    this.sessionLastMessageTime.delete(sessionId);
     this.sessionPlanFiles.delete(sessionId);
     this.browserMcpServers.delete(sessionId);
 
