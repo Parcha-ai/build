@@ -1499,7 +1499,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
           <button
             onClick={() => cyclePermissionMode(sessionId)}
             disabled={disabled}
-            className={`hover:opacity-80 transition-opacity disabled:opacity-40 text-[10px] ${modeConfig.color}`}
+            className={`hover:opacity-80 transition-opacity disabled:opacity-40 text-[10px] -order-3 ${modeConfig.color}`}
             title={permissionModeTitle}
           >
             {modeConfig.label}
@@ -1685,7 +1685,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
           </VoiceModeErrorBoundary>
 
         {/* Effort level selector */}
-        <div className="relative order-first" ref={effortDropdownRef}>
+        <div className="relative -order-2" ref={effortDropdownRef}>
           <button
             onClick={() => setShowEffortDropdown(!showEffortDropdown)}
             disabled={disabled}
@@ -1728,7 +1728,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
           )}
         </div>
         {/* Model selector - always visible */}
-        <div className="relative order-first" ref={modelDropdownRef}>
+        <div className="relative -order-1" ref={modelDropdownRef}>
           <button
             onClick={() => setShowModelDropdown(!showModelDropdown)}
             disabled={disabled}
