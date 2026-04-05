@@ -265,14 +265,60 @@ const createWindow = (): void => {
     console.error('[Main] Renderer failed to load:', errorCode, errorDescription);
   });
 
-  // Intercept CMD+R to prevent app refresh when browser panel might be open
-  // This fires before Electron's default menu accelerators
+  const isMac = process.platform === 'darwin';
+
+  const sendShortcutToRenderer = (action: string) => {
+    mainWindow?.webContents.send(IPC_CHANNELS.APP_SHORTCUT_TRIGGERED, { action });
+  };
+
+  // Intercept app shortcuts in the main process so packaged builds do not depend on
+  // renderer focus state to deliver keyboard commands.
   mainWindow.webContents.on('before-input-event', (event, input) => {
-    if (input.type === 'keyDown' && input.key === 'r' && input.meta && !input.shift && !input.alt) {
-      // Prevent Electron's default CMD+R reload
+    if (input.type !== 'keyDown') {
+      return;
+    }
+
+    const key = (input.key || '').toLowerCase();
+    // On macOS, Control-based chords are normal textarea editing shortcuts
+    // (for example Ctrl+F/Ctrl+B/Ctrl+K/Ctrl+T). Only treat Command as the
+    // app shortcut modifier there.
+    const primaryModifier = isMac ? input.meta : input.control;
+
+    if (!primaryModifier || input.alt) {
+      return;
+    }
+
+    let action: string | null = null;
+
+    if (!input.shift && key === 'r') {
+      action = 'browser-refresh';
+    } else if (input.shift && key === 'g') {
+      action = 'toggle-command-center';
+    } else if (input.shift && key === 'f') {
+      action = 'toggle-file-search';
+    } else if (!input.shift && key === 'k') {
+      action = 'toggle-quick-search';
+    } else if (!input.shift && key === 's') {
+      action = 'save-or-new-session';
+    } else if (!input.shift && key === 'w') {
+      action = 'close-editor-tab';
+    } else if (!input.shift && (key === 't' || key === 'f')) {
+      action = 'fork-empty';
+    } else if (!input.shift && key === '[') {
+      action = 'prev-fork';
+    } else if (!input.shift && key === ']') {
+      action = 'next-fork';
+    } else if (!input.shift && key === 'b') {
+      action = 'background-task';
+    }
+
+    if (action) {
       event.preventDefault();
-      // Send to renderer to handle (will refresh browser if open, or do nothing)
-      mainWindow?.webContents.send(IPC_CHANNELS.APP_CMD_R_PRESSED);
+      sendShortcutToRenderer(action);
+      if (action === 'browser-refresh') {
+        // Preserve the existing dedicated IPC event for older renderer code.
+        mainWindow?.webContents.send(IPC_CHANNELS.APP_CMD_R_PRESSED);
+      }
     }
   });
 

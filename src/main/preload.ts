@@ -13,6 +13,7 @@ import type {
   TTSRequest,
   AudioSettings,
   SSHConfig,
+  SSHResumeCandidate,
   DownloadSessionConfig,
   MCPServerInfo,
   MarketplaceMCPServer,
@@ -139,10 +140,10 @@ const electronAPI = {
 
   // Claude
   claude: {
-    sendMessage: (sessionId: string, message: string, attachments?: unknown[], permissionMode?: string, thinkingMode?: string, model?: string, gstackMode?: string): Promise<void> =>
-      ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_SEND_MESSAGE, sessionId, message, attachments, permissionMode, thinkingMode, model, gstackMode),
-    getMessages: (sessionId: string): Promise<ChatMessage[]> =>
-      ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_GET_MESSAGES, sessionId),
+    sendMessage: (sessionId: string, message: string, attachments?: unknown[], permissionMode?: string, thinkingMode?: string, model?: string, gstackMode?: string, supplementalMessages?: ChatMessage[]): Promise<void> =>
+      ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_SEND_MESSAGE, sessionId, message, attachments, permissionMode, thinkingMode, model, gstackMode, supplementalMessages),
+    getMessages: (sessionId: string, limit?: number): Promise<ChatMessage[]> =>
+      ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_GET_MESSAGES, sessionId, limit),
     getModels: (): Promise<Array<{ id: string; name: string; description: string }>> =>
       ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_GET_MODELS),
     cancel: (sessionId: string): Promise<void> =>
@@ -387,6 +388,13 @@ const electronAPI = {
       ipcRenderer.on(IPC_CHANNELS.APP_CMD_R_PRESSED, handler);
       return () => {
         ipcRenderer.removeListener(IPC_CHANNELS.APP_CMD_R_PRESSED, handler);
+      };
+    },
+    onShortcutTriggered: (callback: (data: { action: string }) => void) => {
+      const handler = (_: IpcRendererEvent, data: { action: string }) => callback(data);
+      ipcRenderer.on(IPC_CHANNELS.APP_SHORTCUT_TRIGGERED, handler);
+      return () => {
+        ipcRenderer.removeListener(IPC_CHANNELS.APP_SHORTCUT_TRIGGERED, handler);
       };
     },
     openBrowserWindow: (): Promise<void> =>
@@ -721,8 +729,10 @@ const electronAPI = {
       claudeCodeVersion?: string;
       hostname?: string;
     }> => ipcRenderer.invoke(IPC_CHANNELS.SSH_TEST_CONNECTION, config),
-    createSession: (data: { name: string; sshConfig: SSHConfig }): Promise<Session> =>
+    createSession: (data: { name: string; sshConfig: SSHConfig; resumeSessionId?: string }): Promise<Session> =>
       ipcRenderer.invoke(IPC_CHANNELS.SSH_CREATE_SESSION, data),
+    listResumeCandidates: (config: SSHConfig): Promise<SSHResumeCandidate[]> =>
+      ipcRenderer.invoke(IPC_CHANNELS.SSH_LIST_RESUME_CANDIDATES, config),
     getSavedConfig: (): Promise<{
       host: string;
       port: string;

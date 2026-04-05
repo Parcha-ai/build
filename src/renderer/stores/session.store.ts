@@ -1874,31 +1874,22 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       });
     });
 
-    // Listen for SSH connection lost events — only notify if mid-stream
-    const unsubConnectionLost = window.electronAPI.ssh.onConnectionLost(async ({ sessionId, reason }) => {
+    // Listen for SSH connection lost events.
+    // Detached SSH runs are expected to survive transport drops, so do not
+    // tear down renderer stream state here. The backend will reconnect and
+    // continue emitting chunks against the same in-flight turn.
+    const unsubConnectionLost = window.electronAPI.ssh.onConnectionLost(({ sessionId, reason }) => {
       console.warn(`[SessionStore] SSH connection lost for ${sessionId}: ${reason}`);
       const currentState = get();
       const wasStreaming = currentState.isStreaming[sessionId];
 
-      // Clear streaming state immediately so UI unblocks
       if (wasStreaming) {
-        clearStreamingWatchdog(sessionId);
+        console.warn(`[SessionStore] Preserving active SSH stream for ${sessionId} while transport reconnects`);
         set((state) => ({
-          isStreaming: { ...state.isStreaming, [sessionId]: false },
-          currentStreamContent: { ...state.currentStreamContent, [sessionId]: '' },
-          currentThinkingContent: { ...state.currentThinkingContent, [sessionId]: '' },
-          streamEvents: { ...state.streamEvents, [sessionId]: [] },
+          sessionActivity: { ...state.sessionActivity, [sessionId]: 'active' },
         }));
-
-        // Only show a message if the connection dropped mid-conversation
-        addMessage(sessionId, {
-          id: `conn-lost-${Date.now()}`,
-          role: 'assistant',
-          content: 'SSH connection lost during response. Send your message again to reconnect.',
-          timestamp: new Date(),
-        });
       }
-      // For idle disconnects, stay silent — reconnection is automatic on next message
+      // For idle disconnects, stay silent — reconnection is automatic on next message.
     });
 
     return () => {

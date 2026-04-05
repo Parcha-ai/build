@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as readline from 'readline';
-import type { Client, ClientChannel, SFTPWrapper } from 'ssh2';
+import type { Client, SFTPWrapper } from 'ssh2';
 import { sshService } from './ssh.service';
 import type { Attachment, SSHConfig } from '../../shared/types';
 
@@ -443,23 +443,19 @@ class CodexServiceImpl {
   /**
    * Spawn codex on a remote SSH server and yield JSON events.
    */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private async *spawnCodexSSH(
     sessionId: string,
     prompt: string,
     workingDir: string,
     apiKey: string,
-    sshConfig: any,
+    sshConfig: SSHConfig,
     codexModel?: string,
     imagePaths: string[] = [],
     executionMode?: CodexExecutionMode,
   ): AsyncGenerator<CodexJsonEvent> {
     console.log(`[Codex Service] Spawning Codex via SSH on ${sshConfig.host}`);
 
-    const client = await sshService.getConnectionForCodex(sessionId, sshConfig);
-    const escapedWorkingDir = this.escapeShellSingleQuoted(workingDir);
-    const escapedApiKey = this.escapeShellSingleQuoted(apiKey);
-    const codexArgs = ['codex', 'exec', '--experimental-json', '--skip-git-repo-check'];
+    const codexArgs = ['exec', '--experimental-json', '--skip-git-repo-check'];
     this.appendExecutionModeArgs(codexArgs, executionMode);
     if (codexModel) {
       codexArgs.push('--model', codexModel);
@@ -467,29 +463,26 @@ class CodexServiceImpl {
     for (const imagePath of imagePaths) {
       codexArgs.push('--image', imagePath);
     }
-    const escapedCodexCommand = codexArgs
-      .map((arg) => `'${this.escapeShellSingleQuoted(arg)}'`)
-      .join(' ');
 
-    // Build the remote command — codex must be in PATH on the server
-    const cmd = `export PATH="$HOME/.local/bin:$HOME/.nvm/versions/node/*/bin:$HOME/.cargo/bin:/usr/local/bin:$PATH" && ` +
-      `cd '${escapedWorkingDir}' && ` +
-      `CODEX_API_KEY='${escapedApiKey}' ` +
-      `${escapedCodexCommand} <<'CODEX_EOF'\n${prompt}\nCODEX_EOF`;
-
-    const channel = await new Promise<ClientChannel>((resolve, reject) => {
-      client.exec(cmd, (err, channel) => {
-        if (err) reject(err);
-        else resolve(channel);
-      });
+    const process = sshService.createDetachedCommandProcess(sessionId, sshConfig, {
+      command: 'codex',
+      args: codexArgs,
+      cwd: workingDir,
+      env: { CODEX_API_KEY: apiKey },
+      closeStdinOnEnd: true,
     });
 
-    const rl = readline.createInterface({ input: channel });
+    const rl = readline.createInterface({ input: process.stdout });
     let eventCount = 0;
+    let processError: Error | null = null;
 
-    channel.stderr.on('data', (data: Buffer) => {
-      console.log('[Codex Service] SSH stderr:', data.toString().substring(0, 200));
+    process.on('error', (error: Error) => {
+      console.warn('[Codex Service] Detached SSH Codex bridge error:', error.message);
+      processError = error;
     });
+
+    process.stdin.write(prompt);
+    process.stdin.end();
 
     try {
       for await (const line of rl) {
@@ -506,6 +499,10 @@ class CodexServiceImpl {
     } finally {
       rl.close();
       console.log(`[Codex Service] SSH stream ended. Total events: ${eventCount}`);
+    }
+
+    if (processError && eventCount === 0) {
+      throw processError;
     }
   }
 

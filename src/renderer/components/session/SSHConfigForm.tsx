@@ -1,11 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { Loader2, CheckCircle, XCircle, Server, Key, Folder, AlertTriangle, Terminal, Settings, Wifi, Wrench, Upload, FolderSearch } from 'lucide-react';
-import type { SSHConfig, SavedSSHConfig, Session } from '../../../shared/types';
+import type { SSHConfig, SavedSSHConfig, Session, SSHResumeCandidate } from '../../../shared/types';
 import RemoteFileBrowser from './RemoteFileBrowser';
 
 interface SSHConfigFormProps {
   onBack: () => void;
-  onConnect: (config: SSHConfig, name: string) => Promise<void>;
+  onConnect: (config: SSHConfig, name: string, resumeSessionId?: string) => Promise<void>;
   // Teleport mode: when provided, shows source session info and teleports instead of creating
   teleportSource?: Session;
   onTeleport?: (config: SSHConfig) => Promise<void>;
@@ -42,6 +42,10 @@ export default function SSHConfigForm({ onBack, onConnect, teleportSource, onTel
   } | null>(null);
   const [isCreating, setIsCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
+  const [resumeCandidates, setResumeCandidates] = useState<SSHResumeCandidate[]>([]);
+  const [isLoadingResumeCandidates, setIsLoadingResumeCandidates] = useState(false);
+  const [resumeMode, setResumeMode] = useState<'new' | 'existing'>('new');
+  const [selectedResumeSessionId, setSelectedResumeSessionId] = useState('');
 
   // Remote file browser
   const [showFileBrowser, setShowFileBrowser] = useState(false);
@@ -76,7 +80,17 @@ export default function SSHConfigForm({ onBack, onConnect, teleportSource, onTel
     if (testResult) {
       setTestResult(null);
     }
-  }, [host, port, username, privateKeyPath, passphrase]);
+    setResumeCandidates([]);
+    setResumeMode('new');
+    setSelectedResumeSessionId('');
+  }, [host, port, username, privateKeyPath, passphrase, remoteWorkdir]);
+
+  useEffect(() => {
+    if (worktreeScript.trim()) {
+      setResumeMode('new');
+      setSelectedResumeSessionId('');
+    }
+  }, [worktreeScript]);
 
   // Auto-test connection when all required fields are filled
   useEffect(() => {
@@ -136,11 +150,27 @@ export default function SSHConfigForm({ onBack, onConnect, teleportSource, onTel
       if (result.success && !sessionName && result.hostname) {
         setSessionName(`SSH: ${result.hostname}`);
       }
+
+      if (result.success && !isTeleportMode && !worktreeScript.trim()) {
+        setIsLoadingResumeCandidates(true);
+        try {
+          const candidates = await window.electronAPI.ssh.listResumeCandidates(config);
+          setResumeCandidates(candidates);
+        } catch (error) {
+          console.error('Failed to load SSH resume candidates:', error);
+          setResumeCandidates([]);
+        } finally {
+          setIsLoadingResumeCandidates(false);
+        }
+      } else {
+        setResumeCandidates([]);
+      }
     } catch (error) {
       setTestResult({
         success: false,
         error: error instanceof Error ? error.message : 'Unknown error',
       });
+      setResumeCandidates([]);
     } finally {
       setIsTesting(false);
     }
@@ -174,7 +204,11 @@ export default function SSHConfigForm({ onBack, onConnect, teleportSource, onTel
       if (isTeleportMode && onTeleport) {
         await onTeleport(config);
       } else {
-        await onConnect(config, sessionName || `SSH: ${host}`);
+        await onConnect(
+          config,
+          sessionName || `SSH: ${host}`,
+          resumeMode === 'existing' ? selectedResumeSessionId : undefined
+        );
       }
     } catch (error) {
       setCreateError(error instanceof Error ? error.message : isTeleportMode ? 'Failed to teleport session' : 'Failed to create session');
@@ -186,7 +220,7 @@ export default function SSHConfigForm({ onBack, onConnect, teleportSource, onTel
   const isConnectionValid = host && username && privateKeyPath;
   const isSetupValid = remoteWorkdir;
   const canTest = isConnectionValid && isSetupValid;
-  const canCreate = testResult?.success;
+  const canCreate = !!testResult?.success && (resumeMode === 'new' || !!selectedResumeSessionId);
 
   const tabs: { id: TabId; label: string; icon: React.ReactNode }[] = [
     { id: 'connection', label: 'Connection', icon: <Wifi size={12} /> },
@@ -438,6 +472,81 @@ export default function SSHConfigForm({ onBack, onConnect, teleportSource, onTel
                 Sync settings to remote (~/.claude/agents, commands, CLAUDE.md)
               </label>
             </div>
+
+            {!isTeleportMode && (
+              <div>
+                <label className="block text-[10px] font-bold mb-1 text-claude-text-secondary" style={{ letterSpacing: '0.1em' }}>
+                  EXISTING SESSION
+                </label>
+                {worktreeScript.trim() ? (
+                  <div className="p-2 border border-amber-400/30 bg-amber-400/10 text-[10px] text-claude-text-secondary">
+                    Resume selection is disabled while a setup script is configured, because the script can change the final working directory.
+                  </div>
+                ) : isLoadingResumeCandidates ? (
+                  <div className="p-2 border border-claude-border bg-claude-bg text-[10px] text-claude-text-secondary flex items-center gap-2">
+                    <Loader2 size={12} className="animate-spin" />
+                    Checking for existing remote sessions...
+                  </div>
+                ) : resumeCandidates.length > 0 ? (
+                  <div className="border border-claude-border bg-claude-bg">
+                    <label className="flex items-center gap-2 px-3 py-2 text-[11px] text-claude-text border-b border-claude-border cursor-pointer">
+                      <input
+                        type="radio"
+                        name="ssh-resume-mode"
+                        checked={resumeMode === 'new'}
+                        onChange={() => {
+                          setResumeMode('new');
+                          setSelectedResumeSessionId('');
+                        }}
+                        className="accent-claude-accent"
+                      />
+                      Start fresh
+                    </label>
+                    <div className="px-3 py-2 border-b border-claude-border text-[10px] text-claude-text-secondary">
+                      Or continue one of the existing remote Claude sessions in this folder:
+                    </div>
+                    <div className="max-h-40 overflow-y-auto">
+                      {resumeCandidates.map((candidate) => (
+                        <label
+                          key={candidate.sessionId}
+                          className="flex flex-col gap-1 px-3 py-2 text-[11px] text-claude-text border-b border-claude-border/50 cursor-pointer last:border-b-0"
+                        >
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="radio"
+                              name="ssh-resume-mode"
+                              checked={resumeMode === 'existing' && selectedResumeSessionId === candidate.sessionId}
+                              onChange={() => {
+                                setResumeMode('existing');
+                                setSelectedResumeSessionId(candidate.sessionId);
+                              }}
+                              className="accent-claude-accent"
+                            />
+                            <span className="font-mono text-[10px]">{candidate.sessionId}</span>
+                          </div>
+                          <div className="pl-5 text-[9px] text-claude-text-secondary">
+                            Last active: {new Date(candidate.mtime * 1000).toLocaleString()}
+                          </div>
+                          {candidate.localSessionId && (
+                            <div className="pl-5 text-[9px] text-cyan-400">
+                              Will also carry forward local G-Build session history{candidate.localSessionName ? ` from ${candidate.localSessionName}` : ''}.
+                            </div>
+                          )}
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                ) : testResult?.success ? (
+                  <div className="p-2 border border-claude-border bg-claude-bg text-[10px] text-claude-text-secondary">
+                    No existing Claude sessions were found for this remote folder.
+                  </div>
+                ) : (
+                  <div className="p-2 border border-claude-border bg-claude-bg text-[10px] text-claude-text-secondary">
+                    Test the connection to check for existing sessions in this folder.
+                  </div>
+                )}
+              </div>
+            )}
           </>
         )}
       </div>

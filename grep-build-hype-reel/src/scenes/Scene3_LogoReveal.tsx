@@ -1,32 +1,41 @@
 import React from "react";
-import { AbsoluteFill, spring, useCurrentFrame, useVideoConfig, interpolate } from "remotion";
-import { GlowText } from "../components/GlowText";
-import { Particles } from "../components/Particles";
+import { AbsoluteFill, useCurrentFrame, interpolate, Easing } from "remotion";
 import { COLORS } from "../constants";
+
+const ASCII_LINES = [
+  "   \u2588\u2588\u2588\u2588\u2588\u2588\u2557 \u2588\u2588\u2588\u2588\u2588\u2588\u2557 \u2588\u2588\u2557   \u2588\u2588\u2557\u2588\u2588\u2557\u2588\u2588\u2557     \u2588\u2588\u2588\u2588\u2588\u2588\u2557 ",
+  "  \u2588\u2588\u2554\u2550\u2550\u2550\u2550\u255D \u2588\u2588\u2554\u2550\u2550\u2588\u2588\u2557\u2588\u2588\u2551   \u2588\u2588\u2551\u2588\u2588\u2551\u2588\u2588\u2551     \u2588\u2588\u2554\u2550\u2550\u2588\u2588\u2557",
+  "  \u2588\u2588\u2551  \u2588\u2588\u2588\u2557\u2588\u2588\u2588\u2588\u2588\u2588\u2554\u255D\u2588\u2588\u2551   \u2588\u2588\u2551\u2588\u2588\u2551\u2588\u2588\u2551     \u2588\u2588\u2551  \u2588\u2588\u2551",
+  "  \u2588\u2588\u2551   \u2588\u2588\u2551\u2588\u2588\u2554\u2550\u2550\u2588\u2588\u2557\u2588\u2588\u2551   \u2588\u2588\u2551\u2588\u2588\u2551\u2588\u2588\u2551     \u2588\u2588\u2551  \u2588\u2588\u2551",
+  "  \u255A\u2588\u2588\u2588\u2588\u2588\u2588\u2554\u255D\u2588\u2588\u2588\u2588\u2588\u2588\u2554\u255D\u255A\u2588\u2588\u2588\u2588\u2588\u2588\u2554\u255D\u2588\u2588\u2551\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2557\u2588\u2588\u2588\u2588\u2588\u2588\u2554\u255D",
+  "   \u255A\u2550\u2550\u2550\u2550\u2550\u255D \u255A\u2550\u2550\u2550\u2550\u2550\u255D  \u255A\u2550\u2550\u2550\u2550\u2550\u255D \u255A\u2550\u255D\u255A\u2550\u2550\u2550\u2550\u2550\u2550\u255D\u255A\u2550\u2550\u2550\u2550\u2550\u255D ",
+];
 
 export const Scene3_LogoReveal: React.FC = () => {
   const frame = useCurrentFrame();
-  const { fps } = useVideoConfig();
 
-  // Logo icon spring entrance
-  const logoSpring = spring({
-    frame: frame - 10,
-    fps,
-    config: { damping: 10, stiffness: 200 },
+  // Each ASCII line appears one at a time, frames 10-50 (approx 7 frames per line)
+  const linesVisible = Math.floor(interpolate(frame, [10, 50], [0, ASCII_LINES.length], {
+    extrapolateLeft: "clamp",
+    extrapolateRight: "clamp",
+  }));
+
+  // Tagline fades in after ASCII art
+  const taglineOpacity = interpolate(frame, [60, 80], [0, 1], {
+    extrapolateLeft: "clamp",
+    extrapolateRight: "clamp",
+    easing: Easing.bezier(0.16, 1, 0.3, 1),
   });
 
-  // Radial glow expands
-  const glowScale = interpolate(frame, [10, 60], [0, 1], {
+  // Purple underline width animates
+  const underlineWidth = interpolate(frame, [55, 75], [0, 100], {
+    extrapolateLeft: "clamp",
     extrapolateRight: "clamp",
+    easing: Easing.bezier(0.25, 0.1, 0.25, 1.0),
   });
 
-  // Tagline fades in after logo
-  const taglineOpacity = interpolate(frame, [50, 70], [0, 1], {
-    extrapolateRight: "clamp",
-  });
-  const taglineY = interpolate(frame, [50, 70], [20, 0], {
-    extrapolateRight: "clamp",
-  });
+  // Blinking cursor
+  const cursorVisible = Math.sin(frame * 0.2) > 0;
 
   return (
     <AbsoluteFill
@@ -34,67 +43,53 @@ export const Scene3_LogoReveal: React.FC = () => {
         backgroundColor: COLORS.bg,
         justifyContent: "center",
         alignItems: "center",
+        flexDirection: "column",
       }}
     >
-      <Particles count={40} color={COLORS.primary} />
-
-      {/* Radial glow */}
+      {/* ASCII art */}
       <div
         style={{
-          position: "absolute",
-          width: 800,
-          height: 800,
-          borderRadius: "50%",
-          background: `radial-gradient(circle, ${COLORS.primary}25 0%, ${COLORS.secondary}10 40%, transparent 70%)`,
-          transform: `scale(${glowScale})`,
-          opacity: 0.8,
-        }}
-      />
-
-      {/* Logo icon -- stylized "G" terminal cursor */}
-      <div
-        style={{
-          transform: `scale(${logoSpring})`,
-          opacity: logoSpring,
-          marginBottom: 24,
-          zIndex: 1,
+          fontFamily: "JetBrains Mono, monospace",
+          fontSize: 22,
+          color: COLORS.primary,
+          lineHeight: 1.3,
+          whiteSpace: "pre",
+          textAlign: "center",
         }}
       >
-        <div
-          style={{
-            width: 120,
-            height: 120,
-            borderRadius: 28,
-            background: `linear-gradient(135deg, ${COLORS.primary}, ${COLORS.secondary})`,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            boxShadow: `0 0 60px ${COLORS.primary}50`,
-          }}
-        >
-          <span style={{ fontSize: 56, fontFamily: "JetBrains Mono, monospace", fontWeight: 700, color: "#fff" }}>
-            G
-          </span>
-        </div>
+        {ASCII_LINES.slice(0, linesVisible).map((line, i) => (
+          <div key={i}>{line}</div>
+        ))}
+        {/* Cursor on the last visible line */}
+        {linesVisible > 0 && linesVisible < ASCII_LINES.length && cursorVisible && (
+          <span style={{ color: COLORS.primary }}>{"\u2588"}</span>
+        )}
       </div>
 
-      {/* Title */}
-      <div style={{ zIndex: 1, transform: `scale(${logoSpring})` }}>
-        <GlowText text="GBuild" fontSize={96} glowColor={COLORS.primary} />
-      </div>
+      {/* Purple underline */}
+      {frame >= 55 && (
+        <div
+          style={{
+            width: `${underlineWidth}%`,
+            maxWidth: 600,
+            height: 2,
+            backgroundColor: COLORS.primary,
+            marginTop: 16,
+            transition: "none",
+          }}
+        />
+      )}
 
       {/* Tagline */}
       <div
         style={{
           opacity: taglineOpacity,
-          transform: `translateY(${taglineY}px)`,
-          fontSize: 32,
-          fontFamily: "Inter, sans-serif",
-          fontWeight: 400,
+          fontSize: 28,
+          fontFamily: "JetBrains Mono, monospace",
+          fontWeight: 500,
           color: COLORS.muted,
-          marginTop: 16,
-          zIndex: 1,
-          letterSpacing: 4,
+          marginTop: 24,
+          letterSpacing: 2,
         }}
       >
         The open-source IDE for Claude Code

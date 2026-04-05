@@ -19,7 +19,7 @@ import {
   Layout,
 } from 'lucide-react';
 import { useEditorStore } from '../../stores/editor.store';
-import { useSessionStore, PermissionMode, ThinkingMode } from '../../stores/session.store';
+import { useSessionStore, PermissionMode, ThinkingMode, getSupportedPermissionModes, isCodexModel, normalizePermissionModeForModel } from '../../stores/session.store';
 import { useUIStore } from '../../stores/ui.store';
 
 interface FileEntry {
@@ -66,7 +66,7 @@ interface SearchResult {
 
 export default function QuickSearch() {
   const { isQuickSearchOpen, closeQuickSearch, openFile } = useEditorStore();
-  const { activeSessionId, permissionMode, thinkingMode, cyclePermissionMode, setPermissionMode, cycleThinkingMode, setThinkingMode } = useSessionStore();
+  const { activeSessionId, sessions, permissionMode, thinkingMode, selectedModel, cyclePermissionMode, setPermissionMode, cycleThinkingMode, setThinkingMode } = useSessionStore();
   const {
     toggleSidebar,
     toggleTerminalPanel,
@@ -92,7 +92,14 @@ export default function QuickSearch() {
 
   // Define all available commands
   const commands = useMemo((): CommandEntry[] => {
-    const currentPermissionMode = activeSessionId ? (permissionMode[activeSessionId] || 'acceptEdits') : 'acceptEdits';
+    const currentModel = activeSessionId
+      ? (selectedModel[activeSessionId] || sessions.find((session) => session.id === activeSessionId)?.model)
+      : undefined;
+    const isCodexSession = isCodexModel(currentModel);
+    const supportedPermissionModes = getSupportedPermissionModes(currentModel);
+    const currentPermissionMode = activeSessionId
+      ? normalizePermissionModeForModel(currentModel, permissionMode[activeSessionId])
+      : 'acceptEdits';
     const currentThinkingMode = activeSessionId ? (thinkingMode[activeSessionId] || 'thinking') : 'thinking';
 
     const permissionModeLabels: Record<PermissionMode, string> = {
@@ -114,6 +121,45 @@ export default function QuickSearch() {
       'high': 'High',
       'max': 'Max',
     };
+
+    const permissionCommands: CommandEntry[] = [
+      {
+        id: 'cycle-permission-mode',
+        label: 'Cycle Permission Mode',
+        description: `Current: ${permissionModeLabels[currentPermissionMode]}`,
+        icon: <Shield size={16} />,
+        category: 'agent',
+        shortcut: '⌘⇧M',
+        action: () => activeSessionId && cyclePermissionMode(activeSessionId),
+      },
+      ...(supportedPermissionModes.includes('acceptEdits') ? [{
+        id: 'set-permission-accept-edits',
+        label: 'Set Permission: Accept Edits',
+        description: isCodexSession ? 'Codex can edit inside the workspace without prompting' : 'Auto-accept file edits from Claude',
+        icon: <Shield size={16} className="text-green-400" />,
+        category: 'agent' as const,
+        shortcut: '⌘1',
+        action: () => activeSessionId && setPermissionMode(activeSessionId, 'acceptEdits'),
+      }] : []),
+      ...(supportedPermissionModes.includes('default') ? [{
+        id: 'set-permission-default',
+        label: 'Set Permission: Default',
+        description: 'Ask for confirmation on file edits',
+        icon: <Shield size={16} className="text-yellow-400" />,
+        category: 'agent' as const,
+        shortcut: '⌘2',
+        action: () => activeSessionId && setPermissionMode(activeSessionId, 'default'),
+      }] : []),
+      ...(supportedPermissionModes.includes('plan') ? [{
+        id: 'set-permission-plan',
+        label: 'Set Permission: Plan Mode',
+        description: isCodexSession ? 'Codex stays read-only and returns a plan' : 'Claude will only plan, not execute',
+        icon: <Shield size={16} className="text-blue-400" />,
+        category: 'agent' as const,
+        shortcut: '⌘3',
+        action: () => activeSessionId && setPermissionMode(activeSessionId, 'plan'),
+      }] : []),
+    ];
 
     return [
       // View commands
@@ -173,42 +219,7 @@ export default function QuickSearch() {
       },
 
       // Agent mode commands
-      {
-        id: 'cycle-permission-mode',
-        label: 'Cycle Permission Mode',
-        description: `Current: ${permissionModeLabels[currentPermissionMode]}`,
-        icon: <Shield size={16} />,
-        category: 'agent',
-        shortcut: '⌘⇧M',
-        action: () => activeSessionId && cyclePermissionMode(activeSessionId),
-      },
-      {
-        id: 'set-permission-accept-edits',
-        label: 'Set Permission: Accept Edits',
-        description: 'Auto-accept file edits from Claude',
-        icon: <Shield size={16} className="text-green-400" />,
-        category: 'agent',
-        shortcut: '⌘1',
-        action: () => activeSessionId && setPermissionMode(activeSessionId, 'acceptEdits'),
-      },
-      {
-        id: 'set-permission-default',
-        label: 'Set Permission: Default',
-        description: 'Ask for confirmation on file edits',
-        icon: <Shield size={16} className="text-yellow-400" />,
-        category: 'agent',
-        shortcut: '⌘2',
-        action: () => activeSessionId && setPermissionMode(activeSessionId, 'default'),
-      },
-      {
-        id: 'set-permission-plan',
-        label: 'Set Permission: Plan Mode',
-        description: 'Claude will only plan, not execute',
-        icon: <Shield size={16} className="text-blue-400" />,
-        category: 'agent',
-        shortcut: '⌘3',
-        action: () => activeSessionId && setPermissionMode(activeSessionId, 'plan'),
-      },
+      ...permissionCommands,
 
       // Effort level commands (formerly thinking mode)
       {
@@ -297,8 +308,10 @@ export default function QuickSearch() {
     ];
   }, [
     activeSessionId,
+    sessions,
     permissionMode,
     thinkingMode,
+    selectedModel,
     isSidebarOpen,
     isTerminalPanelOpen,
     isBrowserPanelOpen,

@@ -15,6 +15,8 @@ import CommandCenterGrid from '../command-center/CommandCenterGrid';
 import EmptyState from './EmptyState';
 import { X, GripVertical, GripHorizontal, Smartphone, Monitor } from 'lucide-react';
 
+const PRIMARY_MODIFIER_KEY: 'metaKey' | 'ctrlKey' = /mac/i.test(navigator.platform) ? 'metaKey' : 'ctrlKey';
+
 export default function MainContent() {
   const { activeSessionId, sessions, setupProgress, commandCenterSessionIds } = useSessionStore();
   const {
@@ -59,7 +61,7 @@ export default function MainContent() {
   // Intercept Cmd+R to ALWAYS prevent app reload, and refresh browser if panel is open
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === 'r') {
+      if (e[PRIMARY_MODIFIER_KEY] && e.key === 'r') {
         // Always prevent Electron's default app reload
         e.preventDefault();
         e.stopPropagation();

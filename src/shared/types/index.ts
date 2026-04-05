@@ -24,6 +24,14 @@ export interface SavedSSHConfig {
   syncSettings: boolean;
 }
 
+export interface SSHResumeCandidate {
+  sessionId: string;
+  backend: 'claude';
+  mtime: number;
+  localSessionId?: string;
+  localSessionName?: string;
+}
+
 export interface Session {
   id: string;
   name: string;
@@ -53,6 +61,7 @@ export interface Session {
   teleportedFrom?: string; // Original local session ID if teleported to SSH
   downloadedFrom?: string; // Session ID of source SSH session (reverse teleport)
   sdkSessionId?: string; // Claude Agent SDK session ID for transcript resumption
+  continuedFromSessionId?: string; // Existing local G-Build session that this session resumed from
   // Starring/favorites
   isStarred?: boolean; // True if session is starred
   starredAt?: Date; // When it was starred (for stable ordering)

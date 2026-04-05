@@ -23,11 +23,13 @@ export const TRANSITION_DURATION = 10;
 
 // Colors
 export const COLORS = {
-  bg: '#0a0a0a',
+  bg: '#050505',
   surface: '#1a1a2e',
   primary: '#8b5cf6',
   secondary: '#3b82f6',
   glow: '#a78bfa',
-  text: '#f8fafc',
+  text: '#F0F0F0',
   muted: '#94a3b8',
+  terminalGreen: '#22c55e',
+  amber: '#f59e0b',
 } as const;

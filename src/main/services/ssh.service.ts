@@ -2670,6 +2670,58 @@ CONFIG_EOF`);
   async getConnectionForCodex(sessionId: string, config: SSHConfig): Promise<Client> {
     return this.getConnection(sessionId, config);
   }
+
+  /**
+   * Set up a reverse SSH tunnel so a local port is accessible on the remote machine.
+   * Used for localhost MCP servers — the remote `claude` process connects to 127.0.0.1:port
+   * which gets tunneled back to the local machine.
+   */
+  private activeTunnels: Set<string> = new Set();
+
+  async setupReverseTunnel(sessionId: string, config: SSHConfig, localPort: number): Promise<void> {
+    const tunnelKey = `${sessionId}:${localPort}`;
+    if (this.activeTunnels.has(tunnelKey)) return; // Already set up
+
+    const client = await this.getConnection(sessionId, config);
+
+    return new Promise((resolve, reject) => {
+      // forwardIn tells the remote sshd to listen on the given port
+      // and forward connections back through the SSH tunnel to our local machine
+      client.forwardIn('127.0.0.1', localPort, (err) => {
+        if (err) {
+          // EADDRINUSE means the port is already forwarded (from a previous session)
+          if (err.message?.includes('address already in use') || err.message?.includes('EADDRINUSE')) {
+            console.log(`[SSH Service] Reverse tunnel port ${localPort} already in use on remote — reusing`);
+            this.activeTunnels.add(tunnelKey);
+            resolve();
+            return;
+          }
+          reject(err);
+          return;
+        }
+
+        this.activeTunnels.add(tunnelKey);
+        console.log(`[SSH Service] Reverse tunnel active: remote:${localPort} → local:${localPort}`);
+
+        // Handle incoming connections on the tunnel
+        client.on('tcp connection', (info, accept) => {
+          if (info.destPort === localPort) {
+            const channel = accept();
+            // Connect to the local port
+            const net = require('net');
+            const socket = net.connect(localPort, '127.0.0.1', () => {
+              channel.pipe(socket);
+              socket.pipe(channel);
+            });
+            socket.on('error', () => channel.close());
+            channel.on('close', () => socket.destroy());
+          }
+        });
+
+        resolve();
+      });
+    });
+  }
 }
 
 // Export singleton instance

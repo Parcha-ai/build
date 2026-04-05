@@ -24,7 +24,8 @@ export const TextReveal: React.FC<TextRevealProps> = ({
   const springValue = spring({
     frame: frame - delay,
     fps,
-    config: { damping: 15, stiffness: 200 },
+    config: { damping: 20, stiffness: 80, mass: 1.2 },
+    durationRestThreshold: 0.001,
   });
 
   const translateY = interpolate(springValue, [0, 1], [50, 0]);

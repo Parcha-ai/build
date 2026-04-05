@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Terminal, Sparkles, Bot, ChevronDown, ChevronRight, Copy, User, FolderGit, Edit3, Plus, X, Loader2, Check, AlertCircle, FileText, Github, Server, Store, Wrench, Power, PowerOff, Trash2, Package } from 'lucide-react';
+import { Terminal, Sparkles, Bot, ChevronDown, ChevronRight, Copy, User, FolderGit, Edit3, Plus, X, Loader2, Check, AlertCircle, FileText, Github, Server, Store, Wrench, Power, PowerOff, Trash2, Package, MoreHorizontal, Download } from 'lucide-react';
 import type { Command, Skill, AgentDefinition, MCPServerInfo, InstalledPlugin } from '../../../shared/types';
 import UnifiedMarketplace from './UnifiedMarketplace';
 
@@ -55,6 +55,8 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
   // Skill action menu state (shown when + is clicked)
   const [showSkillMenu, setShowSkillMenu] = useState(false);
   const skillMenuRef = useRef<HTMLDivElement>(null);
+  const [openAgentMenu, setOpenAgentMenu] = useState<string | null>(null);
+  const agentMenuRef = useRef<HTMLDivElement>(null);
 
   // Skill installation state
   const [showInstallDialog, setShowInstallDialog] = useState(false);
@@ -169,12 +171,33 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
   };
 
   const handleItemClick = (item: Command | Skill | AgentDefinition | MCPServerInfo | InstalledPlugin) => {
+    setOpenAgentMenu(null);
     setSelectedItem(item);
     setViewingContent(true);
   };
 
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text);
+  };
+
+  const downloadJsonFile = (filename: string, data: unknown) => {
+    const blob = new Blob([`${JSON.stringify(data, null, 2)}\n`], {
+      type: 'application/json;charset=utf-8',
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  };
+
+  const handleExportAgentConfig = (agent: AgentDefinition) => {
+    setOpenAgentMenu(null);
+    const safeName = agent.name.replace(/[^a-z0-9-_]+/gi, '-').replace(/^-+|-+$/g, '') || 'agent';
+    downloadJsonFile(`${safeName}.json`, agent);
   };
 
   // Focus input when dialog opens
@@ -197,13 +220,16 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
       if (skillMenuRef.current && !skillMenuRef.current.contains(e.target as Node)) {
         setShowSkillMenu(false);
       }
+      if (agentMenuRef.current && !agentMenuRef.current.contains(e.target as Node)) {
+        setOpenAgentMenu(null);
+      }
     };
 
-    if (showSkillMenu) {
+    if (showSkillMenu || openAgentMenu) {
       document.addEventListener('mousedown', handleClickOutside);
       return () => document.removeEventListener('mousedown', handleClickOutside);
     }
-  }, [showSkillMenu]);
+  }, [showSkillMenu, openAgentMenu]);
 
   // Refresh skills list
   const refreshSkills = async () => {
@@ -475,25 +501,66 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
       );
     }
 
-    return agents.map(agent => (
-      <button
-        key={`${agent.scope}-${agent.name}`}
-        onClick={() => handleItemClick(agent)}
-        className={`w-full px-3 py-2 text-left hover:bg-claude-surface transition-colors ${
-          selectedItem === agent ? 'bg-claude-surface' : ''
-        }`}
-      >
-        <div className="flex items-center gap-2">
-          <span className="text-xs font-mono text-claude-text">@agent-{agent.name}</span>
-          {agent.scope === 'user' ? (
-            <User size={10} className="text-claude-text-secondary" />
-          ) : (
-            <FolderGit size={10} className="text-claude-text-secondary" />
-          )}
+    return agents.map(agent => {
+      const agentKey = `${agent.scope}-${agent.name}`;
+      const isMenuOpen = openAgentMenu === agentKey;
+
+      return (
+        <div key={agentKey} className="relative group">
+          <button
+            onClick={() => handleItemClick(agent)}
+            className={`w-full px-3 py-2 pr-11 text-left hover:bg-claude-surface transition-colors ${
+              selectedItem === agent ? 'bg-claude-surface' : ''
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-mono text-claude-text">@agent-{agent.name}</span>
+              {agent.scope === 'user' ? (
+                <User size={10} className="text-claude-text-secondary" />
+              ) : (
+                <FolderGit size={10} className="text-claude-text-secondary" />
+              )}
+            </div>
+            <p className="text-xs text-claude-text-secondary mt-1 truncate">{agent.description}</p>
+          </button>
+
+          <div
+            ref={isMenuOpen ? agentMenuRef : undefined}
+            className="absolute right-2 top-2"
+          >
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setOpenAgentMenu(isMenuOpen ? null : agentKey);
+              }}
+              className={`p-1 transition-colors ${
+                isMenuOpen
+                  ? 'bg-claude-surface text-claude-text'
+                  : 'text-claude-text-secondary opacity-0 group-hover:opacity-100 hover:bg-claude-surface'
+              }`}
+              title="Agent actions"
+            >
+              <MoreHorizontal size={14} />
+            </button>
+
+            {isMenuOpen && (
+              <div className="absolute right-0 top-full z-20 mt-1 min-w-48 border border-claude-border bg-claude-bg shadow-lg">
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleExportAgentConfig(agent);
+                  }}
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-claude-text hover:bg-claude-surface"
+                >
+                  <Download size={13} />
+                  Export agent config
+                </button>
+              </div>
+            )}
+          </div>
         </div>
-        <p className="text-xs text-claude-text-secondary mt-1 truncate">{agent.description}</p>
-      </button>
-    ));
+      );
+    });
   };
 
   const renderMcpServerList = () => {

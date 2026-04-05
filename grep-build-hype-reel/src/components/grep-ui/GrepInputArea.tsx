@@ -2,10 +2,15 @@
 // Uses exact same Tailwind classes and structure from InputArea.tsx
 
 import React from "react";
-import { Mic, Square, Image, FileCode, Brain } from "lucide-react";
+import { Mic, Square, Image, FileCode, Brain, Crown } from "lucide-react";
 
 type PermissionMode = 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan';
 type EffortLevel = 'low' | 'medium' | 'high' | 'max';
+
+interface GStackMode {
+  shortName: string;
+  color: string;
+}
 
 interface GrepInputAreaProps {
   inputText?: string;
@@ -15,6 +20,7 @@ interface GrepInputAreaProps {
   modelLabel?: string;
   showVoiceActive?: boolean;
   disabled?: boolean;
+  gstackMode?: GStackMode;
 }
 
 const PERMISSION_MODE_CONFIG: Record<PermissionMode, { prompt: string; label: string; color: string }> = {
@@ -46,6 +52,7 @@ export function GrepInputArea({
   modelLabel = 'Opus 4.6',
   showVoiceActive = false,
   disabled = false,
+  gstackMode,
 }: GrepInputAreaProps) {
   const modeConfig = PERMISSION_MODE_CONFIG[permissionMode];
   const effortLabel = EFFORT_LABELS[effortLevel];
@@ -60,6 +67,21 @@ export function GrepInputArea({
           <span className={`font-bold font-mono text-lg ${modeConfig.color} flex-shrink-0 pt-0.5`}>
             {modeConfig.prompt}
           </span>
+
+          {/* GStack mode badge */}
+          {gstackMode && (
+            <span
+              className="flex-shrink-0 font-mono text-[10px] font-bold uppercase px-1.5 py-0.5 mt-1"
+              style={{
+                color: gstackMode.color,
+                border: `2px solid ${gstackMode.color}40`,
+                backgroundColor: `${gstackMode.color}10`,
+                letterSpacing: '0.08em',
+              }}
+            >
+              {gstackMode.shortName}
+            </span>
+          )}
 
           {/* Text input area */}
           <div className="flex-1 min-w-0">
@@ -116,6 +138,16 @@ export function GrepInputArea({
         <span className="text-[9px] font-bold uppercase text-claude-text-secondary" style={{ letterSpacing: '0.05em' }}>
           {modelLabel}
         </span>
+
+        {/* GStack indicator */}
+        {gstackMode && (
+          <>
+            <span className="text-claude-border">@</span>
+            <span className="text-[9px] font-bold uppercase" style={{ letterSpacing: '0.05em', color: gstackMode.color }}>
+              GSTACK:{gstackMode.shortName}
+            </span>
+          </>
+        )}
 
         {/* Attachments */}
         <div className="ml-auto flex items-center gap-1">

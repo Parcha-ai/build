@@ -18,13 +18,34 @@ export interface SecureKey {
   sessionId: string;    // Session this key belongs to
   type: string;         // Key type (e.g., "anthropic", "openai", "github")
   value: string;        // The actual key value (never logged or persisted)
+  envVarName?: string;  // Environment variable name if detected from CAPS=value pattern
   detectedAt: number;   // Timestamp when detected
   lastAccessedAt: number | null; // Last time agent accessed this key
+}
+
+interface DetectedKey {
+  value: string;
+  type: string;
+  description: string;
+  envVarName?: string;
 }
 
 export class SecureKeysService {
   // In-memory storage only - never persisted
   private keys = new Map<string, SecureKey>();
+
+  private readonly ENV_ASSIGNMENT_PATTERN = /^(?:\s*export\s+)?([A-Z][A-Z0-9_]{1,127})=(.*)$/gm;
+  private readonly SECRET_ENV_NAME_PATTERNS = [
+    /(?:^|_)(?:API_KEY|ACCESS_KEY|SECRET|SECRET_KEY|TOKEN|PASSWORD|PASS|PRIVATE_KEY|CLIENT_SECRET|AUTH_TOKEN|SESSION_TOKEN|PAT)$/i,
+    /^AWS_(?:ACCESS_KEY_ID|SECRET_ACCESS_KEY|SESSION_TOKEN)$/i,
+  ];
+  private readonly NON_SECRET_ENV_NAME_PATTERNS = [
+    /(?:^|_)(?:URL|URI|HOST|PORT|TARGET|BACKEND|ENDPOINT|REGION|MODEL|PROJECT|USERNAME|USER|ORG|ORGANIZATION|ENV|ENVIRONMENT)$/i,
+    /^USE_/i,
+    /^ENABLE_/i,
+    /^IS_/i,
+    /^HAS_/i,
+  ];
 
   // Key type detection patterns
   private readonly KEY_PATTERNS = [
@@ -47,16 +68,18 @@ export class SecureKeysService {
    * Detect and extract API keys from text
    * Returns array of detected keys with their types
    */
-  detectKeys(text: string): Array<{ value: string; type: string; description: string }> {
-    const detected: Array<{ value: string; type: string; description: string }> = [];
+  detectKeys(text: string): DetectedKey[] {
+    const detected = this.detectEnvVarKeys(text);
+    const seenValues = new Set(detected.map((key) => key.value));
 
     for (const { type, pattern, description } of this.KEY_PATTERNS) {
       const matches = text.match(pattern);
       if (matches) {
         for (const value of matches) {
           // Skip if already detected (avoid duplicates)
-          if (!detected.find(k => k.value === value)) {
+          if (!seenValues.has(value)) {
             detected.push({ value, type, description });
+            seenValues.add(value);
           }
         }
       }
@@ -68,7 +91,7 @@ export class SecureKeysService {
   /**
    * Store a key securely and return reference ID
    */
-  storeKey(sessionId: string, keyValue: string, keyType: string): string {
+  storeKey(sessionId: string, keyValue: string, keyType: string, envVarName?: string): string {
     const id = this.generateKeyId();
 
     const secureKey: SecureKey = {
@@ -76,6 +99,7 @@ export class SecureKeysService {
       sessionId,
       type: keyType,
       value: keyValue,
+      envVarName,
       detectedAt: Date.now(),
       lastAccessedAt: null,
     };
@@ -115,12 +139,34 @@ export class SecureKeysService {
         sessionKeys.push({
           id: key.id,
           type: key.type,
-          description: pattern?.description || key.type,
+          description: key.envVarName
+            ? `Environment Variable: ${key.envVarName}`
+            : (pattern?.description || key.type),
         });
       }
     }
 
     return sessionKeys;
+  }
+
+  getSessionEnvVars(sessionId: string): Array<{ name: string; value: string; type: string; description: string }> {
+    const envVars: Array<{ name: string; value: string; type: string; description: string }> = [];
+
+    for (const key of this.keys.values()) {
+      if (key.sessionId !== sessionId || !key.envVarName) {
+        continue;
+      }
+
+      envVars.push({
+        name: key.envVarName,
+        value: key.value,
+        type: key.type,
+        description: `Environment Variable: ${key.envVarName}`,
+      });
+    }
+
+    envVars.sort((a, b) => a.name.localeCompare(b.name));
+    return envVars;
   }
 
   /**
@@ -141,8 +187,8 @@ export class SecureKeysService {
     const keysDetected: Array<{ id: string; type: string; description: string }> = [];
 
     // Store each key and replace with placeholder
-    for (const { value, type, description } of detected) {
-      const keyId = this.storeKey(sessionId, value, type);
+    for (const { value, type, description, envVarName } of detected) {
+      const keyId = this.storeKey(sessionId, value, type, envVarName);
 
       // Replace the actual key with a secure placeholder
       // The agent can retrieve it via tool call if needed
@@ -205,6 +251,73 @@ export class SecureKeysService {
    */
   private generateKeyId(): string {
     return `key_${randomBytes(8).toString('hex')}`;
+  }
+
+  private detectEnvVarKeys(text: string): DetectedKey[] {
+    const detected: DetectedKey[] = [];
+    const seen = new Set<string>();
+
+    for (const match of text.matchAll(this.ENV_ASSIGNMENT_PATTERN)) {
+      const envVarName = match[1];
+      const rawValue = match[2];
+
+      if (!this.isSensitiveEnvVarName(envVarName)) {
+        continue;
+      }
+
+      const value = this.extractEnvVarValue(rawValue);
+      if (!value || this.isClearlyNonSecretValue(value)) {
+        continue;
+      }
+
+      const dedupeKey = `${envVarName}:${value}`;
+      if (seen.has(dedupeKey)) {
+        continue;
+      }
+
+      detected.push({
+        value,
+        type: 'env_var',
+        description: `Environment Variable: ${envVarName}`,
+        envVarName,
+      });
+      seen.add(dedupeKey);
+    }
+
+    return detected;
+  }
+
+  private isSensitiveEnvVarName(envVarName: string): boolean {
+    if (this.NON_SECRET_ENV_NAME_PATTERNS.some((pattern) => pattern.test(envVarName))) {
+      return false;
+    }
+
+    return this.SECRET_ENV_NAME_PATTERNS.some((pattern) => pattern.test(envVarName));
+  }
+
+  private extractEnvVarValue(rawValue: string): string {
+    const trimmed = rawValue.trim();
+    if (!trimmed) {
+      return '';
+    }
+
+    if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith('\'') && trimmed.endsWith('\''))) {
+      return trimmed.slice(1, -1);
+    }
+
+    return trimmed.replace(/\s+#.*$/, '').trim();
+  }
+
+  private isClearlyNonSecretValue(value: string): boolean {
+    if (!value) {
+      return true;
+    }
+
+    if (/^\[SECURE_KEY:[^\]]+\]$/.test(value)) {
+      return true;
+    }
+
+    return /^(true|false|null|undefined|yes|no|on|off)$/i.test(value);
   }
 }
 

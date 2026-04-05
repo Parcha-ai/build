@@ -9,7 +9,7 @@ import fs from 'fs/promises';
 import crypto from 'crypto';
 import { IPC_CHANNELS } from '../../shared/constants/channels';
 import { sshService } from '../services/ssh.service';
-import type { SSHConfig, Session, SavedSSHConfig, DownloadSessionConfig } from '../../shared/types';
+import type { SSHConfig, Session, SavedSSHConfig, DownloadSessionConfig, SSHResumeCandidate } from '../../shared/types';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const sessionStore: any = new Store({ name: getSessionStoreName() });
@@ -52,6 +52,35 @@ function sendDownloadProgress(message: string): void {
  */
 function getPathHash(repoPath: string): string {
   return crypto.createHash('md5').update(repoPath).digest('hex').substring(0, 8);
+}
+
+function findMatchingLocalSession(config: SSHConfig, remoteSdkSessionId: string): { sessionId: string; name?: string } | undefined {
+  const storedSessions = (sessionStore.get('sessions') as Record<string, Session | undefined> | undefined) || {};
+  const sdkMappings = (sessionStore.get('sdkSessionMappings') as Record<string, string | undefined> | undefined) || {};
+
+  for (const [localSessionId, candidate] of Object.entries(storedSessions)) {
+    if (!candidate?.sshConfig) {
+      continue;
+    }
+    if (sdkMappings[localSessionId] !== remoteSdkSessionId) {
+      continue;
+    }
+    if (candidate.sshConfig.host !== config.host || candidate.sshConfig.username !== config.username) {
+      continue;
+    }
+
+    const candidateWorkdir = candidate.sshConfig.remoteWorkdir || candidate.worktreePath || candidate.repoPath;
+    if (candidateWorkdir !== config.remoteWorkdir) {
+      continue;
+    }
+
+    return {
+      sessionId: localSessionId,
+      name: candidate.name,
+    };
+  }
+
+  return undefined;
 }
 
 /**
@@ -109,6 +138,7 @@ export function registerSSHHandlers(ipcMain: IpcMain): void {
       data: {
         name: string;
         sshConfig: SSHConfig;
+        resumeSessionId?: string;
       }
     ) => {
       console.log('[SSH IPC] Creating SSH session:', data.name);
@@ -133,7 +163,15 @@ export function registerSSHHandlers(ipcMain: IpcMain): void {
           updatedAt: new Date(),
           setupScript: '',
           isDevMode: true, // Mark as dev mode (no Docker)
+          ...(data.resumeSessionId ? { sdkSessionId: data.resumeSessionId } : {}),
         };
+
+        const localResumeSource = data.resumeSessionId
+          ? findMatchingLocalSession(data.sshConfig, data.resumeSessionId)
+          : undefined;
+        if (localResumeSource) {
+          session.continuedFromSessionId = localResumeSource.sessionId;
+        }
 
         // Establish the SSH connection
         try {
@@ -194,16 +232,46 @@ export function registerSSHHandlers(ipcMain: IpcMain): void {
         // Save session (use individual key pattern like SessionService)
         sessionStore.set(`sessions.${sessionId}`, session);
 
-        // Mark as a brand-new session so getMessages() won't search for old transcripts
-        // at the same remote path. The sentinel 'new' is replaced with the real SDK session
-        // ID on first message send (claude.service.ts stores it on system_id receipt).
-        sessionStore.set(`sdkSessionMappings.${sessionId}`, 'new');
+        if (data.resumeSessionId) {
+          sessionStore.set(`sdkSessionMappings.${sessionId}`, data.resumeSessionId);
+        } else {
+          // Mark as a brand-new session so getMessages() won't search for old transcripts
+          // at the same remote path. The sentinel 'new' is replaced with the real SDK session
+          // ID on first message send (claude.service.ts stores it on system_id receipt).
+          sessionStore.set(`sdkSessionMappings.${sessionId}`, 'new');
+        }
 
         console.log('[SSH IPC] SSH session created:', sessionId);
         return session;
       } catch (error) {
         console.error('[SSH IPC] Failed to create SSH session:', error);
         throw error;
+      }
+    }
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.SSH_LIST_RESUME_CANDIDATES,
+    async (_event, config: SSHConfig): Promise<SSHResumeCandidate[]> => {
+      const probeSessionId = `ssh-resume-probe-${uuid()}`;
+
+      try {
+        const transcripts = await sshService.listRemoteTranscripts(probeSessionId, config, config.remoteWorkdir);
+        return transcripts.slice(0, 10).map((transcript) => {
+          const localMatch = findMatchingLocalSession(config, transcript.sessionId);
+          return {
+            sessionId: transcript.sessionId,
+            backend: 'claude' as const,
+            mtime: transcript.mtime,
+            localSessionId: localMatch?.sessionId,
+            localSessionName: localMatch?.name,
+          };
+        });
+      } catch (error) {
+        console.error('[SSH IPC] Failed to list resume candidates:', error);
+        return [];
+      } finally {
+        sshService.disconnect(probeSessionId);
       }
     }
   );
@@ -781,6 +849,11 @@ export function registerSSHHandlers(ipcMain: IpcMain): void {
         }
 
         const config = session.sshConfig;
+        const rawSdkSessionId = sessionStore.get(`sdkSessionMappings.${sessionId}`) as string | undefined
+          || session.sdkSessionId;
+        const sdkSessionId = rawSdkSessionId === 'new' ? undefined : rawSdkSessionId;
+
+        sshService.invalidateTranscriptCache(sdkSessionId || sessionId);
 
         // 1. Clean disconnect
         sshService.disconnect(sessionId);

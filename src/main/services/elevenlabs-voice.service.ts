@@ -488,16 +488,13 @@ export class ElevenLabsVoiceService extends EventEmitter {
    * Send contextual update (for informing the agent of state changes)
    */
   sendContextUpdate(context: string): void {
-    console.log('[ElevenLabsVoice] sendContextUpdate called, length:', context.length);
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      console.warn('[ElevenLabsVoice] Cannot send context update - WebSocket not connected, readyState:', this.ws?.readyState);
       return;
     }
     this.sendMessage({
       type: 'contextual_update',
       text: context,
     });
-    console.log('[ElevenLabsVoice] Context update sent successfully');
   }
 
   /**

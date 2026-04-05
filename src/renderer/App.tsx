@@ -20,6 +20,7 @@ import { Terminal, Globe, PanelRight, Settings, PanelLeftClose, Monitor, AlertTr
 
 // Check if we're running in Electron (has electronAPI) or browser preview mode
 const isElectron = typeof window !== 'undefined' && !!window.electronAPI;
+const PRIMARY_MODIFIER_KEY: 'metaKey' | 'ctrlKey' = /mac/i.test(navigator.platform) ? 'metaKey' : 'ctrlKey';
 
 // Preview Mode Component - shown when running outside Electron
 function PreviewMode() {
@@ -387,22 +388,24 @@ function ElectronApp() {
   // Global keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      const primaryModifierPressed = e[PRIMARY_MODIFIER_KEY];
+
       // Cmd+Shift+G: Toggle Command Center
-      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === 'g') {
+      if (primaryModifierPressed && e.shiftKey && e.key === 'g') {
         e.preventDefault();
         useUIStore.getState().toggleCommandCenter();
         return;
       }
 
       // Cmd+Shift+F: File Content Search
-      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === 'f') {
+      if (primaryModifierPressed && e.shiftKey && e.key === 'f') {
         e.preventDefault();
         useEditorStore.getState().toggleFileSearch();
         return;
       }
 
       // Cmd+K: Quick Search
-      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+      if (primaryModifierPressed && e.key === 'k') {
         e.preventDefault();
         console.log('[App] CMD+K pressed - toggling QuickSearch');
         useEditorStore.getState().toggleQuickSearch();
@@ -414,20 +417,88 @@ function ElectronApp() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
-  // CMD+R handler - intercepted by main process, sent via IPC
+  // Native shortcut bridge from the main process for packaged builds
   useEffect(() => {
-    const unsubscribe = window.electronAPI.app.onCmdRPressed(() => {
-      if (isBrowserPanelOpen) {
-        // Dispatch custom event for BrowserPreview to handle
-        window.dispatchEvent(new CustomEvent('browser-refresh'));
+    const unsubscribe = window.electronAPI.app.onShortcutTriggered(({ action }) => {
+      switch (action) {
+        case 'toggle-command-center':
+          useUIStore.getState().toggleCommandCenter();
+          return;
+        case 'toggle-file-search':
+          useEditorStore.getState().toggleFileSearch();
+          return;
+        case 'toggle-quick-search':
+          useEditorStore.getState().toggleQuickSearch();
+          return;
+        case 'browser-refresh': {
+          const uiState = useUIStore.getState();
+          if (!uiState.isBrowserPanelOpen) {
+            return;
+          }
+
+          const sessionState = useSessionStore.getState();
+          const activeId = sessionState.activeSessionId;
+          if (!activeId) {
+            return;
+          }
+
+          let rootId = activeId;
+          let session = sessionState.sessions.find((candidate) => candidate.id === rootId);
+          while (session?.parentSessionId) {
+            rootId = session.parentSessionId;
+            session = sessionState.sessions.find((candidate) => candidate.id === rootId);
+          }
+
+          window.dispatchEvent(new CustomEvent('grep-browser-refresh', {
+            detail: { sessionId: rootId },
+          }));
+          return;
+        }
+        case 'save-or-new-session':
+          if (useEditorStore.getState().isEditorOpen) {
+            window.dispatchEvent(new CustomEvent('grep-shortcut', {
+              detail: { action: 'save' },
+            }));
+          } else {
+            useUIStore.getState().openNewSessionDialog();
+          }
+          return;
+        case 'close-editor-tab':
+          if (useEditorStore.getState().isEditorOpen) {
+            window.dispatchEvent(new CustomEvent('grep-shortcut', {
+              detail: { action: 'close-tab' },
+            }));
+          }
+          return;
+        case 'fork-empty':
+          if (useSessionStore.getState().activeSessionId) {
+            void useSessionStore.getState().createForkFromCurrent('');
+          }
+          return;
+        case 'prev-fork':
+          useSessionStore.getState().cycleForkTabs('prev');
+          return;
+        case 'next-fork':
+          useSessionStore.getState().cycleForkTabs('next');
+          return;
+        case 'background-task':
+          if (!useSessionStore.getState().activeSessionId) {
+            return;
+          }
+          window.dispatchEvent(new CustomEvent('grep-shortcut', {
+            detail: {
+              action: 'background-task',
+              sessionId: useSessionStore.getState().activeSessionId,
+            },
+          }));
+          return;
       }
-      // If browser panel is closed, do nothing (no app refresh)
     });
 
     return () => {
       unsubscribe();
     };
-  }, [isBrowserPanelOpen]);
+  }, []);
 
   // Auto-open browser panel when Stagehand browser tools are used
   useEffect(() => {

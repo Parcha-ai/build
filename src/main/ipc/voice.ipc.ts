@@ -159,7 +159,6 @@ export function registerVoiceHandlers(ipcMain: IpcMain): void {
   });
 
   ipcMain.handle(IPC_CHANNELS.VOICE_CONTEXT_UPDATE, async (_, context: string) => {
-    console.log('[Voice IPC] Context update received, length:', context.length, 'preview:', context.slice(0, 100));
     try {
       voiceService.sendContextUpdate(context);
       return { success: true };

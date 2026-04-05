@@ -18,6 +18,54 @@ export interface ReleaseNote {
 
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    version: '0.0.94',
+    date: '2026-04-01',
+    title: 'Codex Parity + Stability',
+    highlights: [
+      'Claude and Codex now share session context',
+      'Codex gets plan mode, screenshots, and inspector context',
+      'Secure env vars auto-handoff to the agent',
+    ],
+    changes: [
+      {
+        type: 'feature',
+        description: 'Codex turns now persist in the session timeline and stay interleaved with Claude turns in chronological order when you switch sessions or models',
+      },
+      {
+        type: 'feature',
+        description: 'Switching back to Claude now carries forward Codex context so Claude can continue the same thread instead of resetting to transcript-only history',
+      },
+      {
+        type: 'feature',
+        description: 'Codex now supports the mode switcher with Accept Edits, Just Build It, and Plan modes, including matching Quick Search commands',
+      },
+      {
+        type: 'feature',
+        description: 'Codex now receives browser inspector DOM context and image attachments in chat flows, including local and SSH-backed runs',
+      },
+      {
+        type: 'improvement',
+        description: 'Sensitive CAPS=value environment variables are now detected automatically, redacted from chat text, and handed to Claude or Codex through a temporary shell file instead of raw prompt text',
+      },
+      {
+        type: 'fix',
+        description: 'Fixed packaged local Claude runs failing with misleading “Claude Code executable not found” errors by launching Claude Code through Electron’s embedded runtime instead of depending on node being on PATH',
+      },
+      {
+        type: 'fix',
+        description: 'Packaged builds no longer repeatedly prompt for macOS Keychain access on launch because Chromium cookie encryption is disabled for local release builds',
+      },
+      {
+        type: 'fix',
+        description: 'Reduced production hangs and lockups during long streaming runs by disabling noisy per-chunk debug logging and stopping voice context updates when voice mode is off',
+      },
+      {
+        type: 'fix',
+        description: 'Browser/web builds now avoid the Electron-only Monaco asset path during startup, preventing production startup crashes in browser-hosted runs',
+      },
+    ],
+  },
+  {
     version: '0.0.12',
     date: '2025-01-23',
     title: 'Instant Annotation Submit',

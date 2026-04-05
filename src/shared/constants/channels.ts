@@ -111,6 +111,7 @@ export const IPC_CHANNELS = {
   APP_GET_PATH: 'app:get-path',
   APP_SHOW_DIALOG: 'app:show-dialog',
   APP_CMD_R_PRESSED: 'app:cmd-r-pressed',
+  APP_SHORTCUT_TRIGGERED: 'app:shortcut-triggered',
   APP_OPEN_BROWSER_WINDOW: 'app:open-browser-window',
   APP_CLOSE_BROWSER_WINDOW: 'app:close-browser-window',
 
@@ -182,6 +183,7 @@ export const IPC_CHANNELS = {
   // SSH channels
   SSH_TEST_CONNECTION: 'ssh:test-connection',
   SSH_CREATE_SESSION: 'ssh:create-session',
+  SSH_LIST_RESUME_CANDIDATES: 'ssh:list-resume-candidates',
   SSH_SYNC_SETTINGS: 'ssh:sync-settings',
   SSH_RUN_WORKTREE_SCRIPT: 'ssh:run-worktree-script',
   SSH_GET_SAVED_CONFIG: 'ssh:get-saved-config',

@@ -3,6 +3,72 @@ import type { ChatMessage } from '../../shared/types';
 const MAX_ASSISTANT_CHARS = 2000;
 const MAX_TOOL_INPUT_CHARS = 100;
 
+function normalizeChatMessageTimestamp(message: ChatMessage): ChatMessage {
+  const timestamp = message.timestamp instanceof Date ? message.timestamp : new Date(message.timestamp);
+  return {
+    ...message,
+    timestamp,
+  };
+}
+
+function compareChatMessages(a: ChatMessage, b: ChatMessage): number {
+  const aTime = normalizeChatMessageTimestamp(a).timestamp.getTime();
+  const bTime = normalizeChatMessageTimestamp(b).timestamp.getTime();
+  if (aTime !== bTime) {
+    return aTime - bTime;
+  }
+
+  const roleOrder = { system: 0, user: 1, assistant: 2 };
+  const roleDelta = roleOrder[a.role] - roleOrder[b.role];
+  if (roleDelta !== 0) {
+    return roleDelta;
+  }
+
+  return a.id.localeCompare(b.id);
+}
+
+function buildMessageFingerprint(message: ChatMessage): string {
+  const normalized = normalizeChatMessageTimestamp(message);
+  const toolFingerprint = (normalized.toolCalls || [])
+    .map((toolCall) => `${toolCall.id}:${toolCall.name}:${toolCall.status}:${toolCall.result || ''}`)
+    .join('|');
+
+  return [
+    normalized.role,
+    normalized.timestamp.getTime(),
+    normalized.content,
+    toolFingerprint,
+    normalized.interrupted ? '1' : '0',
+  ].join('::');
+}
+
+export function mergeConversationMessages(primary: ChatMessage[], supplemental: ChatMessage[]): ChatMessage[] {
+  const merged = [...primary, ...supplemental]
+    .map(normalizeChatMessageTimestamp)
+    .sort(compareChatMessages);
+
+  const seenIds = new Set<string>();
+  const seenFingerprints = new Set<string>();
+  const deduped: ChatMessage[] = [];
+
+  for (const message of merged) {
+    if (seenIds.has(message.id)) {
+      continue;
+    }
+
+    const fingerprint = buildMessageFingerprint(message);
+    if (seenFingerprints.has(fingerprint)) {
+      continue;
+    }
+
+    seenIds.add(message.id);
+    seenFingerprints.add(fingerprint);
+    deduped.push(message);
+  }
+
+  return deduped;
+}
+
 /**
  * Format conversation history into a structured context block for Codex.
  * Builds from newest messages backward within the character budget,
@@ -63,7 +129,7 @@ export function formatConversationContext(messages: ChatMessage[], budgetChars: 
 
   return `<conversation_history>
 The following is the recent conversation history from this coding session.
-You are continuing work that was started by a previous assistant (Claude).
+Some of these turns may have been produced by Claude and some by Codex.
 Use this context to understand what has been discussed and decided.
 
 ${formatted.join('\n')}

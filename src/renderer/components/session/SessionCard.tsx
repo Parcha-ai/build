@@ -41,7 +41,7 @@ interface SessionCardProps {
 }
 
 export default function SessionCard({ session, isActive, onClick, isFork = false, onTeleportRequest, onDownload }: SessionCardProps) {
-  const { sessions, startSession, stopSession, deleteSession, updateSession, addToCommandCenter, removeFromCommandCenter, commandCenterSessionIds } = useSessionStore();
+  const { sessions, startSession, stopSession, deleteSession, updateSession, addToCommandCenter, removeFromCommandCenter, commandCenterSessionIds, loadMessages } = useSessionStore();
   const activity = useSessionStore((s) => s.sessionActivity[session.id]);
   // Check if this session (or its root) is in the command center
   const isInCommandCenter = (() => {
@@ -115,7 +115,10 @@ export default function SessionCard({ session, isActive, onClick, isFork = false
 
     try {
       // Reconnect via SSH service (disconnects and will reconnect on next start)
-      await window.electronAPI.ssh.reconnect(session.id);
+      const result = await window.electronAPI.ssh.reconnect(session.id);
+      if (!result.success) {
+        throw new Error(result.error || 'Reconnect failed');
+      }
 
       // Stop the session
       await stopSession(session.id);
@@ -125,6 +128,7 @@ export default function SessionCard({ session, isActive, onClick, isFork = false
 
       // Restart the session
       await startSession(session.id);
+      await loadMessages(session.id);
     } catch (error) {
       console.error('Failed to reconnect:', error);
     }

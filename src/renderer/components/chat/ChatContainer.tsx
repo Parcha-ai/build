@@ -68,6 +68,7 @@ export default function ChatContainer({ session }: ChatContainerProps) {
   const [showScrollButton, setShowScrollButton] = useState(false);
   const [hasNewContent, setHasNewContent] = useState(false);
   const lastMessageCountRef = useRef(0);
+  const prevIsLoadingMessagesRef = useRef(isLoadingMessages);
   const lastScrollTop = useRef(0);
   const lastScrollTime = useRef(Date.now());
   const fastScrollCount = useRef(0);
@@ -495,6 +496,22 @@ export default function ChatContainer({ session }: ChatContainerProps) {
     setShowScrollButton(false);
     setHasNewContent(false);
   }, []);
+
+  // Transcript reloads should always land on the latest messages first.
+  useEffect(() => {
+    if (prevIsLoadingMessagesRef.current && !isLoadingMessages && sessionMessages.length > 0) {
+      setTimeout(() => {
+        isProgrammaticScroll.current = true;
+        messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
+        setTimeout(() => { isProgrammaticScroll.current = false; }, 100);
+        setIsAtBottom(true);
+        setShowScrollButton(false);
+        setHasNewContent(false);
+      }, 0);
+    }
+
+    prevIsLoadingMessagesRef.current = isLoadingMessages;
+  }, [isLoadingMessages, sessionMessages.length]);
 
   // Scroll to bottom when session changes or messages first load
   const prevSessionId = useRef(session.id);

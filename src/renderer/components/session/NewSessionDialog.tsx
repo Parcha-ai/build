@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { X, Search, Loader2, GitBranch, Lock, Globe, Folder, Github, Zap, ChevronDown, AlertTriangle, Edit3, Eye, FileText, Terminal as TerminalIcon, Server } from 'lucide-react';
 import { useAuthStore } from '../../stores/auth.store';
-import { useSessionStore } from '../../stores/session.store';
+import { cloneSupplementalMessages, useSessionStore } from '../../stores/session.store';
 import SSHConfigForm from './SSHConfigForm';
 import type { SSHConfig } from '../../../shared/types';
 
@@ -290,7 +290,7 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
     }
   };
 
-  const handleSSHConnect = async (sshConfig: SSHConfig, name: string) => {
+  const handleSSHConnect = async (sshConfig: SSHConfig, name: string, resumeSessionId?: string) => {
     setIsCreating(true);
     setCreateError(null);
 
@@ -298,9 +298,13 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
       const session = await window.electronAPI.ssh.createSession({
         name,
         sshConfig,
+        resumeSessionId,
       });
 
       if (session) {
+        if (session.continuedFromSessionId) {
+          cloneSupplementalMessages(session.continuedFromSessionId, session.id);
+        }
         addSession(session);
         setActiveSession(session.id);
         handleClose();

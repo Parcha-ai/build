@@ -3,7 +3,7 @@ import Store from 'electron-store';
 import { IPC_CHANNELS } from '../../shared/constants/channels';
 import { ClaudeService } from '../services/claude.service';
 import { getMainWindow } from '../index';
-import type { QuestionResponse, Attachment, PlanApprovalResponse } from '../../shared/types';
+import type { QuestionResponse, Attachment, PlanApprovalResponse, ChatMessage } from '../../shared/types';
 import { DEFAULT_AUDIO_SETTINGS } from '../../shared/types/audio';
 
 // Settings store for Ralph Loop check
@@ -90,14 +90,14 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
 
   ipcMain.handle(
     IPC_CHANNELS.CLAUDE_SEND_MESSAGE,
-    async (_, sessionId: string, message: string, attachments?: Attachment[], permissionMode?: string, thinkingMode?: string, model?: string, gstackMode?: string) => {
+    async (_, sessionId: string, message: string, attachments?: Attachment[], permissionMode?: string, thinkingMode?: string, model?: string, gstackMode?: string, supplementalMessages?: ChatMessage[]) => {
       const mainWindow = getMainWindow();
       if (!mainWindow) return;
 
       // Ensure claudeService has the mainWindow reference for browser updates
       claudeService.setMainWindow(mainWindow);
 
-      console.log('[Claude IPC] sendMessage received with attachments:', attachments?.length || 0, 'model:', model, 'permissionMode:', permissionMode, 'gstackMode:', gstackMode);
+      console.log('[Claude IPC] sendMessage received with attachments:', attachments?.length || 0, 'model:', model, 'permissionMode:', permissionMode, 'gstackMode:', gstackMode, 'supplementalMessages:', supplementalMessages?.length || 0);
       if (attachments) {
         attachments.forEach((a, i) => {
           console.log(`[Claude IPC] Attachment ${i}: type=${a?.type}, name=${a?.name}, content length=${a?.content?.length || 0}`);
@@ -119,7 +119,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
 
         try {
           // Stream the response (Stop hook handles Ralph Loop iteration)
-          for await (const event of claudeService.streamMessage(sessionId, message, attachments, permissionMode, thinkingMode, model, gstackMode)) {
+          for await (const event of claudeService.streamMessage(sessionId, message, attachments, permissionMode, thinkingMode, model, gstackMode, supplementalMessages)) {
             switch (event.type) {
               case 'text_delta':
                 batcher.addText(event.content || '', event.agentId);
@@ -206,7 +206,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
                   // Retry by starting a new stream with the same message
                   console.log('[Claude IPC] Starting retry stream after compaction');
                   try {
-                    for await (const retryEvent of claudeService.streamMessage(sessionId, message, attachments, permissionMode, thinkingMode, model)) {
+                    for await (const retryEvent of claudeService.streamMessage(sessionId, message, attachments, permissionMode, thinkingMode, model, gstackMode, supplementalMessages)) {
                       // Process retry events the same way
                       switch (retryEvent.type) {
                         case 'text_delta':
@@ -342,8 +342,8 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
     await new Promise(resolve => setTimeout(resolve, 50));
   });
 
-  ipcMain.handle(IPC_CHANNELS.CLAUDE_GET_MESSAGES, async (_, sessionId: string) => {
-    return claudeService.getMessages(sessionId);
+  ipcMain.handle(IPC_CHANNELS.CLAUDE_GET_MESSAGES, async (_, sessionId: string, limit?: number) => {
+    return claudeService.getMessages(sessionId, limit);
   });
 
   // Handle permission responses from user

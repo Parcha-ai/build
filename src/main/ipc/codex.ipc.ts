@@ -1,7 +1,13 @@
 import { IpcMain } from 'electron';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import { IPC_CHANNELS } from '../../shared/constants/channels';
 import { codexService } from '../services/codex.service';
 import { getMainWindow } from '../index';
+import { secureKeysService } from '../services/secure-keys.service';
+import { sshService } from '../services/ssh.service';
+import type { SSHConfig } from '../../shared/types';
 
 // Batching helper for smooth text streaming (mirrors claude.ipc.ts pattern)
 class CodexChunkBatcher {
@@ -72,8 +78,11 @@ export function registerCodexHandlers(ipcMain: IpcMain): void {
       const Store = (await import('electron-store')).default;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const sessionsStore = new Store({ name: 'claudette-sessions' }) as any;
-      const sessionData = sessionsStore.get(sessionId) as { worktreePath?: string; repoPath?: string } | undefined;
-      const workingDir = sessionData?.worktreePath || sessionData?.repoPath || process.cwd();
+      const sessionData = sessionsStore.get(sessionId) as { worktreePath?: string; repoPath?: string; sshConfig?: SSHConfig } | undefined;
+      const workingDir = sessionData?.sshConfig?.remoteWorkdir || sessionData?.worktreePath || sessionData?.repoPath || process.cwd();
+      const { modifiedText } = secureKeysService.interceptAndReplaceKeys(sessionId, prompt);
+      const secureEnvContext = await prepareSecureEnvContext(sessionId, sessionData?.sshConfig);
+      const fullPrompt = secureEnvContext ? `${secureEnvContext}\n\n${modifiedText}` : modifiedText;
 
       const batcher = new CodexChunkBatcher(
         sessionId,
@@ -82,7 +91,7 @@ export function registerCodexHandlers(ipcMain: IpcMain): void {
       );
 
       try {
-        for await (const event of codexService.streamDirect(sessionId, prompt, workingDir)) {
+        for await (const event of codexService.streamDirect(sessionId, fullPrompt, workingDir, sessionData?.sshConfig)) {
           switch (event.type) {
             case 'text_start':
               // Nothing to send yet, just marks the start
@@ -142,4 +151,51 @@ export function registerCodexHandlers(ipcMain: IpcMain): void {
     codexService.cancel(sessionId);
     await new Promise(resolve => setTimeout(resolve, 50));
   });
+}
+
+function getSecureEnvFilePath(sessionId: string, sshConfig?: SSHConfig): string {
+  return sshConfig
+    ? `/tmp/g-build-secure-env-${sessionId}.sh`
+    : path.join(os.tmpdir(), `g-build-secure-env-${sessionId}.sh`);
+}
+
+function formatSecureEnvFileContent(sessionId: string): string {
+  const envVars = secureKeysService.getSessionEnvVars(sessionId);
+  const lines = [
+    `# Temporary secure environment variables for G-Build session ${sessionId}`,
+    ...envVars.map(({ name, value }) => `export ${name}='${value.replace(/'/g, `'\\''`)}'`),
+    '',
+  ];
+
+  return lines.join('\n');
+}
+
+async function prepareSecureEnvContext(sessionId: string, sshConfig?: SSHConfig): Promise<string | undefined> {
+  const envVars = secureKeysService.getSessionEnvVars(sessionId);
+  if (envVars.length === 0) {
+    return undefined;
+  }
+
+  const envFilePath = getSecureEnvFilePath(sessionId, sshConfig);
+  const envFileContent = formatSecureEnvFileContent(sessionId);
+
+  if (sshConfig) {
+    await sshService.writeRemoteFile(sessionId, sshConfig, envFilePath, envFileContent);
+  } else {
+    fs.writeFileSync(envFilePath, envFileContent, { mode: 0o600 });
+    try {
+      fs.chmodSync(envFilePath, 0o600);
+    } catch {
+      // best-effort permission tightening
+    }
+  }
+
+  const envVarNames = envVars.map(({ name }) => `- ${name}`).join('\n');
+
+  return `The user provided sensitive environment variables. They are available in a temporary shell file at \`${envFilePath}\`.
+
+Available variable names:
+${envVarNames}
+
+Read or source that file if you need the actual values. Do not print secret values into chat, logs, diffs, or committed files unless the user explicitly asks for that.`;
 }

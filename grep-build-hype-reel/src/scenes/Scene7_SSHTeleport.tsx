@@ -1,5 +1,5 @@
 import React from "react";
-import { AbsoluteFill, useCurrentFrame, useVideoConfig, spring, interpolate } from "remotion";
+import { AbsoluteFill, useCurrentFrame, useVideoConfig, spring, interpolate, Easing } from "remotion";
 import { SceneTransition } from "../components/SceneTransition";
 import { TextReveal } from "../components/TextReveal";
 import { Particles } from "../components/Particles";
@@ -13,13 +13,15 @@ export const Scene7_SSHTeleport: React.FC = () => {
   const beamProgress = interpolate(frame, [30, 90], [0, 1], {
     extrapolateLeft: "clamp",
     extrapolateRight: "clamp",
+    easing: Easing.bezier(0.25, 0.1, 0.25, 1.0),
   });
 
-  // Server appears
+  // Server appears — snappy pop-in
   const serverSpring = spring({
     frame: frame - 60,
     fps,
-    config: { damping: 12, stiffness: 180 },
+    config: { damping: 14, stiffness: 170, mass: 0.8 },
+    durationRestThreshold: 0.001,
   });
 
   // Terminal content typing
@@ -120,10 +122,11 @@ export const Scene7_SSHTeleport: React.FC = () => {
               width: 700,
               backgroundColor: "#0d1117",
               borderRadius: 12,
-              border: `1px solid ${COLORS.muted}20`,
+              border: `2px solid ${COLORS.muted}20`,
               padding: 20,
               fontFamily: "JetBrains Mono, monospace",
-              fontSize: 14,
+              fontSize: 16,
+              fontWeight: 500,
               color: "#22c55e",
               whiteSpace: "pre-wrap",
               lineHeight: 1.6,
