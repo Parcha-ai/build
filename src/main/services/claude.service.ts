@@ -2679,10 +2679,20 @@ Read or source that file if you need the actual values. Do not print secret valu
     // Proactive compaction: compact OTHER idle sessions that are above 60% context
     this.compactIdleSessions(sessionId);
 
+    // Cancel any existing query for this session before starting a new one.
+    // Without this, the old SSH process keeps running and the UI gets stuck
+    // showing "thinking" from the orphaned query that never sends STREAM_END.
+    const existingController = this.activeQueries.get(sessionId);
+    if (existingController) {
+      console.log(`[Claude Service] Aborting existing query for session ${sessionId.substring(0, 8)} before starting new one`);
+      existingController.abort();
+      codexService.cancel(sessionId);
+    }
+
     // Create abort controller for cancellation
     const abortController = new AbortController();
     this.activeQueries.set(sessionId, abortController);
-    powerService.sessionStarted();
+    if (!existingController) powerService.sessionStarted(); // Only increment if not replacing
 
     // Resolve the remote SDK session ID before invalidating transcript caches.
     const rawSdkSessionId = this.sessionStore.get(`sdkSessionMappings.${sessionId}`) as string | undefined
@@ -3001,6 +3011,29 @@ Read or source that file if you need the actual values. Do not print secret valu
           delete userMcpServers['chrome-devtools'];
           // Register a local in-process chrome-devtools MCP server so tools are still visible to the agent
           mcpServersConfig['chrome-devtools'] = this.getChromeDevtoolsMcpServer(sessionId);
+        }
+
+        // For SSH sessions, set up reverse SSH tunnels for localhost MCP servers
+        // so they're accessible from the remote machine
+        if (session.sshConfig) {
+          for (const [name, config] of Object.entries(userMcpServers)) {
+            const args = (config as { args?: string[] }).args || [];
+            const localhostArg = args.find((a: string) =>
+              /https?:\/\/(localhost|127\.0\.0\.1)(:\d+)/.test(a)
+            );
+            if (localhostArg) {
+              const portMatch = localhostArg.match(/:(\d+)/);
+              if (portMatch) {
+                const localPort = parseInt(portMatch[1], 10);
+                // Set up reverse tunnel: remote:localPort → local:localPort
+                sshService.setupReverseTunnel(sessionId, session.sshConfig, localPort).then(() => {
+                  console.log(`[Claude Service] Reverse tunnel for ${name} MCP: remote:${localPort} → local:${localPort}`);
+                }).catch(err => {
+                  console.warn(`[Claude Service] Failed to set up tunnel for ${name} MCP:`, err.message);
+                });
+              }
+            }
+          }
         }
 
         Object.assign(mcpServersConfig, userMcpServers);
