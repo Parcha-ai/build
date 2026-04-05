@@ -74,15 +74,17 @@ export interface Session {
   aiGeneratedName?: string; // AI-generated short name (2-3 words) for fork tabs
   isRoot?: boolean; // True for original conversation (no parent)
   forkCreatedAt?: Date; // When this conversation fork was created
-  gstackMode?: GStackMode; // Active GStack workflow mode
+  gstackMode?: string; // Active GStack skill name (dynamic, from disk)
 }
 
-export type GStackMode = 'plan-ceo' | 'plan-eng' | 'design' | 'review' | 'ship' | 'qa' | 'browse' | 'retro' | 'office-hours' | 'investigate' | 'careful' | 'freeze' | 'guard' | 'document-release' | 'autoplan' | 'cso' | 'sdd';
+// GStack mode is now a dynamic string (skill ID from disk), not a fixed union
+export type GStackMode = string;
 
-export const GSTACK_MODE_META: Record<GStackMode, { color: string; shortName: string }> = {
-  'plan-ceo': { color: '#f59e0b', shortName: 'CEO' },
-  'plan-eng': { color: '#3b82f6', shortName: 'ENG' },
-  'design':   { color: '#ec4899', shortName: 'DES' },
+// Legacy meta kept for backwards compatibility — new skills use dynamic metadata from disk
+export const GSTACK_MODE_META: Record<string, { color: string; shortName: string }> = {
+  'plan-ceo-review': { color: '#f59e0b', shortName: 'CEO' },
+  'plan-eng-review': { color: '#3b82f6', shortName: 'ENG' },
+  'design-consultation': { color: '#ec4899', shortName: 'DES' },
   'review':   { color: '#ef4444', shortName: 'REV' },
   'ship':     { color: '#22c55e', shortName: 'SHIP' },
   'qa':       { color: '#a855f7', shortName: 'QA' },
@@ -254,6 +256,8 @@ export interface AppSettings {
   // Bedtime reminder settings
   bedtimeReminderEnabled: boolean; // Enable/disable bedtime reminders
   bedtimeReminderTime?: string; // Time in HH:MM format (only used if enabled)
+  // GStack integration
+  gstackEnabled: boolean; // Enable gstack skills and routing
   // Foundry settings (Azure-hosted Claude)
   foundryEnabled?: boolean;
   foundryBaseUrl?: string;

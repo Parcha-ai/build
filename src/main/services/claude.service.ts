@@ -505,14 +505,14 @@ ${cleanOutput}
       }
     }
 
-    // Add GStack mode prompt if active (passed directly from renderer, not from session store)
-    const activeGStackMode = gstackMode || session.gstackMode;
-    if (activeGStackMode) {
-      const { getGStackModePrompt } = require('./gstack.service');
-      const modePrompt = getGStackModePrompt(activeGStackMode);
-      if (modePrompt) {
-        console.log('[Claude Service] GStack mode active:', activeGStackMode);
-        append += '\n\n' + modePrompt;
+    // Inject GStack skill routing if gstack is enabled in settings
+    const settings = this.store.get('settings', {}) as Record<string, unknown>;
+    const gstackEnabled = settings.gstackEnabled as boolean | undefined;
+    if (gstackEnabled) {
+      const { getGStackRoutingPrompt } = require('./gstack.service');
+      const routingPrompt = getGStackRoutingPrompt();
+      if (routingPrompt) {
+        append += '\n\n' + routingPrompt;
       }
     }
 

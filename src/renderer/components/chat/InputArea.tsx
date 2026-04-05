@@ -93,14 +93,21 @@ interface SystemInfo {
   model: string;
 }
 
-// GStack mode selector — sets the active workflow mode (appended to system prompt)
+// GStack skill launcher — discovers real gstack skills from disk and invokes them via /command messages
 function GStackLauncher({ sessionId, onClose }: { sessionId: string; onClose: () => void }) {
   const menuRef = useRef<HTMLDivElement>(null);
-  const [modes, setModes] = useState<Array<{ id: string; name: string; shortName: string; description: string; color: string }>>([]);
-  const setGStackMode = useSessionStore((s) => s.setGStackMode);
+  const [skills, setSkills] = useState<Array<{ id: string; name: string; shortName: string; description: string; color: string; category: string }>>([]);
+  const [isInstalled, setIsInstalled] = useState(true);
+  const [isInstalling, setIsInstalling] = useState(false);
+  const sendMessage = useSessionStore((s) => s.sendMessage);
 
   useEffect(() => {
-    window.electronAPI.gstack.getModes().then(setModes).catch(() => {});
+    window.electronAPI.gstack.isInstalled().then(installed => {
+      setIsInstalled(installed);
+      if (installed) {
+        window.electronAPI.gstack.getModes().then(setSkills).catch(() => {});
+      }
+    }).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -118,55 +125,87 @@ function GStackLauncher({ sessionId, onClose }: { sessionId: string; onClose: ()
     };
   }, [onClose]);
 
-  const GROUPS = [
-    { label: 'Strategy', ids: ['office-hours', 'plan-ceo', 'plan-eng', 'design', 'autoplan', 'sdd'] },
-    { label: 'Development', ids: ['review', 'ship', 'document-release', 'investigate'] },
-    { label: 'Testing', ids: ['qa', 'browse'] },
-    { label: 'Safety', ids: ['careful', 'freeze', 'guard', 'cso'] },
-    { label: 'Analysis', ids: ['retro'] },
-  ];
-
-  const handleSelect = (modeId: string) => {
-    onClose();
-    // Set the mode — prompt is appended to system message by claude.service.ts
-    setGStackMode(sessionId, modeId as import('../../../shared/types').GStackMode);
+  const handleInstall = async () => {
+    setIsInstalling(true);
+    const result = await window.electronAPI.gstack.install();
+    setIsInstalling(false);
+    if (result.success) {
+      setIsInstalled(true);
+      const modes = await window.electronAPI.gstack.getModes();
+      setSkills(modes);
+    }
   };
+
+  const handleSelect = (skillId: string) => {
+    onClose();
+    // Send /{skillId} as a message — Claude Code invokes the real gstack skill
+    sendMessage(sessionId, `/${skillId}`);
+  };
+
+  // Group skills by category
+  const categories = ['Strategy', 'Design', 'Development', 'Testing', 'Analysis', 'Safety'];
+  const grouped = categories.map(cat => ({
+    label: cat,
+    skills: skills.filter(s => s.category === cat),
+  })).filter(g => g.skills.length > 0);
 
   return (
     <div
       ref={menuRef}
-      className="absolute bottom-full right-0 mb-1 w-64 bg-claude-surface border border-claude-border shadow-xl z-50 overflow-hidden"
+      className="absolute bottom-full right-0 mb-1 w-72 bg-claude-surface border border-claude-border shadow-xl z-50 overflow-hidden"
       style={{ borderRadius: 0 }}
     >
-      <div className="px-3 py-1.5 border-b border-claude-border">
-        <span className="text-[10px] font-semibold text-claude-text-secondary uppercase tracking-wide">GStack Mode</span>
+      <div className="px-3 py-1.5 border-b border-claude-border flex items-center justify-between">
+        <span className="text-[10px] font-semibold text-claude-text-secondary uppercase tracking-wide">GStack Skills</span>
+        {isInstalled && (
+          <span className="text-[9px] text-green-400 font-mono">{skills.length} skills</span>
+        )}
       </div>
-      <div className="py-0.5 max-h-[300px] overflow-y-auto">
-        {GROUPS.map((group, gi) => (
-          <div key={group.label}>
-            {gi > 0 && <div className="mx-2 my-0.5 border-t border-claude-border" />}
-            {group.ids.map((id) => {
-              const mode = modes.find((m) => m.id === id);
-              if (!mode) return null;
-              return (
+
+      {!isInstalled ? (
+        <div className="p-3 text-center">
+          <p className="text-xs text-claude-text-secondary mb-2">
+            GStack is not installed. Install Garry Tan's Claude Code operating system?
+          </p>
+          <button
+            onClick={handleInstall}
+            disabled={isInstalling}
+            className="px-3 py-1.5 bg-purple-600 hover:bg-purple-500 text-white text-xs font-bold uppercase disabled:opacity-50"
+            style={{ borderRadius: 0, letterSpacing: '0.05em' }}
+          >
+            {isInstalling ? 'Installing...' : 'Install GStack'}
+          </button>
+        </div>
+      ) : (
+        <div className="py-0.5 max-h-[400px] overflow-y-auto">
+          {grouped.map((group, gi) => (
+            <div key={group.label}>
+              {gi > 0 && <div className="mx-2 my-0.5 border-t border-claude-border" />}
+              <div className="px-3 py-0.5">
+                <span className="text-[9px] font-semibold text-claude-text-secondary uppercase tracking-wider">{group.label}</span>
+              </div>
+              {group.skills.map((skill) => (
                 <button
-                  key={id}
-                  onClick={() => handleSelect(id)}
+                  key={skill.id}
+                  onClick={() => handleSelect(skill.id)}
                   className="w-full px-3 py-1 flex items-center gap-2 hover:bg-white/5 transition-colors text-left"
                 >
                   <span
-                    className="text-[9px] font-bold font-mono px-1 rounded-sm flex-shrink-0"
-                    style={{ backgroundColor: `${mode.color}25`, color: mode.color }}
+                    className="text-[9px] font-bold font-mono px-1 flex-shrink-0"
+                    style={{ backgroundColor: `${skill.color}25`, color: skill.color }}
                   >
-                    {mode.shortName}
+                    {skill.shortName}
                   </span>
-                  <span className="text-xs text-claude-text truncate">{mode.name}</span>
+                  <div className="min-w-0">
+                    <span className="text-xs text-claude-text truncate block">/{skill.id}</span>
+                    <span className="text-[10px] text-claude-text-secondary truncate block">{skill.description}</span>
+                  </div>
                 </button>
-              );
-            })}
-          </div>
-        ))}
-      </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

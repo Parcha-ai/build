@@ -1016,10 +1016,14 @@ const electronAPI = {
 
   // GStack workflow skills
   gstack: {
-    getModes: (): Promise<Array<{ id: string; name: string; shortName: string; description: string; icon: string; color: string }>> =>
+    getModes: (): Promise<Array<{ id: string; name: string; shortName: string; description: string; color: string; category: string }>> =>
       ipcRenderer.invoke(IPC_CHANNELS.GSTACK_GET_MODES),
-    getPrompt: (mode: string): Promise<string | null> =>
-      ipcRenderer.invoke(IPC_CHANNELS.GSTACK_GET_PROMPT, mode),
+    isInstalled: (): Promise<boolean> =>
+      ipcRenderer.invoke(IPC_CHANNELS.GSTACK_IS_INSTALLED),
+    install: (): Promise<{ success: boolean; error?: string }> =>
+      ipcRenderer.invoke(IPC_CHANNELS.GSTACK_INSTALL),
+    upgrade: (): Promise<{ success: boolean; error?: string }> =>
+      ipcRenderer.invoke(IPC_CHANNELS.GSTACK_UPGRADE),
   },
 };
 

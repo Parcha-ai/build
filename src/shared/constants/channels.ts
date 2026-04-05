@@ -255,7 +255,9 @@ export const IPC_CHANNELS = {
 
   // GStack channels (workflow skills)
   GSTACK_GET_MODES: 'gstack:get-modes',
-  GSTACK_GET_PROMPT: 'gstack:get-prompt',
+  GSTACK_IS_INSTALLED: 'gstack:is-installed',
+  GSTACK_INSTALL: 'gstack:install',
+  GSTACK_UPGRADE: 'gstack:upgrade',
 
   // Codex channels (second opinion / direct invocation)
   CODEX_RUN: 'codex:run',

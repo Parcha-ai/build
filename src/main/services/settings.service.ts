@@ -32,6 +32,8 @@ export NODE_ENV=development
   // Bedtime reminder - disabled by default
   bedtimeReminderEnabled: false,
   bedtimeReminderTime: '23:00', // Default time, only used if enabled
+  // GStack - disabled by default, user enables in settings
+  gstackEnabled: false,
   // Foundry - disabled by default
   foundryEnabled: false,
 };

@@ -59,7 +59,7 @@ import { registerQmdHandlers } from './ipc/qmd.ipc';
 import { registerMcpHandlers } from './ipc/mcp.ipc';
 import { registerPluginHandlers } from './ipc/plugin.ipc';
 import { registerCodexHandlers } from './ipc/codex.ipc';
-import { getGStackModes, getGStackModePrompt } from './services/gstack.service';
+import { getGStackModes, isGStackInstalled, installGStack, upgradeGStack } from './services/gstack.service';
 import { IPC_CHANNELS } from '../shared/constants/channels';
 import { cdpProxyService } from './services/cdp-proxy.service';
 import { powerService } from './services/power.service';
@@ -504,7 +504,9 @@ function registerIPCHandlers(): void {
 
   // GStack workflow skills
   ipcMain.handle(IPC_CHANNELS.GSTACK_GET_MODES, () => getGStackModes());
-  ipcMain.handle(IPC_CHANNELS.GSTACK_GET_PROMPT, (_, mode: string) => getGStackModePrompt(mode));
+  ipcMain.handle(IPC_CHANNELS.GSTACK_IS_INSTALLED, () => isGStackInstalled());
+  ipcMain.handle(IPC_CHANNELS.GSTACK_INSTALL, async () => installGStack());
+  ipcMain.handle(IPC_CHANNELS.GSTACK_UPGRADE, async () => upgradeGStack());
 }
 
 // Migrate data from old "Grep Build" app directory to new "G-Build" on first launch
