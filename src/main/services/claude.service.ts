@@ -4114,9 +4114,12 @@ Begin by creating the task structure now.
             }
 
             // Track token usage and send to renderer
-            const successResult = resultMsg as SDKMessage & { usage?: { input_tokens?: number }; model?: string };
-            if (successResult.usage?.input_tokens) {
-              const inputTokens = successResult.usage.input_tokens;
+            // Total input = input_tokens + cache_creation_input_tokens + cache_read_input_tokens
+            const successResult = resultMsg as SDKMessage & { usage?: { input_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number }; model?: string };
+            if (successResult.usage) {
+              const inputTokens = (successResult.usage.input_tokens || 0)
+                + (successResult.usage.cache_creation_input_tokens || 0)
+                + (successResult.usage.cache_read_input_tokens || 0);
               const currentModel = successResult.model || selectedModel || 'claude-opus-4-6';
               const hasLargeContext = currentModel.includes('opus-4-6') || currentModel.includes('sonnet-4-6') || currentModel.includes('sonnet-4-5');
               const contextWindowSize = hasLargeContext ? 1000000 : 200000;

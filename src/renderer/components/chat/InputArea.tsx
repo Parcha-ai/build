@@ -1759,7 +1759,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
         </div>
         {/* Context usage indicator — pushed to far right */}
         {contextUsage && (
-          <div className="ml-auto flex items-center gap-1.5" title={`${contextUsage.inputTokens.toLocaleString()} / ${contextUsage.contextWindowSize.toLocaleString()} tokens (${contextUsage.percentage}%)`}>
+          <div className="flex items-center gap-1.5" style={{ order: -1 }} title={`${contextUsage.inputTokens.toLocaleString()} / ${contextUsage.contextWindowSize.toLocaleString()} tokens (${contextUsage.percentage}%)`}>
             <div className="w-16 h-1.5 bg-claude-border overflow-hidden" style={{ borderRadius: 0 }}>
               <div
                 className={`h-full transition-all ${
