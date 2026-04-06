@@ -2612,6 +2612,31 @@ CONFIG_EOF`);
     } catch (err) {
       console.warn('[SSH Service] Could not sync MCP servers to remote:', err);
     }
+
+    // Sync skills to remote — rsync ~/.claude/skills/ (excluding binaries/node_modules)
+    try {
+      const localSkillsDir = path.join(os.homedir(), '.claude', 'skills');
+      const stats = await fsPromises.stat(localSkillsDir).catch(() => null);
+      if (stats?.isDirectory()) {
+        const { execSync } = await import('child_process');
+        const host = config.host;
+        const user = config.username;
+        const port = config.port || 22;
+        const keyPath = config.privateKeyPath;
+        const keyFlag = keyPath ? `-e "ssh -i ${keyPath} -p ${port} -o StrictHostKeyChecking=no"` : `-e "ssh -p ${port} -o StrictHostKeyChecking=no"`;
+
+        // Ensure remote directory exists
+        await this.execCommand(client, 'mkdir -p ~/.claude/skills');
+
+        // rsync skills, excluding heavy build artifacts
+        const rsyncCmd = `rsync -az --delete ${keyFlag} --exclude='node_modules' --exclude='dist' --exclude='.git' --exclude='*.node' --exclude='chromium*' ${localSkillsDir}/ ${user}@${host}:~/.claude/skills/`;
+        console.log('[SSH Service] Syncing skills to remote...');
+        execSync(rsyncCmd, { timeout: 60000, stdio: 'pipe' });
+        console.log('[SSH Service] Skills synced to remote');
+      }
+    } catch (err) {
+      console.warn('[SSH Service] Could not sync skills to remote:', err);
+    }
   }
 
   /**
