@@ -1029,12 +1029,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
       return;
     }
 
-    // Cmd+F: Fork the current chat (same as Cmd+T)
-    if (e.key === 'f' && e.metaKey && !e.shiftKey && !e.altKey) {
-      e.preventDefault();
-      useSessionStore.getState().createForkFromCurrent('');
-      return;
-    }
+    // Cmd+F: Let system handle (find in editor/page) — don't intercept
 
     // Cmd+Enter: Force send — interrupt current stream and send immediately
     if (e.key === 'Enter' && e.metaKey && !e.shiftKey && !e.altKey) {
