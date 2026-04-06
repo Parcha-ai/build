@@ -139,6 +139,43 @@ class CodexServiceImpl {
     return this.codexBinaryPath;
   }
 
+  private isBenignDiagnosticLine(line: string): boolean {
+    const trimmed = line.trim();
+    if (!trimmed) return true;
+    if (trimmed.startsWith('WARNING: proceeding, even though we could not update PATH:')) {
+      return true;
+    }
+    return false;
+  }
+
+  private buildCodexProcessErrorMessage(
+    exitCode: number | null,
+    stderrOutput: string,
+    diagnosticLines: string[],
+    label: string,
+  ): string | undefined {
+    const meaningfulDiagnostics = [
+      ...stderrOutput
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => line && !this.isBenignDiagnosticLine(line)),
+      ...diagnosticLines
+        .map((line) => line.trim())
+        .filter((line) => line && !this.isBenignDiagnosticLine(line)),
+    ];
+
+    const lastDiagnostic = meaningfulDiagnostics[meaningfulDiagnostics.length - 1];
+    if (lastDiagnostic) {
+      return lastDiagnostic;
+    }
+
+    if (exitCode && exitCode !== 0) {
+      return `${label} exited before emitting JSON events (exit code ${exitCode}).`;
+    }
+
+    return undefined;
+  }
+
   /**
    * Translate a JSON event from `codex exec --experimental-json` into our CodexStreamEvent.
    */
@@ -383,6 +420,25 @@ class CodexServiceImpl {
 
     this.activeProcesses.set(sessionId, { process: child, abortController });
 
+    const exitPromise = new Promise<number | null>((resolve) => {
+      let settled = false;
+      const settle = (code: number | null) => {
+        if (settled) return;
+        settled = true;
+        resolve(code);
+      };
+
+      child.once('close', (code) => {
+        console.log(`[Codex Service] Process exited with code: ${code}`);
+        settle(code);
+      });
+
+      if (child.exitCode !== null) {
+        console.log(`[Codex Service] Process already exited with code: ${child.exitCode}`);
+        settle(child.exitCode);
+      }
+    });
+
     // Write prompt to stdin then close it
     if (child.stdin) {
       child.stdin.write(prompt);
@@ -407,6 +463,7 @@ class CodexServiceImpl {
 
     const rl = readline.createInterface({ input: child.stdout });
     let eventCount = 0;
+    const diagnosticLines: string[] = [];
 
     try {
       for await (const line of rl) {
@@ -417,6 +474,7 @@ class CodexServiceImpl {
           console.log(`[Codex Service] Event ${eventCount}: ${event.type} ${event.item?.type || ''}`);
           yield event;
         } catch {
+          diagnosticLines.push(line);
           console.warn('[Codex Service] Failed to parse JSON line:', line.substring(0, 200));
         }
       }
@@ -426,18 +484,13 @@ class CodexServiceImpl {
       console.log(`[Codex Service] Stream ended. Total events: ${eventCount}, stderr: ${stderrOutput.substring(0, 200)}`);
     }
 
-    // Wait for process to exit
-    await new Promise<void>((resolve) => {
-      child.on('close', (code) => {
-        console.log(`[Codex Service] Process exited with code: ${code}`);
-        resolve();
-      });
-      // If already exited
-      if (child.exitCode !== null) {
-        console.log(`[Codex Service] Process already exited with code: ${child.exitCode}`);
-        resolve();
+    const exitCode = await exitPromise;
+    if (eventCount === 0) {
+      const diagnosticMessage = this.buildCodexProcessErrorMessage(exitCode, stderrOutput, diagnosticLines, 'Codex');
+      if (diagnosticMessage) {
+        throw new Error(diagnosticMessage);
       }
-    });
+    }
   }
 
   /**
@@ -475,6 +528,23 @@ class CodexServiceImpl {
     const rl = readline.createInterface({ input: process.stdout });
     let eventCount = 0;
     let processError: Error | null = null;
+    const diagnosticLines: string[] = [];
+    const exitPromise = new Promise<number | null>((resolve) => {
+      let settled = false;
+      const settle = (code: number | null) => {
+        if (settled) return;
+        settled = true;
+        resolve(code);
+      };
+
+      process.once('exit', (code) => {
+        settle(code);
+      });
+
+      if (process.exitCode !== null) {
+        settle(process.exitCode);
+      }
+    });
 
     process.on('error', (error: Error) => {
       console.warn('[Codex Service] Detached SSH Codex bridge error:', error.message);
@@ -494,6 +564,7 @@ class CodexServiceImpl {
           yield event;
         } catch {
           // Non-JSON output from remote (e.g. shell messages) — skip
+          diagnosticLines.push(line);
         }
       }
     } finally {
@@ -501,8 +572,15 @@ class CodexServiceImpl {
       console.log(`[Codex Service] SSH stream ended. Total events: ${eventCount}`);
     }
 
+    const exitCode = await exitPromise;
     if (processError && eventCount === 0) {
       throw processError;
+    }
+    if (eventCount === 0) {
+      const diagnosticMessage = this.buildCodexProcessErrorMessage(exitCode, '', diagnosticLines, 'Remote Codex');
+      if (diagnosticMessage) {
+        throw new Error(diagnosticMessage);
+      }
     }
   }
 

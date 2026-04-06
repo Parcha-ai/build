@@ -725,6 +725,7 @@ export class SSHService {
     let exitCode: number | null = null;
     const emitter = new EventEmitter();
     const closeStdinOnEnd = options.closeStdinOnEnd === true;
+    let stdinEnded = false;
 
     const envExports = Object.entries(options.env || {})
       .filter(([, value]) => value !== undefined)
@@ -767,6 +768,7 @@ export class SSHService {
     });
 
     passThrough.stdin.on('end', () => {
+      stdinEnded = true;
       if (closeStdinOnEnd && channelReady && channel) {
         channel.stdin.end();
       }
@@ -789,6 +791,9 @@ export class SSHService {
             ch.stdin.write(data);
           }
           pendingData.length = 0;
+          if (stdinEnded && closeStdinOnEnd) {
+            ch.stdin.end();
+          }
 
           ch.on('data', (data: Buffer) => {
             passThrough.stdout.write(data);
@@ -882,6 +887,7 @@ export class SSHService {
     let stdinBridgeChannel: ClientChannel | null = null;
     let stdinBridgeReady = false;
     let stdinEnded = false;
+    let stdinEofSignaled = false;
     let readerChannel: ClientChannel | null = null;
     let stdoutOffset = 0;
     let finalized = false;
@@ -910,6 +916,18 @@ export class SSHService {
           scheduleReaderReconnect();
         });
       }, 1000);
+    };
+
+    const signalRemoteStdinEof = async (): Promise<void> => {
+      if (stdinEofSignaled || !closeStdinOnEnd || fallbackProcess) return;
+      stdinEofSignaled = true;
+      try {
+        const client = await this.getConnection(sessionId, config);
+        await this.execCommand(client, `touch ${this.quoteForShell(bridge.eofPath)}`);
+      } catch (error) {
+        stdinEofSignaled = false;
+        throw error;
+      }
     };
 
     const openStdinBridge = async (): Promise<void> => {
@@ -946,7 +964,8 @@ export class SSHService {
           pendingData.length = 0;
 
           if (stdinEnded && closeStdinOnEnd) {
-            this.execCommand(client, `touch ${this.quoteForShell(bridge.eofPath)}`).catch((error) => {
+            channel.stdin.end();
+            signalRemoteStdinEof().catch((error) => {
               console.warn('[SSH Service] Failed to signal remote stdin EOF:', error);
             });
           }
@@ -1109,6 +1128,12 @@ export class SSHService {
 
     passThrough.stdin.on('end', () => {
       stdinEnded = true;
+      if (closeStdinOnEnd && stdinBridgeReady && stdinBridgeChannel) {
+        stdinBridgeChannel.stdin.end();
+        void signalRemoteStdinEof().catch((error) => {
+          console.warn('[SSH Service] Failed to signal remote stdin EOF:', error);
+        });
+      }
     });
 
     void (async () => {
@@ -1257,11 +1282,12 @@ export class SSHService {
     config: SSHConfig,
     sdkOptions: SDKSpawnOptions
   ): SpawnedProcess {
-    // Build environment exports - only include essential variables for Claude
-    // We explicitly whitelist rather than blacklist to avoid sending local machine paths/configs
-    // NOTE: ANTHROPIC_API_KEY is NOT sent — the remote machine should use its own OAuth login.
-    // Sending the local API key would override the remote's auth and bill to the API account.
+    // Build environment exports - only include essential variables for Claude.
+    // We explicitly whitelist rather than blacklist to avoid sending unrelated local machine paths/configs.
+    // If the app has an Anthropic API key configured, pass it through so the next remote turn uses it
+    // immediately instead of relying on whatever OAuth/auth state exists on the remote host.
     const includeVars = [
+      'ANTHROPIC_API_KEY',
       'CLAUDE_CODE_USE_FOUNDRY',
       'ANTHROPIC_FOUNDRY_BASE_URL',
       'ANTHROPIC_FOUNDRY_API_KEY',
@@ -1269,6 +1295,7 @@ export class SSHService {
       'ANTHROPIC_DEFAULT_HAIKU_MODEL',
       'ANTHROPIC_DEFAULT_OPUS_MODEL',
       'CLAUDE_CODE_ENTRYPOINT',
+      'ENABLE_TOOL_SEARCH',
       'TERM',
       'LANG',
     ];

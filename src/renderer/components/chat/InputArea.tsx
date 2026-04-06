@@ -152,8 +152,8 @@ function GStackLauncher({ sessionId, onClose }: { sessionId: string; onClose: ()
   return (
     <div
       ref={menuRef}
-      className="absolute bottom-full right-0 mb-1 w-72 bg-claude-surface border border-claude-border shadow-xl z-50 overflow-hidden"
-      style={{ borderRadius: 0 }}
+      className="fixed w-72 bg-claude-surface border border-claude-border shadow-xl z-50 overflow-hidden"
+      style={{ bottom: '80px', maxHeight: 'calc(100vh - 120px)', borderRadius: 0 }}
     >
       <div className="px-3 py-1.5 border-b border-claude-border flex items-center justify-between">
         <span className="text-[10px] font-semibold text-claude-text-secondary uppercase tracking-wide">GStack Skills</span>

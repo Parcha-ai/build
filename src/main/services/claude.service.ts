@@ -3341,6 +3341,7 @@ Begin by creating the task structure now.
             ...process.env,
             ...(apiKey ? { ANTHROPIC_API_KEY: apiKey } : {}),
             CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
+            ENABLE_TOOL_SEARCH: process.env.ENABLE_TOOL_SEARCH || 'true',
             ...this.getFoundryEnvVars(),
           },
           // Resume previous conversation if we have an SDK session ID

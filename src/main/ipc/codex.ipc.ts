@@ -8,6 +8,7 @@ import { getMainWindow } from '../index';
 import { secureKeysService } from '../services/secure-keys.service';
 import { sshService } from '../services/ssh.service';
 import type { SSHConfig } from '../../shared/types';
+import { getSessionStoreName } from '../store-names';
 
 // Batching helper for smooth text streaming (mirrors claude.ipc.ts pattern)
 class CodexChunkBatcher {
@@ -77,8 +78,10 @@ export function registerCodexHandlers(ipcMain: IpcMain): void {
       // Determine working directory from session
       const Store = (await import('electron-store')).default;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const sessionsStore = new Store({ name: 'claudette-sessions' }) as any;
-      const sessionData = sessionsStore.get(sessionId) as { worktreePath?: string; repoPath?: string; sshConfig?: SSHConfig } | undefined;
+      const sessionsStore = new Store({ name: getSessionStoreName() }) as any;
+      const sessionData =
+        sessionsStore.get(`sessions.${sessionId}`) as { worktreePath?: string; repoPath?: string; sshConfig?: SSHConfig } | undefined
+        || sessionsStore.get(`discoveredSessions.${sessionId}`) as { worktreePath?: string; repoPath?: string; sshConfig?: SSHConfig } | undefined;
       const workingDir = sessionData?.sshConfig?.remoteWorkdir || sessionData?.worktreePath || sessionData?.repoPath || process.cwd();
       const { modifiedText } = secureKeysService.interceptAndReplaceKeys(sessionId, prompt);
       const secureEnvContext = await prepareSecureEnvContext(sessionId, sessionData?.sshConfig);
