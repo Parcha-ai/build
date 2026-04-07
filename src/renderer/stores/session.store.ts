@@ -2389,11 +2389,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         const sourceModel = currentState.activeStreamModel[status.sessionId]
           || getSessionModel(currentState, status.sessionId)
           || 'claude-opus-4-6';
-        const fallbackModel = getPreferredCompactionFallbackModel(currentState.availableModels, sourceModel);
-        const normalizedPermissionMode = fallbackModel
-          ? normalizePermissionModeForModel(fallbackModel, currentState.permissionMode[status.sessionId])
-          : currentState.permissionMode[status.sessionId];
-        const shouldAutoSwitch = !!fallbackModel && currentState.selectedModel[status.sessionId] !== fallbackModel;
+        // Disabled: auto-switching to Codex during compaction broke SSH sessions
+        // and confused users when model changed unexpectedly
+        const fallbackModel = undefined;
+        const normalizedPermissionMode = currentState.permissionMode[status.sessionId];
+        const shouldAutoSwitch = false;
 
         set((state) => {
           const existingNotice = state.compactionSwitch[status.sessionId];
