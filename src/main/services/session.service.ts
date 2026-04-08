@@ -778,6 +778,11 @@ Only return the title, nothing else.`
     // Store the forked session
     this.store.set(`sessions.${forkedSessionId}`, forkedSession);
 
+    // Mark fork as 'new' so the orphan-transcript search in getMessages() doesn't
+    // re-point this fork back to the parent's SDK session. The 'new' sentinel means
+    // "this session should start fresh — do not search for existing transcripts."
+    this.store.set(`sdkSessionMappings.${forkedSessionId}`, 'new');
+
     // Add to discovered sessions cache
     this.discoveredSessionsCache.set(forkedSessionId, forkedSession);
     this.persistDiscoveredSessions();
@@ -947,6 +952,11 @@ Only return the title, nothing else.`
 
     // Store the forked session
     this.store.set(`sessions.${forkedSessionId}`, forkedSession);
+
+    // Mark fork as 'new' so the orphan-transcript search in getMessages() doesn't
+    // re-point this fork back to the parent's SDK session. The 'new' sentinel means
+    // "this session should start fresh — do not search for existing transcripts."
+    this.store.set(`sdkSessionMappings.${forkedSessionId}`, 'new');
 
     // Update parent session: add to childSessionIds, mark as root if not already
     const updatedParent = {
