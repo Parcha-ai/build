@@ -172,11 +172,13 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
 
               case 'context_usage':
                 // Forward context usage info to renderer for progress display
+                // Includes rich breakdown from SDK getContextUsage() when available (v0.2.86+)
                 mainWindow.webContents.send(IPC_CHANNELS.CLAUDE_CONTEXT_USAGE, {
                   sessionId,
                   inputTokens: (event as any).inputTokens,
                   contextWindowSize: (event as any).contextWindowSize,
                   percentage: (event as any).percentage,
+                  ...((event as any).contextUsageBreakdown ? { breakdown: (event as any).contextUsageBreakdown } : {}),
                 });
                 break;
 
@@ -272,6 +274,9 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
                 mainWindow.webContents.send(IPC_CHANNELS.CLAUDE_STREAM_END, {
                   sessionId,
                   message: finalMessage,
+                  // Surface terminal_reason from SDK result (v0.2.91+)
+                  // Tells the UI why the query loop ended (e.g. 'completed', 'max_turns', 'aborted_tools')
+                  ...((event as any).terminalReason ? { terminalReason: (event as any).terminalReason } : {}),
                 });
                 break;
 

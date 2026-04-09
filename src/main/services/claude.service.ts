@@ -1,5 +1,5 @@
 import { query, tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
-import type { SDKMessage, SDKUserMessage, Query, SpawnedProcess } from '@anthropic-ai/claude-agent-sdk';
+import type { SDKMessage, SDKUserMessage, Query, SpawnedProcess, TerminalReason } from '@anthropic-ai/claude-agent-sdk';
 import type { ImageBlockParam, TextBlockParam } from '@anthropic-ai/sdk/resources';
 import { z } from 'zod';
 import Store from 'electron-store';
@@ -53,6 +53,10 @@ interface StreamEvent {
   // Agent teams fields
   agentId?: string; // parent_tool_use_id from SDK (null = lead agent)
   agentName?: string; // Descriptive name for the agent/teammate
+  // Terminal reason from SDK result message (v0.2.91+)
+  terminalReason?: string;
+  // Rich context usage breakdown from SDK getContextUsage() (v0.2.86+)
+  contextUsageBreakdown?: Record<string, unknown>;
 }
 
 interface PendingQuestion {
@@ -3686,6 +3690,7 @@ Begin by creating the task structure now.
       };
 
       let queryComplete = false;
+      let lastTerminalReason: string | undefined; // From SDK result message (v0.2.91+)
       for await (const msg of messages) {
         if (abortController.signal.aborted) {
           yield { type: 'error', error: 'Query cancelled' };
@@ -4120,6 +4125,13 @@ Begin by creating the task structure now.
               yield { type: 'thinking_delta', content: finalFlushed.thinking };
             }
 
+            // Extract terminal_reason from result message (SDK v0.2.91+)
+            // Indicates why the query loop terminated (e.g. 'completed', 'max_turns', 'aborted_tools', etc.)
+            const resultWithReason = resultMsg as SDKMessage & { terminal_reason?: TerminalReason };
+            if (resultWithReason.terminal_reason) {
+              console.log(`[Claude SDK] Terminal reason: ${resultWithReason.terminal_reason}`);
+            }
+
             // Track token usage and send to renderer
             // Total input = input_tokens + cache_creation_input_tokens + cache_read_input_tokens
             const successResult = resultMsg as SDKMessage & { usage?: { input_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number }; model?: string };
@@ -4139,8 +4151,34 @@ Begin by creating the task structure now.
                 console.warn(`[Claude SDK] ⚠️ Conversation approaching context limit: ${percentage}%`);
               }
 
-              // Send context usage to renderer for display
-              yield { type: 'context_usage', inputTokens, contextWindowSize, percentage } as StreamEvent & { inputTokens: number; contextWindowSize: number; percentage: number };
+              // Fetch rich context usage breakdown from SDK (v0.2.86+)
+              // Provides per-category token counts (system prompt, tools, messages, MCP, etc.)
+              let contextUsageBreakdown: Record<string, unknown> | undefined;
+              try {
+                const queryObj = this.activeQueryObjects.get(sessionId);
+                if (queryObj) {
+                  const richUsage = await queryObj.getContextUsage();
+                  contextUsageBreakdown = richUsage as unknown as Record<string, unknown>;
+                  console.log(`[Claude SDK] Rich context usage: ${richUsage.totalTokens}/${richUsage.maxTokens} (${richUsage.percentage}%) across ${richUsage.categories.length} categories`);
+                }
+              } catch (ctxErr) {
+                // Non-fatal: fall back to basic token-based usage
+                console.warn('[Claude SDK] getContextUsage() failed, using basic token counts:', ctxErr);
+              }
+
+              // Send context usage to renderer for display (enhanced with rich breakdown when available)
+              yield {
+                type: 'context_usage',
+                inputTokens,
+                contextWindowSize,
+                percentage,
+                ...(contextUsageBreakdown ? { contextUsageBreakdown } : {}),
+              } as StreamEvent & { inputTokens: number; contextWindowSize: number; percentage: number; contextUsageBreakdown?: Record<string, unknown> };
+            }
+
+            // Store terminal_reason for inclusion in the message_complete event
+            if (resultWithReason.terminal_reason) {
+              lastTerminalReason = resultWithReason.terminal_reason;
             }
 
             // Mark query as complete so we exit the loop
@@ -4212,7 +4250,7 @@ Begin by creating the task structure now.
         timestamp: new Date(),
       };
 
-      yield { type: 'message_complete', message };
+      yield { type: 'message_complete', message, ...(lastTerminalReason ? { terminalReason: lastTerminalReason } : {}) };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       console.error('[Claude SDK] streamMessage error caught:', errorMessage);

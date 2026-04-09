@@ -63,7 +63,7 @@
     "typescript": "~4.5.4"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.77",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.98",
     "@anthropic-ai/sdk": "^0.71.1",
     "@browserbasehq/stagehand": "^3.0.7",
     "@elevenlabs/client": "^0.14.0-beta.0",
