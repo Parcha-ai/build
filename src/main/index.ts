@@ -302,8 +302,10 @@ const createWindow = (): void => {
       action = 'save-or-new-session';
     } else if (!input.shift && key === 'w') {
       action = 'close-editor-tab';
-    } else if (!input.shift && (key === 't' || key === 'f')) {
+    } else if (!input.shift && key === 't') {
       action = 'fork-empty';
+    // NOTE: Cmd+F is deliberately NOT intercepted here — it must reach Monaco's
+    // built-in Find widget and the browser's native find-in-page.
     } else if (!input.shift && key === '[') {
       action = 'prev-fork';
     } else if (!input.shift && key === ']') {
