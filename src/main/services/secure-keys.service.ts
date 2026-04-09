@@ -47,22 +47,116 @@ export class SecureKeysService {
     /^HAS_/i,
   ];
 
-  // Key type detection patterns
+  // Key type detection patterns — ordered from most specific to least specific
   private readonly KEY_PATTERNS = [
+    // Provider-specific patterns (high confidence, known prefixes)
     { type: 'anthropic', pattern: /\bsk-ant-[a-zA-Z0-9_-]{95,105}\b/g, description: 'Anthropic API Key' },
     { type: 'openai', pattern: /\bsk-[a-zA-Z0-9]{48,}\b/g, description: 'OpenAI API Key' },
     { type: 'github_token', pattern: /\bghp_[a-zA-Z0-9]{36,}\b/g, description: 'GitHub Personal Access Token' },
     { type: 'github_oauth', pattern: /\bgho_[a-zA-Z0-9]{36,}\b/g, description: 'GitHub OAuth Token' },
     { type: 'github_app', pattern: /\b(ghu|ghs)_[a-zA-Z0-9]{36,}\b/g, description: 'GitHub App Token' },
+    { type: 'github_fine', pattern: /\bgithub_pat_[a-zA-Z0-9_]{22,}\b/g, description: 'GitHub Fine-grained PAT' },
     { type: 'aws_access_key', pattern: /\bAKIA[0-9A-Z]{16}\b/g, description: 'AWS Access Key' },
-    { type: 'aws_secret_key', pattern: /\b[A-Za-z0-9/+=]{40}\b/g, description: 'AWS Secret Key' },
-    { type: 'stripe', pattern: /\bsk_(live|test)_[a-zA-Z0-9]{24,}\b/g, description: 'Stripe API Key' },
+    { type: 'stripe', pattern: /\b[sr]k_(live|test)_[a-zA-Z0-9]{24,}\b/g, description: 'Stripe API Key' },
+    { type: 'stripe_webhook', pattern: /\bwhsec_[a-zA-Z0-9]{32,}\b/g, description: 'Stripe Webhook Secret' },
     { type: 'twilio', pattern: /\bSK[a-z0-9]{32}\b/g, description: 'Twilio API Key' },
     { type: 'google_api', pattern: /\bAIza[0-9A-Za-z_-]{35}\b/g, description: 'Google API Key' },
     { type: 'slack', pattern: /\bxox[baprs]-[0-9]{10,13}-[0-9]{10,13}-[a-zA-Z0-9]{24,}\b/g, description: 'Slack Token' },
+    { type: 'sendgrid', pattern: /\bSG\.[a-zA-Z0-9_-]{22,}\.[a-zA-Z0-9_-]{22,}\b/g, description: 'SendGrid API Key' },
+    { type: 'supabase', pattern: /\bsbp_[a-f0-9]{40}\b/g, description: 'Supabase Service Key' },
+    { type: 'vercel', pattern: /\b[a-zA-Z0-9]{24}_[a-zA-Z0-9]{24,}\b/g, description: 'Vercel Token' },
     { type: 'bearer', pattern: /\bBearer\s+[a-zA-Z0-9_-]{20,}\b/gi, description: 'Bearer Token' },
     { type: 'jwt', pattern: /\beyJ[a-zA-Z0-9_-]+\.eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\b/g, description: 'JWT Token' },
   ];
+
+  // Words that are NOT API keys (common English words, CLI args, hashes that appear in normal usage)
+  private readonly FALSE_POSITIVE_WORDS = new Set([
+    // Common long words/patterns that could be false positives
+    'authentication', 'authorization', 'configuration', 'implementation',
+    'documentation', 'representation', 'transformation', 'infrastructure',
+    'internationally', 'acknowledgement', 'unsubscribe', 'troubleshooting',
+  ]);
+
+  /**
+   * Calculate Shannon entropy of a string (bits per character).
+   * High-entropy strings (>3.5 bits/char) are likely random/generated keys.
+   * Normal English text is ~1.5-3.0 bits/char.
+   */
+  private calculateEntropy(str: string): number {
+    const freq = new Map<string, number>();
+    for (const char of str) {
+      freq.set(char, (freq.get(char) || 0) + 1);
+    }
+    let entropy = 0;
+    for (const count of freq.values()) {
+      const p = count / str.length;
+      entropy -= p * Math.log2(p);
+    }
+    return entropy;
+  }
+
+  /**
+   * Count how many character classes are present in a string.
+   * API keys typically have 3+ classes (upper, lower, digits, special).
+   */
+  private countCharClasses(str: string): number {
+    let classes = 0;
+    if (/[a-z]/.test(str)) classes++;
+    if (/[A-Z]/.test(str)) classes++;
+    if (/[0-9]/.test(str)) classes++;
+    if (/[^a-zA-Z0-9]/.test(str)) classes++;
+    return classes;
+  }
+
+  /**
+   * Detect generic high-entropy tokens that don't match known prefixes.
+   * Uses Shannon entropy + character class diversity to distinguish
+   * random API keys from normal text.
+   */
+  private detectGenericHighEntropyKeys(text: string, alreadyDetected: Set<string>): DetectedKey[] {
+    const detected: DetectedKey[] = [];
+
+    // Match standalone tokens: alphanumeric with dashes/underscores, 20-128 chars
+    const genericPattern = /(?:^|[\s=:"'`,;({\[])([a-zA-Z0-9][a-zA-Z0-9_-]{18,126}[a-zA-Z0-9])(?=$|[\s:"'`,;)}\]])/g;
+
+    let match;
+    while ((match = genericPattern.exec(text)) !== null) {
+      const token = match[1];
+
+      // Skip if already caught by a prefix pattern
+      if (alreadyDetected.has(token)) continue;
+
+      // Skip if it's a known non-secret word
+      if (this.FALSE_POSITIVE_WORDS.has(token.toLowerCase())) continue;
+
+      // Skip if it looks like a file path, URL component, or CSS class
+      if (/^(https?|ftp|ssh|file|mailto|data)$/i.test(token)) continue;
+      if (/^(node_modules|src|dist|build|public|assets|components)$/i.test(token)) continue;
+
+      // Skip if it's all one case with no digits (likely a regular word or identifier)
+      if (/^[a-z_-]+$/.test(token) || /^[A-Z_-]+$/.test(token)) continue;
+
+      // Skip camelCase/PascalCase identifiers (common in code)
+      if (/^[a-z]+(?:[A-Z][a-z]+)+$/.test(token) || /^[A-Z][a-z]+(?:[A-Z][a-z]+)+$/.test(token)) continue;
+
+      // Require at least 3 character classes (e.g. upper + lower + digit)
+      const charClasses = this.countCharClasses(token);
+      if (charClasses < 3) continue;
+
+      // Require high Shannon entropy (>3.5 bits/char for 20+ char strings)
+      const entropy = this.calculateEntropy(token);
+      if (entropy < 3.5) continue;
+
+      // Passed all checks — this looks like a random key/token
+      detected.push({
+        value: token,
+        type: 'generic_key',
+        description: 'API Key or Token',
+      });
+    }
+
+    return detected;
+  }
 
   /**
    * Detect and extract API keys from text
@@ -72,16 +166,25 @@ export class SecureKeysService {
     const detected = this.detectEnvVarKeys(text);
     const seenValues = new Set(detected.map((key) => key.value));
 
+    // Run known-prefix patterns first
     for (const { type, pattern, description } of this.KEY_PATTERNS) {
       const matches = text.match(pattern);
       if (matches) {
         for (const value of matches) {
-          // Skip if already detected (avoid duplicates)
           if (!seenValues.has(value)) {
             detected.push({ value, type, description });
             seenValues.add(value);
           }
         }
+      }
+    }
+
+    // Then run generic high-entropy detection for keys without known prefixes
+    const genericKeys = this.detectGenericHighEntropyKeys(text, seenValues);
+    for (const key of genericKeys) {
+      if (!seenValues.has(key.value)) {
+        detected.push(key);
+        seenValues.add(key.value);
       }
     }
 
