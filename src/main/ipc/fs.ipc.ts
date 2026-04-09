@@ -240,11 +240,23 @@ export function registerFsHandlers(ipcMain: IpcMain): void {
         }
       }
 
-      // Local file write
-      console.log('[FS] Writing local file:', filePath);
-      const dir = path.dirname(filePath);
+      // Local file write — validate path is within session's worktree
+      const resolvedPath = path.resolve(filePath);
+      if (sessionId) {
+        const session = await sessionService.getSession(sessionId);
+        if (session?.worktreePath) {
+          const resolvedWorktree = path.resolve(session.worktreePath);
+          if (!resolvedPath.startsWith(resolvedWorktree + path.sep) && resolvedPath !== resolvedWorktree) {
+            console.error('[FS] Path validation failed: write outside worktree', resolvedPath, 'worktree:', resolvedWorktree);
+            return { success: false, error: 'Path is outside the session worktree' };
+          }
+        }
+      }
+
+      console.log('[FS] Writing local file:', resolvedPath);
+      const dir = path.dirname(resolvedPath);
       await fs.mkdir(dir, { recursive: true });
-      await fs.writeFile(filePath, content, 'utf-8');
+      await fs.writeFile(resolvedPath, content, 'utf-8');
       return { success: true };
     } catch (error) {
       console.error('[FS] Write file error:', error);

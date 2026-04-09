@@ -84,7 +84,8 @@ export class CdpProxyService {
           }
         });
 
-        this.httpServer.listen(this.port, () => {
+        // Bind to localhost only — never expose CDP to the network
+        this.httpServer.listen(this.port, '127.0.0.1', () => {
           console.log('[CDP Proxy] Server listening on port', this.port);
           console.log('[CDP Proxy] HTTP endpoints: http://localhost:' + this.port + '/json/version');
           console.log('[CDP Proxy] Browser WS: ws://localhost:' + this.port + '/devtools/browser');
