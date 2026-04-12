@@ -2369,31 +2369,15 @@ Read or source that file if you need the actual values. Do not print secret valu
     const cwd = session?.repoPath || process.cwd();
     const { spawn } = require('child_process') as typeof import('child_process');
 
-    // Resolve the SDK session ID so remote control resumes the current conversation
-    const rawSdkSessionId = this.sessionStore.get(`sdkSessionMappings.${sessionId}`) as string | undefined
-      || this.sessionStore.get(`sessions.${sessionId}.sdkSessionId`) as string | undefined;
-    const sdkSessionId = rawSdkSessionId === 'new' ? undefined : rawSdkSessionId;
-
-    let child;
-    if (sdkSessionId) {
-      // Resume the existing session with remote control enabled
-      console.log('[Claude Service] Starting remote control with --resume for SDK session:', sdkSessionId);
-      child = spawn('claude', ['--resume', sdkSessionId, '--remote-control'], {
-        cwd,
-        shell: true,
-        env: { ...process.env, CLAUDECODE: '' },
-        stdio: ['pipe', 'pipe', 'pipe'],
-      });
-    } else {
-      // No SDK session yet — fall back to standalone remote-control
-      console.log('[Claude Service] No SDK session ID found, starting standalone remote-control');
-      child = spawn('claude', ['remote-control', '--name', sessionName], {
-        cwd,
-        shell: true,
-        env: { ...process.env, CLAUDECODE: '' },
-        stdio: ['pipe', 'pipe', 'pipe'],
-      });
-    }
+    // Remote control is now a standalone subcommand (no longer combinable with --resume).
+    // It creates a persistent server that accepts sessions from claude.ai/code.
+    console.log('[Claude Service] Starting remote-control server for session:', sessionId, 'name:', sessionName);
+    const child = spawn('claude', ['remote-control', '--name', sessionName], {
+      cwd,
+      shell: true,
+      env: { ...process.env, CLAUDECODE: '' },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
 
     this.rcProcesses.set(sessionId, child);
 
@@ -2415,7 +2399,8 @@ Read or source that file if you need the actual values. Do not print secret valu
       // Look for the URL in the output (strip ANSI escape sequences first)
       if (!urlEmitted) {
         const cleanBuffer = outputBuffer.replace(/\x1b\]8;;[^\x07\x1b]*(\x07|\x1b\\)/g, '').replace(/\x1b\[[^m]*m/g, '');
-        const urlMatch = cleanBuffer.match(/https:\/\/claude\.ai\/code\?bridge=[^\s]+/)
+        const urlMatch = cleanBuffer.match(/https:\/\/claude\.ai\/code\?environment=[^\s]+/)
+          || cleanBuffer.match(/https:\/\/claude\.ai\/code\?bridge=[^\s]+/)
           || cleanBuffer.match(/https:\/\/claude\.ai\/code\/[^\s]+/);
         if (urlMatch) {
           urlEmitted = true;
@@ -2454,19 +2439,9 @@ Read or source that file if you need the actual values. Do not print secret valu
       const client = await sshService['getConnection'](sessionId, sshConfig);
       const claudePaths = `/home/${sshConfig.username}/.local/bin:/home/${sshConfig.username}/bin:/usr/local/bin:/usr/bin`;
 
-      // Resolve the SDK session ID so remote control resumes the current conversation
-      const rawSdkSessionId = this.sessionStore.get(`sdkSessionMappings.${sessionId}`) as string | undefined
-        || this.sessionStore.get(`sessions.${sessionId}.sdkSessionId`) as string | undefined;
-      const sdkSessionId = rawSdkSessionId === 'new' ? undefined : rawSdkSessionId;
-
-      let command: string;
-      if (sdkSessionId) {
-        console.log('[Claude Service] SSH RC: resuming SDK session:', sdkSessionId);
-        command = `export PATH="${claudePaths}:$PATH" && cd "${sshConfig.remoteWorkdir}" && echo y | claude --resume "${sdkSessionId}" --remote-control`;
-      } else {
-        console.log('[Claude Service] SSH RC: no SDK session, starting standalone remote-control');
-        command = `export PATH="${claudePaths}:$PATH" && cd "${sshConfig.remoteWorkdir}" && echo y | claude remote-control --name "${sessionName}"`;
-      }
+      // Remote control is now a standalone subcommand (no longer combinable with --resume).
+      console.log('[Claude Service] SSH RC: starting remote-control server for:', sessionName);
+      const command = `export PATH="${claudePaths}:$PATH" && cd "${sshConfig.remoteWorkdir}" && echo y | claude remote-control --name "${sessionName}"`;
 
       console.log('[Claude Service] Starting remote control on SSH:', command);
 
@@ -2497,7 +2472,8 @@ Read or source that file if you need the actual values. Do not print secret valu
 
           if (!urlEmitted) {
             const cleanBuffer = outputBuffer.replace(/\x1b\]8;;[^\x07\x1b]*(\x07|\x1b\\)/g, '').replace(/\x1b\[[^m]*m/g, '');
-            const urlMatch = cleanBuffer.match(/https:\/\/claude\.ai\/code\?bridge=[^\s]+/)
+            const urlMatch = cleanBuffer.match(/https:\/\/claude\.ai\/code\?environment=[^\s]+/)
+              || cleanBuffer.match(/https:\/\/claude\.ai\/code\?bridge=[^\s]+/)
               || cleanBuffer.match(/https:\/\/claude\.ai\/code\/[^\s]+/);
             if (urlMatch) {
               urlEmitted = true;
