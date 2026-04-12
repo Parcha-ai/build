@@ -2199,7 +2199,18 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         currentToolCalls: { ...state.currentToolCalls, [sessionId]: [] },
       }));
 
-      console.log(`[interruptAndSend] Streaming state cleared (gen ${nextGen}), sending new message`);
+      console.log(`[interruptAndSend] Streaming state cleared (gen ${nextGen}), waiting for stale events to drain`);
+
+      // CRITICAL: Wait for the stale STREAM_END/STREAM_ERROR from the cancelled
+      // stream to arrive via IPC and be discarded by our isStreaming guard.
+      // Without this delay, sendMessage() sets isStreaming=true immediately, and
+      // the stale event arrives to find isStreaming=true (from the NEW stream),
+      // bypassing the guard and killing the new stream with "process aborted".
+      // 300ms is enough for the IPC round-trip from the backend's generator
+      // unwind + STREAM_END emit + Electron IPC delivery.
+      await new Promise(resolve => setTimeout(resolve, 300));
+
+      console.log(`[interruptAndSend] Stale event drain complete, sending new message`);
     }
 
     // Send new message (use fresh state reference, not the stale `state` from before cancel)
