@@ -82,7 +82,8 @@ export const MicrophoneButton = forwardRef<VoiceModeHandle, MicrophoneButtonProp
     setAudioMode,
   } = useAudioStore();
 
-  const agentId = audioSettings?.elevenLabsAgentId || 'agent_8101kf1x665ve49b9zy8jbtvhq12';
+  const agentId = audioSettings?.elevenLabsAgentId;
+  const isConfigured = Boolean(agentId);
   const voiceState = voiceModeStates[sessionId];
   const isConnected = voiceState?.isConnected || false;
   const isConnecting = voiceState?.isConnecting || false;
@@ -166,7 +167,7 @@ ${messageSummary || 'No messages yet'}`;
     speak,
     sendUserActivity,
   } = useVoiceConversationSDK({
-    agentId,
+    agentId: agentId || '',
     sessionId,
     // No systemPrompt - use agent's main prompt configured via ElevenLabs API
     // This allows us to update the prompt via API without code changes
@@ -695,6 +696,7 @@ ${messageSummary || 'No messages yet'}`;
   };
 
   const getTitle = () => {
+    if (!isConfigured) return 'Configure ElevenLabs Agent ID in Settings';
     if (error || voiceState?.error) return `Error: ${error || voiceState?.error}`;
     if (isConnecting) return 'Connecting to voice mode...';
     if (isConnected) return 'Voice mode ON - Click to turn off';
@@ -724,11 +726,11 @@ ${messageSummary || 'No messages yet'}`;
   return (
     <button
       onClick={handleClick}
-      disabled={disabled || isConnecting}
+      disabled={disabled || isConnecting || !isConfigured}
       className={`
         relative p-1 transition-all duration-200
-        ${getStatusColor()}
-        ${disabled || isConnecting ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}
+        ${!isConfigured ? 'text-claude-text-secondary opacity-40 cursor-not-allowed' : getStatusColor()}
+        ${disabled || isConnecting ? 'opacity-50 cursor-not-allowed' : !isConfigured ? '' : 'cursor-pointer'}
       `}
       style={{ borderRadius: 0 }}
       title={getTitle()}
