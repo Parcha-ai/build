@@ -25,6 +25,5 @@ export const plugins = [
   // Inject embedded API keys at build time for voice features
   new webpack.DefinePlugin({
     'process.env.EMBEDDED_OPENAI_API_KEY': JSON.stringify(env.EMBEDDED_OPENAI_API_KEY || ''),
-    'process.env.EMBEDDED_ELEVENLABS_API_KEY': JSON.stringify(env.EMBEDDED_ELEVENLABS_API_KEY || ''),
   }),
 ];

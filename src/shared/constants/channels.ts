@@ -174,7 +174,7 @@ export const IPC_CHANNELS = {
   EXTENSION_INSTALL_SKILL: 'extension:install-skill',
   EXTENSION_LIST_AVAILABLE_SKILLS: 'extension:list-available-skills',
 
-  // Auto-resume channels (for Ralph Loop/Grep It mode)
+  // Auto-resume channels (for Ralph Loop/Build It mode)
   AUTO_RESUME_SAVE_STATE: 'auto-resume:save-state',
   AUTO_RESUME_GET_STATE: 'auto-resume:get-state',
   AUTO_RESUME_CLEAR_STATE: 'auto-resume:clear-state',

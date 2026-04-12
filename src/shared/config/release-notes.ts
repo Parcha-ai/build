@@ -1,5 +1,5 @@
 /**
- * Release Notes for Grep
+ * Release Notes for Build
  *
  * Add new releases at the TOP of the array (newest first).
  * Each release should have a version, date, and list of changes.
@@ -125,11 +125,11 @@ export const RELEASE_NOTES: ReleaseNote[] = [
     changes: [
       {
         type: 'feature',
-        description: 'GREP IT! permission switch now works during active queries - click it on any permission dialog to auto-approve all subsequent permissions',
+        description: 'BUILD IT! permission switch now works during active queries - click it on any permission dialog to auto-approve all subsequent permissions',
       },
       {
         type: 'feature',
-        description: 'Voice mode "think out loud" - the voice agent now receives thinking updates and can narrate what Grep is considering',
+        description: 'Voice mode "think out loud" - the voice agent now receives thinking updates and can narrate what Build is considering',
       },
       {
         type: 'feature',
@@ -144,9 +144,9 @@ export const RELEASE_NOTES: ReleaseNote[] = [
   {
     version: '0.0.9',
     date: '2025-01-22',
-    title: 'Grep It Mode & Ralph Loop',
+    title: 'Build It Mode & Ralph Loop',
     highlights: [
-      'Renamed to GREP IT! mode',
+      'Renamed to BUILD IT! mode',
       'Ralph Loop for persistent work',
       'Auto-resume on restart',
       'Central worktree location',

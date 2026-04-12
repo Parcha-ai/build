@@ -529,7 +529,7 @@ export default function SSHConfigForm({ onBack, onConnect, teleportSource, onTel
                           </div>
                           {candidate.localSessionId && (
                             <div className="pl-5 text-[9px] text-cyan-400">
-                              Will also carry forward local G-Build session history{candidate.localSessionName ? ` from ${candidate.localSessionName}` : ''}.
+                              Will also carry forward local Build session history{candidate.localSessionName ? ` from ${candidate.localSessionName}` : ''}.
                             </div>
                           )}
                         </label>

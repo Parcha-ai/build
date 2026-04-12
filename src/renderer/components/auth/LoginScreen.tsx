@@ -197,7 +197,7 @@ export default function LoginScreen() {
       <div className="w-full max-w-md p-6">
         {/* Logo - brutalist */}
         <div className="text-center mb-6">
-          {/* Grep blocky G lettermark logo */}
+          {/* Build blocky G lettermark logo */}
           <div className="flex justify-center mb-4">
             <div className="w-24 h-24 bg-claude-accent flex items-center justify-center p-3" style={{ borderRadius: 0 }}>
               <svg viewBox="0 0 923 923" fill="none" xmlns="http://www.w3.org/2000/svg">

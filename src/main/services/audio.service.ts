@@ -52,12 +52,7 @@ export class AudioService {
   }
 
   getElevenLabsApiKey(): string | undefined {
-    // User-provided key takes precedence over embedded key
-    const userKey = this.store.get('elevenLabsApiKey') as string | undefined;
-    if (userKey) return userKey;
-
-    // Fallback to embedded key
-    return EMBEDDED_KEYS.elevenLabs || undefined;
+    return this.store.get('elevenLabsApiKey') as string | undefined;
   }
 
   setElevenLabsApiKey(key: string): void {

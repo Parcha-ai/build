@@ -165,7 +165,7 @@ function getSecureEnvFilePath(sessionId: string, sshConfig?: SSHConfig): string 
 function formatSecureEnvFileContent(sessionId: string): string {
   const envVars = secureKeysService.getSessionEnvVars(sessionId);
   const lines = [
-    `# Temporary secure environment variables for G-Build session ${sessionId}`,
+    `# Temporary secure environment variables for Build session ${sessionId}`,
     ...envVars.map(({ name, value }) => `export ${name}='${value.replace(/'/g, `'\\''`)}'`),
     '',
   ];

@@ -204,7 +204,7 @@ export default function CommandCenterCell({ session, forks, isFocused }: Command
             request={currentPermission}
             onApprove={(modifiedInput, alwaysApprove) => approvePermission(displayId, modifiedInput, alwaysApprove)}
             onDeny={() => denyPermission(displayId)}
-            onGrepIt={() => {
+            onBuildIt={() => {
               setPermissionMode(displayId, 'bypassPermissions');
               approvePermission(displayId);
             }}

@@ -1,7 +1,6 @@
 import WebSocket from 'ws';
 import Store from 'electron-store';
 import { EventEmitter } from 'events';
-import { EMBEDDED_KEYS } from '../../shared/config/embedded-keys';
 
 /**
  * ElevenLabs Conversational AI WebSocket Events
@@ -113,12 +112,10 @@ export class ElevenLabsVoiceService extends EventEmitter {
   }
 
   /**
-   * Get ElevenLabs API key (user-provided or embedded)
+   * Get ElevenLabs API key (user-provided)
    */
   private getApiKey(): string | undefined {
-    const userKey = this.store.get('elevenLabsApiKey') as string | undefined;
-    if (userKey) return userKey;
-    return EMBEDDED_KEYS.elevenLabs || undefined;
+    return this.store.get('elevenLabsApiKey') as string | undefined;
   }
 
   /**

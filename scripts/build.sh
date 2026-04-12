@@ -1,18 +1,18 @@
 #!/bin/bash
-# Build script for Grep Build
+# Build script for Build
 # Usage: ./scripts/build.sh
 
 set -e
 
-echo "🔨 Building Grep Build..."
+echo "🔨 Building Build..."
 
 # Get version from package.json
 VERSION=$(node -p "require('./package.json').version")
 echo "📦 Version: v${VERSION}"
 
-# Kill any running instances of Grep Build
-echo "🛑 Stopping any running Grep Build instances..."
-pkill -f "Grep Build" 2>/dev/null || true
+# Kill any running instances of Build
+echo "🛑 Stopping any running Build instances..."
+pkill -f "Build.app" 2>/dev/null || true
 sleep 1
 
 # Kill any dev server processes
@@ -29,13 +29,13 @@ echo "🏷️  Creating git tag v${VERSION}..."
 git tag -f "v${VERSION}" 2>/dev/null || true
 
 # Open the built app
-APP_PATH="./out/v${VERSION}/Grep Build-darwin-arm64/Grep Build.app"
+APP_PATH="./out/v${VERSION}/Build-darwin-arm64/Build.app"
 if [ -d "$APP_PATH" ]; then
-    echo "🚀 Launching Grep Build v${VERSION}..."
+    echo "🚀 Launching Build v${VERSION}..."
     open "$APP_PATH"
 else
     echo "❌ Build output not found at: $APP_PATH"
     exit 1
 fi
 
-echo "✅ Build complete! Grep Build v${VERSION} is now running."
+echo "✅ Build complete! Build v${VERSION} is now running."

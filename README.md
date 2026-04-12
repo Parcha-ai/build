@@ -32,6 +32,21 @@ Grep Build wraps Claude's agent capabilities in a native desktop app. Point it a
 3. Open a project folder
 4. Start building
 
+## Voice Mode (Optional)
+
+Voice mode enables hands-free speech-to-speech conversations with Claude. It requires an ElevenLabs account and an OpenAI account.
+
+### Setup
+
+1. Create an account at [elevenlabs.io](https://elevenlabs.io)
+2. Get your API key from [Settings > API Keys](https://elevenlabs.io/app/settings/api-keys)
+3. Create a Conversational AI agent in the [ElevenLabs dashboard](https://elevenlabs.io/app/conversational-ai)
+4. Copy the agent ID (starts with `agent_`)
+5. In Grep Build, go to **Settings > API Keys** and enter your ElevenLabs API Key and Agent ID
+6. You will also need an [OpenAI API key](https://platform.openai.com/api-keys) for speech-to-text (Whisper) -- enter it in the same Settings tab
+
+Once configured, click the microphone icon in the chat input to start a voice session.
+
 ## Using with Claude Code
 
 Grep Build includes a `CLAUDE.md` with built-in skills that Claude Code can use directly. If you develop on Grep Build using Claude Code, these slash commands are available out of the box:

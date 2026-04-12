@@ -84,6 +84,9 @@ export default function SettingsDialog() {
   const [showOpenaiApiKey, setShowOpenaiApiKey] = useState(false);
   const [googleApiKey, setGoogleApiKey] = useState('');
   const [showGoogleApiKey, setShowGoogleApiKey] = useState(false);
+  const [elevenLabsApiKey, setElevenLabsApiKey] = useState('');
+  const [showElevenLabsApiKey, setShowElevenLabsApiKey] = useState(false);
+  const [elevenLabsAgentId, setElevenLabsAgentId] = useState('');
 
   // Audio settings
   const [voiceModeEnabled, setVoiceModeEnabled] = useState(false);
@@ -164,7 +167,7 @@ export default function SettingsDialog() {
   }, [audioSettings, updateSettings, showSaveIndicator]);
 
   // Auto-save API keys with debounce for text inputs
-  const autoSaveApiKey = useCallback(async (key: string, type: 'anthropic' | 'openai' | 'google') => {
+  const autoSaveApiKey = useCallback(async (key: string, type: 'anthropic' | 'openai' | 'google' | 'elevenlabs') => {
     showSaveIndicator();
     try {
       if (type === 'anthropic') {
@@ -173,6 +176,8 @@ export default function SettingsDialog() {
         await window.electronAPI.audio.setOpenAiKey(key);
       } else if (type === 'google') {
         await window.electronAPI.settings.setGoogleApiKey(key);
+      } else if (type === 'elevenlabs') {
+        await window.electronAPI.audio.setElevenLabsKey(key);
       }
       console.log(`[SettingsDialog] Auto-saved ${type} API key`);
     } catch (error) {
@@ -201,12 +206,14 @@ export default function SettingsDialog() {
         window.electronAPI.settings.get(),
         window.electronAPI.qmd.getStatus(),
         loadSettings(),
+        window.electronAPI.audio.getElevenLabsKey(),
       ])
-        .then(([anthropicKey, openAiKey, googleKey, appSettings, qmdStatusResult]) => {
+        .then(([anthropicKey, openAiKey, googleKey, appSettings, qmdStatusResult, , elevenLabsKey]) => {
           console.log('[SettingsDialog] Loaded settings:', appSettings);
           setApiKey(anthropicKey || '');
           setOpenaiApiKey(openAiKey || '');
           setGoogleApiKey(googleKey || '');
+          setElevenLabsApiKey(elevenLabsKey || '');
           setQmdEnabled(appSettings.qmdEnabled || false);
           setUltraPlanMode(appSettings.ultraPlanMode || false);
           setLunchReminderEnabled(appSettings.lunchReminderEnabled || false);
@@ -237,6 +244,7 @@ export default function SettingsDialog() {
       setRalphLoopEnabled(audioSettings.ralphLoopEnabled || false);
       setComputerUseEnabled(audioSettings.computerUseEnabled || false);
       setMaxComputerUseIterations(audioSettings.maxComputerUseIterations || 20);
+      setElevenLabsAgentId(audioSettings.elevenLabsAgentId || '');
     }
   }, [audioSettings]);
 
@@ -667,6 +675,61 @@ export default function SettingsDialog() {
           >
             Get key
           </a>
+        </p>
+      </div>
+
+      {/* ElevenLabs API Key */}
+      <div className="space-y-2 pt-4 border-t border-claude-border">
+        <label className="block text-xs font-mono text-claude-text-secondary uppercase tracking-wider">
+          ElevenLabs API Key
+        </label>
+        <ApiKeyInput
+          value={elevenLabsApiKey}
+          onChange={setElevenLabsApiKey}
+          show={showElevenLabsApiKey}
+          onToggleShow={() => setShowElevenLabsApiKey(!showElevenLabsApiKey)}
+          placeholder="xi-..."
+          onSave={(value) => autoSaveApiKey(value, 'elevenlabs')}
+          isLoading={isLoading}
+          handleDebouncedChange={handleDebouncedChange}
+        />
+        <p className="text-[10px] font-mono text-claude-text-secondary">
+          Required for voice mode.{' '}
+          <a
+            href="#"
+            onClick={(e) => {
+              e.preventDefault();
+              window.electronAPI.app?.openExternal?.('https://elevenlabs.io/app/settings/api-keys');
+            }}
+            className="text-claude-accent hover:underline"
+          >
+            Get your key at elevenlabs.io
+          </a>
+        </p>
+      </div>
+
+      {/* ElevenLabs Agent ID */}
+      <div className="space-y-2 pt-4 border-t border-claude-border">
+        <label className="block text-xs font-mono text-claude-text-secondary uppercase tracking-wider">
+          ElevenLabs Agent ID
+        </label>
+        <div className="relative">
+          <input
+            type="text"
+            value={elevenLabsAgentId}
+            onChange={(e) => {
+              const newValue = e.target.value;
+              setElevenLabsAgentId(newValue);
+              handleDebouncedChange(newValue, (v) => autoSaveAudioSettings({ elevenLabsAgentId: v }));
+            }}
+            placeholder="agent_..."
+            disabled={isLoading}
+            className="w-full px-3 py-2 bg-claude-bg border border-claude-border text-claude-text font-mono text-sm placeholder:text-claude-text-secondary focus:outline-none focus:border-claude-accent disabled:opacity-50"
+            style={{ borderRadius: 0 }}
+          />
+        </div>
+        <p className="text-[10px] font-mono text-claude-text-secondary">
+          Your Conversational AI agent ID for voice mode
         </p>
       </div>
 

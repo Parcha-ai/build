@@ -599,7 +599,7 @@ export function registerDevHandlers(ipcMain: IpcMain): void {
       console.log('[Teleport] Using existing local session:', remoteSessionId);
     }
 
-    // Create a Grep session that references the teleported session
+    // Create a Build session that references the teleported session
     const session: Session = {
       id: remoteSessionId,
       name: data.name,
@@ -623,7 +623,7 @@ export function registerDevHandlers(ipcMain: IpcMain): void {
     store.set(`sessions.${session.id}`, session);
     store.set(`sdkSessionMappings.${session.id}`, remoteSessionId);
 
-    console.log('[Teleport] Created Grep session for teleported conversation:', session.id);
+    console.log('[Teleport] Created Build session for teleported conversation:', session.id);
 
     return session;
   });

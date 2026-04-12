@@ -41,7 +41,7 @@ export const VoiceMode: React.FC<VoiceModeProps> = ({
   } = useVoiceConversationSDK({
     agentId,
     sessionId,
-    systemPrompt: `You are G-Build, an AI development assistant.
+    systemPrompt: `You are Build, an AI development assistant.
 When the user speaks, process their request and help them with code, debugging, and development tasks.
 Keep responses concise and conversational.
 

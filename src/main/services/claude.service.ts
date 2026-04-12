@@ -435,9 +435,9 @@ export class ClaudeService {
     supplementalConversationContext?: string,
   ): string {
     let append = `
-## G-Build Agent
+## Build Agent
 
-You are the G-Build agent, an AI development assistant running inside the G-Build desktop application. You have access to a browser preview panel via MCP tools (claudette-browser) that allows you to test changes you make to web applications in real-time.
+You are the Build agent, an AI development assistant running inside the Build desktop application. You have access to a browser preview panel via MCP tools (claudette-browser) that allows you to test changes you make to web applications in real-time.
 
 ### Browser Testing Capabilities
 
@@ -637,7 +637,7 @@ ${supplementalConversationContext}
   private formatSecureEnvFileContent(sessionId: string): string {
     const envVars = secureKeysService.getSessionEnvVars(sessionId);
     const lines = [
-      `# Temporary secure environment variables for G-Build session ${sessionId}`,
+      `# Temporary secure environment variables for Build session ${sessionId}`,
       ...envVars.map(({ name, value }) => `export ${name}='${value.replace(/'/g, `'\\''`)}'`),
       '',
     ];
@@ -2357,7 +2357,7 @@ Read or source that file if you need the actual values. Do not print secret valu
     // Check both manual sessions and discovered sessions (discovered sessions may not be in sessions.*)
     const session = (this.sessionStore.get(`sessions.${sessionId}`) as Session | undefined)
       || (this.sessionStore.get(`discoveredSessions.${sessionId}`) as Session | undefined);
-    const sessionName = session?.name || 'G-Build';
+    const sessionName = session?.name || 'Build';
     console.log('[Claude Service] startRemoteControl for:', sessionId, 'found:', !!session, 'ssh:', !!session?.sshConfig);
 
     // For SSH sessions, run remote-control on the remote machine via SSH
@@ -2980,7 +2980,7 @@ Read or source that file if you need the actual values. Do not print secret valu
       }
 
       // Browser tools - available for all sessions
-      // For SSH, the MCP server runs in local Grep process but tools are sent to remote
+      // For SSH, the MCP server runs in local Build process but tools are sent to remote
       // (investigating why they worked before but now show "No such tool available")
       mcpServersConfig['claudette-browser'] = this.getBrowserMcpServer(sessionId);
       console.log('[Claude Service] Browser MCP tools enabled', session.sshConfig ? '(SSH session)' : '(local session)');
@@ -3142,7 +3142,7 @@ Read or source that file if you need the actual values. Do not print secret valu
         ];
       }
 
-      // Ralph Loop: Add Stop hook for Grep It mode (bypassPermissions)
+      // Ralph Loop: Add Stop hook for Build It mode (bypassPermissions)
       // This intercepts session exit to continue iteration until task is complete
       // Based on Anthropic's official Ralph Wiggum plugin pattern with safety improvements
       const audioSettings = this.store.get('audioSettings') as any;
@@ -3312,7 +3312,7 @@ Begin by creating the task structure now.
           ...(maxThinkingTokens ? { maxThinkingTokens } : {}),
           // Ultra Plan Mode: Add hooks if enabled
           ...(hooks ? { hooks } : {}),
-          // Use Claude Code's system prompt preset with G-Build agent context
+          // Use Claude Code's system prompt preset with Build agent context
           systemPrompt: {
             type: 'preset',
             preset: 'claude_code',

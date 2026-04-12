@@ -50,7 +50,7 @@ export interface AudioSettings {
   transcriptionLanguage: string;
   voiceTriggerWord: string; // Word that triggers auto-submit when speaking
   voiceModeEnabled?: boolean; // Enable the new voice conversation mode
-  ralphLoopEnabled?: boolean; // Enable Ralph Loop in Grep It mode (agent keeps working until task complete)
+  ralphLoopEnabled?: boolean; // Enable Ralph Loop in Build It mode (agent keeps working until task complete)
   computerUseEnabled?: boolean; // Enable Computer Use API for visual browser automation
   maxComputerUseIterations?: number; // Max iterations for Computer Use Stop hook (default: 20)
 }
@@ -68,7 +68,7 @@ export const DEFAULT_AUDIO_SETTINGS: AudioSettings = {
   autoPlayResponses: false,
   transcriptionLanguage: 'en',
   voiceTriggerWord: 'please', // Default trigger word
-  elevenLabsAgentId: 'agent_8101kf1x665ve49b9zy8jbtvhq12', // Default Grep voice agent
+  elevenLabsAgentId: undefined, // User must configure in Settings
   voiceModeEnabled: true, // Enable voice mode by default
   ralphLoopEnabled: false, // Ralph Loop disabled by default
   computerUseEnabled: false, // Computer Use disabled by default

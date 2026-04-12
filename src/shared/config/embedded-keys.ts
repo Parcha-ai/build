@@ -15,13 +15,11 @@
 declare const process: {
   env: {
     EMBEDDED_OPENAI_API_KEY?: string;
-    EMBEDDED_ELEVENLABS_API_KEY?: string;
   };
 };
 
 export const EMBEDDED_KEYS = {
   openAi: process.env.EMBEDDED_OPENAI_API_KEY || '',
-  elevenLabs: process.env.EMBEDDED_ELEVENLABS_API_KEY || '',
 } as const;
 
 /**
@@ -29,11 +27,4 @@ export const EMBEDDED_KEYS = {
  */
 export function hasEmbeddedOpenAiKey(): boolean {
   return Boolean(EMBEDDED_KEYS.openAi);
-}
-
-/**
- * Check if an embedded ElevenLabs key is available
- */
-export function hasEmbeddedElevenLabsKey(): boolean {
-  return Boolean(EMBEDDED_KEYS.elevenLabs);
 }

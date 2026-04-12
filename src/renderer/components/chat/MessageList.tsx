@@ -350,7 +350,7 @@ export default function MessageList({
               <div className="w-2 h-2 bg-claude-accent" style={{ animation: 'pulse-square 1.2s ease-in-out infinite 0.4s' }} />
               <div className="w-2 h-2 bg-claude-accent" style={{ animation: 'pulse-square 1.2s ease-in-out infinite 0.8s' }} />
             </div>
-            <span className="text-sm">G-Build is thinking...</span>
+            <span className="text-sm">Build is thinking...</span>
           </div>
         );
       })()}

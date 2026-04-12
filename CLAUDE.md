@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Claudette (branded as "Grep") is an Electron desktop application providing an AI-powered development environment with Claude integration. Features include multi-session support, terminal emulation, browser preview with DOM inspection, Monaco code editor, and git integration.
+Claudette (branded as "Build") is an Electron desktop application providing an AI-powered development environment with Claude integration. Features include multi-session support, terminal emulation, browser preview with DOM inspection, Monaco code editor, and git integration.
 
 ## Build & Development Commands
 
@@ -65,7 +65,7 @@ Skips QA check and builds immediately:
 1. **BUMP THE VERSION** in `package.json` (increment patch version, e.g., 0.0.3 → 0.0.4)
 2. Run `npm run make` to create the distributable
 3. **CREATE A RELEASE TAG** with `git tag v{version}` (e.g., `git tag v0.0.4`)
-4. Open the built application from `out/Grep Build-darwin-arm64/Grep Build.app`
+4. Open the built application from `out/Build-darwin-arm64/Build.app`
 
 **CRITICAL: Always bump the version number before building!** The version is displayed in the bottom right of the app's status bar. Users need to see the new version to confirm they're running the updated build.
 

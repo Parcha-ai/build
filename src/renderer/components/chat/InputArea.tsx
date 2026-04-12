@@ -1598,9 +1598,9 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
                 console.log('[InputArea] onTranscriptionComplete called with:', text, 'voiceModeActive:', isVoiceModeActive);
 
                 // In voice mode (ElevenLabs), send directly without trigger word
-                // This enables the hybrid flow where transcripts go straight to Grep
+                // This enables the hybrid flow where transcripts go straight to Build
                 if (isVoiceModeActive && !disabled && !isSending && text.trim()) {
-                  console.log('[InputArea] Voice mode active - sending directly to Grep');
+                  console.log('[InputArea] Voice mode active - sending directly to Build');
 
                   // Activate audio mode for auto-play TTS on response
                   setAudioMode(sessionId, true);

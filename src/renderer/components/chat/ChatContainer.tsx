@@ -593,7 +593,7 @@ export default function ChatContainer({ session }: ChatContainerProps) {
               <div className="flex gap-2">
                 <button
                   onClick={() => {
-                    // Open the terminal panel in Grep
+                    // Open the terminal panel in Build
                     if (!isTerminalPanelOpen) {
                       toggleTerminalPanel();
                     }
@@ -693,7 +693,7 @@ export default function ChatContainer({ session }: ChatContainerProps) {
             request={currentPermissionRequest}
             onApprove={(modifiedInput, alwaysApprove) => approvePermission(session.id, modifiedInput, alwaysApprove)}
             onDeny={() => denyPermission(session.id)}
-            onGrepIt={() => {
+            onBuildIt={() => {
               // Switch to bypass permissions mode and approve the current request
               setPermissionMode(session.id, 'bypassPermissions');
               approvePermission(session.id);

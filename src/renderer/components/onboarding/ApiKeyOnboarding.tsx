@@ -69,7 +69,7 @@ export default function ApiKeyOnboarding() {
             </div>
             <div>
               <h2 className="text-lg font-mono font-bold text-claude-text">
-                Welcome to G-Build
+                Welcome to Build
               </h2>
               <p className="text-xs font-mono text-claude-text-secondary">
                 AI-powered development environment

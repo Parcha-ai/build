@@ -6,7 +6,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   fontSize: 14,
   fontFamily: 'JetBrains Mono, Menlo, Monaco, monospace',
   defaultSetupScript: `#!/bin/bash
-# Grep Session Setup Script
+# Build Session Setup Script
 # This script runs when the Docker container starts
 
 # Install dependencies

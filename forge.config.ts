@@ -26,11 +26,11 @@ const config: ForgeConfig = {
   outDir: `./out/v${version}`,
   packagerConfig: {
     asar: true,
-    name: 'G-Build',
-    executableName: 'g-build',
-    appBundleId: 'com.parcha.g-build',
-    // macOS icon - Grep logo (black on purple)
-    icon: './assets/grep-icon',
+    name: 'Build',
+    executableName: 'build',
+    appBundleId: 'com.parcha.build',
+    // macOS icon - Build logo (black on purple)
+    icon: './assets/build-icon',
     // macOS specific
     darwinDarkModeSupport: true,
     appCategoryType: 'public.app-category.developer-tools',
@@ -56,7 +56,7 @@ const config: ForgeConfig = {
       for (const outputPath of options.outputPaths) {
         let resourcesPath;
         if (options.platform === 'darwin') {
-          resourcesPath = path.join(outputPath, 'G-Build.app', 'Contents', 'Resources');
+          resourcesPath = path.join(outputPath, 'Build.app', 'Contents', 'Resources');
         } else {
           resourcesPath = path.join(outputPath, 'resources');
         }
@@ -100,7 +100,7 @@ const config: ForgeConfig = {
         // This must happen after copying dependencies to ensure valid signature
         if (options.platform === 'darwin') {
           const { execSync } = require('child_process');
-          const appPath = path.join(outputPath, 'G-Build.app');
+          const appPath = path.join(outputPath, 'Build.app');
           console.log(`[Packaging] Signing app with adhoc signature: ${appPath}`);
           try {
             execSync(`codesign --force --deep --sign - "${appPath}"`, { stdio: 'inherit' });

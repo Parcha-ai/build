@@ -1,5 +1,5 @@
 /**
- * Setup script for bundling QMD (semantic codebase search) with Grep Build
+ * Setup script for bundling QMD (semantic codebase search) with Build
  *
  * This script downloads Bun runtime and installs QMD into the app's resources.
  * Run during build: npx ts-node scripts/setup-qmd.ts

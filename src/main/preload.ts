@@ -225,7 +225,7 @@ const electronAPI = {
       ipcRenderer.on(IPC_CHANNELS.CLAUDE_PLAN_CONTENT, handler);
       return () => ipcRenderer.removeListener(IPC_CHANNELS.CLAUDE_PLAN_CONTENT, handler);
     },
-    // Auto-resume for Grep It mode
+    // Auto-resume for Build It mode
     saveAutoResumeState: (state: { sessionId: string; wasStreaming: boolean; permissionMode: string; lastMessage?: string }): Promise<{ success: boolean }> =>
       ipcRenderer.invoke(IPC_CHANNELS.AUTO_RESUME_SAVE_STATE, state),
     getAutoResumeState: (): Promise<{ sessionId: string; wasStreaming: boolean; permissionMode: string; lastMessage?: string; timestamp: number } | null> =>

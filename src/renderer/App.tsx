@@ -530,7 +530,7 @@ function ElectronApp() {
     if (user || isDevMode) {
       const store = useSessionStore.getState();
       store.loadSessions().then(() => {
-        // After sessions are loaded, check for auto-resume (Grep It mode interrupted)
+        // After sessions are loaded, check for auto-resume (Build It mode interrupted)
         useSessionStore.getState().checkAndAutoResume();
       });
       const unsubscribeSession = store.subscribeToSessionChanges();
@@ -561,7 +561,7 @@ function ElectronApp() {
       <div className="h-screen w-screen flex items-center justify-center bg-claude-bg">
         <div className="flex flex-col items-center gap-4">
           <div className="w-12 h-12 border-4 border-claude-accent border-t-transparent rounded-full animate-spin" />
-          <p className="text-claude-text-secondary">Loading G-Build...</p>
+          <p className="text-claude-text-secondary">Loading Build...</p>
         </div>
       </div>
     );

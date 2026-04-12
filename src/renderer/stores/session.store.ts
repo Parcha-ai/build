@@ -222,7 +222,7 @@ interface SessionState {
   dismissCompactionSwitch: (sessionId: string) => void;
   restoreCompactionModel: (sessionId: string) => void;
   subscribeToCompaction: () => () => void;
-  // Auto-resume for Grep It mode
+  // Auto-resume for Build It mode
   saveAutoResumeState: (sessionId: string) => Promise<void>;
   clearAutoResumeState: () => Promise<void>;
   checkAndAutoResume: () => Promise<void>;
@@ -2506,7 +2506,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     };
   },
 
-  // Auto-resume methods for Grep It mode
+  // Auto-resume methods for Build It mode
   saveAutoResumeState: async (sessionId) => {
     if (!hasElectronAPI) return;
 
@@ -2514,12 +2514,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const isStreaming = state.isStreaming[sessionId];
     const permissionMode = state.permissionMode[sessionId] || 'default';
 
-    // Only save state if we're in Grep It mode (bypassPermissions) and streaming
+    // Only save state if we're in Build It mode (bypassPermissions) and streaming
     if (permissionMode !== 'bypassPermissions' || !isStreaming) {
       return;
     }
 
-    console.log('[SessionStore] Saving auto-resume state for Grep It session:', sessionId);
+    console.log('[SessionStore] Saving auto-resume state for Build It session:', sessionId);
     await window.electronAPI.claude.saveAutoResumeState({
       sessionId,
       wasStreaming: true,
@@ -2549,9 +2549,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
       const { sessionId, wasStreaming, permissionMode } = resumeState;
 
-      // Only auto-resume for Grep It mode (bypassPermissions)
+      // Only auto-resume for Build It mode (bypassPermissions)
       if (permissionMode !== 'bypassPermissions' || !wasStreaming) {
-        console.log('[SessionStore] Not auto-resuming - not Grep It mode or was not streaming');
+        console.log('[SessionStore] Not auto-resuming - not Build It mode or was not streaming');
         return;
       }
 
@@ -2569,7 +2569,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         return;
       }
 
-      console.log('[SessionStore] Auto-resuming Grep It session:', sessionId);
+      console.log('[SessionStore] Auto-resuming Build It session:', sessionId);
 
       // Set the session as active
       state.setActiveSession(sessionId);

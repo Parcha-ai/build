@@ -13,8 +13,8 @@ const sizeMap = {
   large: { width: 220, height: 48, fontSize: 32, iconSize: 38 },
 };
 
-// Pixel-art magnifying glass icon - Grep logo
-const GrepIcon = memo(({ size = 28, className = "" }: { size?: number; className?: string }) => {
+// Pixel-art magnifying glass icon - Build logo
+const BuildIcon = memo(({ size = 28, className = "" }: { size?: number; className?: string }) => {
   const scale = size / 32; // Base size is 32x32
   const pixelSize = 2 * scale;
 
@@ -54,9 +54,9 @@ const GrepIcon = memo(({ size = 28, className = "" }: { size?: number; className
   );
 });
 
-GrepIcon.displayName = "GrepIcon";
+BuildIcon.displayName = "BuildIcon";
 
-export const GrepBuildBrandLogo = memo(({
+export const BuildBrandLogo = memo(({
   size = "medium",
   className = "",
   showIcon = true
@@ -66,7 +66,7 @@ export const GrepBuildBrandLogo = memo(({
   return (
     <div className={`flex items-center gap-2 ${className}`}>
       {showIcon && (
-        <GrepIcon size={dimensions.iconSize} className="text-claude-accent" />
+        <BuildIcon size={dimensions.iconSize} className="text-claude-accent" />
       )}
       <span
         className="font-mono font-bold tracking-wider text-current"
@@ -75,15 +75,15 @@ export const GrepBuildBrandLogo = memo(({
           letterSpacing: '0.15em'
         }}
       >
-        GREP BUILD
+        BUILD
       </span>
     </div>
   );
 });
 
-GrepBuildBrandLogo.displayName = "GrepBuildBrandLogo";
+BuildBrandLogo.displayName = "BuildBrandLogo";
 
 // Backward compatibility exports
-export const ClaudetteBrandLogo = GrepBuildBrandLogo;
-export { GrepIcon as ClaudetteIcon };
-export default GrepBuildBrandLogo;
+export const ClaudetteBrandLogo = BuildBrandLogo;
+export { BuildIcon as ClaudetteIcon };
+export default BuildBrandLogo;

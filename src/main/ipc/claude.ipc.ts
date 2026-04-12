@@ -366,7 +366,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
     claudeService.handleQuestionResponse(response);
   });
 
-  // Auto-resume handlers for Grep It mode
+  // Auto-resume handlers for Build It mode
   // Save streaming state before app closes (called by renderer)
   ipcMain.handle(IPC_CHANNELS.AUTO_RESUME_SAVE_STATE, async (_, state: {
     sessionId: string;

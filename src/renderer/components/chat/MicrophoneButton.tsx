@@ -125,12 +125,12 @@ export const MicrophoneButton = forwardRef<VoiceModeHandle, MicrophoneButtonProp
       // Rich initial context for when voice mode first connects
       // Include FULL conversation history so voice agent understands what's been discussed
       return `INITIAL SESSION CONTEXT:
-You are now connected as the voice assistant for G-Build (an AI coding tool).
+You are now connected as the voice assistant for Build (an AI coding tool).
 
 PROJECT: ${projectName}
 WORKING DIRECTORY: ${session?.repoPath || 'unknown'}
 BRANCH: ${session?.branch || 'main'}
-STATUS: ${isStreaming ? 'G-Build is currently working on a task' : 'G-Build is idle, ready for instructions'}
+STATUS: ${isStreaming ? 'Build is currently working on a task' : 'Build is idle, ready for instructions'}
 
 FULL CONVERSATION HISTORY (${contextMessages.length} messages):
 ${messageSummary || 'No conversation yet - this is a fresh session'}
@@ -145,7 +145,7 @@ You should greet the user briefly and ask how you can help with their coding wor
     }
 
     // Standard update context
-    return `Current G-Build Session Context:
+    return `Current Build Session Context:
 - Working directory: ${session?.repoPath || 'unknown'}
 - Branch: ${session?.branch || 'unknown'}
 - Session state: ${isStreaming ? 'Currently working on a task' : 'Idle, waiting for input'}
@@ -176,7 +176,7 @@ ${messageSummary || 'No messages yet'}`;
       setVoiceModeTranscript(sessionId, text);
       // Track user speaking state for UI feedback (wave animation)
       setVoiceModeUserSpeaking(sessionId, !isFinal && text.length > 0);
-      // Note: We no longer send directly to Grep here.
+      // Note: We no longer send directly to Build here.
       // ElevenLabs agent decides when to call the execute_grep_command tool.
       if (isFinal && text.trim()) {
         console.log('[MicrophoneButton] Final transcript received, waiting for tool call:', text.slice(0, 50));
@@ -198,13 +198,13 @@ ${messageSummary || 'No messages yet'}`;
       if (toolCall.toolName === 'execute_grep_command') {
         const instruction = toolCall.parameters.instruction as string;
         if (instruction) {
-          console.log('[MicrophoneButton] Executing Grep command:', instruction.slice(0, 100));
+          console.log('[MicrophoneButton] Executing Build command:', instruction.slice(0, 100));
 
-          // Send to Grep/Agent SDK
+          // Send to Build/Agent SDK
           onTranscriptionComplete?.(instruction);
 
           // Return a clear "in progress" response
-          return `TASK SUBMITTED. G-Build is now working on: "${instruction.slice(0, 50)}...". Call get_task_status every 5-10 seconds to check progress and announce what G-Build is doing.`;
+          return `TASK SUBMITTED. Build is now working on: "${instruction.slice(0, 50)}...". Call get_task_status every 5-10 seconds to check progress and announce what Build is doing.`;
         }
         return 'No instruction provided';
       }
@@ -444,7 +444,7 @@ ${messageSummary || 'No messages yet'}`;
     return firstLine.length < content.length ? firstLine + '...' : firstLine;
   }, []);
 
-  // Send context updates when messages change (Grep responded)
+  // Send context updates when messages change (Build responded)
   const prevMessagesLengthRef = useRef(messages.length);
   const prevStreamingRef = useRef(isStreaming);
 
@@ -453,10 +453,10 @@ ${messageSummary || 'No messages yet'}`;
     if (hookConnected && messages.length > 0 && messages.length !== prevMessagesLengthRef.current) {
       const lastMessage = messages[messages.length - 1];
 
-      // If Grep (assistant) responded, send a progress update
+      // If Build (assistant) responded, send a progress update
       if (lastMessage?.role === 'assistant') {
         const summary = summarizeForVoice(lastMessage.content);
-        console.log('[MicrophoneButton] Grep responded, sending progress update:', summary);
+        console.log('[MicrophoneButton] Build responded, sending progress update:', summary);
 
         // If streaming just ended, this is the COMPLETION - announce it clearly
         if (!isStreaming && prevStreamingRef.current) {
@@ -475,7 +475,7 @@ ${messageSummary || 'No messages yet'}`;
           }
         } else {
           // Still streaming - just a progress update (no speak needed)
-          updateContext(`G-Build progress: ${summary}\nStatus: Still working...`);
+          updateContext(`Build progress: ${summary}\nStatus: Still working...`);
         }
       } else {
         // User message - just update context
@@ -573,7 +573,7 @@ ${messageSummary || 'No messages yet'}`;
     if (hadPendingPermissionRef.current && !pendingPermission) {
       console.log('[MicrophoneButton] Permission resolved, notifying agent');
       updateContext(JSON.stringify({ type: 'permission_resolved', status: 'approved' }));
-      speak('Permission granted. G-Build is continuing.');
+      speak('Permission granted. Build is continuing.');
       hadPendingPermissionRef.current = false;
       prevPermissionRef.current = null;
       return;
@@ -605,7 +605,7 @@ ${messageSummary || 'No messages yet'}`;
       }
 
       console.log('[MicrophoneButton] Permission request, announcing:', announcement);
-      speak(`${announcement}. Tell me that G-Build needs permission to proceed.`);
+      speak(`${announcement}. Tell me that Build needs permission to proceed.`);
     }
   }, [hookConnected, pendingPermission, speak, updateContext]);
 

@@ -19,7 +19,7 @@ interface SessionCreateConfig {
 }
 
 const DEFAULT_SETUP_SCRIPT = `#!/bin/bash
-# Grep Session Setup Script
+# Build Session Setup Script
 # This script runs when the Docker container starts
 
 # Install dependencies

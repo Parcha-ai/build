@@ -1,6 +1,6 @@
 import { memo } from "react";
 
-interface GrepBrandLogoProps {
+interface BuildBrandLogoProps {
   size?: "xs" | "small" | "medium" | "large";
   className?: string;
 }
@@ -12,7 +12,7 @@ const sizeMap = {
   large: { width: 273, height: 142 },
 };
 
-export const GrepBrandLogo = memo(({ size = "medium", className = "" }: GrepBrandLogoProps) => {
+export const BuildBrandLogo = memo(({ size = "medium", className = "" }: BuildBrandLogoProps) => {
   const dimensions = sizeMap[size];
 
   return (
@@ -44,6 +44,6 @@ export const GrepBrandLogo = memo(({ size = "medium", className = "" }: GrepBran
   );
 });
 
-GrepBrandLogo.displayName = "GrepBrandLogo";
+BuildBrandLogo.displayName = "BuildBrandLogo";
 
-export default GrepBrandLogo;
+export default BuildBrandLogo;

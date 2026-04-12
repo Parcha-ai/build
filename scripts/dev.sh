@@ -29,7 +29,7 @@ mkdir -p "$GREP_DEV_USER_DATA"
 
 # Copy settings from production so API keys etc. are available in dev
 DEV_SETTINGS="$GREP_DEV_USER_DATA/claudette-settings.json"
-for PROD_DIR in "$HOME/Library/Application Support/G-Build" "$HOME/Library/Application Support/Grep Build"; do
+for PROD_DIR in "$HOME/Library/Application Support/Build" "$HOME/Library/Application Support/G-Build" "$HOME/Library/Application Support/Grep Build"; do
   PROD_SETTINGS="$PROD_DIR/claudette-settings.json"
   if [ -f "$PROD_SETTINGS" ]; then
     cp "$PROD_SETTINGS" "$DEV_SETTINGS"

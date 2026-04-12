@@ -130,7 +130,7 @@ let mainWindow: BrowserWindow | null = null;
 if (process.env.GREP_DISABLE_SINGLE_INSTANCE !== '1') {
   const gotSingleInstanceLock = app.requestSingleInstanceLock();
   if (!gotSingleInstanceLock) {
-    console.log('[Main] Another G-Build instance is already running, exiting');
+    console.log('[Main] Another Build instance is already running, exiting');
     app.quit();
   } else {
     app.on('second-instance', () => {
@@ -511,18 +511,23 @@ function registerIPCHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.GSTACK_UPGRADE, async () => upgradeGStack());
 }
 
-// Migrate data from old "Grep Build" app directory to new "G-Build" on first launch
+// Migrate data from old "Grep Build" or "G-Build" app directories to new "Build" on first launch
 function migrateFromGrepBuild(): void {
   const fs = require('fs');
   const pathModule = require('path');
-  const newDir = app.getPath('userData'); // Now points to G-Build
-  const oldDir = pathModule.join(pathModule.dirname(newDir), 'Grep Build');
+  const newDir = app.getPath('userData'); // Now points to Build
+  const parentDir = pathModule.dirname(newDir);
 
-  // Only migrate if old dir exists and we haven't migrated yet
+  // Check both old directory names, preferring the more recent "G-Build" over "Grep Build"
+  const gBuildDir = pathModule.join(parentDir, 'G-Build');
+  const grepBuildDir = pathModule.join(parentDir, 'Grep Build');
+  const oldDir = fs.existsSync(gBuildDir) ? gBuildDir : (fs.existsSync(grepBuildDir) ? grepBuildDir : null);
+
+  // Only migrate if an old dir exists and we haven't migrated yet
   const migrationMarker = pathModule.join(newDir, '.migrated-from-grep-build');
-  if (!fs.existsSync(oldDir) || fs.existsSync(migrationMarker)) return;
+  if (!oldDir || fs.existsSync(migrationMarker)) return;
 
-  console.log('[Migration] Migrating data from Grep Build →', newDir);
+  console.log('[Migration] Migrating data from', oldDir, '→', newDir);
   const filesToMigrate = [
     'claudette-sessions.json',
     'claudette-settings.json',

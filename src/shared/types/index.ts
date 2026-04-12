@@ -1,4 +1,4 @@
-// Core Types for Grep
+// Core Types for Build
 
 // SSH configuration for remote execution
 export interface SSHConfig {
@@ -61,7 +61,7 @@ export interface Session {
   teleportedFrom?: string; // Original local session ID if teleported to SSH
   downloadedFrom?: string; // Session ID of source SSH session (reverse teleport)
   sdkSessionId?: string; // Claude Agent SDK session ID for transcript resumption
-  continuedFromSessionId?: string; // Existing local G-Build session that this session resumed from
+  continuedFromSessionId?: string; // Existing local Build session that this session resumed from
   // Starring/favorites
   isStarred?: boolean; // True if session is starred
   starredAt?: Date; // When it was starred (for stable ordering)

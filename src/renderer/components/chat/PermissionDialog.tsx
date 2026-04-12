@@ -6,7 +6,7 @@ interface PermissionDialogProps {
   request: PermissionRequest;
   onApprove: (modifiedInput?: Record<string, unknown>, alwaysApprove?: boolean) => void;
   onDeny: () => void;
-  onGrepIt: () => void;
+  onBuildIt: () => void;
 }
 
 // Extract a wildcard pattern from a command for "always approve"
@@ -21,7 +21,7 @@ function extractCommandPattern(command: string): string {
   return parts.slice(0, 2).join(' ') + ' *';
 }
 
-export default function PermissionDialog({ request, onApprove, onDeny, onGrepIt }: PermissionDialogProps) {
+export default function PermissionDialog({ request, onApprove, onDeny, onBuildIt }: PermissionDialogProps) {
   const formatInput = () => {
     const input = request.toolInput || {};
     if (request.toolName === 'Bash') {
@@ -106,7 +106,7 @@ export default function PermissionDialog({ request, onApprove, onDeny, onGrepIt 
           </button>
         )}
         <button
-          onClick={onGrepIt}
+          onClick={onBuildIt}
           className="px-4 py-2 text-xs font-bold uppercase bg-purple-900/40 text-purple-400 hover:bg-purple-900/60 transition-colors flex items-center gap-1.5"
           style={{ letterSpacing: '0.05em', borderRadius: 0 }}
           title="Switch to autonomous mode - approve all permissions automatically"
