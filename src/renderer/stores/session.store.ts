@@ -198,6 +198,7 @@ interface SessionState {
   // Question handling
   setPendingQuestion: (sessionId: string, request: QuestionRequest | null) => void;
   answerQuestion: (sessionId: string, answers: Record<string, string>) => Promise<void>;
+  cancelQuestion: (sessionId: string) => Promise<void>;
   // Plan approval handling
   setPendingPlanApproval: (sessionId: string, request: PlanApprovalRequest | null) => void;
   approvePlan: (sessionId: string) => Promise<void>;
@@ -2011,6 +2012,22 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     console.log('[Session Store] Answering question:', request.requestId, answers);
     await window.electronAPI.claude.respondToQuestion(response);
+    setPendingQuestion(sessionId, null);
+  },
+
+  cancelQuestion: async (sessionId) => {
+    if (!hasElectronAPI) return;
+    const { pendingQuestion, setPendingQuestion } = get();
+    const request = pendingQuestion[sessionId];
+
+    if (!request) return;
+
+    console.log('[Session Store] Cancelling question:', request.requestId);
+    await window.electronAPI.claude.respondToQuestion({
+      requestId: request.requestId,
+      answers: {},
+      cancelled: true,
+    } as any);
     setPendingQuestion(sessionId, null);
   },
 

@@ -46,6 +46,7 @@ export default function CommandCenterCell({ session, forks, isFocused }: Command
   const approvePermission = useSessionStore((s) => s.approvePermission);
   const denyPermission = useSessionStore((s) => s.denyPermission);
   const answerQuestion = useSessionStore((s) => s.answerQuestion);
+  const cancelQuestion = useSessionStore((s) => s.cancelQuestion);
   const setPermissionMode = useSessionStore((s) => s.setPermissionMode);
   const removeFromCommandCenter = useSessionStore((s) => s.removeFromCommandCenter);
   const setActiveSession = useSessionStore((s) => s.setActiveSession);
@@ -218,6 +219,7 @@ export default function CommandCenterCell({ session, forks, isFocused }: Command
           <QuestionDialog
             request={currentQuestion}
             onAnswer={(answers) => answerQuestion(displayId, answers)}
+            onCancel={() => cancelQuestion(displayId)}
           />
         </div>
       )}

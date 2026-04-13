@@ -53,6 +53,7 @@ export default function ChatContainer({ session }: ChatContainerProps) {
   const approvePermission = useSessionStore((s) => s.approvePermission);
   const denyPermission = useSessionStore((s) => s.denyPermission);
   const answerQuestion = useSessionStore((s) => s.answerQuestion);
+  const cancelQuestion = useSessionStore((s) => s.cancelQuestion);
   const setPermissionMode = useSessionStore((s) => s.setPermissionMode);
   const addBackgroundTask = useSessionStore((s) => s.addBackgroundTask);
   const removeBackgroundTask = useSessionStore((s) => s.removeBackgroundTask);
@@ -708,6 +709,7 @@ export default function ChatContainer({ session }: ChatContainerProps) {
           <QuestionDialog
             request={currentQuestionRequest}
             onAnswer={(answers) => answerQuestion(session.id, answers)}
+            onCancel={() => cancelQuestion(session.id)}
           />
         </div>
       )}

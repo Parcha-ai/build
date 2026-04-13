@@ -1,13 +1,14 @@
 import React, { useState } from 'react';
-import { HelpCircle, Check } from 'lucide-react';
+import { HelpCircle, Check, X } from 'lucide-react';
 import type { Question, QuestionRequest } from '../../../shared/types';
 
 interface QuestionDialogProps {
   request: QuestionRequest;
   onAnswer: (answers: Record<string, string>) => void;
+  onCancel?: () => void;
 }
 
-export default function QuestionDialog({ request, onAnswer }: QuestionDialogProps) {
+export default function QuestionDialog({ request, onAnswer, onCancel }: QuestionDialogProps) {
   // Track selected answers for each question
   const [answers, setAnswers] = useState<Record<string, Set<string>>>(() => {
     const initial: Record<string, Set<string>> = {};
@@ -135,8 +136,18 @@ export default function QuestionDialog({ request, onAnswer }: QuestionDialogProp
         ))}
       </div>
 
-      {/* Submit button */}
-      <div className="flex items-center justify-end mt-4">
+      {/* Action buttons */}
+      <div className="flex items-center justify-end gap-2 mt-4">
+        {onCancel && (
+          <button
+            onClick={onCancel}
+            className="px-4 py-2 text-xs font-bold uppercase flex items-center gap-1.5 transition-colors bg-claude-surface text-claude-text-secondary hover:bg-red-900/30 hover:text-red-400"
+            style={{ letterSpacing: '0.05em', borderRadius: 0 }}
+          >
+            <X size={14} />
+            DISMISS
+          </button>
+        )}
         <button
           onClick={handleSubmit}
           disabled={!allAnswered}

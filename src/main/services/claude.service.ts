@@ -2123,10 +2123,14 @@ Read or source that file if you need the actual values. Do not print secret valu
   }
 
   // Handle question responses from the renderer
-  handleQuestionResponse(response: QuestionResponse): void {
+  handleQuestionResponse(response: QuestionResponse & { cancelled?: boolean }): void {
     const pending = this.pendingQuestions.get(response.requestId);
     if (pending) {
-      pending.resolve(response.answers);
+      if (response.cancelled) {
+        pending.reject(new Error('User dismissed the question'));
+      } else {
+        pending.resolve(response.answers);
+      }
       this.pendingQuestions.delete(response.requestId);
     }
   }
@@ -4254,6 +4258,12 @@ Begin by creating the task structure now.
             error: '⚠️ Session had corrupted thinking data. Starting fresh session - please try your message again.'
           };
         }
+      } else if (errorMessage.match(/process exited with code|process terminated by signal/) && session?.sshConfig) {
+        console.error('[Claude SDK] SSH process exit caught:', errorMessage);
+        yield {
+          type: 'error',
+          error: 'SSH connection lost. The remote Claude process was interrupted, likely due to a network drop. Try sending your message again to reconnect.'
+        };
       } else if (errorMessage.match(/unauthorized|api.?key.*invalid|invalid.*api.?key|not authenticated|login required|authentication_error/i)) {
         console.error('[Claude SDK] Auth error caught:', errorMessage);
         yield {

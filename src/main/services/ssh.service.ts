@@ -803,16 +803,26 @@ export class SSHService {
             passThrough.stdout.write(data);
           });
 
-          ch.on('close', (code: number, signal: string) => {
+          let exitEmitted = false;
+
+          ch.on('exit', (code: number | null, signal: string | undefined) => {
+            if (exitEmitted) return;
+            exitEmitted = true;
             exitCode = code;
             emitter.emit('exit', code, signal as NodeJS.Signals | null);
-            passThrough.stdout.end();
-            options.signal?.removeEventListener('abort', abortHandler);
           });
 
-          ch.on('exit', (code: number, signal: string) => {
-            exitCode = code;
-            emitter.emit('exit', code, signal as NodeJS.Signals | null);
+          ch.on('close', () => {
+            // close fires after exit (or instead of exit on connection drop).
+            // Only emit exit here if the exit event never fired — and use
+            // code 1 (not undefined) so the SDK treats it as a real exit.
+            if (!exitEmitted) {
+              exitEmitted = true;
+              exitCode = exitCode ?? 1;
+              emitter.emit('exit', exitCode, null);
+            }
+            passThrough.stdout.end();
+            options.signal?.removeEventListener('abort', abortHandler);
           });
 
           ch.on('error', (error: Error) => {
