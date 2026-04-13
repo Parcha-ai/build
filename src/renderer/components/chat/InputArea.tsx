@@ -6,6 +6,7 @@ import { useAudioStore } from '../../stores/audio.store';
 import MentionAutocomplete, { type Mention } from './MentionAutocomplete';
 import CommandAutocomplete, { type CommandAutocompleteHandle } from './CommandAutocomplete';
 import { MicrophoneButton, type VoiceModeHandle } from './MicrophoneButton';
+import { VoiceAgentButton, type VoiceAgentHandle } from './VoiceAgentButton';
 import { MessageQueuePanel } from './MessageQueuePanel';
 import { VoiceModeErrorBoundary } from './VoiceModeErrorBoundary';
 import SecureInput from './SecureInput';
@@ -253,7 +254,12 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
   const containerRef = useRef<HTMLDivElement>(null);
   const commandAutocompleteRef = useRef<CommandAutocompleteHandle>(null);
   const voiceModeRef = useRef<VoiceModeHandle>(null);
+  const voiceAgentRef = useRef<VoiceAgentHandle>(null);
   const blurFromBrowserEditRef = useRef(false);
+
+  // STT mic state
+  const [isMicActive, setIsMicActive] = useState(false);
+  const [isMicSpeaking, setIsMicSpeaking] = useState(false);
 
   // Helper to safely get selection position
   const getSelectionStart = (): number | undefined => {
@@ -306,15 +312,15 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
   const voiceState = voiceModeStates[sessionId];
   const isVoiceModeActive = voiceState?.isConnected || false;
 
-  // Animation time for wave visualization
+  // Animation time for wave visualization (used by both voice agent and mic STT bars)
   const [waveTime, setWaveTime] = useState(0);
   useEffect(() => {
-    if (!isVoiceModeActive) return;
+    if (!isVoiceModeActive && !isMicActive) return;
     const interval = setInterval(() => {
-      setWaveTime(Date.now() / 200);  // Update ~60fps worth of animation time
-    }, 50);  // 20fps is enough for smooth wave animation
+      setWaveTime(Date.now() / 200);
+    }, 50);
     return () => clearInterval(interval);
-  }, [isVoiceModeActive]);
+  }, [isVoiceModeActive, isMicActive]);
 
   // Command/Skill/Agent autocomplete state
   const [showCommands, setShowCommands] = useState(false);
@@ -1368,6 +1374,39 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
         </div>
       )}
 
+      {/* STT Mic Status Bar - shown above input when mic dictation is active */}
+      {isMicActive && !isVoiceModeActive && (
+        <div className="mb-2 px-2 py-1.5 bg-claude-bg-secondary/50 border border-claude-border flex items-center gap-3 min-w-0">
+          {/* Simple wave visualization */}
+          <div className="flex items-center gap-[2px] h-5 flex-shrink-0">
+            {[...Array(8)].map((_, i) => {
+              const phase = Math.sin(waveTime + i * 0.6);
+              const dynamicScale = isMicSpeaking
+                ? 0.4 + Math.abs(phase) * 0.6
+                : 0.2 + Math.abs(phase) * 0.15;
+              return (
+                <div
+                  key={i}
+                  className="w-[2px] rounded-full bg-green-400 transition-all duration-75"
+                  style={{
+                    height: '14px',
+                    transform: `scaleY(${dynamicScale})`,
+                    opacity: isMicSpeaking ? 0.9 : 0.4,
+                  }}
+                />
+              );
+            })}
+          </div>
+          <span className="font-mono text-sm text-green-400/70">
+            {isMicSpeaking ? 'Listening...' : 'Speak now — say "' + (audioSettings?.voiceTriggerWord || 'please') + '" to send'}
+          </span>
+          <div className="flex items-center gap-1.5 text-xs font-mono flex-shrink-0 ml-auto">
+            <span className={`h-2 w-2 rounded-full ${isMicSpeaking ? 'bg-green-400 animate-pulse' : 'bg-green-400/50'}`} />
+            <span className="text-green-400">MIC</span>
+          </div>
+        </div>
+      )}
+
       {/* Voice Mode Status Bar - shown above input when voice mode is active */}
       {isVoiceModeActive && (
         <div className="mb-2 px-2 py-1.5 bg-claude-bg-secondary/50 border border-claude-border flex items-center gap-3 min-w-0">
@@ -1590,17 +1629,83 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
             <MicrophoneButton
               ref={voiceModeRef}
               sessionId={sessionId}
+              onConnectionChange={(connected) => {
+                setIsMicActive(connected);
+                if (!connected) setIsMicSpeaking(false);
+              }}
+              onSpeechStateChange={(speaking) => {
+                setIsMicSpeaking(speaking);
+              }}
               onInterimTranscript={(text) => {
                 // Stream real-time transcript into the input box
                 setMessage(text);
               }}
               onTranscriptionComplete={async (text) => {
-                console.log('[InputArea] onTranscriptionComplete called with:', text, 'voiceModeActive:', isVoiceModeActive);
+                console.log('[InputArea] STT onTranscriptionComplete called with:', text);
 
-                // In voice mode (ElevenLabs), send directly without trigger word
-                // This enables the hybrid flow where transcripts go straight to Build
-                if (isVoiceModeActive && !disabled && !isSending && text.trim()) {
-                  console.log('[InputArea] Voice mode active - sending directly to Build');
+                // Simple STT mode - use trigger word detection
+                const escapedTrigger = triggerWord.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                const triggerPattern = new RegExp(`\\b${escapedTrigger}\\s*[.!?]?\\s*$`, 'i');
+
+                const hasTrigger = triggerPattern.test(text);
+                console.log('[InputArea] Trigger detection:', {
+                  triggerWord,
+                  text,
+                  hasTrigger,
+                  disabled,
+                  isSending,
+                });
+
+                if (hasTrigger && !disabled && !isSending) {
+                  // Remove the trigger word from the message
+                  const cleanedText = text
+                    .replace(triggerPattern, '')
+                    .trim();
+
+                  if (!cleanedText) {
+                    setMessage('');
+                    return;
+                  }
+
+                  // Activate audio mode for auto-play TTS on response
+                  setAudioMode(sessionId, true);
+
+                  // Clear input and send
+                  setMessage('');
+
+                  // Build message with file context if there are attachments
+                  let messageToSend = cleanedText;
+                  const fileMentions = attachments.filter((a) => a.type === 'mention');
+                  if (fileMentions.length > 0) {
+                    const fileContext = fileMentions.map((m) => `@${m.name}`).join(', ');
+                    messageToSend = `[Files: ${fileContext}]\n\n${messageToSend}`;
+                  }
+
+                  const otherAttachments = attachments.filter((a) => a.type !== 'mention');
+                  setAttachments([]);
+
+                  await sendMessage(sessionId, messageToSend, otherAttachments.length > 0 ? otherAttachments : undefined);
+                } else {
+                  // No trigger word - keep the text in input for editing/review
+                  // But still enable audio mode since user is using voice
+                  setAudioMode(sessionId, true);
+                  setMessage(text);
+                  textareaRef.current?.focus();
+                }
+              }}
+              disabled={disabled}
+            />
+          </VoiceModeErrorBoundary>
+          <VoiceModeErrorBoundary>
+            <VoiceAgentButton
+              ref={voiceAgentRef}
+              sessionId={sessionId}
+              onTranscriptionComplete={async (text) => {
+                console.log('[InputArea] VoiceAgent onTranscriptionComplete called with:', text);
+
+                // Voice agent mode - send directly to Build without trigger word
+                if (!disabled && !isSending && text.trim()) {
+                  console.log('[InputArea] Voice agent - sending directly to Build');
 
                   // Activate audio mode for auto-play TTS on response
                   setAudioMode(sessionId, true);
@@ -1613,70 +1718,17 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
                   const fileMentions = attachments.filter((a) => a.type === 'mention');
                   if (fileMentions.length > 0) {
                     const fileContext = fileMentions.map((m) => `@${m.name}`).join(', ');
-                  messageToSend = `[Files: ${fileContext}]\n\n${messageToSend}`;
+                    messageToSend = `[Files: ${fileContext}]\n\n${messageToSend}`;
+                  }
+
+                  const otherAttachments = attachments.filter((a) => a.type !== 'mention');
+                  setAttachments([]);
+
+                  await sendMessage(sessionId, messageToSend, otherAttachments.length > 0 ? otherAttachments : undefined);
                 }
-
-                const otherAttachments = attachments.filter((a) => a.type !== 'mention');
-                setAttachments([]);
-
-                await sendMessage(sessionId, messageToSend, otherAttachments.length > 0 ? otherAttachments : undefined);
-                return;
-              }
-
-              // Not in voice mode - use trigger word detection
-              // Check if the transcription ends with the trigger word (configurable in settings)
-              const escapedTrigger = triggerWord.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-              const triggerPattern = new RegExp(`\\b${escapedTrigger}\\s*[.!?]?\\s*$`, 'i');
-
-              const hasTrigger = triggerPattern.test(text);
-              console.log('[InputArea] Trigger detection:', {
-                triggerWord,
-                escapedTrigger,
-                text,
-                hasTrigger,
-                disabled,
-                isSending,
-              });
-
-              if (hasTrigger && !disabled && !isSending) {
-                // Remove the trigger word from the message
-                const cleanedText = text
-                  .replace(triggerPattern, '')
-                  .trim();
-
-                if (!cleanedText) {
-                  setMessage('');
-                  return;
-                }
-
-                // Activate audio mode for auto-play TTS on response
-                setAudioMode(sessionId, true);
-
-                // Clear input and send
-                setMessage('');
-
-                // Build message with file context if there are attachments
-                let messageToSend = cleanedText;
-                const fileMentions = attachments.filter((a) => a.type === 'mention');
-                if (fileMentions.length > 0) {
-                  const fileContext = fileMentions.map((m) => `@${m.name}`).join(', ');
-                  messageToSend = `[Files: ${fileContext}]\n\n${messageToSend}`;
-                }
-
-                const otherAttachments = attachments.filter((a) => a.type !== 'mention');
-                setAttachments([]);
-
-                await sendMessage(sessionId, messageToSend, otherAttachments.length > 0 ? otherAttachments : undefined);
-              } else {
-                // No trigger word - keep the text in input for editing/review
-                // But still enable audio mode since user is using voice
-                setAudioMode(sessionId, true);
-                setMessage(text);
-                textareaRef.current?.focus();
-              }
-            }}
-            disabled={disabled}
-          />
+              }}
+              disabled={disabled}
+            />
           </VoiceModeErrorBoundary>
 
         {/* Effort level selector */}

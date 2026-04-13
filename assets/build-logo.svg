@@ -1,4 +1,26 @@
 <svg viewBox="0 0 923 923" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <rect width="923" height="923" fill="black"/>
-  <path d="M314 121H605V218H702V414H605V511H702V706H605V804H314V706H217V218H314V121ZM324 228V404H595V228H324ZM324 521V696H595V521H324Z" fill="white" fill-rule="evenodd"/>
+  <!-- Squircle background -->
+  <path d="M461.5 923C225.5 923 120 923 60 863C0 803 0 697.5 0 461.5C0 225.5 0 120 60 60C120 0 225.5 0 461.5 0C697.5 0 803 0 863 60C923 120 923 225.5 923 461.5C923 697.5 923 803 863 863C803 923 697.5 923 461.5 923Z" fill="black"/>
+  <!--
+    B on a 7-col × 9-row grid, each cell ~60px
+    Key: bumps (col 6) connect top-to-mid and mid-to-bottom
+    Bars (cols 2-5) at rows 1, 5, 9
+    Left spine col 1 full height
+  -->
+  <!-- Left spine -->
+  <rect x="247" y="182" width="72" height="559" fill="white"/>
+  <!-- Top bar -->
+  <rect x="319" y="182" width="216" height="72" fill="white"/>
+  <!-- Upper right bump (connects top bar to middle bar) -->
+  <rect x="535" y="254" width="72" height="135" fill="white"/>
+  <!-- Middle bar -->
+  <rect x="319" y="389" width="216" height="72" fill="white"/>
+  <!-- Lower right bump (connects middle bar to bottom bar) -->
+  <rect x="535" y="461" width="72" height="208" fill="white"/>
+  <!-- Bottom bar -->
+  <rect x="319" y="669" width="216" height="72" fill="white"/>
+  <!-- Top-right corner connector (bar meets bump) -->
+  <rect x="535" y="182" width="72" height="72" fill="white"/>
+  <!-- Bottom-right corner connector (bump meets bar) -->
+  <rect x="535" y="669" width="72" height="72" fill="white"/>
 </svg>

@@ -1,51 +1,17 @@
-import React, { useCallback, useEffect, useRef, forwardRef, useImperativeHandle } from 'react';
+import React, { useCallback, useEffect, useRef, useState, forwardRef, useImperativeHandle } from 'react';
 import { Mic, Loader2 } from 'lucide-react';
-import { useVoiceConversationSDK } from '../../hooks/useVoiceConversationSDK';
 import { useAudioStore } from '../../stores/audio.store';
-import { useSessionStore } from '../../stores/session.store';
-
-// Stable empty array references outside component to prevent infinite re-renders
-const EMPTY_MESSAGES: never[] = [];
-const EMPTY_TOOL_CALLS: never[] = [];
-
-// Debounce helper
-function useDebouncedCallback<Args extends unknown[]>(
-  callback: (...args: Args) => void,
-  delay: number
-): (...args: Args) => void {
-  const timeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const callbackRef = useRef(callback);
-  callbackRef.current = callback;
-
-  const debouncedFn = useCallback((...args: Args) => {
-    if (timeoutRef.current) {
-      clearTimeout(timeoutRef.current);
-    }
-    timeoutRef.current = setTimeout(() => {
-      callbackRef.current(...args);
-    }, delay);
-  }, [delay]);
-
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      if (timeoutRef.current) {
-        clearTimeout(timeoutRef.current);
-      }
-    };
-  }, []);
-
-  return debouncedFn;
-}
 
 interface MicrophoneButtonProps {
   sessionId: string;
   onTranscriptionComplete?: (text: string) => void;
   onInterimTranscript?: (text: string) => void;
+  onSpeechStateChange?: (isSpeaking: boolean) => void;
+  onConnectionChange?: (isConnected: boolean) => void;
   disabled?: boolean;
 }
 
-// Imperative handle for voice mode control from InputArea
+// Imperative handle for STT control from InputArea
 export interface VoiceModeHandle {
   startPushToTalk: () => Promise<void>;
   stopPushToTalk: () => Promise<void>;
@@ -55,652 +21,297 @@ export interface VoiceModeHandle {
 }
 
 /**
- * Microphone Button - Toggles ElevenLabs Voice Mode
+ * Microphone Button - Streaming Speech-to-Text
  *
- * Click: Toggle voice mode on/off
- * When on, the InputArea shows voice mode UI
+ * Uses OpenAI Realtime API for live transcription with server-side VAD.
+ * Words appear in the input box as you speak.
+ * Only requires an OpenAI API key.
  *
- * Also exposes imperative handle for push-to-talk (CMD hotkey)
+ * Click to start, click again to stop.
  */
 export const MicrophoneButton = forwardRef<VoiceModeHandle, MicrophoneButtonProps>(({
-  sessionId,
+  sessionId: _sessionId,
   onTranscriptionComplete,
+  onInterimTranscript,
+  onSpeechStateChange,
+  onConnectionChange,
   disabled = false,
 }, ref) => {
-  const {
-    settings: audioSettings,
-    voiceModeStates,
-    setVoiceModeConnecting,
-    setVoiceModeConnected,
-    setVoiceModeDisconnected,
-    setVoiceModeSpeaking,
-    setVoiceModeUserSpeaking,
-    setVoiceModeAudioLevel,
-    setVoiceModeTranscript,
-    setVoiceModeAgentResponse,
-    setVoiceModeError,
-    setAudioMode,
-  } = useAudioStore();
+  const [isConnected, setIsConnected] = useState(false);
+  const [isConnecting, setIsConnecting] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const agentId = audioSettings?.elevenLabsAgentId;
-  const isConfigured = Boolean(agentId);
-  const voiceState = voiceModeStates[sessionId];
-  const isConnected = voiceState?.isConnected || false;
-  const isConnecting = voiceState?.isConnecting || false;
+  // Refs for audio capture
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const processorRef = useRef<ScriptProcessorNode | null>(null);
+  const isConnectedRef = useRef(false);
+  const cleanupFnsRef = useRef<Array<() => void>>([]);
 
-  // Get session context for ElevenLabs agent
-  // Use stable empty array reference to avoid infinite re-renders
-  const messages = useSessionStore((state) => state.messages[sessionId]) || EMPTY_MESSAGES;
-  const session = useSessionStore((state) => state.sessions.find(s => s.id === sessionId));
-  const isStreaming = useSessionStore((state) => !!state.isStreaming[sessionId]);
+  // Accumulate deltas for the current utterance
+  const currentTranscriptRef = useRef('');
 
-  // Subscribe to thinking content and assistant text for incremental updates
-  // Use stable references for empty values to prevent infinite re-renders
-  const currentThinkingContent = useSessionStore((state) => state.currentThinkingContent[sessionId] || '');
-  const currentStreamContent = useSessionStore((state) => state.currentStreamContent[sessionId] || '');
-  const currentToolCalls = useSessionStore((state) => state.currentToolCalls[sessionId] || EMPTY_TOOL_CALLS);
-  const pendingPermission = useSessionStore((state) => state.pendingPermission[sessionId]);
+  // Ref for callbacks to avoid stale closures
+  const onTranscriptionCompleteRef = useRef(onTranscriptionComplete);
+  const onInterimTranscriptRef = useRef(onInterimTranscript);
+  const onSpeechStateChangeRef = useRef(onSpeechStateChange);
+  const onConnectionChangeRef = useRef(onConnectionChange);
+  onTranscriptionCompleteRef.current = onTranscriptionComplete;
+  onInterimTranscriptRef.current = onInterimTranscript;
+  onSpeechStateChangeRef.current = onSpeechStateChange;
+  onConnectionChangeRef.current = onConnectionChange;
 
-  // Generate context summary for ElevenLabs agent
-  const generateContextSummary = useCallback((isInitial = false) => {
-    // For initial connection, send ALL messages (or last 50 if > 50)
-    // For updates, send last 5 messages
-    const contextMessages = isInitial
-      ? (messages.length > 50 ? messages.slice(-50) : messages)
-      : messages.slice(-5);
+  /**
+   * Convert Float32 audio samples to Int16 PCM
+   */
+  const float32ToInt16 = useCallback((float32: Float32Array): Int16Array => {
+    const int16 = new Int16Array(float32.length);
+    for (let i = 0; i < float32.length; i++) {
+      const s = Math.max(-1, Math.min(1, float32[i]));
+      int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+    }
+    return int16;
+  }, []);
 
-    const messageSummary = contextMessages
-      .map(m => {
-        const content = typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
-        // For initial context, show more of each message
-        const maxLength = isInitial ? 300 : 150;
-        return `${m.role}: ${content.slice(0, maxLength)}${content.length > maxLength ? '...' : ''}`;
-      })
-      .join('\n');
+  /**
+   * Resample audio from source rate to target rate
+   */
+  const resample = useCallback((samples: Float32Array, sourceRate: number, targetRate: number): Float32Array => {
+    if (sourceRate === targetRate) return samples;
+    const ratio = sourceRate / targetRate;
+    const newLength = Math.round(samples.length / ratio);
+    const result = new Float32Array(newLength);
+    for (let i = 0; i < newLength; i++) {
+      const srcIdx = i * ratio;
+      const low = Math.floor(srcIdx);
+      const high = Math.min(low + 1, samples.length - 1);
+      const frac = srcIdx - low;
+      result[i] = samples[low] * (1 - frac) + samples[high] * frac;
+    }
+    return result;
+  }, []);
 
-    // Extract project name from path
-    const projectName = session?.repoPath?.split('/').pop() || session?.name || 'unknown project';
+  /**
+   * Set up IPC event listeners for Realtime API events
+   */
+  const setupListeners = useCallback(() => {
+    // Clean up any existing listeners
+    cleanupFnsRef.current.forEach(fn => fn());
+    cleanupFnsRef.current = [];
 
-    if (isInitial) {
-      // Rich initial context for when voice mode first connects
-      // Include FULL conversation history so voice agent understands what's been discussed
-      return `INITIAL SESSION CONTEXT:
-You are now connected as the voice assistant for Build (an AI coding tool).
+    const unsubConnected = window.electronAPI.realtime.onConnected(() => {
+      console.log('[MicrophoneButton] Realtime connected');
+      isConnectedRef.current = true;
+      setIsConnected(true);
+      setIsConnecting(false);
+      onConnectionChangeRef.current?.(true);
+    });
+    cleanupFnsRef.current.push(unsubConnected);
 
-PROJECT: ${projectName}
-WORKING DIRECTORY: ${session?.repoPath || 'unknown'}
-BRANCH: ${session?.branch || 'main'}
-STATUS: ${isStreaming ? 'Build is currently working on a task' : 'Build is idle, ready for instructions'}
+    const unsubDisconnected = window.electronAPI.realtime.onDisconnected(() => {
+      console.log('[MicrophoneButton] Realtime disconnected');
+      isConnectedRef.current = false;
+      setIsConnected(false);
+      setIsSpeaking(false);
+      onConnectionChangeRef.current?.(false);
+    });
+    cleanupFnsRef.current.push(unsubDisconnected);
 
-FULL CONVERSATION HISTORY (${contextMessages.length} messages):
-${messageSummary || 'No conversation yet - this is a fresh session'}
+    const unsubDelta = window.electronAPI.realtime.onTranscriptionDelta((delta: string) => {
+      // Accumulate deltas for the current utterance
+      currentTranscriptRef.current += delta;
+      onInterimTranscriptRef.current?.(currentTranscriptRef.current);
+    });
+    cleanupFnsRef.current.push(unsubDelta);
 
-IMPORTANT: Claude Code already has ALL of this context. Do NOT repeat analysis or work that's already been done.
-Your role is to:
-1. Understand what's already been discussed
-2. Help the user communicate new requests to Claude Code
-3. Report on Claude Code's progress when asked
+    const unsubCompleted = window.electronAPI.realtime.onTranscriptionCompleted((transcript: string) => {
+      console.log('[MicrophoneButton] Transcription completed:', transcript.slice(0, 80));
+      // Use the completed transcript (more accurate than accumulated deltas)
+      const finalText = transcript.trim();
+      if (finalText) {
+        onTranscriptionCompleteRef.current?.(finalText);
+      }
+      // Reset accumulated transcript for next utterance
+      currentTranscriptRef.current = '';
+    });
+    cleanupFnsRef.current.push(unsubCompleted);
 
-You should greet the user briefly and ask how you can help with their coding work on ${projectName}.`;
+    const unsubSpeechStarted = window.electronAPI.realtime.onSpeechStarted(() => {
+      setIsSpeaking(true);
+      onSpeechStateChangeRef.current?.(true);
+      // Clear accumulated transcript for new utterance
+      currentTranscriptRef.current = '';
+    });
+    cleanupFnsRef.current.push(unsubSpeechStarted);
+
+    const unsubSpeechStopped = window.electronAPI.realtime.onSpeechStopped(() => {
+      setIsSpeaking(false);
+      onSpeechStateChangeRef.current?.(false);
+    });
+    cleanupFnsRef.current.push(unsubSpeechStopped);
+
+    const unsubError = window.electronAPI.realtime.onError((err: string) => {
+      console.error('[MicrophoneButton] Realtime error:', err);
+      setError(err);
+    });
+    cleanupFnsRef.current.push(unsubError);
+  }, []);
+
+  /**
+   * Start streaming STT: connect to Realtime API + capture mic audio
+   */
+  const startStreaming = useCallback(async () => {
+    try {
+      setError(null);
+      setIsConnecting(true);
+
+      // Set up event listeners before connecting
+      setupListeners();
+
+      // Connect to OpenAI Realtime API (via main process)
+      const result = await window.electronAPI.realtime.connect();
+      if (!result.success) {
+        throw new Error(result.error || 'Failed to connect to Realtime API');
+      }
+
+      // Capture microphone audio
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          sampleRate: 16000,
+        },
+      });
+      streamRef.current = stream;
+
+      const audioContext = new AudioContext({ sampleRate: 16000 });
+      audioContextRef.current = audioContext;
+
+      const source = audioContext.createMediaStreamSource(stream);
+      const processor = audioContext.createScriptProcessor(4096, 1, 1);
+      processorRef.current = processor;
+
+      processor.onaudioprocess = (event) => {
+        if (!isConnectedRef.current) return;
+
+        const inputData = event.inputBuffer.getChannelData(0);
+        const resampled = resample(inputData, audioContext.sampleRate, 16000);
+        const int16Data = float32ToInt16(resampled);
+        const audioArray = Array.from(int16Data);
+
+        window.electronAPI.realtime.sendAudio(audioArray).catch((e: Error) => {
+          console.error('[MicrophoneButton] Error sending audio:', e);
+        });
+      };
+
+      source.connect(processor);
+      processor.connect(audioContext.destination);
+
+      console.log('[MicrophoneButton] Streaming STT started');
+    } catch (err) {
+      console.error('[MicrophoneButton] Failed to start streaming:', err);
+      setError(err instanceof Error ? err.message : 'Failed to start microphone');
+      setIsConnecting(false);
+      // Clean up on failure
+      cleanupFnsRef.current.forEach(fn => fn());
+      cleanupFnsRef.current = [];
+    }
+  }, [setupListeners, float32ToInt16, resample]);
+
+  /**
+   * Stop streaming STT: disconnect from Realtime API + release mic
+   */
+  const stopStreaming = useCallback(async () => {
+    // Stop audio processing
+    if (processorRef.current) {
+      processorRef.current.disconnect();
+      processorRef.current = null;
+    }
+    if (audioContextRef.current) {
+      await audioContextRef.current.close();
+      audioContextRef.current = null;
+    }
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(t => t.stop());
+      streamRef.current = null;
     }
 
-    // Standard update context
-    return `Current Build Session Context:
-- Working directory: ${session?.repoPath || 'unknown'}
-- Branch: ${session?.branch || 'unknown'}
-- Session state: ${isStreaming ? 'Currently working on a task' : 'Idle, waiting for input'}
-- Recent conversation:
-${messageSummary || 'No messages yet'}`;
-  }, [messages, session, isStreaming]);
+    // Disconnect from Realtime API
+    await window.electronAPI.realtime.disconnect();
 
-  const {
-    isConnected: hookConnected,
-    isConnecting: hookConnecting,
-    isSpeaking,
-    audioLevel,
-    currentTranscript,
-    error,
-    connect,
-    disconnect,
-    startRecording,
-    updateContext,
-    speak,
-    sendUserActivity,
-  } = useVoiceConversationSDK({
-    agentId: agentId || '',
-    sessionId,
-    // No systemPrompt - use agent's main prompt configured via ElevenLabs API
-    // This allows us to update the prompt via API without code changes
-    onTranscript: (text, isFinal) => {
-      // Update store with transcript for display
-      setVoiceModeTranscript(sessionId, text);
-      // Track user speaking state for UI feedback (wave animation)
-      setVoiceModeUserSpeaking(sessionId, !isFinal && text.length > 0);
-      // Note: We no longer send directly to Build here.
-      // ElevenLabs agent decides when to call the execute_grep_command tool.
-      if (isFinal && text.trim()) {
-        console.log('[MicrophoneButton] Final transcript received, waiting for tool call:', text.slice(0, 50));
+    // Clean up listeners
+    cleanupFnsRef.current.forEach(fn => fn());
+    cleanupFnsRef.current = [];
+
+    isConnectedRef.current = false;
+    setIsConnected(false);
+    setIsConnecting(false);
+    setIsSpeaking(false);
+    currentTranscriptRef.current = '';
+    onConnectionChangeRef.current?.(false);
+
+    console.log('[MicrophoneButton] Streaming STT stopped');
+  }, []);
+
+  // Clean up on unmount
+  useEffect(() => {
+    return () => {
+      if (isConnectedRef.current) {
+        stopStreaming();
       }
-    },
-    onClaudeResponse: (text) => {
-      // Update store with agent response
-      setVoiceModeAgentResponse(sessionId, text);
-      console.log('[MicrophoneButton] Agent response:', text.slice(0, 50));
-    },
-    onError: (error) => {
-      console.error('[MicrophoneButton] Voice error:', error);
-      setVoiceModeError(sessionId, error);
-    },
-    // Handle tool calls from ElevenLabs agent
-    onToolCall: async (toolCall) => {
-      console.log('[MicrophoneButton] Tool call received:', toolCall.toolName, toolCall.parameters);
+    };
+  }, [stopStreaming]);
 
-      if (toolCall.toolName === 'execute_grep_command') {
-        const instruction = toolCall.parameters.instruction as string;
-        if (instruction) {
-          console.log('[MicrophoneButton] Executing Build command:', instruction.slice(0, 100));
-
-          // Send to Build/Agent SDK
-          onTranscriptionComplete?.(instruction);
-
-          // Return a clear "in progress" response
-          return `TASK SUBMITTED. Build is now working on: "${instruction.slice(0, 50)}...". Call get_task_status every 5-10 seconds to check progress and announce what Build is doing.`;
-        }
-        return 'No instruction provided';
-      }
-
-      // Status polling tool - agent calls this to get latest updates
-      if (toolCall.toolName === 'get_task_status') {
-        const currentState = useSessionStore.getState();
-        const sessionIsStreaming = currentState.isStreaming[sessionId];
-        const thinking = currentState.currentThinkingContent[sessionId] || '';
-        const streamContent = currentState.currentStreamContent[sessionId] || '';
-        const toolCalls = currentState.currentToolCalls[sessionId] || [];
-        const sessionMessages = currentState.messages[sessionId] || [];
-
-        // Get latest tool call for context
-        const latestToolCall = toolCalls.length > 0 ? toolCalls[toolCalls.length - 1] : null;
-        let currentAction = 'Processing';
-        if (latestToolCall) {
-          const toolName = latestToolCall.name?.toLowerCase() || '';
-          const input = latestToolCall.input || {};
-          // Extract file path, getting just the filename for brevity
-          const filePath = input.file_path as string | undefined;
-          const fileName = filePath ? filePath.split('/').pop() : undefined;
-
-          if (toolName.includes('read')) {
-            currentAction = fileName ? `Reading ${fileName}` : 'Reading a file';
-          } else if (toolName.includes('write')) {
-            currentAction = fileName ? `Writing ${fileName}` : 'Writing a file';
-          } else if (toolName.includes('edit')) {
-            currentAction = fileName ? `Editing ${fileName}` : 'Editing a file';
-          } else if (toolName.includes('bash')) {
-            // Include the command being run (truncated)
-            const command = input.command as string | undefined;
-            const description = input.description as string | undefined;
-            if (description) {
-              currentAction = description.slice(0, 60);
-            } else if (command) {
-              // Extract first part of command for context
-              const cmdPreview = command.split(/\s+/).slice(0, 4).join(' ');
-              currentAction = `Running: ${cmdPreview.slice(0, 50)}`;
-            } else {
-              currentAction = 'Running a command';
-            }
-          } else if (toolName.includes('glob')) {
-            const pattern = input.pattern as string | undefined;
-            currentAction = pattern ? `Searching for ${pattern}` : 'Searching files';
-          } else if (toolName.includes('grep')) {
-            const pattern = input.pattern as string | undefined;
-            currentAction = pattern ? `Searching for "${pattern}"` : 'Searching code';
-          } else if (toolName.includes('task')) {
-            const desc = input.description as string | undefined;
-            currentAction = desc ? `Sub-agent: ${desc.slice(0, 40)}` : 'Working with a sub-agent';
-          } else {
-            currentAction = `Using ${toolName}`;
-          }
-        }
-
-        // Extract latest thinking sentence
-        const thinkingSentences = thinking.split(/[.!?]\s+/).filter(s => s.trim().length > 10);
-        const latestThinking = thinkingSentences.length > 0 ? thinkingSentences[thinkingSentences.length - 1].slice(0, 100) : '';
-
-        if (sessionIsStreaming) {
-          // Include raw tool call data for the agent to summarize
-          const recentToolCalls = toolCalls.slice(-3).map(tc => ({
-            tool: tc.name,
-            input: tc.input,
-          }));
-
-          return JSON.stringify({
-            status: 'working',
-            toolCallCount: toolCalls.length,
-            recentToolCalls: recentToolCalls,
-            latestThought: latestThinking,
-          });
-        } else {
-          // Task complete - get last assistant message
-          const lastMessage = sessionMessages[sessionMessages.length - 1];
-          let completionContent = '';
-          if (lastMessage?.role === 'assistant' && typeof lastMessage.content === 'string') {
-            completionContent = lastMessage.content.slice(0, 500);
-          }
-
-          return JSON.stringify({
-            status: 'complete',
-            completionContent: completionContent,
-          });
-        }
-      }
-
-      return `Unknown tool: ${toolCall.toolName}`;
-    },
-  });
-
-  // Expose imperative handle for voice mode control from InputArea
+  // Expose imperative handle for push-to-talk control from InputArea
   useImperativeHandle(ref, () => ({
     startPushToTalk: async () => {
-      console.log('[VoiceMode] startPushToTalk called, isConnected:', hookConnected);
-      if (!hookConnected && !hookConnecting) {
-        // Need to connect first
-        try {
-          setVoiceModeConnecting(sessionId);
-          await connect();
-          // Wait a bit for connection to establish before starting recording
-          setTimeout(async () => {
-            await startRecording();
-          }, 100);
-        } catch (e) {
-          console.error('[VoiceMode] Push-to-talk connect error:', e);
-          setVoiceModeError(sessionId, e instanceof Error ? e.message : 'Failed to connect');
-        }
-      } else if (hookConnected) {
-        // Already connected, just start recording
-        await startRecording();
+      if (!isConnected && !isConnecting) {
+        await startStreaming();
       }
     },
     stopPushToTalk: async () => {
-      console.log('[VoiceMode] stopPushToTalk called');
-      // Stop recording but keep connected for quick follow-up
-      // Just signal end of user input
-      await window.electronAPI.voice.endInput();
+      if (isConnected) {
+        await stopStreaming();
+      }
     },
     toggleVoiceMode: async () => {
-      console.log('[VoiceMode] toggleVoiceMode called, isConnected:', hookConnected);
-      if (hookConnected) {
-        // Disconnect
-        await disconnect();
-        setVoiceModeDisconnected(sessionId);
-        setVoiceModeUserSpeaking(sessionId, false);
-        setAudioMode(sessionId, false);
-      } else if (!hookConnecting) {
-        // Connect
-        try {
-          setVoiceModeConnecting(sessionId);
-          await connect();
-          // Start recording immediately after connecting
-          setTimeout(async () => {
-            await startRecording();
-          }, 100);
-        } catch (e) {
-          console.error('[VoiceMode] Toggle connect error:', e);
-          setVoiceModeError(sessionId, e instanceof Error ? e.message : 'Failed to connect');
-        }
+      if (isConnected) {
+        await stopStreaming();
+      } else if (!isConnecting) {
+        await startStreaming();
       }
     },
     disconnectVoiceMode: async () => {
-      console.log('[VoiceMode] disconnectVoiceMode called');
-      if (hookConnected) {
-        await disconnect();
-        setVoiceModeDisconnected(sessionId);
-        setVoiceModeUserSpeaking(sessionId, false);
-        setAudioMode(sessionId, false);
+      if (isConnected) {
+        await stopStreaming();
       }
     },
-    isConnected: hookConnected,
-  }), [hookConnected, hookConnecting, connect, disconnect, startRecording, sessionId,
-      setVoiceModeConnecting, setVoiceModeDisconnected, setVoiceModeUserSpeaking, setVoiceModeError, setAudioMode]);
-
-  // Sync hook state to store
-  useEffect(() => {
-    if (hookConnecting && !isConnecting) {
-      setVoiceModeConnecting(sessionId);
-    }
-  }, [hookConnecting, isConnecting, sessionId, setVoiceModeConnecting]);
-
-  useEffect(() => {
-    if (hookConnected && !isConnected) {
-      setVoiceModeConnected(sessionId);
-      setAudioMode(sessionId, true);
-    } else if (!hookConnected && isConnected) {
-      // Voice mode disconnected (could be unexpected WebSocket close)
-      // Clear audioMode to prevent legacy TTS from running ("ghost mode")
-      setVoiceModeDisconnected(sessionId);
-      setAudioMode(sessionId, false);
-      setVoiceModeUserSpeaking(sessionId, false);
-    }
-  }, [hookConnected, isConnected, sessionId, setVoiceModeConnected, setVoiceModeDisconnected, setAudioMode, setVoiceModeUserSpeaking]);
-
-  useEffect(() => {
-    setVoiceModeSpeaking(sessionId, isSpeaking);
-  }, [isSpeaking, sessionId, setVoiceModeSpeaking]);
-
-  // Sync audio level to store for wave visualization
-  useEffect(() => {
-    setVoiceModeAudioLevel(sessionId, audioLevel);
-  }, [audioLevel, sessionId, setVoiceModeAudioLevel]);
-
-  useEffect(() => {
-    if (currentTranscript) {
-      setVoiceModeTranscript(sessionId, currentTranscript);
-    }
-  }, [currentTranscript, sessionId, setVoiceModeTranscript]);
-
-  useEffect(() => {
-    if (error) {
-      setVoiceModeError(sessionId, error);
-    }
-  }, [error, sessionId, setVoiceModeError]);
-
-  // Ref to hold generateContextSummary to avoid dependency issues
-  const generateContextRef = useRef(generateContextSummary);
-  generateContextRef.current = generateContextSummary;
-
-  // Send initial context when connected - includes rich context for proper greeting
-  useEffect(() => {
-    console.log('[MicrophoneButton] Connection effect fired, hookConnected:', hookConnected);
-    if (hookConnected) {
-      // Send rich initial context - this gives the agent all the information it needs
-      const context = generateContextRef.current(true);
-      console.log('[MicrophoneButton] Sending initial context, preview:', context.slice(0, 200));
-      updateContext(context);
-      // Note: We don't send a greeting speak() anymore - let user initiate conversation
-      // The initial context is enough for the agent to understand the session state
-    }
-    // eslint-disable-next-line react-hooks-exhaustive-deps
-  }, [hookConnected]);
-
-  // Helper to summarize assistant response for voice announcements
-  const summarizeForVoice = useCallback((content: unknown): string => {
-    if (typeof content !== 'string') return 'Task completed';
-
-    // Check for common patterns in Claude responses
-    if (content.includes('Created') || content.includes('created')) {
-      const match = content.match(/[Cc]reated?\s+(?:file\s+)?[`"]?([^`"\n]+)[`"]?/);
-      if (match) return `Created ${match[1]}`;
-    }
-    if (content.includes('Updated') || content.includes('updated') || content.includes('Modified') || content.includes('modified')) {
-      return 'Made the changes';
-    }
-    if (content.includes('Done') || content.includes('done') || content.includes('Complete') || content.includes('complete')) {
-      return 'Done';
-    }
-    if (content.includes('Error') || content.includes('error') || content.includes('failed')) {
-      return 'Encountered an issue';
-    }
-
-    // Truncate to first sentence/line if nothing specific found
-    const firstLine = content.split('\n')[0].slice(0, 100);
-    return firstLine.length < content.length ? firstLine + '...' : firstLine;
-  }, []);
-
-  // Send context updates when messages change (Build responded)
-  const prevMessagesLengthRef = useRef(messages.length);
-  const prevStreamingRef = useRef(isStreaming);
-
-  useEffect(() => {
-    // Only send update if messages actually changed (not on initial render)
-    if (hookConnected && messages.length > 0 && messages.length !== prevMessagesLengthRef.current) {
-      const lastMessage = messages[messages.length - 1];
-
-      // If Build (assistant) responded, send a progress update
-      if (lastMessage?.role === 'assistant') {
-        const summary = summarizeForVoice(lastMessage.content);
-        console.log('[MicrophoneButton] Build responded, sending progress update:', summary);
-
-        // If streaming just ended, this is the COMPLETION - announce it clearly
-        if (!isStreaming && prevStreamingRef.current) {
-          console.log('[MicrophoneButton] Streaming ended, announcing completion');
-
-          // Send raw completion data as JSON context
-          const completionData = JSON.stringify({
-            type: 'task_complete',
-            assistantResponse: typeof lastMessage.content === 'string' ? lastMessage.content.slice(0, 1000) : 'Task completed',
-          });
-          updateContext(completionData);
-
-          // Brief completion prompt - let agent summarize naturally
-          if (!isSpeaking) {
-            speak('Task complete. Give a brief summary.');
-          }
-        } else {
-          // Still streaming - just a progress update (no speak needed)
-          updateContext(`Build progress: ${summary}\nStatus: Still working...`);
-        }
-      } else {
-        // User message - just update context
-        console.log('[MicrophoneButton] Messages changed, sending context update');
-        const context = generateContextRef.current();
-        console.log('[MicrophoneButton] Context preview:', context.slice(0, 100));
-        updateContext(context);
-      }
-    }
-    prevMessagesLengthRef.current = messages.length;
-    prevStreamingRef.current = isStreaming;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hookConnected, messages.length, isStreaming, summarizeForVoice, speak]);
-
-  // User activity signal ref for preventing "are you there?" prompts
-  const activityIntervalRef = useRef<NodeJS.Timeout | null>(null);
-
-  // Send user activity signals while streaming to prevent "are you there?" prompts
-  useEffect(() => {
-    if (hookConnected && isStreaming) {
-      // Send activity signal immediately when streaming starts
-      sendUserActivity();
-      console.log('[MicrophoneButton] Sent initial user activity signal');
-
-      // Send activity signal every 15 seconds while working
-      activityIntervalRef.current = setInterval(() => {
-        sendUserActivity();
-        console.log('[MicrophoneButton] Sent periodic user activity signal');
-      }, 15000);
-    } else {
-      // Clear interval when not streaming
-      if (activityIntervalRef.current) {
-        clearInterval(activityIntervalRef.current);
-        activityIntervalRef.current = null;
-      }
-    }
-
-    return () => {
-      if (activityIntervalRef.current) {
-        clearInterval(activityIntervalRef.current);
-        activityIntervalRef.current = null;
-      }
-    };
-  }, [hookConnected, isStreaming, sendUserActivity]);
-
-  // Event-driven status updates - send tool changes as silent context (no verbal prompt)
-  // The agent can reference this if needed, but thinking updates are the primary verbal updates
-  const prevToolCallCountRef = useRef<number>(0);
-
-  useEffect(() => {
-    if (!hookConnected || !isStreaming) {
-      prevToolCallCountRef.current = 0;
-      return;
-    }
-
-    // When new tool calls come in, send raw JSON as context (silently - no speak)
-    const currentCount = currentToolCalls.length;
-    if (currentCount > prevToolCallCountRef.current && currentCount > 0) {
-      // Get the new tool calls since last update
-      const newTools = currentToolCalls.slice(prevToolCallCountRef.current);
-
-      // Send raw tool call data as JSON
-      const rawToolData = newTools.map(tool => ({
-        tool: tool.name,
-        input: tool.input,
-      }));
-
-      const contextJson = JSON.stringify({
-        type: 'tool_update',
-        toolCalls: rawToolData,
-        note: 'This is background context. Only mention if relevant and not already covered by thinking updates.',
-      });
-
-      console.log('[MicrophoneButton] Tool update (silent context):', contextJson.slice(0, 200));
-
-      // Send as context only - no verbal prompt for tool calls
-      // Thinking updates are the primary way to communicate what's happening
-      updateContext(contextJson);
-    }
-    prevToolCallCountRef.current = currentCount;
-  }, [hookConnected, isStreaming, currentToolCalls, updateContext]);
-
-  // Announce permission requests vocally and notify when approved/denied
-  const prevPermissionRef = useRef<string | null>(null);
-  const hadPendingPermissionRef = useRef<boolean>(false);
-
-  useEffect(() => {
-    if (!hookConnected) {
-      prevPermissionRef.current = null;
-      hadPendingPermissionRef.current = false;
-      return;
-    }
-
-    // Check if permission was just resolved (had one, now gone)
-    if (hadPendingPermissionRef.current && !pendingPermission) {
-      console.log('[MicrophoneButton] Permission resolved, notifying agent');
-      updateContext(JSON.stringify({ type: 'permission_resolved', status: 'approved' }));
-      speak('Permission granted. Build is continuing.');
-      hadPendingPermissionRef.current = false;
-      prevPermissionRef.current = null;
-      return;
-    }
-
-    if (!pendingPermission) {
-      return;
-    }
-
-    // Track that we have a pending permission
-    hadPendingPermissionRef.current = true;
-
-    // Only announce if this is a new permission request
-    const permissionId = pendingPermission.requestId;
-    if (permissionId !== prevPermissionRef.current) {
-      prevPermissionRef.current = permissionId;
-
-      // Build a descriptive announcement
-      let announcement = 'Permission needed.';
-      if (pendingPermission.toolName === 'Bash') {
-        const command = pendingPermission.toolInput?.command as string;
-        if (command) {
-          // Extract the main command (first few words)
-          const cmdPreview = command.split(/\s+/).slice(0, 3).join(' ');
-          announcement = `Permission needed to run: ${cmdPreview}`;
-        }
-      } else {
-        announcement = `Permission needed for ${pendingPermission.toolName}`;
-      }
-
-      console.log('[MicrophoneButton] Permission request, announcing:', announcement);
-      speak(`${announcement}. Tell me that Build needs permission to proceed.`);
-    }
-  }, [hookConnected, pendingPermission, speak, updateContext]);
-
-  // Silent thinking context updates - NO forced speak() calls
-  // The agent decides when to speak based on significant moments:
-  // - Discoveries or interesting findings
-  // - Changes in direction or approach
-  // - Important progress updates
-  const prevThinkingContentRef = useRef<string>('');
-  const lastContextUpdateRef = useRef<number>(0);
-
-  useEffect(() => {
-    if (!hookConnected || !isStreaming || !currentThinkingContent) {
-      if (!isStreaming) {
-        prevThinkingContentRef.current = '';
-        lastContextUpdateRef.current = 0;
-      }
-      return;
-    }
-
-    // Throttle context updates to every 5 seconds
-    const now = Date.now();
-    if (now - lastContextUpdateRef.current < 5000) {
-      return;
-    }
-
-    // Check for meaningful new content
-    const newContent = currentThinkingContent.slice(prevThinkingContentRef.current.length);
-    if (newContent.length < 100) {
-      return;
-    }
-
-    // Get recent thinking for context
-    const sentences = currentThinkingContent.split(/[.!?]/).filter(s => s.trim().length > 10);
-    const recentThinking = sentences.slice(-3).join('. ').slice(0, 500);
-
-    if (recentThinking.length > 30) {
-      // Send context silently - agent decides when to speak
-      const contextJson = JSON.stringify({
-        type: 'thinking_update',
-        thought: recentThinking,
-        instruction: 'Only speak if you notice something significant: a discovery, a change in approach, or important progress. Stay quiet for routine work.',
-      });
-
-      console.log('[MicrophoneButton] Silent thinking context update');
-      updateContext(contextJson);
-
-      prevThinkingContentRef.current = currentThinkingContent;
-      lastContextUpdateRef.current = now;
-    }
-  }, [hookConnected, isStreaming, currentThinkingContent, updateContext]);
-
-  // NOTE: Minimal speech approach - let agent decide when to speak
-  // - Thinking updates: Silent context only, agent speaks when significant
-  // - Tool calls: Silent context only
-  // - Permission requests: Speak (needs user action)
-  // - Task completion: Brief natural prompt
+    isConnected,
+  }), [isConnected, isConnecting, startStreaming, stopStreaming]);
 
   const handleClick = useCallback(async () => {
     if (isConnected) {
-      // Disconnect voice mode
-      await disconnect();
-      setVoiceModeDisconnected(sessionId);
-      setVoiceModeUserSpeaking(sessionId, false);
-      setAudioMode(sessionId, false);
+      await stopStreaming();
     } else if (!isConnecting) {
-      // Connect to voice mode
-      try {
-        setVoiceModeConnecting(sessionId);
-        await connect();
-        // Start recording immediately after connecting
-        setTimeout(async () => {
-          await startRecording();
-        }, 100);
-      } catch (e) {
-        console.error('[MicrophoneButton] Failed to connect:', e);
-        setVoiceModeError(sessionId, e instanceof Error ? e.message : 'Failed to connect');
-      }
+      await startStreaming();
     }
-  }, [isConnected, isConnecting, connect, disconnect, startRecording, sessionId,
-      setVoiceModeConnecting, setVoiceModeDisconnected, setVoiceModeUserSpeaking, setVoiceModeError, setAudioMode]);
+  }, [isConnected, isConnecting, startStreaming, stopStreaming]);
 
   const getStatusColor = () => {
-    if (error || voiceState?.error) return 'text-red-500';
-    if (isConnected) return 'text-green-500 hover:text-red-400'; // Green when on, hover shows it will turn off
+    if (error) return 'text-red-500';
+    if (isConnected) return 'text-green-500 hover:text-green-400';
     if (isConnecting) return 'text-yellow-500';
     return 'text-claude-text-secondary hover:text-claude-accent';
   };
 
   const getTitle = () => {
-    if (!isConfigured) return 'Configure ElevenLabs Agent ID in Settings';
-    if (error || voiceState?.error) return `Error: ${error || voiceState?.error}`;
-    if (isConnecting) return 'Connecting to voice mode...';
-    if (isConnected) return 'Voice mode ON - Click to turn off';
-    return 'Click to start voice mode';
+    if (error) return `Error: ${error}`;
+    if (isConnecting) return 'Connecting to speech-to-text...';
+    if (isConnected && isSpeaking) return 'Listening... click to stop';
+    if (isConnected) return 'Mic active — speak now (click to stop)';
+    return 'Click to start dictation';
   };
 
   const renderIcon = () => {
@@ -726,11 +337,11 @@ ${messageSummary || 'No messages yet'}`;
   return (
     <button
       onClick={handleClick}
-      disabled={disabled || isConnecting || !isConfigured}
+      disabled={disabled || isConnecting}
       className={`
         relative p-1 transition-all duration-200
-        ${!isConfigured ? 'text-claude-text-secondary opacity-40 cursor-not-allowed' : getStatusColor()}
-        ${disabled || isConnecting ? 'opacity-50 cursor-not-allowed' : !isConfigured ? '' : 'cursor-pointer'}
+        ${getStatusColor()}
+        ${disabled || isConnecting ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}
       `}
       style={{ borderRadius: 0 }}
       title={getTitle()}
