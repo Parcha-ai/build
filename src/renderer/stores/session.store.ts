@@ -1727,15 +1727,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     const unsubEnd = window.electronAPI.claude.onStreamEnd(({ sessionId, message }) => {
       const currentState = get();
-
-      // If streaming is already false, this is a stale STREAM_END from a cancelled stream
-      // that arrived after interruptAndSend already cleaned up. Skip it entirely to prevent
-      // interfering with a new stream that may have already started.
-      if (!currentState.isStreaming[sessionId]) {
-        console.log(`[SessionStore] onStreamEnd SKIPPED for ${sessionId} — streaming already false (stale event from cancelled stream)`);
-        return;
-      }
-
       const queueLength = (currentState.messageQueue[sessionId] || []).length;
       const streamModel = currentState.activeStreamModel[sessionId];
 
@@ -1822,13 +1813,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     const unsubError = window.electronAPI.claude.onStreamError(({ sessionId, error }) => {
       const currentState = get();
-
-      // If streaming is already false, this is a stale error from a cancelled stream.
-      // Skip to prevent interfering with a new stream.
-      if (!currentState.isStreaming[sessionId]) {
-        console.log(`[SessionStore] onStreamError SKIPPED for ${sessionId} — streaming already false (stale event from cancelled stream)`);
-        return;
-      }
 
       const streamModel = currentState.activeStreamModel[sessionId];
 
@@ -2251,36 +2235,20 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         console.log(`[interruptAndSend] Saved interrupted message with ${partialContent.length} chars of content`);
       }
 
-      // Increment stream generation so the stale STREAM_END from the cancelled
-      // stream is ignored when it arrives (it will see a different generation)
-      const nextGen = (get().streamGeneration[sessionId] || 0) + 1;
-
       // Clear current streaming state
       set((state) => ({
         isStreaming: { ...state.isStreaming, [sessionId]: false },
-        streamGeneration: { ...state.streamGeneration, [sessionId]: nextGen },
         streamEvents: { ...state.streamEvents, [sessionId]: [] },
         currentStreamContent: { ...state.currentStreamContent, [sessionId]: '' },
         currentThinkingContent: { ...state.currentThinkingContent, [sessionId]: '' },
         currentToolCalls: { ...state.currentToolCalls, [sessionId]: [] },
       }));
 
-      console.log(`[interruptAndSend] Streaming state cleared (gen ${nextGen}), waiting for stale events to drain`);
-
-      // CRITICAL: Wait for the stale STREAM_END/STREAM_ERROR from the cancelled
-      // stream to arrive via IPC and be discarded by our isStreaming guard.
-      // Without this delay, sendMessage() sets isStreaming=true immediately, and
-      // the stale event arrives to find isStreaming=true (from the NEW stream),
-      // bypassing the guard and killing the new stream with "process aborted".
-      // 300ms is enough for the IPC round-trip from the backend's generator
-      // unwind + STREAM_END emit + Electron IPC delivery.
-      await new Promise(resolve => setTimeout(resolve, 300));
-
-      console.log(`[interruptAndSend] Stale event drain complete, sending new message`);
+      console.log(`[interruptAndSend] Streaming state cleared, sending new message`);
     }
 
-    // Send new message (use fresh state reference, not the stale `state` from before cancel)
-    get().sendMessage(sessionId, message, attachments);
+    // Send new message
+    state.sendMessage(sessionId, message, attachments);
   },
 
   // Setup progress methods

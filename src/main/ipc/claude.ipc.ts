@@ -119,7 +119,17 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
 
         try {
           // Stream the response (Stop hook handles Ralph Loop iteration)
+          let eventCount = 0;
+          let lastEventType = '';
+          let lastEventTime = Date.now();
+          const streamStartTime = Date.now();
           for await (const event of claudeService.streamMessage(sessionId, message, attachments, permissionMode, thinkingMode, model, gstackMode, supplementalMessages)) {
+            eventCount++;
+            lastEventType = event.type;
+            lastEventTime = Date.now();
+            if (event.type !== 'text_delta' && event.type !== 'thinking_delta') {
+              console.log(`[Claude IPC] Event #${eventCount} type=${event.type} for ${sessionId.substring(0, 8)} (+${Date.now() - streamStartTime}ms)`);
+            }
             switch (event.type) {
               case 'text_delta':
                 batcher.addText(event.content || '', event.agentId);
@@ -343,11 +353,8 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
 
   ipcMain.handle(IPC_CHANNELS.CLAUDE_CANCEL, async (_, sessionId: string) => {
     claudeService.cancelQuery(sessionId);
-    // Wait for the abort signal to propagate through the SDK generator and
-    // the generator to yield its final STREAM_END/error event. 200ms gives
-    // the async generator time to unwind, preventing stale events from
-    // arriving after the renderer has already started a new stream.
-    await new Promise(resolve => setTimeout(resolve, 200));
+    // Small delay to ensure the abort signal has propagated through the generator
+    await new Promise(resolve => setTimeout(resolve, 50));
   });
 
   ipcMain.handle(IPC_CHANNELS.CLAUDE_GET_MESSAGES, async (_, sessionId: string, limit?: number) => {

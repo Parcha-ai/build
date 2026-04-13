@@ -4133,17 +4133,25 @@ Begin by creating the task structure now.
 
               // Fetch rich context usage breakdown from SDK (v0.2.86+)
               // Provides per-category token counts (system prompt, tools, messages, MCP, etc.)
+              // Fetch rich context usage breakdown — but NOT on SSH sessions.
+              // getContextUsage() sends a request to the Claude Code process over
+              // stdin/stdout. On SSH, this hangs indefinitely (the response gets
+              // lost in the transport), blocking the entire stream pipeline.
               let contextUsageBreakdown: Record<string, unknown> | undefined;
-              try {
-                const queryObj = this.activeQueryObjects.get(sessionId);
-                if (queryObj) {
-                  const richUsage = await queryObj.getContextUsage();
-                  contextUsageBreakdown = richUsage as unknown as Record<string, unknown>;
-                  console.log(`[Claude SDK] Rich context usage: ${richUsage.totalTokens}/${richUsage.maxTokens} (${richUsage.percentage}%) across ${richUsage.categories.length} categories`);
+              if (!session?.sshConfig) {
+                try {
+                  const queryObj = this.activeQueryObjects.get(sessionId);
+                  if (queryObj) {
+                    const richUsage = await Promise.race([
+                      queryObj.getContextUsage(),
+                      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('getContextUsage timeout')), 5000)),
+                    ]);
+                    contextUsageBreakdown = richUsage as unknown as Record<string, unknown>;
+                    console.log(`[Claude SDK] Rich context usage: ${richUsage.totalTokens}/${richUsage.maxTokens} (${richUsage.percentage}%) across ${richUsage.categories.length} categories`);
+                  }
+                } catch (ctxErr) {
+                  console.warn('[Claude SDK] getContextUsage() failed, using basic token counts:', ctxErr);
                 }
-              } catch (ctxErr) {
-                // Non-fatal: fall back to basic token-based usage
-                console.warn('[Claude SDK] getContextUsage() failed, using basic token counts:', ctxErr);
               }
 
               // Send context usage to renderer for display (enhanced with rich breakdown when available)
