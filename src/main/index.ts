@@ -531,6 +531,7 @@ function migrateFromGrepBuild(): void {
   const filesToMigrate = [
     'claudette-sessions.json',
     'claudette-settings.json',
+    'claudette-message-cache.json',
     'claudette-memory.json',
     'claudette-qmd.json',
     'claudette-mcp-servers.json',
@@ -540,8 +541,9 @@ function migrateFromGrepBuild(): void {
   for (const file of filesToMigrate) {
     const src = pathModule.join(oldDir, file);
     const dst = pathModule.join(newDir, file);
-    if (fs.existsSync(src) && !fs.existsSync(dst)) {
+    if (fs.existsSync(src)) {
       try {
+        // Overwrite — the app may have created default/empty files before migration ran
         fs.copyFileSync(src, dst);
         console.log(`[Migration] Copied ${file}`);
       } catch (err) {
