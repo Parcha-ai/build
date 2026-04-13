@@ -80,20 +80,70 @@ export interface CompactionSwitchState {
   postTokens?: number;
 }
 
-// SSH streaming watchdog — DISABLED.
-// The 60s timeout was too aggressive: Claude routinely spends >60s executing tools
-// (bash commands, research, etc.) without sending text deltas back to the renderer.
-// The watchdog kept firing mid-work, spamming reconnect messages and disrupting sessions.
-// The safety net in claude.ipc.ts (finally block sending synthetic STREAM_END) handles
-// true stalls when the SSH connection drops silently.
+// Streaming activity watchdog — catches stuck isStreaming state.
+// Tracks the last time ANY stream event (chunk, tool call, thinking, etc.) was received.
+// If isStreaming is true but no activity for 120s, force-clear it.
+// The old 60s text-delta-only watchdog was too aggressive. This one tracks ALL events
+// and uses a longer timeout, so it only fires when the stream is truly dead.
+const streamLastActivity = new Map<string, number>();
+const streamWatchdogTimers = new Map<string, ReturnType<typeof setInterval>>();
 
-function resetStreamingWatchdog(_sessionId: string, _getState: () => SessionState) {
-  // no-op — watchdog disabled
+function touchStreamActivity(sessionId: string) {
+  streamLastActivity.set(sessionId, Date.now());
 }
 
-function clearStreamingWatchdog(_sessionId: string) {
-  // no-op — watchdog disabled
+function resetStreamingWatchdog(sessionId: string, getState: () => SessionState) {
+  clearStreamingWatchdog(sessionId);
+  touchStreamActivity(sessionId);
+
+  const timer = setInterval(() => {
+    const state = getState();
+    if (!state.isStreaming[sessionId]) {
+      clearStreamingWatchdog(sessionId);
+      return;
+    }
+
+    const lastActivity = streamLastActivity.get(sessionId) || 0;
+    const elapsed = Date.now() - lastActivity;
+    if (elapsed > 120_000) {
+      console.error(`[StreamWatchdog] No stream activity for ${Math.round(elapsed / 1000)}s on ${sessionId} — force-clearing isStreaming`);
+      clearStreamingWatchdog(sessionId);
+
+      // Force-clear streaming state so the UI unsticks
+      const currentContent = state.currentStreamContent[sessionId] || '';
+      if (currentContent.trim()) {
+        // Save partial content as interrupted message
+        state.addMessage(sessionId, {
+          id: `watchdog-${Date.now()}`,
+          role: 'assistant',
+          content: currentContent,
+          timestamp: new Date(),
+          interrupted: true,
+        });
+      }
+
+      // Use direct set to avoid queue processing (same pattern as error handler)
+      // We don't know if the backend is truly done, so don't drain the queue
+      const store = getState as unknown as { setState: (fn: (s: SessionState) => Partial<SessionState>) => void };
+      // Access the zustand set function via the module-level reference
+      watchdogForceReset(sessionId);
+    }
+  }, 15_000); // Check every 15s
+
+  streamWatchdogTimers.set(sessionId, timer);
 }
+
+function clearStreamingWatchdog(sessionId: string) {
+  const timer = streamWatchdogTimers.get(sessionId);
+  if (timer) {
+    clearInterval(timer);
+    streamWatchdogTimers.delete(sessionId);
+  }
+  streamLastActivity.delete(sessionId);
+}
+
+// This gets wired up after the store is created (see below)
+let watchdogForceReset: (sessionId: string) => void = () => {};
 
 interface SessionState {
   sessions: Session[];
@@ -1508,11 +1558,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     if (!hasElectronAPI) return () => {};
     const { addMessage, updateStreamContent, updateThinkingContent, addToolCall, updateToolCall, setStreaming, setSystemInfo } = get();
 
-    // Helper to reset SSH watchdog on any stream activity
+    // Helper to reset watchdog on any stream activity (all sessions, not just SSH)
     const resetWatchdog = (sessionId: string) => {
-      const session = get().sessions.find(s => s.id === sessionId);
-      if (session?.sshConfig && get().isStreaming[sessionId]) {
-        resetStreamingWatchdog(sessionId, get);
+      if (get().isStreaming[sessionId]) {
+        touchStreamActivity(sessionId);
       }
     };
 
@@ -2949,3 +2998,16 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     };
   },
 }));
+
+// Wire up the watchdog force-reset function now that the store exists
+watchdogForceReset = (sessionId: string) => {
+  console.error(`[StreamWatchdog] Force-resetting isStreaming for ${sessionId}`);
+  useSessionStore.setState((state) => ({
+    isStreaming: { ...state.isStreaming, [sessionId]: false },
+    activeStreamModel: { ...state.activeStreamModel, [sessionId]: undefined },
+    currentStreamContent: { ...state.currentStreamContent, [sessionId]: '' },
+    currentThinkingContent: { ...state.currentThinkingContent, [sessionId]: '' },
+    currentToolCalls: { ...state.currentToolCalls, [sessionId]: [] },
+    streamEvents: { ...state.streamEvents, [sessionId]: [] },
+  }));
+};
