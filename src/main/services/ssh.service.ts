@@ -472,6 +472,46 @@ export class SSHService {
    * Get the current git branch on the remote for an SSH session.
    * Returns the branch name or null if not a git repo / connection failed.
    */
+  /**
+   * Kill all orphaned remote processes across all active SSH connections.
+   * Called on app quit to prevent process accumulation on the server.
+   */
+  async killAllRemoteProcesses(): Promise<void> {
+    for (const [sessionId, conn] of this.connections.entries()) {
+      try {
+        await this.execCommand(conn.client,
+          'pkill -f "claude --output-format stream-json" 2>/dev/null; ' +
+          'pkill -f "chrome-devtools-mcp" 2>/dev/null; ' +
+          'true'
+        );
+        console.log(`[SSH Service] Cleaned up remote processes via connection ${sessionId}`);
+      } catch (error) {
+        console.warn(`[SSH Service] Failed to clean up remote processes for ${sessionId}:`, error);
+      }
+    }
+  }
+
+  /**
+   * Kill orphaned claude processes on the remote server for a given session.
+   * Called on session cleanup, query cancel, and app quit.
+   */
+  async killRemoteProcesses(sessionId: string, config: SSHConfig): Promise<void> {
+    try {
+      const client = await this.getConnection(sessionId, config);
+      // Kill any claude processes started by this user that are orphaned
+      // (no controlling terminal, which means they were launched via SSH exec)
+      await this.execCommand(client,
+        'pkill -f "claude --output-format stream-json" 2>/dev/null; ' +
+        'pkill -f "chrome-devtools-mcp" 2>/dev/null; ' +
+        'true' // Always succeed
+      );
+      console.log(`[SSH Service] Killed remote processes for session ${sessionId}`);
+    } catch (error) {
+      // Non-fatal — connection might already be dead
+      console.warn(`[SSH Service] Failed to kill remote processes for ${sessionId}:`, error);
+    }
+  }
+
   async getRemoteBranch(sessionId: string, config: SSHConfig): Promise<string | null> {
     try {
       const client = await this.getConnection(sessionId, config);

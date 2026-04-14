@@ -2671,6 +2671,11 @@ Read or source that file if you need the actual values. Do not print secret valu
       console.log(`[Claude Service] Aborting existing query for session ${sessionId.substring(0, 8)} before starting new one`);
       existingController.abort();
       codexService.cancel(sessionId);
+
+      // Kill orphaned remote processes from the old query
+      if (session?.sshConfig) {
+        sshService.killRemoteProcesses(sessionId, session.sshConfig).catch(() => {});
+      }
     }
 
     // Create abort controller for cancellation
@@ -4301,6 +4306,12 @@ Begin by creating the task structure now.
     }
     this.activeQueries.delete(sessionId);
     this.activeQueryObjects.delete(sessionId);
+
+    // Kill remote processes if this is an SSH session
+    const session = (this.sessionStore.get(`sessions.${sessionId}`) as Session | undefined);
+    if (session?.sshConfig) {
+      sshService.killRemoteProcesses(sessionId, session.sshConfig).catch(() => {});
+    }
 
     // Session-keyed maps
     this.sessionPermissionModes.delete(sessionId);
