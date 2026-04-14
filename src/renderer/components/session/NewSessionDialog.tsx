@@ -26,6 +26,8 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
   const [createWorktree, setCreateWorktree] = useState(false);
   const [isGitRepo, setIsGitRepo] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
+  const [progressMessage, setProgressMessage] = useState<string>('');
+  const [progressLog, setProgressLog] = useState<string[]>([]);
   const [worktreeSetupType, setWorktreeSetupType] = useState<'none' | 'script' | 'instructions'>('none');
   const [worktreeScriptPath, setWorktreeScriptPath] = useState('');
   const [worktreeInstructions, setWorktreeInstructions] = useState('');
@@ -43,6 +45,44 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
   const [isBranchDropdownOpen, setIsBranchDropdownOpen] = useState(false);
   const [branchFilter, setBranchFilter] = useState('');
   const [manualRepoUrl, setManualRepoUrl] = useState('');
+
+  // Subscribe to setup progress (both SSH and dev) while creating.
+  // Live updates like "Connecting...", "Embedding documents...", etc.
+  useEffect(() => {
+    if (!isCreating) return;
+
+    const handleProgress = (data: { sessionId: string; status: string; message?: string; output?: string; error?: string }) => {
+      const text = (data.message || data.output || '').trim();
+      if (text) {
+        setProgressMessage(text);
+        setProgressLog((prev) => {
+          // Avoid duplicates and keep the log bounded
+          if (prev[prev.length - 1] === text) return prev;
+          const next = [...prev, text];
+          return next.length > 50 ? next.slice(-50) : next;
+        });
+      }
+      if (data.status === 'error' && data.error) {
+        setProgressMessage(`Error: ${data.error}`);
+      }
+    };
+
+    const unsubDev = window.electronAPI.dev.onSetupProgress(handleProgress);
+    const unsubSSH = window.electronAPI.ssh.onSetupProgress(handleProgress);
+
+    return () => {
+      unsubDev();
+      unsubSSH();
+    };
+  }, [isCreating]);
+
+  // Reset progress when creation starts
+  useEffect(() => {
+    if (isCreating) {
+      setProgressMessage('Starting...');
+      setProgressLog([]);
+    }
+  }, [isCreating]);
 
   // Check if Claude CLI is installed when dialog opens
   useEffect(() => {
@@ -456,6 +496,27 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
 
           {/* Content */}
           <div className="p-4">
+            {/* Live setup progress — shown for ANY step while creating (SSH, dev, teleport) */}
+            {isCreating && (
+              <div className="p-3 mb-4 bg-claude-bg border border-claude-border">
+                <div className="flex items-center gap-2 mb-2">
+                  <Loader2 size={12} className="animate-spin text-cyan-400" />
+                  <span className="text-[10px] font-bold uppercase text-cyan-400" style={{ letterSpacing: '0.05em' }}>
+                    {progressMessage || 'Starting...'}
+                  </span>
+                </div>
+                {progressLog.length > 0 && (
+                  <div className="max-h-48 overflow-y-auto border-t border-claude-border pt-2 space-y-0.5">
+                    {progressLog.slice(-30).map((line, i) => (
+                      <div key={i} className="text-[10px] text-claude-text-secondary font-mono whitespace-pre-wrap break-all">
+                        {line}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
             {step === 'source' ? (
               <>
                 {/* Source selection */}
@@ -1190,6 +1251,7 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
                       </p>
                     </div>
                   )}
+
                 </div>
               </>
             )}

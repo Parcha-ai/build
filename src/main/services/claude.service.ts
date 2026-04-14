@@ -215,7 +215,9 @@ export class ClaudeService {
    * This runs compaction invisibly while the user is focused elsewhere.
    */
   private compactIdleSessions(activeSessionId: string): void {
-    const COMPACT_THRESHOLD = 60; // percentage
+    // Only proactively compact when context is genuinely filling up.
+    // On 1M windows, 60% (600k) still has massive runway. 85% is the new floor.
+    const COMPACT_THRESHOLD = 85; // percentage
     const IDLE_THRESHOLD = 30_000; // 30 seconds
     const now = Date.now();
 
@@ -2671,6 +2673,11 @@ Read or source that file if you need the actual values. Do not print secret valu
       console.log(`[Claude Service] Aborting existing query for session ${sessionId.substring(0, 8)} before starting new one`);
       existingController.abort();
       codexService.cancel(sessionId);
+
+      // Kill orphaned remote processes from the old query
+      if (session?.sshConfig) {
+        sshService.killRemoteProcesses(sessionId, session.sshConfig).catch(() => {});
+      }
     }
 
     // Create abort controller for cancellation

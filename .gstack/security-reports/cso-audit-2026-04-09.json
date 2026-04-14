@@ -1,0 +1,215 @@
+{
+  "audit": {
+    "type": "CSO Daily Security Audit",
+    "date": "2026-04-09",
+    "target": "Claudette/Grep Build - Electron Desktop Application",
+    "version": "0.2.3",
+    "confidenceGate": "8/10",
+    "auditor": "Agent M - CSO Mode"
+  },
+  "architectureSummary": {
+    "stack": "Electron 38.x + TypeScript + React 18 + Node.js",
+    "processModel": "Main process (Node) + Renderer (React/Chromium) + Preload bridge",
+    "ipcChannelCount": 145,
+    "serviceCount": 28,
+    "trustBoundaries": [
+      "Renderer <-> Preload <-> Main (IPC)",
+      "Main <-> SSH Remote Hosts",
+      "Main <-> Claude Agent SDK",
+      "Main <-> CDP Proxy <-> External Tools (Playwright/Stagehand)",
+      "Browser Webview <-> Loaded Web Content",
+      "Main <-> MCP Servers",
+      "Main <-> Plugin Marketplaces (GitHub repos)"
+    ],
+    "securityPosture": {
+      "contextIsolation": "ENABLED for main window, DISABLED for webview",
+      "nodeIntegration": "DISABLED",
+      "sandbox": "DISABLED (node-pty requirement)",
+      "webSecurity": "DISABLED for webview",
+      "fuses": {
+        "RunAsNode": false,
+        "EnableNodeOptionsEnvironmentVariable": false,
+        "EnableNodeCliInspectArguments": false,
+        "EnableEmbeddedAsarIntegrityValidation": true,
+        "OnlyLoadAppFromAsar": true,
+        "EnableCookieEncryption": false
+      }
+    }
+  },
+  "findings": [
+    {
+      "id": "CSO-001",
+      "title": "CDP Proxy Listens on All Network Interfaces (0.0.0.0)",
+      "severity": "HIGH",
+      "confidence": "9/10",
+      "phase": "Phase 1 / Phase 10 (STRIDE)",
+      "category": "Network Exposure",
+      "location": "src/main/services/cdp-proxy.service.ts:87",
+      "description": "The CDP (Chrome DevTools Protocol) proxy server calls httpServer.listen(this.port) without specifying a bind address, which defaults to 0.0.0.0 (all interfaces). This exposes full browser debugging capabilities to any device on the local network.",
+      "exploitScenario": "An attacker on the same WiFi network (coffee shop, office, conference) can connect to ws://<victim-ip>:9222/devtools/browser and gain full CDP control over the webview. This allows: reading page content, executing JavaScript, intercepting network requests, and stealing cookies/credentials from any site loaded in the browser preview.",
+      "evidence": "this.httpServer.listen(this.port) at line 87 — no host parameter specified. Also sets Access-Control-Allow-Origin: '*' at line 107.",
+      "remediation": "Bind to localhost only: this.httpServer.listen(this.port, '127.0.0.1', callback). Also remove the wildcard CORS header.",
+      "status": "OPEN"
+    },
+    {
+      "id": "CSO-002",
+      "title": "Webview Has contextIsolation Disabled and webSecurity Disabled",
+      "severity": "HIGH",
+      "confidence": "9/10",
+      "phase": "Phase 9 (OWASP A05) / Phase 10 (STRIDE)",
+      "category": "Electron Misconfiguration",
+      "location": "src/main/index.ts:383-385, src/renderer/components/preview/BrowserPreview.tsx:1605",
+      "description": "The browser preview webview is created with contextIsolation=no (line 1605) and the will-attach-webview handler sets webSecurity=false (line 385). This means any website loaded in the preview can access the webview's JavaScript context without isolation and make arbitrary cross-origin requests.",
+      "exploitScenario": "A developer previews a malicious or compromised website. With webSecurity=false, that page can make cross-origin fetch requests to localhost services, internal network hosts, or cloud metadata endpoints (169.254.169.254). With contextIsolation disabled, if any preload APIs leak into the webview context, the page could access them.",
+      "evidence": "webpreferences=\"contextIsolation=no\" at BrowserPreview.tsx:1605; webPreferences.webSecurity = false at index.ts:385",
+      "remediation": "Enable contextIsolation for the webview. If cross-origin requests are needed for preview, use a controlled proxy or session-level CORS configuration rather than disabling webSecurity entirely.",
+      "status": "OPEN"
+    },
+    {
+      "id": "CSO-003",
+      "title": "Arbitrary File Write via FS_WRITE_FILE IPC Without Path Validation",
+      "severity": "HIGH",
+      "confidence": "8/10",
+      "phase": "Phase 9 (OWASP A01/A03)",
+      "category": "Path Traversal / Arbitrary File Write",
+      "location": "src/main/ipc/fs.ipc.ts:228-253",
+      "description": "The FS_WRITE_FILE handler accepts an arbitrary filePath and content from the renderer process without validating that the path is within the session's worktree. It creates parent directories recursively and writes the file. While the renderer is trusted (same origin), if any XSS occurs in the renderer or a malicious extension/plugin manipulates IPC, arbitrary files can be written anywhere the process has access.",
+      "exploitScenario": "A compromised renderer or malicious MCP tool response triggers a write to /Users/aj/.ssh/authorized_keys or /Users/aj/.zshrc, injecting malicious content. The handler creates directories with recursive:true, so any path is valid.",
+      "evidence": "ipcMain.handle(FS_WRITE_FILE) at line 228: accepts filePath, content with no path validation. fs.mkdir(dir, { recursive: true }) at line 246.",
+      "remediation": "Validate that filePath is within the session's worktreePath using path.resolve() and startsWith() checks. Reject writes outside the project boundary.",
+      "status": "OPEN"
+    },
+    {
+      "id": "CSO-004",
+      "title": "Critical Dependency Vulnerability: simple-git RCE (GHSA-r275-fr43-pm7q)",
+      "severity": "CRITICAL",
+      "confidence": "10/10",
+      "phase": "Phase 3 (Supply Chain)",
+      "category": "Dependency Vulnerability",
+      "location": "package.json: simple-git ^3.30.0",
+      "description": "The installed version of simple-git (3.15.0-3.32.2) has a critical vulnerability where the blockUnsafeOperationsPlugin can be bypassed via case-insensitive protocol.allow config key, enabling Remote Code Execution. npm audit confirms a fix is available.",
+      "exploitScenario": "An attacker who can influence git clone/pull arguments (e.g., through a crafted repository URL passed via the session creation flow) could exploit the unsafe operations bypass to execute arbitrary commands on the host.",
+      "evidence": "npm audit output: 'simple-git has blockUnsafeOperationsPlugin bypass via case-insensitive protocol.allow config key enables RCE'",
+      "remediation": "Run 'npm audit fix' to update simple-git to the patched version (3.32.3+).",
+      "status": "OPEN"
+    },
+    {
+      "id": "CSO-005",
+      "title": "All Permissions Granted to All Origins (Default Session + Webview Session)",
+      "severity": "MEDIUM",
+      "confidence": "9/10",
+      "phase": "Phase 9 (OWASP A05)",
+      "category": "Excessive Permissions",
+      "location": "src/main/index.ts:346-365, 374-377",
+      "description": "Both the default Electron session and the webview session grant ALL permission requests unconditionally. The setPermissionRequestHandler always calls callback(true) regardless of origin or permission type. The setPermissionCheckHandler returns true for all permissions. This includes geolocation, camera, microphone, clipboard, and more.",
+      "exploitScenario": "Any website loaded in the browser preview can silently access the microphone, camera, geolocation, clipboard contents, and notifications without any user prompt. A malicious site previewed by the developer could exfiltrate audio/video or clipboard data.",
+      "evidence": "index.ts:354 callback(true) in else branch; index.ts:364 return true unconditionally; index.ts:376 callback(true) for webview session.",
+      "remediation": "Implement granular permission checks. Only grant media permissions to trusted origins. Prompt the user for permissions from webview-loaded content.",
+      "status": "OPEN"
+    },
+    {
+      "id": "CSO-006",
+      "title": "shell.openExternal and shell.openPath Without URL/Path Validation",
+      "severity": "MEDIUM",
+      "confidence": "8/10",
+      "phase": "Phase 9 (OWASP A03)",
+      "category": "Open Redirect / Arbitrary Protocol Handler",
+      "location": "src/main/ipc/settings.ipc.ts:44-49",
+      "description": "The APP_OPEN_EXTERNAL and APP_OPEN_PATH IPC handlers pass renderer-provided URLs and file paths directly to shell.openExternal() and shell.openPath() without any validation or allowlisting.",
+      "exploitScenario": "shell.openExternal with a crafted URL like 'file:///etc/passwd' or a custom protocol handler could open arbitrary local files or trigger OS-level protocol handlers. A malicious link in a Claude response that triggers openExternal could exploit this.",
+      "evidence": "settings.ipc.ts:45 shell.openExternal(url) with no URL validation; line 49 shell.openPath(filePath) with no path restriction.",
+      "remediation": "Validate URLs against an allowlist of protocols (https:, http:). For openPath, validate the path is within expected directories.",
+      "status": "OPEN"
+    },
+    {
+      "id": "CSO-007",
+      "title": "Codex Service Uses --dangerously-bypass-approvals-and-sandbox by Default",
+      "severity": "MEDIUM",
+      "confidence": "8/10",
+      "phase": "Phase 7 (LLM/AI Security)",
+      "category": "AI Safety Bypass",
+      "location": "src/main/services/codex.service.ts:790-799",
+      "description": "The Codex service's default execution mode maps to useDangerouslyBypass=true, which appends '--dangerously-bypass-approvals-and-sandbox' to the Codex CLI arguments. This disables all safety guardrails for the AI agent.",
+      "exploitScenario": "If the Codex agent is given a prompt containing adversarial instructions (via prompt injection in file contents or user input), it can execute arbitrary code, modify any file, and make network requests without any approval gates.",
+      "evidence": "codex.service.ts:792 default case returns { useDangerouslyBypass: true }; line 799 args.push('--dangerously-bypass-approvals-and-sandbox')",
+      "remediation": "Change the default execution mode to use sandbox with workspace-write and require approval for dangerous operations. Only allow bypass when explicitly requested by the user with clear warning.",
+      "status": "OPEN"
+    },
+    {
+      "id": "CSO-008",
+      "title": "API Keys Stored Unencrypted in electron-store (Cookie Encryption Fuse Disabled)",
+      "severity": "MEDIUM",
+      "confidence": "8/10",
+      "phase": "Phase 11 (Data Classification)",
+      "category": "Sensitive Data Storage",
+      "location": "src/main/services/settings.service.ts, forge.config.ts:170",
+      "description": "API keys (Anthropic, OpenAI, ElevenLabs, Google, GitHub, Foundry) are stored in electron-store without encryption. The EnableCookieEncryption fuse is explicitly set to false. electron-store writes plain JSON to the filesystem. Auth tokens are stored similarly in the grep-auth store without encryptionKey.",
+      "exploitScenario": "Any process with filesystem read access (another Electron app, malware, a rogue npm script) can read ~/Library/Application Support/g-build/claudette-settings.json and extract all API keys. On shared machines, other users may access these files.",
+      "evidence": "settings.service.ts uses Store without encryption; auth.service.ts:29 explicitly comments 'We don't use encryptionKey'; forge.config.ts:170 EnableCookieEncryption: false",
+      "remediation": "Use electron-store's encryptionKey option or the system keychain (keytar) for API key storage. Consider using safeStorage API for encrypting sensitive values.",
+      "status": "OPEN"
+    }
+  ],
+  "filteredFindings": {
+    "belowConfidenceGate": [
+      "Electron remote debugging port enabled via command line switch (design decision for CDP proxy, localhost only via Electron's default)",
+      "Third-party cookie flags disabled (required for OAuth flow, documented)",
+      "monaco-asset protocol with bypassCSP (custom protocol for editor assets, limited scope)",
+      "sandbox: false on BrowserWindow (required for node-pty, documented in CLAUDE.md)"
+    ],
+    "hardExclusions": [
+      "DoS via deep directory traversal in FS_LIST_FILES (rate limiting exclusion)",
+      "Memory leak in output buffers for terminal (memory leak exclusion)",
+      "Missing HSTS/security headers on CDP proxy HTTP (hardening without concrete vuln)"
+    ]
+  },
+  "dependencyAudit": {
+    "totalVulnerabilities": 64,
+    "critical": 4,
+    "high": 42,
+    "moderate": 11,
+    "low": 7,
+    "criticalPackages": [
+      "simple-git 3.15.0-3.32.2 (RCE via protocol.allow bypass) - FIX AVAILABLE",
+      "basic-ftp <5.2.0",
+      "form-data 4.0.0-4.0.3",
+      "xlsx (prototype pollution, ReDoS) - NO FIX AVAILABLE"
+    ]
+  },
+  "secretsArchaeology": {
+    "envFilesInGit": false,
+    "hardcodedCredentials": false,
+    "apiKeysInHistory": false,
+    "notes": "No leaked credentials found in git history. GitHub Client ID/Secret sourced from environment variables. API keys stored at runtime in electron-store."
+  },
+  "cicdPipeline": {
+    "githubActionsFound": false,
+    "notes": "No CI/CD pipeline configuration found (.github/workflows/ does not exist). Build is local-only."
+  },
+  "strideModel": {
+    "spoofing": "MEDIUM - No origin validation on IPC calls. Webview content could potentially craft messages if isolation is bypassed.",
+    "tampering": "HIGH - Arbitrary file write without path validation (CSO-003). CDP proxy accessible from network (CSO-001).",
+    "repudiation": "LOW - Audit logging is minimal but this is a local desktop app.",
+    "informationDisclosure": "MEDIUM - API keys stored unencrypted (CSO-008). All permissions granted to webview (CSO-005).",
+    "denialOfService": "EXCLUDED per audit rules.",
+    "elevationOfPrivilege": "HIGH - Codex bypass-sandbox default (CSO-007). simple-git RCE (CSO-004)."
+  },
+  "dataClassification": {
+    "highSensitivity": [
+      "API keys (Anthropic, OpenAI, ElevenLabs, Google, GitHub, Foundry) - stored unencrypted in electron-store",
+      "SSH private keys and passphrases - read from filesystem, held in memory during sessions",
+      "GitHub OAuth tokens - stored unencrypted in grep-auth store",
+      "Secure keys intercepted from chat (detected API keys) - memory only, cleared on session end"
+    ],
+    "mediumSensitivity": [
+      "Session transcripts and conversation history",
+      "File contents read/written via FS handlers",
+      "Terminal input/output",
+      "MCP server configurations with auth values"
+    ],
+    "lowSensitivity": [
+      "App settings (theme, font, etc.)",
+      "Git branch/commit metadata"
+    ]
+  }
+}

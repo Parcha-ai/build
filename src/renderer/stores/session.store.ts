@@ -106,13 +106,12 @@ function resetStreamingWatchdog(sessionId: string, getState: () => SessionState)
     const lastActivity = streamLastActivity.get(sessionId) || 0;
     const elapsed = Date.now() - lastActivity;
     if (elapsed > 120_000) {
-      console.error(`[StreamWatchdog] No stream activity for ${Math.round(elapsed / 1000)}s on ${sessionId} — force-clearing isStreaming`);
+      console.error(`[StreamWatchdog] No stream activity for ${Math.round(elapsed / 1000)}s on ${sessionId} — cancelling backend and clearing isStreaming`);
       clearStreamingWatchdog(sessionId);
 
-      // Force-clear streaming state so the UI unsticks
+      // Save partial content as interrupted message before clearing
       const currentContent = state.currentStreamContent[sessionId] || '';
       if (currentContent.trim()) {
-        // Save partial content as interrupted message
         state.addMessage(sessionId, {
           id: `watchdog-${Date.now()}`,
           role: 'assistant',
@@ -122,10 +121,15 @@ function resetStreamingWatchdog(sessionId: string, getState: () => SessionState)
         });
       }
 
-      // Use direct set to avoid queue processing (same pattern as error handler)
-      // We don't know if the backend is truly done, so don't drain the queue
-      const store = getState as unknown as { setState: (fn: (s: SessionState) => Partial<SessionState>) => void };
-      // Access the zustand set function via the module-level reference
+      // CRITICAL: cancel the backend query too. Without this, the backend keeps
+      // the query alive. The next user message would trigger an "Operation aborted"
+      // error as the backend aborts the zombie query for the new sendMessage call.
+      if (hasElectronAPI) {
+        window.electronAPI.claude.cancel(sessionId).catch((err: unknown) => {
+          console.warn('[StreamWatchdog] Backend cancel failed:', err);
+        });
+      }
+
       watchdogForceReset(sessionId);
     }
   }, 15_000); // Check every 15s
@@ -160,6 +164,15 @@ interface SessionState {
   currentThinkingContent: Record<string, string>;
   currentToolCalls: Record<string, ToolCall[]>;
   currentSystemInfo: Record<string, SystemInfo | null>;
+  // Monitor tool instances per session (streaming background watches)
+  monitorInstances: Record<string, Array<{
+    id: string;
+    description: string;
+    events: Array<{ id: string; text: string; timestamp: number }>;
+    active: boolean;
+    persistent?: boolean;
+    startedAt: number;
+  }>>;
   activeStreamModel: Record<string, string | undefined>;
   permissionMode: Record<string, PermissionMode>;
   thinkingMode: Record<string, ThinkingMode>;
@@ -539,6 +552,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   currentThinkingContent: {},
   currentToolCalls: {},
   currentSystemInfo: {},
+  monitorInstances: {},
   activeStreamModel: {},
   permissionMode: {},
   thinkingMode: {},
@@ -1378,7 +1392,21 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         attachments,
         timestamp: Date.now(),
       };
+      // Show the user message in chat IMMEDIATELY with a "queued" flag so the
+      // user knows their input was received. Without this, the input clears
+      // but nothing visible happens — users think the send silently failed
+      // and re-type the same message.
+      const userMessage: ChatMessage = {
+        id: queuedMsg.id,
+        role: 'user',
+        content: message,
+        timestamp: new Date(queuedMsg.timestamp),
+      };
       set((state) => ({
+        messages: {
+          ...state.messages,
+          [sessionId]: [...(state.messages[sessionId] || []), userMessage],
+        },
         messageQueue: {
           ...state.messageQueue,
           [sessionId]: [
@@ -1387,7 +1415,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           ],
         },
       }));
-      console.log('[SessionStore] Message queued - will send after current response. Queue length:', (state.messageQueue[sessionId] || []).length + 1);
+      console.log('[SessionStore] Message queued + shown in chat. Queue length:', (state.messageQueue[sessionId] || []).length + 1);
       console.log('[SessionStore] Queued message preview:', message.slice(0, 50));
       return;
     }
@@ -1580,6 +1608,33 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       const tc = toolCall as ToolCall;
       console.log('[SessionStore] onToolCall received:', tc?.name, 'input:', JSON.stringify(tc?.input || {}));
       addToolCall(sessionId, tc);
+
+      // Track Monitor tool invocations for the dedicated MonitorBlock UI
+      if (tc?.name === 'Monitor' && tc.id) {
+        const input = (tc.input || {}) as { description?: string; persistent?: boolean; command?: string };
+        const description = input.description || input.command?.slice(0, 60) || 'monitor';
+        set((state) => {
+          const existing = state.monitorInstances[sessionId] || [];
+          // Avoid duplicates — same tool_use id
+          if (existing.some((m) => m.id === tc.id)) return state;
+          return {
+            monitorInstances: {
+              ...state.monitorInstances,
+              [sessionId]: [
+                ...existing,
+                {
+                  id: tc.id,
+                  description,
+                  events: [],
+                  active: true,
+                  persistent: input.persistent === true,
+                  startedAt: Date.now(),
+                },
+              ],
+            },
+          };
+        });
+      }
     });
 
     const unsubToolResult = window.electronAPI.claude.onToolResult(async ({ sessionId, toolCall }) => {
@@ -1594,6 +1649,37 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         result: tc.result,
         completedAt: tc.completedAt,
       });
+
+      // Accumulate Monitor events — each tool_result for a Monitor tool is a new streaming event
+      if (tc.name === 'Monitor' && tc.id && tc.result) {
+        set((state) => {
+          const existing = state.monitorInstances[sessionId] || [];
+          const idx = existing.findIndex((m) => m.id === tc.id);
+          if (idx < 0) return state;
+
+          const resultText = typeof tc.result === 'string' ? tc.result : JSON.stringify(tc.result);
+          const newEvent = {
+            id: `${tc.id}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+            text: resultText,
+            timestamp: Date.now(),
+          };
+
+          const isDone = tc.status === 'completed' || tc.status === 'error';
+          const updated = [...existing];
+          updated[idx] = {
+            ...updated[idx],
+            events: [...updated[idx].events, newEvent],
+            active: !isDone,
+          };
+
+          return {
+            monitorInstances: {
+              ...state.monitorInstances,
+              [sessionId]: updated,
+            },
+          };
+        });
+      }
 
       // Handle Edit tool completion for text replacement feature
       if (tc.name === 'Edit' && tc.status === 'completed') {
@@ -1630,27 +1716,33 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         const nextMessage = queue[0];
         console.log(`[SessionStore] Tool completed, injecting queued message: "${nextMessage.message.slice(0, 50)}..."`);
 
-        // First, add the user message to the chat so it's visible immediately
-        const userMessage: ChatMessage = {
-          id: nextMessage.id,
-          role: 'user',
-          content: nextMessage.message,
-          timestamp: new Date(nextMessage.timestamp),
-        };
+        // The user message was already added to the chat when queued (sendMessage
+        // line ~1395). We just need to remove it from the queue here. If for some
+        // reason the message isn't already in the chat (legacy state), add it.
+        set((state) => {
+          const existing = state.messages[sessionId] || [];
+          const alreadyShown = existing.some((m) => m.id === nextMessage.id);
+          const userMessage: ChatMessage = {
+            id: nextMessage.id,
+            role: 'user',
+            content: nextMessage.message,
+            timestamp: new Date(nextMessage.timestamp),
+          };
+          return {
+            messages: alreadyShown
+              ? state.messages
+              : {
+                  ...state.messages,
+                  [sessionId]: [...existing, userMessage],
+                },
+            messageQueue: {
+              ...state.messageQueue,
+              [sessionId]: (state.messageQueue[sessionId] || []).slice(1),
+            },
+          };
+        });
 
-        // Add message and remove from queue in a single state update for consistency
-        set((state) => ({
-          messages: {
-            ...state.messages,
-            [sessionId]: [...(state.messages[sessionId] || []), userMessage],
-          },
-          messageQueue: {
-            ...state.messageQueue,
-            [sessionId]: (state.messageQueue[sessionId] || []).slice(1),
-          },
-        }));
-
-        console.log(`[SessionStore] User message added to chat: "${nextMessage.message.slice(0, 50)}..."`);
+        console.log(`[SessionStore] Queued message dequeued for inject: "${nextMessage.message.slice(0, 50)}..."`);
 
         // Inject into the active query via streamInput
         try {
