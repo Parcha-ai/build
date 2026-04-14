@@ -9,6 +9,7 @@ import QuestionDialog from './QuestionDialog';
 import ThinkingBlock from './ThinkingBlock';
 import TasksBlock, { type Task } from './TasksBlock';
 import BackgroundTasksBlock from './BackgroundTasksBlock';
+import MonitorBlock from './MonitorBlock';
 import BtwOverlay from './BtwOverlay';
 // CodexOverlay removed — Codex runs as a model in the existing chat
 import RemoteControlPanel from './RemoteControlPanel';
@@ -28,6 +29,7 @@ const EMPTY_EVENTS: never[] = [];
 const EMPTY_TOOL_CALLS: never[] = [];
 const EMPTY_QUEUE: never[] = [];
 const EMPTY_BG_TASKS: never[] = [];
+const EMPTY_MONITORS: never[] = [];
 
 export default function ChatContainer({ session }: ChatContainerProps) {
   // Per-session data selectors — only re-render when THIS session's data changes
@@ -43,6 +45,7 @@ export default function ChatContainer({ session }: ChatContainerProps) {
   const compaction = useSessionStore(useCallback((s) => s.compactionStatus[session.id] || null, [session.id]));
   const queuedMessages = useSessionStore(useCallback((s) => s.messageQueue[session.id] || EMPTY_QUEUE, [session.id]));
   const sessionBgTasks = useSessionStore(useCallback((s) => s.backgroundTasks[session.id] || EMPTY_BG_TASKS, [session.id]));
+  const sessionMonitors = useSessionStore(useCallback((s) => s.monitorInstances[session.id] || EMPTY_MONITORS, [session.id]));
   const isLoadingMessages = useSessionStore(useCallback((s) => s.isLoadingMessages[session.id] || false, [session.id]));
   const btwState = useSessionStore(useCallback((s) => s.btw[session.id] || null, [session.id]));
   const rcState = useSessionStore(useCallback((s) => s.remoteControl[session.id] || null, [session.id]));
@@ -651,6 +654,15 @@ export default function ChatContainer({ session }: ChatContainerProps) {
           </button>
         )}
       </div>
+
+      {/* Monitor section - above tasks (streaming background watches) */}
+      {sessionMonitors.length > 0 && (
+        <div className="border-t border-claude-border bg-claude-surface/30 px-4 py-2">
+          <MonitorBlock
+            monitors={sessionMonitors}
+          />
+        </div>
+      )}
 
       {/* Tasks section - above thinking */}
       {currentTasks.length > 0 && (

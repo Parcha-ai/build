@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { X, Image, FileCode, Target, File, Folder, AtSign, Brain, Square, Code, Smartphone, RefreshCw } from 'lucide-react';
+import { X, Image, FileCode, Target, File, Folder, AtSign, Brain, Square, Code, Smartphone, RefreshCw, Slash } from 'lucide-react';
 import { useSessionStore, type PermissionMode, type ThinkingMode, type EffortLevel, migrateThinkingMode, normalizePermissionModeForModel } from '../../stores/session.store';
 import { useUIStore } from '../../stores/ui.store';
 import { useAudioStore } from '../../stores/audio.store';
@@ -584,6 +584,16 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
 
   // Load commands, skills, and agents when session changes
   useEffect(() => {
+    // Always seed the builtin commands so the autocomplete works even if
+    // session lookup or extensions IPC fails (e.g. SSH session before worktree
+    // is set up). These are the always-available items.
+    const builtinCommands = [
+      { name: 'codex', description: 'Get a second opinion from OpenAI Codex', scope: 'builtin', itemType: 'codex' },
+      { name: 'monitor', description: '[Claude Code] Watch a long-running process and stream events', scope: 'builtin', itemType: 'claude-code' },
+      { name: 'loop', description: '[Claude Code] Run a prompt on a recurring interval', scope: 'builtin', itemType: 'claude-code' },
+    ];
+    setCommands(builtinCommands as any);
+
     const currentSession = useSessionStore.getState().sessions.find(s => s.id === sessionId);
     if (!currentSession) return;
 
@@ -612,14 +622,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
         itemType: 'gstack',
         gstackId: null,
       });
-      // Add /codex command for second opinion
-      const codexCommand = {
-        name: 'codex',
-        description: 'Get a second opinion from OpenAI Codex',
-        scope: 'builtin',
-        itemType: 'codex',
-      };
-      setCommands([...cmds, ...gstackCommands, codexCommand]);
+      setCommands([...cmds, ...gstackCommands, ...builtinCommands] as any);
       setSkills(skls);
       setAgents(agts);
       console.log('[InputArea] Loaded extensions for session:', sessionId, '- Commands:', cmds.length, 'Skills:', skls.length, 'Agents:', agts.length, 'GStack:', gstackCommands.length);
@@ -753,19 +756,31 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
       const projectPath = currentSession?.worktreePath;
       const itemType = item.itemType || commandType;
 
+      // Detect whether the autocomplete was opened by typing "/" (inline mode)
+      // or by clicking the slash button (popover mode). In inline mode, a "/"
+      // exists at commandStartIndex and needs to be replaced. In popover mode,
+      // there's no "/" in the text — we insert fresh at the cursor.
+      const isInlineMode = message[commandStartIndex] === '/';
+
       if (itemType === 'codex') {
         // Switch to Codex model — messages route through Codex SDK in the same chat
         const { availableModels, setSelectedModel } = useSessionStore.getState();
         const defaultCodexModel = availableModels.find((model) => model.id.startsWith('codex:'))?.id || 'codex:gpt-5.4';
         setSelectedModel(sessionId, defaultCodexModel);
-        const beforeCommand = message.slice(0, commandStartIndex);
-        setMessage(beforeCommand.trim());
+        if (isInlineMode) {
+          const beforeCommand = message.slice(0, commandStartIndex);
+          setMessage(beforeCommand.trim());
+        }
+        // In popover mode: codex just switches model, no text change
       } else if (itemType === 'gstack') {
         // GStack mode activation/deactivation — set the mode and clear the slash command from input
         const gstackId = item.gstackId || null;
         setGStackMode(sessionId, gstackId as import('../../../shared/types').GStackMode | null);
-        const beforeCommand = message.slice(0, commandStartIndex);
-        setMessage(beforeCommand.trim());
+        if (isInlineMode) {
+          const beforeCommand = message.slice(0, commandStartIndex);
+          setMessage(beforeCommand.trim());
+        }
+        // In popover mode: mode activation only, no text change
       } else if (itemType === 'command') {
         // Load command content and replace the /command with it
         try {
@@ -775,24 +790,44 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
             const lines = content.split('\n');
             const cleanContent = lines.filter((l: string) => !l.trim().startsWith('<!--')).join('\n').trim();
 
-            // Replace /command with the command content, preserving text before and after
-            const beforeCommand = message.slice(0, commandStartIndex);
-            const afterCommand = message.slice(commandStartIndex + item.name.length + 1);
-            setMessage(beforeCommand + cleanContent + (afterCommand ? ' ' + afterCommand : ''));
+            if (isInlineMode) {
+              // Replace /command with the command content, preserving text before and after
+              const beforeCommand = message.slice(0, commandStartIndex);
+              const afterCommand = message.slice(commandStartIndex + item.name.length + 1);
+              setMessage(beforeCommand + cleanContent + (afterCommand ? ' ' + afterCommand : ''));
+            } else {
+              // Popover mode: insert command content at cursor
+              const before = message.slice(0, commandStartIndex);
+              const after = message.slice(commandStartIndex);
+              setMessage(before + cleanContent + (after ? ' ' + after : ''));
+            }
           }
         } catch (err) {
           console.error('[InputArea] Error loading command:', err);
         }
-      } else if (itemType === 'skill') {
-        // Skills are invoked via Skill tool - just insert /skill-name as is
-        const before = message.slice(0, commandStartIndex);
-        const after = message.slice(getSelectionStart() || commandStartIndex);
-        setMessage(before + `/${item.name}` + after);
+      } else if (itemType === 'skill' || itemType === 'claude-code') {
+        // Skills and Claude Code builtins: insert /name at position
+        if (isInlineMode) {
+          const before = message.slice(0, commandStartIndex);
+          const after = message.slice(getSelectionStart() || commandStartIndex);
+          setMessage(before + `/${item.name}` + after);
+        } else {
+          // Popover mode: insert /name at cursor
+          const before = message.slice(0, commandStartIndex);
+          const after = message.slice(commandStartIndex);
+          setMessage(before + `/${item.name} ` + after);
+        }
       } else if (itemType === 'agent') {
         // Replace @agent-name with just the agent mention
-        const before = message.slice(0, commandStartIndex);
-        const after = message.slice(getSelectionStart() || commandStartIndex);
-        setMessage(before + `@agent-${item.name}` + after);
+        if (isInlineMode) {
+          const before = message.slice(0, commandStartIndex);
+          const after = message.slice(getSelectionStart() || commandStartIndex);
+          setMessage(before + `@agent-${item.name}` + after);
+        } else {
+          const before = message.slice(0, commandStartIndex);
+          const after = message.slice(commandStartIndex);
+          setMessage(before + `@agent-${item.name} ` + after);
+        }
       }
 
       setShowCommands(false);
@@ -1210,6 +1245,31 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
     }
   };
 
+  const handleSlashButtonClick = (e: React.MouseEvent<HTMLButtonElement>) => {
+    // Open the command autocomplete anchored above the input container — same
+    // position the inline "/" trigger uses, so the popover gets full width and
+    // doesn't collide with the viewport edge.
+    e.preventDefault();
+    e.stopPropagation();
+
+    if (containerRef.current) {
+      const containerRect = containerRef.current.getBoundingClientRect();
+      setCommandPosition({
+        top: Math.max(10, containerRect.top - 270),
+        left: containerRect.left,
+      });
+    }
+
+    const elem = textareaRef.current;
+    const cursorPos = elem?.selectionStart ?? message.length;
+
+    setCommandType('command');
+    setCommandQuery('');
+    setCommandStartIndex(cursorPos);
+    setShowCommands(true);
+    setShowMentions(false);
+  };
+
   const handleAtButtonClick = () => {
     // Insert @ at cursor position
     const elem = textareaRef.current;
@@ -1535,6 +1595,15 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
             title="@ mention file"
           >
             <AtSign size={14} />
+          </button>
+          <button
+            onClick={handleSlashButtonClick}
+            disabled={disabled}
+            className="p-1 transition-colors hover:bg-claude-bg disabled:opacity-40 disabled:cursor-not-allowed text-claude-text-secondary hover:text-claude-accent"
+            style={{ borderRadius: 0 }}
+            title="/ slash commands (Monitor, Loop, etc.)"
+          >
+            <Slash size={14} />
           </button>
           <button
             onClick={handleInspectElement}

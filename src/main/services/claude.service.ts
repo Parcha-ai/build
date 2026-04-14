@@ -215,7 +215,9 @@ export class ClaudeService {
    * This runs compaction invisibly while the user is focused elsewhere.
    */
   private compactIdleSessions(activeSessionId: string): void {
-    const COMPACT_THRESHOLD = 60; // percentage
+    // Only proactively compact when context is genuinely filling up.
+    // On 1M windows, 60% (600k) still has massive runway. 85% is the new floor.
+    const COMPACT_THRESHOLD = 85; // percentage
     const IDLE_THRESHOLD = 30_000; // 30 seconds
     const now = Date.now();
 
