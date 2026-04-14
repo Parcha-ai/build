@@ -4302,6 +4302,12 @@ Begin by creating the task structure now.
     this.activeQueries.delete(sessionId);
     this.activeQueryObjects.delete(sessionId);
 
+    // Kill remote processes if this is an SSH session
+    const session = (this.sessionStore.get(`sessions.${sessionId}`) as Session | undefined);
+    if (session?.sshConfig) {
+      sshService.killRemoteProcesses(sessionId, session.sshConfig).catch(() => {});
+    }
+
     // Session-keyed maps
     this.sessionPermissionModes.delete(sessionId);
     this.prePlanPermissionModes.delete(sessionId);

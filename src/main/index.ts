@@ -587,6 +587,9 @@ app.on('ready', async () => {
 
 // Clean up power management on quit
 app.on('will-quit', () => {
+  // Kill remote processes before quitting to prevent orphans on the server
+  const { sshService } = require('./services/ssh.service');
+  sshService.killAllRemoteProcesses().catch(() => {});
   powerService.dispose();
 });
 
