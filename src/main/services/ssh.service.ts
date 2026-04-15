@@ -634,20 +634,32 @@ export class SSHService {
   /**
    * Get or create a connection for a session
    */
-  private async getConnection(sessionId: string, config: SSHConfig): Promise<Client> {
+  private async getConnection(
+    sessionId: string,
+    config: SSHConfig,
+    options?: { livenessProbe?: boolean }
+  ): Promise<Client> {
+    // By default we skip the active liveness probe. A 30s periodic health check
+    // already runs per connection (startHealthCheck), and the cheap socket
+    // `destroyed / !writable` check below catches truly dead connections for
+    // ~0ms. The active probe adds 40-80ms RTT per call which slows every
+    // transcript fetch on SSH sessions. Callers that need extra certainty
+    // (e.g. a one-shot operation that won't retry) can pass
+    // `{ livenessProbe: true }` explicitly.
     const existing = this.connections.get(sessionId);
     if (existing) {
-      // Verify the connection is still alive — half-dead TCP connections
-      // may linger in the map without triggering the 'close' event
+      // Cheap socket check — half-dead TCP sockets can linger in the map
+      // without triggering the 'close' event.
       const socket = (existing.client as any)._sock;
       if (socket && (socket.destroyed || !socket.writable)) {
         console.warn(`[SSH Service] Cached connection for ${sessionId} has a dead socket — removing stale entry`);
         this.connections.delete(sessionId);
         this.stopHealthCheck(sessionId);
         // Fall through to create a new connection
-      } else {
-        // Active liveness probe — run a trivial command to confirm the connection
-        // actually works. Tailscale can keep the TCP socket alive while blocking SSH.
+      } else if (options?.livenessProbe) {
+        // Active liveness probe — only run when the caller explicitly asks
+        // for it. Covers the Tailscale edge case where TCP stays writable
+        // while SSH is blocked.
         try {
           await new Promise<void>((resolve, reject) => {
             const timeout = setTimeout(() => reject(new Error('SSH ping timeout')), 5000);
@@ -667,6 +679,9 @@ export class SSHService {
           this.stopHealthCheck(sessionId);
           // Fall through to create a new connection
         }
+      } else {
+        // Socket appears healthy — reuse without an RTT-adding probe.
+        return existing.client;
       }
     }
 
@@ -676,6 +691,34 @@ export class SSHService {
       throw new Error('Failed to establish connection');
     }
     return conn.client;
+  }
+
+  /**
+   * Run an SSH exec with a single auto-reconnect on failure. Used for idempotent
+   * read-only operations (transcript fetch/list) where the cost of a spurious
+   * retry is low and the win from skipping the liveness probe is large.
+   */
+  private async execWithRetry(
+    sessionId: string,
+    config: SSHConfig,
+    command: string,
+    options?: { pty?: boolean }
+  ): Promise<string> {
+    const client = await this.getConnection(sessionId, config);
+    try {
+      return await this.execCommand(client, command, options);
+    } catch (err) {
+      console.warn(`[SSH Service] execWithRetry failed first attempt, reconnecting: ${err}`);
+      // Drop the stale connection and try once more with a fresh one.
+      const existing = this.connections.get(sessionId);
+      if (existing) {
+        try { existing.client.end(); } catch { /* best-effort */ }
+        this.connections.delete(sessionId);
+        this.stopHealthCheck(sessionId);
+      }
+      const fresh = await this.getConnection(sessionId, config);
+      return this.execCommand(fresh, command, options);
+    }
   }
 
   private getRemoteBridgeInstallKey(config: SSHConfig): string {
@@ -1912,7 +1955,6 @@ export class SSHService {
 
     try {
       const perfStart = performance.now();
-      const client = await this.getConnection(sessionId, config);
 
       // Construct the expected path to the transcript file
       // Claude Code stores transcripts in ~/.claude/projects/<escaped-path>/<session-id>.jsonl
@@ -1925,10 +1967,9 @@ export class SSHService {
       const readCommand = options?.full
         ? `cat "${transcriptPath}" 2>/dev/null || echo "___TRANSCRIPT_NOT_FOUND___"`
         : `tail -n 500 "${transcriptPath}" 2>/dev/null || echo "___TRANSCRIPT_NOT_FOUND___"`;
-      const result = await this.execCommand(
-        client,
-        readCommand
-      );
+      // Reads are idempotent — use execWithRetry so we skip the liveness probe
+      // but still survive a stale connection by auto-reconnecting once.
+      const result = await this.execWithRetry(sessionId, config, readCommand);
 
       if (result.includes('___TRANSCRIPT_NOT_FOUND___')) {
         // Try alternative path format (just the directory name)
@@ -1938,10 +1979,7 @@ export class SSHService {
         const altReadCommand = options?.full
           ? `cat ${altPath} 2>/dev/null || echo "___TRANSCRIPT_NOT_FOUND___"`
           : `tail -n 500 ${altPath} 2>/dev/null || echo "___TRANSCRIPT_NOT_FOUND___"`;
-        const altResult = await this.execCommand(
-          client,
-          altReadCommand
-        );
+        const altResult = await this.execWithRetry(sessionId, config, altReadCommand);
 
         if (altResult.includes('___TRANSCRIPT_NOT_FOUND___')) {
           console.log('[SSH Service] Transcript not found on remote');
@@ -1982,17 +2020,18 @@ export class SSHService {
     remoteWorkdir: string
   ): Promise<Array<{ filename: string; sessionId: string; mtime: number }>> {
     try {
-      const client = await this.getConnection(sessionId, config);
-
       // Construct the expected path to the transcripts directory
       const escapedPath = remoteWorkdir.replace(/\//g, '-').replace(/^-/, '-');
       const transcriptsDir = `~/.claude/projects/${escapedPath}`;
 
       console.log('[SSH Service] Listing remote transcripts in:', transcriptsDir);
 
-      // List .jsonl files with their modification times, excluding agent files
-      const result = await this.execCommand(
-        client,
+      // List .jsonl files with their modification times, excluding agent files.
+      // Reads are idempotent — execWithRetry skips the liveness probe but
+      // reconnects once on failure, preserving correctness at lower RTT cost.
+      const result = await this.execWithRetry(
+        sessionId,
+        config,
         `find ${transcriptsDir} -maxdepth 1 -name "*.jsonl" ! -name "agent-*" -printf "%T@ %f\\n" 2>/dev/null | sort -rn || echo ""`
       );
 
