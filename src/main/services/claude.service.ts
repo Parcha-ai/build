@@ -2451,12 +2451,20 @@ Read or source that file if you need the actual values. Do not print secret valu
 
       console.log('[Claude Service] Starting remote control on SSH:', command);
 
-      client.exec(command, (err, channel) => {
+      // Allocate a PTY so `claude remote-control` (an interactive CLI) flushes
+      // its stdout promptly. Without pty:true the ssh2 channel's `data` event
+      // never fires for line-buffered, TTY-aware CLIs — the output stays
+      // stuck in the remote process's stdout buffer. This was the silent
+      // stall: command launched, log line "Starting remote control on SSH"
+      // printed, then nothing ever came back.
+      client.exec(command, { pty: true }, (err, channel) => {
         if (err) {
           console.error('[Claude Service] SSH RC exec error:', err);
           this.mainWindow?.webContents.send(IPC_CHANNELS.CLAUDE_RC_STOPPED, { sessionId });
           return;
         }
+
+        console.log('[Claude Service] SSH RC channel opened with PTY for session:', sessionId);
 
         // Store the channel so we can kill it later (wrap as a fake ChildProcess)
         const fakeProcess = {
@@ -2521,6 +2529,41 @@ Read or source that file if you need the actual values. Do not print secret valu
   }
 
   async askBtw(sessionId: string, question: string): Promise<void> {
+    // Preferred path: the session has a live SDK Query — use the native
+    // `askSideQuestion` control so the side answer runs against the running
+    // claude's in-memory context. No duplicate API call, no history rebuild,
+    // no role-sanitising. The response arrives as a single string (not
+    // streamed), which we emit as one chunk + done.
+    const liveQuery = this.activeQueryObjects.get(sessionId);
+    // askSideQuestion is a Query control method exposed in the SDK runtime
+    // (sdk.mjs) but not yet declared on the public Query type; cast through
+    // an any-shaped surface to reach it.
+    const liveQueryAny = liveQuery as unknown as { askSideQuestion?: (q: string) => Promise<string> } | undefined;
+    if (liveQueryAny?.askSideQuestion) {
+      try {
+        console.log('[Claude Service] /btw via SDK askSideQuestion (live query)');
+        const answer = await liveQueryAny.askSideQuestion(question);
+        if (answer) {
+          this.mainWindow?.webContents.send(IPC_CHANNELS.CLAUDE_BTW_RESPONSE, {
+            sessionId,
+            content: answer,
+            done: false,
+          });
+        }
+        this.mainWindow?.webContents.send(IPC_CHANNELS.CLAUDE_BTW_RESPONSE, {
+          sessionId,
+          content: '',
+          done: true,
+        });
+        return;
+      } catch (err) {
+        console.warn('[Claude Service] askSideQuestion failed, falling back to direct API:', err);
+        // Fall through to the direct-API path below.
+      }
+    }
+
+    // Fallback: no active query (session is idle between turns). Make a direct
+    // Anthropic API call with reconstructed context.
     const Anthropic = (await import('@anthropic-ai/sdk')).default;
 
     // Retrieve API configuration — mirror the same paths as streamMessage

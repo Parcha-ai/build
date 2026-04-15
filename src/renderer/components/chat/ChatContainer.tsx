@@ -60,6 +60,7 @@ export default function ChatContainer({ session }: ChatContainerProps) {
   const setPermissionMode = useSessionStore((s) => s.setPermissionMode);
   const addBackgroundTask = useSessionStore((s) => s.addBackgroundTask);
   const removeBackgroundTask = useSessionStore((s) => s.removeBackgroundTask);
+  const approvePermissionAsBackground = useSessionStore((s) => s.approvePermissionAsBackground);
   const dismissBtw = useSessionStore((s) => s.dismissBtw);
   // Codex overlay actions removed — Codex runs as a model in the existing chat
   // clearRemoteControl removed — stopRemoteControl handles both IPC kill + state clear
@@ -91,19 +92,27 @@ export default function ChatContainer({ session }: ChatContainerProps) {
   // Check if any TTS is actively playing for messages in this session
   const isTTSPlaying = sessionMessages.some(msg => msg?.id && ttsStates[msg.id]?.isPlaying);
 
-  // Handler to background a running Bash command
-  const handleBackgroundTask = useCallback((toolCall: ToolCall) => {
-    const task: BackgroundTask = {
-      id: toolCall.id,
-      sessionId: session.id,
-      command: (toolCall.input?.command as string) || 'Unknown command',
-      output: '',
-      status: 'running',
-      startedAt: new Date(),
-    };
-    addBackgroundTask(session.id, task);
-    console.log('[ChatContainer] Backgrounded task:', task.command.slice(0, 50));
-  }, [session.id, addBackgroundTask]);
+  // Handler to background a running Bash command. Clean path: when the Bash
+  // call is waiting on a permission prompt, approve it with
+  // `run_in_background: true` so the SDK spawns the shell detached. The
+  // resulting shell_id flows through the normal tool_result path and the
+  // MonitorBlock picks it up from there.
+  //
+  // When there is NO pending permission (permission mode = auto-approve and
+  // the shell is already running in-band) the clean path doesn't apply — we
+  // surface that as a console warning instead of pretending the button did
+  // something. A future change can add a "cancel and re-run" blunt path.
+  const handleBackgroundTask = useCallback(async (toolCall: ToolCall) => {
+    const moved = await approvePermissionAsBackground(session.id);
+    if (!moved) {
+      console.warn(
+        '[ChatContainer] BG button pressed but no pending Bash permission to modify. ' +
+          'This tool is already running in-band. Either set permission mode to "prompt" ' +
+          'or ask the model to rerun with run_in_background: true.',
+        { toolCallId: toolCall.id }
+      );
+    }
+  }, [session.id, approvePermissionAsBackground]);
 
   // Handler to stop a background task
   const handleStopBackgroundTask = useCallback((taskId: string) => {
