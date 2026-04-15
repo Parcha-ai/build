@@ -18,6 +18,16 @@ interface SessionCreateConfig {
   setupScript?: string;
 }
 
+// Centralised resolver for the Claude transcripts directory.
+// Honours `CLAUDE_PROJECTS_DIR` so demo/test runs can point at a synthetic
+// directory without having to override $HOME (which would also break Claude
+// CLI / keychain auth).
+function getClaudeProjectsDir(): string {
+  const override = process.env.CLAUDE_PROJECTS_DIR;
+  if (override && override.trim()) return override;
+  return path.join(require('os').homedir(), '.claude', 'projects');
+}
+
 const DEFAULT_SETUP_SCRIPT = `#!/bin/bash
 # Build Session Setup Script
 # This script runs when the Docker container starts
@@ -468,8 +478,7 @@ Only return the title, nothing else.`
 
   private async discoverClaudeSessions(): Promise<Session[]> {
     const sessions: Session[] = [];
-    const homeDir = require('os').homedir();
-    const claudeProjectsDir = path.join(homeDir, '.claude', 'projects');
+    const claudeProjectsDir = getClaudeProjectsDir();
 
     console.log('[Session Discovery] Scanning:', claudeProjectsDir);
 
@@ -659,8 +668,7 @@ Only return the title, nothing else.`
     }
 
     // Find the transcript file for this session
-    const homeDir = require('os').homedir();
-    const claudeProjectsDir = path.join(homeDir, '.claude', 'projects');
+    const claudeProjectsDir = getClaudeProjectsDir();
 
     // Search for the transcript file matching this sessionId
     let transcriptPath: string | null = null;
@@ -813,8 +821,7 @@ Only return the title, nothing else.`
     }
 
     // Find the transcript file for the parent session
-    const homeDir = require('os').homedir();
-    const claudeProjectsDir = path.join(homeDir, '.claude', 'projects');
+    const claudeProjectsDir = getClaudeProjectsDir();
 
     let transcriptPath: string | null = null;
     let projectHash: string | null = null;
@@ -1094,8 +1101,7 @@ Only return the short name (exactly 3 words), nothing else.`
    * Read the first user message from a session's transcript file.
    */
   private async getFirstUserMessage(sessionId: string): Promise<string | null> {
-    const homeDir = require('os').homedir();
-    const claudeProjectsDir = path.join(homeDir, '.claude', 'projects');
+    const claudeProjectsDir = getClaudeProjectsDir();
 
     try {
       const entries = await fs.readdir(claudeProjectsDir, { withFileTypes: true });
