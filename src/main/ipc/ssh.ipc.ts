@@ -173,65 +173,10 @@ export function registerSSHHandlers(ipcMain: IpcMain): void {
           session.continuedFromSessionId = localResumeSource.sessionId;
         }
 
-        // Establish the SSH connection
-        try {
-          sendSetupProgress(sessionId, 'running', 'Connecting to remote host...');
-          await sshService.connect(sessionId, data.sshConfig);
-          sendSetupProgress(sessionId, 'running', 'Connected to remote host');
-
-          // Run pre-session setup (worktree script + settings sync)
-          if (data.sshConfig.worktreeScript || data.sshConfig.syncSettings !== false) {
-            console.log('[SSH IPC] Running pre-session setup...');
-            const setupResult = await sshService.runPreSessionSetup(
-              sessionId,
-              data.sshConfig,
-              (message) => {
-                console.log('[SSH IPC] Setup progress:', message);
-                sendSetupProgress(sessionId, 'running', undefined, message);
-              }
-            );
-
-            if (!setupResult.success) {
-              console.error('[SSH IPC] Pre-session setup failed:', setupResult.error);
-              session.status = 'error';
-              session.errorMessage = setupResult.error;
-              sendSetupProgress(sessionId, 'error', undefined, undefined, setupResult.error);
-            } else {
-              // Update the working directory if the script output one
-              if (setupResult.workingDirectory) {
-                console.log('[SSH IPC] Updating session worktreePath to:', setupResult.workingDirectory);
-                session.worktreePath = setupResult.workingDirectory;
-                session.repoPath = setupResult.workingDirectory;
-                // Also update the SSH config so Claude uses the correct directory
-                if (session.sshConfig) {
-                  session.sshConfig.remoteWorkdir = setupResult.workingDirectory;
-                }
-                // Update session name to show host and last 2 path segments
-                // Format: "host:parent/folder" e.g. "greppy2:parcha/grep3"
-                const folderPath = getPathTail(setupResult.workingDirectory, 2);
-                session.name = `${data.sshConfig.host}:${folderPath}`;
-              }
-              // Store the setup output for context in system prompt
-              if (setupResult.setupOutput) {
-                session.setupOutput = setupResult.setupOutput;
-              }
-              session.status = 'running';
-              sendSetupProgress(sessionId, 'completed', 'Setup completed successfully');
-            }
-          } else {
-            session.status = 'running';
-            sendSetupProgress(sessionId, 'completed', 'Connected');
-          }
-        } catch (connError) {
-          console.error('[SSH IPC] Failed to establish SSH connection:', connError);
-          session.status = 'error';
-          session.errorMessage = connError instanceof Error ? connError.message : 'Connection failed';
-          sendSetupProgress(sessionId, 'error', undefined, undefined, session.errorMessage);
-        }
-
-        // Save session (use individual key pattern like SessionService)
+        // Persist the session in 'creating' state BEFORE kicking off SSH work so
+        // the renderer can close its dialog and show streaming setup progress in
+        // the chat view straight away (non-blocking session creation).
         sessionStore.set(`sessions.${sessionId}`, session);
-
         if (data.resumeSessionId) {
           sessionStore.set(`sdkSessionMappings.${sessionId}`, data.resumeSessionId);
         } else {
@@ -241,7 +186,82 @@ export function registerSSHHandlers(ipcMain: IpcMain): void {
           sessionStore.set(`sdkSessionMappings.${sessionId}`, 'new');
         }
 
-        console.log('[SSH IPC] SSH session created:', sessionId);
+        // Emit an initial progress event so the chat view renders a setup block
+        // immediately, before any remote work has started.
+        sendSetupProgress(sessionId, 'running', 'Connecting to remote host...');
+
+        // Broadcast session status updates to the renderer so the sidebar/chat
+        // stays in sync as setup progresses. Uses the existing status-changed
+        // channel already handled by the renderer.
+        const broadcastStatus = () => {
+          const wins = BrowserWindow.getAllWindows();
+          for (const win of wins) {
+            if (!win.isDestroyed()) {
+              win.webContents.send(IPC_CHANNELS.SESSION_STATUS_CHANGED, session);
+            }
+          }
+        };
+
+        // Run SSH connect + setup asynchronously so the IPC call returns
+        // immediately. Progress and terminal state changes reach the renderer
+        // via SSH_SETUP_PROGRESS and SESSION_STATUS_CHANGED events.
+        (async () => {
+          try {
+            await sshService.connect(sessionId, data.sshConfig);
+            sendSetupProgress(sessionId, 'running', 'Connected to remote host');
+
+            if (data.sshConfig.worktreeScript || data.sshConfig.syncSettings !== false) {
+              console.log('[SSH IPC] Running pre-session setup...');
+              const setupResult = await sshService.runPreSessionSetup(
+                sessionId,
+                data.sshConfig,
+                (message) => {
+                  console.log('[SSH IPC] Setup progress:', message);
+                  sendSetupProgress(sessionId, 'running', undefined, message);
+                }
+              );
+
+              if (!setupResult.success) {
+                console.error('[SSH IPC] Pre-session setup failed:', setupResult.error);
+                session.status = 'error';
+                session.errorMessage = setupResult.error;
+                sendSetupProgress(sessionId, 'error', undefined, undefined, setupResult.error);
+              } else {
+                if (setupResult.workingDirectory) {
+                  console.log('[SSH IPC] Updating session worktreePath to:', setupResult.workingDirectory);
+                  session.worktreePath = setupResult.workingDirectory;
+                  session.repoPath = setupResult.workingDirectory;
+                  if (session.sshConfig) {
+                    session.sshConfig.remoteWorkdir = setupResult.workingDirectory;
+                  }
+                  const folderPath2 = getPathTail(setupResult.workingDirectory, 2);
+                  session.name = `${data.sshConfig.host}:${folderPath2}`;
+                }
+                if (setupResult.setupOutput) {
+                  session.setupOutput = setupResult.setupOutput;
+                }
+                session.status = 'running';
+                sendSetupProgress(sessionId, 'completed', 'Setup completed successfully');
+              }
+            } else {
+              session.status = 'running';
+              sendSetupProgress(sessionId, 'completed', 'Connected');
+            }
+          } catch (connError) {
+            console.error('[SSH IPC] Failed to establish SSH connection:', connError);
+            session.status = 'error';
+            session.errorMessage = connError instanceof Error ? connError.message : 'Connection failed';
+            sendSetupProgress(sessionId, 'error', undefined, undefined, session.errorMessage);
+          } finally {
+            session.updatedAt = new Date();
+            sessionStore.set(`sessions.${sessionId}`, session);
+            broadcastStatus();
+            console.log('[SSH IPC] SSH session setup finished:', sessionId, 'status:', session.status);
+          }
+        })();
+
+        // Return immediately with the pending session so the dialog can close.
+        console.log('[SSH IPC] SSH session record created (setup running async):', sessionId);
         return session;
       } catch (error) {
         console.error('[SSH IPC] Failed to create SSH session:', error);

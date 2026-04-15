@@ -251,7 +251,7 @@ interface SessionState {
   cycleThinkingMode: (sessionId: string) => void;
   setSelectedModel: (sessionId: string, model: string) => void;
   loadAvailableModels: () => Promise<void>;
-  sendMessage: (sessionId: string, message: string, attachments?: unknown[]) => Promise<void>;
+  sendMessage: (sessionId: string, message: string, attachments?: unknown[], opts?: { existingMessageId?: string }) => Promise<void>;
   loadMessages: (sessionId: string) => Promise<void>;
   subscribeToClaude: () => () => void;
   // Permission handling
@@ -1367,7 +1367,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
   },
 
-  sendMessage: async (sessionId, message, attachments) => {
+  sendMessage: async (sessionId, message, attachments, opts) => {
     if (!hasElectronAPI) return;
     const state = get();
     const currentIsStreaming = state.isStreaming[sessionId];
@@ -1455,14 +1455,23 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     const supplementalMessagesForContext = loadSupplementalMessages(sessionId);
 
-    // Add user message (with keys replaced by placeholders)
+    // Add user message (with keys replaced by placeholders).
+    // If the caller passed `existingMessageId` (e.g. we're re-sending a queued
+    // message that was already shown in the chat when it was enqueued), skip
+    // adding so the message doesn't appear twice.
+    const existingMessages = get().messages[sessionId] || [];
+    const alreadyInChat =
+      !!opts?.existingMessageId &&
+      existingMessages.some((m) => m.id === opts!.existingMessageId);
     const userMessage: ChatMessage = {
-      id: Date.now().toString(),
+      id: opts?.existingMessageId || Date.now().toString(),
       role: 'user',
       content: modifiedText, // Use the secured version
       timestamp: new Date(),
     };
-    addMessage(sessionId, userMessage);
+    if (!alreadyInChat) {
+      addMessage(sessionId, userMessage);
+    }
     if (isCodexModel(model)) {
       persistSupplementalMessage(sessionId, userMessage);
     }
@@ -1819,6 +1828,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     const unsubEnd = window.electronAPI.claude.onStreamEnd(({ sessionId, message }) => {
       const currentState = get();
+
+      // Ignore stale STREAM_END from a cancelled stream that races in after a
+      // new stream has started. Without this guard the handler re-runs queue
+      // processing and duplicates the user message.
+      if (!currentState.isStreaming[sessionId]) {
+        console.log(`[SessionStore] onStreamEnd SKIPPED for ${sessionId} — streaming already false (stale event from cancelled stream)`);
+        return;
+      }
+
       const queueLength = (currentState.messageQueue[sessionId] || []).length;
       const streamModel = currentState.activeStreamModel[sessionId];
 
@@ -1896,15 +1914,28 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           },
         }));
 
-        // Send the next message
+        // Send the next message. Pass the queued message's ID so sendMessage
+        // knows the user bubble is already on screen (added when it was queued)
+        // and skips re-adding it — otherwise each dequeued message duplicates
+        // in the chat.
         setTimeout(() => {
-          get().sendMessage(sessionId, nextMsg.message, nextMsg.attachments);
+          get().sendMessage(sessionId, nextMsg.message, nextMsg.attachments, { existingMessageId: nextMsg.id });
         }, 100);
       }
     });
 
     const unsubError = window.electronAPI.claude.onStreamError(({ sessionId, error }) => {
       const currentState = get();
+
+      // Ignore stale errors from a cancelled stream that race in after we've
+      // already cleared the streaming flag (e.g. during interruptAndSend,
+      // which cancels, clears state, then kicks off a new send). Without this
+      // guard, the old query's STREAM_ERROR tears down the NEW stream's state
+      // — exactly the "isStreaming still fucked" regression.
+      if (!currentState.isStreaming[sessionId]) {
+        console.log(`[SessionStore] onStreamError SKIPPED for ${sessionId} — streaming already false (stale event from cancelled stream)`);
+        return;
+      }
 
       const streamModel = currentState.activeStreamModel[sessionId];
 
@@ -2336,11 +2367,22 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         currentToolCalls: { ...state.currentToolCalls, [sessionId]: [] },
       }));
 
-      console.log(`[interruptAndSend] Streaming state cleared, sending new message`);
+      // CRITICAL: Wait for the stale STREAM_END/STREAM_ERROR from the cancelled
+      // stream to arrive via IPC and be discarded by the isStreaming guards in
+      // onStreamEnd / onStreamError. Without this drain window, sendMessage()
+      // sets isStreaming=true immediately and the stale event arrives to find
+      // isStreaming=true (from the NEW stream), bypassing the guard and killing
+      // the new stream with "Claude Code process aborted by user".
+      //
+      // This was the v0.2.2 fix (commit c5601ec) that got lost in v0.3.x.
+      // 300ms is enough for the backend generator to unwind and the IPC to deliver.
+      console.log(`[interruptAndSend] Streaming state cleared, draining stale events for 300ms`);
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      console.log(`[interruptAndSend] Drain complete, sending new message`);
     }
 
-    // Send new message
-    state.sendMessage(sessionId, message, attachments);
+    // Send new message (use fresh state, not the stale closure from before cancel)
+    get().sendMessage(sessionId, message, attachments);
   },
 
   // Setup progress methods

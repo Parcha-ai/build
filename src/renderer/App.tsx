@@ -371,13 +371,15 @@ function ElectronApp() {
 
       await useAuthStore.getState().checkAuth();
 
-      // Check for API key and show onboarding if missing (and not previously skipped)
+      // Check for API key and show onboarding if missing (and not previously skipped).
+      // Demo mode (`demoForceOnboarding` settings flag) forces the onboarding to show
+      // on first launch even when an API key is already present, so the "first run"
+      // experience can be recorded without sessions being broken.
       const hasKey = await useUIStore.getState().checkApiKey();
-      if (!hasKey) {
-        const settings = await window.electronAPI?.settings?.get?.();
-        if (!settings?.onboardingSkipped) {
-          useUIStore.getState().openOnboarding();
-        }
+      const settings = await window.electronAPI?.settings?.get?.();
+      const forceOnboarding = !!(settings as any)?.demoForceOnboarding;
+      if ((!hasKey || forceOnboarding) && !settings?.onboardingSkipped) {
+        useUIStore.getState().openOnboarding();
       }
 
       setIsInitialized(true);

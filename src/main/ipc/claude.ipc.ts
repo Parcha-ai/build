@@ -353,8 +353,12 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
 
   ipcMain.handle(IPC_CHANNELS.CLAUDE_CANCEL, async (_, sessionId: string) => {
     claudeService.cancelQuery(sessionId);
-    // Small delay to ensure the abort signal has propagated through the generator
-    await new Promise(resolve => setTimeout(resolve, 50));
+    // Wait for the abort signal to propagate through the SDK generator and
+    // the generator to yield its final STREAM_END/error event. 200ms gives
+    // the async generator time to unwind, preventing stale events from
+    // arriving after the renderer has already started a new stream.
+    // (Restored from v0.2.2 commit c5601ec — regressed in v0.3.x.)
+    await new Promise(resolve => setTimeout(resolve, 200));
   });
 
   ipcMain.handle(IPC_CHANNELS.CLAUDE_GET_MESSAGES, async (_, sessionId: string, limit?: number) => {

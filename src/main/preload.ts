@@ -39,6 +39,10 @@ const electronAPI = {
       ipcRenderer.invoke(IPC_CHANNELS.AUTH_GET_USER),
     getRepos: (): Promise<GitHubRepo[]> =>
       ipcRenderer.invoke(IPC_CHANNELS.AUTH_GET_REPOS),
+    checkProviders: (): Promise<{
+      claude: { loggedIn: boolean; method?: 'cli' | 'apiKey' | 'chatgpt'; detail?: string };
+      codex: { loggedIn: boolean; method?: 'cli' | 'apiKey' | 'chatgpt'; detail?: string };
+    }> => ipcRenderer.invoke(IPC_CHANNELS.AUTH_CHECK_PROVIDERS),
     onOAuthCallback: (callback: (data: { code: string }) => void) => {
       const handler = (_: IpcRendererEvent, data: { code: string }) => callback(data);
       ipcRenderer.on('auth:oauth-callback', handler);

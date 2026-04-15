@@ -7,6 +7,7 @@ export const IPC_CHANNELS = {
   AUTH_GET_USER: 'auth:get-user',
   AUTH_GET_REPOS: 'auth:get-repos',
   AUTH_STATUS: 'auth:status',
+  AUTH_CHECK_PROVIDERS: 'auth:check-providers',
 
   // Session channels
   SESSION_CREATE: 'session:create',
