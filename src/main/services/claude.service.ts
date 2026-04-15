@@ -4275,9 +4275,12 @@ Begin by creating the task structure now.
         }
       } else if (errorMessage.match(/process exited with code|process terminated by signal/) && session?.sshConfig) {
         console.error('[Claude SDK] SSH process exit caught:', errorMessage);
+        // Don't guess at the cause — "network drop" was misleading because
+        // the process can also exit from a crash, OOM, or being killed.
+        // Surface the raw exit reason so the user can tell the difference.
         yield {
           type: 'error',
-          error: 'SSH connection lost. The remote Claude process was interrupted, likely due to a network drop. Try sending your message again to reconnect.'
+          error: `Remote Claude process exited unexpectedly (${errorMessage}). Messages already streamed are saved on the remote. Send another message to reconnect and continue.`,
         };
       } else if (errorMessage.match(/unauthorized|api.?key.*invalid|invalid.*api.?key|not authenticated|login required|authentication_error/i)) {
         console.error('[Claude SDK] Auth error caught:', errorMessage);

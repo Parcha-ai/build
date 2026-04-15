@@ -105,3 +105,4 @@ test-*.js
 test-*.ts
 test-*.sh
 test-*.scpt
+.gstack/
