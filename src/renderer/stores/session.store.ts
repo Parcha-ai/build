@@ -80,74 +80,11 @@ export interface CompactionSwitchState {
   postTokens?: number;
 }
 
-// Streaming activity watchdog — catches stuck isStreaming state.
-// Tracks the last time ANY stream event (chunk, tool call, thinking, etc.) was received.
-// If isStreaming is true but no activity for 120s, force-clear it.
-// The old 60s text-delta-only watchdog was too aggressive. This one tracks ALL events
-// and uses a longer timeout, so it only fires when the stream is truly dead.
-const streamLastActivity = new Map<string, number>();
-const streamWatchdogTimers = new Map<string, ReturnType<typeof setInterval>>();
-
-function touchStreamActivity(sessionId: string) {
-  streamLastActivity.set(sessionId, Date.now());
-}
-
-function resetStreamingWatchdog(sessionId: string, getState: () => SessionState) {
-  clearStreamingWatchdog(sessionId);
-  touchStreamActivity(sessionId);
-
-  const timer = setInterval(() => {
-    const state = getState();
-    if (!state.isStreaming[sessionId]) {
-      clearStreamingWatchdog(sessionId);
-      return;
-    }
-
-    const lastActivity = streamLastActivity.get(sessionId) || 0;
-    const elapsed = Date.now() - lastActivity;
-    if (elapsed > 120_000) {
-      console.error(`[StreamWatchdog] No stream activity for ${Math.round(elapsed / 1000)}s on ${sessionId} — cancelling backend and clearing isStreaming`);
-      clearStreamingWatchdog(sessionId);
-
-      // Save partial content as interrupted message before clearing
-      const currentContent = state.currentStreamContent[sessionId] || '';
-      if (currentContent.trim()) {
-        state.addMessage(sessionId, {
-          id: `watchdog-${Date.now()}`,
-          role: 'assistant',
-          content: currentContent,
-          timestamp: new Date(),
-          interrupted: true,
-        });
-      }
-
-      // CRITICAL: cancel the backend query too. Without this, the backend keeps
-      // the query alive. The next user message would trigger an "Operation aborted"
-      // error as the backend aborts the zombie query for the new sendMessage call.
-      if (hasElectronAPI) {
-        window.electronAPI.claude.cancel(sessionId).catch((err: unknown) => {
-          console.warn('[StreamWatchdog] Backend cancel failed:', err);
-        });
-      }
-
-      watchdogForceReset(sessionId);
-    }
-  }, 15_000); // Check every 15s
-
-  streamWatchdogTimers.set(sessionId, timer);
-}
-
-function clearStreamingWatchdog(sessionId: string) {
-  const timer = streamWatchdogTimers.get(sessionId);
-  if (timer) {
-    clearInterval(timer);
-    streamWatchdogTimers.delete(sessionId);
-  }
-  streamLastActivity.delete(sessionId);
-}
-
-// This gets wired up after the store is created (see below)
-let watchdogForceReset: (sessionId: string) => void = () => {};
+// Streaming watchdog was removed — it fired too aggressively during long
+// compactions, long tool runs, and slow SSH handshakes, cancelling live
+// backend queries and causing sessions to mysteriously "stop". The backend's
+// own error/exit events drive isStreaming state; if the UI feels stuck, the
+// interrupt button is the user's direct control.
 
 interface SessionState {
   sessions: Session[];
@@ -257,6 +194,7 @@ interface SessionState {
   // Permission handling
   setPendingPermission: (sessionId: string, request: PermissionRequest | null) => void;
   approvePermission: (sessionId: string, modifiedInput?: Record<string, unknown>, alwaysApprove?: boolean) => Promise<void>;
+  approvePermissionAsBackground: (sessionId: string) => Promise<boolean>;
   denyPermission: (sessionId: string) => Promise<void>;
   // Question handling
   setPendingQuestion: (sessionId: string, request: QuestionRequest | null) => void;
@@ -1056,15 +994,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   setStreaming: (sessionId, isStreaming) => {
     console.log(`[SessionStore] setStreaming called for ${sessionId}: ${isStreaming}`);
 
-    // Manage SSH streaming watchdog
-    if (isStreaming) {
-      const session = get().sessions.find(s => s.id === sessionId);
-      if (session?.sshConfig) {
-        resetStreamingWatchdog(sessionId, get);
-      }
-    } else {
-      clearStreamingWatchdog(sessionId);
-    }
 
     set((state) => ({
       isStreaming: { ...state.isStreaming, [sessionId]: isStreaming },
@@ -1595,59 +1524,84 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     if (!hasElectronAPI) return () => {};
     const { addMessage, updateStreamContent, updateThinkingContent, addToolCall, updateToolCall, setStreaming, setSystemInfo } = get();
 
-    // Helper to reset watchdog on any stream activity (all sessions, not just SSH)
-    const resetWatchdog = (sessionId: string) => {
-      if (get().isStreaming[sessionId]) {
-        touchStreamActivity(sessionId);
-      }
-    };
-
     const unsubChunk = window.electronAPI.claude.onStreamChunk(({ sessionId, content, agentId }) => {
-      resetWatchdog(sessionId);
       updateStreamContent(sessionId, content, agentId);
     });
 
     const unsubThinking = window.electronAPI.claude.onThinkingChunk(({ sessionId, content }) => {
-      resetWatchdog(sessionId);
       updateThinkingContent(sessionId, content);
     });
 
     const unsubToolCall = window.electronAPI.claude.onToolCall(({ sessionId, toolCall }) => {
-      resetWatchdog(sessionId);
       const tc = toolCall as ToolCall;
       console.log('[SessionStore] onToolCall received:', tc?.name, 'input:', JSON.stringify(tc?.input || {}));
       addToolCall(sessionId, tc);
 
-      // Track Monitor tool invocations for the dedicated MonitorBlock UI
-      if (tc?.name === 'Monitor' && tc.id) {
-        const input = (tc.input || {}) as { description?: string; persistent?: boolean; command?: string };
-        const description = input.description || input.command?.slice(0, 60) || 'monitor';
-        set((state) => {
-          const existing = state.monitorInstances[sessionId] || [];
-          // Avoid duplicates — same tool_use id
-          if (existing.some((m) => m.id === tc.id)) return state;
-          return {
-            monitorInstances: {
-              ...state.monitorInstances,
-              [sessionId]: [
-                ...existing,
-                {
-                  id: tc.id,
-                  description,
-                  events: [],
-                  active: true,
-                  persistent: input.persistent === true,
-                  startedAt: Date.now(),
-                },
-              ],
-            },
-          };
-        });
+      // Track real backgrounded shells via Claude Code's native tool suite:
+      // - `Bash` with `run_in_background: true` starts a shell, result includes shell_id
+      // - `BashOutput` polls stdout/stderr for a shell_id
+      // - `KillShell` stops a background shell_id
+      // The MonitorBlock UI uses the tool_use id as a placeholder until the
+      // Bash tool result comes back with the real shell_id (see onToolResult).
+      if (tc?.name === 'Bash' && tc.id) {
+        const input = (tc.input || {}) as { run_in_background?: boolean; command?: string; description?: string };
+        if (input.run_in_background === true) {
+          const description = input.description || input.command?.slice(0, 80) || 'background shell';
+          set((state) => {
+            const existing = state.monitorInstances[sessionId] || [];
+            if (existing.some((m) => m.id === tc.id)) return state;
+            return {
+              monitorInstances: {
+                ...state.monitorInstances,
+                [sessionId]: [
+                  ...existing,
+                  {
+                    id: tc.id,              // swapped for shell_id when Bash result arrives
+                    description,
+                    events: [],
+                    active: true,
+                    startedAt: Date.now(),
+                  },
+                ],
+              },
+            };
+          });
+        }
+      }
+
+      // Teammate spawning (Agent Teams feature). The model invokes `Agent` /
+      // `Task` with a `subagent_type` to run a named teammate asynchronously
+      // (Scaramanga, Q, Moneypenny, etc). Track the lifecycle so the Monitor
+      // pane shows which teammates are in-flight. Result completion arrives
+      // via onToolResult below.
+      if ((tc?.name === 'Agent' || tc?.name === 'Task') && tc.id) {
+        const input = (tc.input || {}) as { subagent_type?: string; prompt?: string; description?: string };
+        if (input.subagent_type) {
+          const description = `${input.subagent_type}: ${input.description || (input.prompt || '').slice(0, 60) || 'teammate'}`;
+          set((state) => {
+            const existing = state.monitorInstances[sessionId] || [];
+            if (existing.some((m) => m.id === tc.id)) return state;
+            return {
+              monitorInstances: {
+                ...state.monitorInstances,
+                [sessionId]: [
+                  ...existing,
+                  {
+                    id: tc.id,
+                    description,
+                    events: [],
+                    active: true,
+                    startedAt: Date.now(),
+                  },
+                ],
+              },
+            };
+          });
+        }
       }
     });
 
     const unsubToolResult = window.electronAPI.claude.onToolResult(async ({ sessionId, toolCall }) => {
-      resetWatchdog(sessionId);
       if (!toolCall) return;
       const tc = toolCall as ToolCall;
       console.log('[SessionStore] onToolResult received:', tc.name, 'input:', JSON.stringify(tc.input || {}));
@@ -1659,35 +1613,138 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         completedAt: tc.completedAt,
       });
 
-      // Accumulate Monitor events — each tool_result for a Monitor tool is a new streaming event
-      if (tc.name === 'Monitor' && tc.id && tc.result) {
-        set((state) => {
-          const existing = state.monitorInstances[sessionId] || [];
-          const idx = existing.findIndex((m) => m.id === tc.id);
-          if (idx < 0) return state;
+      // Real backgrounded shells (Claude Code native):
+      // 1. Bash(run_in_background=true) result → rekey monitor by shell_id + seed output
+      // 2. BashOutput result → append lines to matching shell_id monitor
+      // 3. KillShell result → mark that shell_id inactive
+      if (tc.id && tc.result) {
+        const resultText = typeof tc.result === 'string' ? tc.result : JSON.stringify(tc.result);
 
-          const resultText = typeof tc.result === 'string' ? tc.result : JSON.stringify(tc.result);
-          const newEvent = {
-            id: `${tc.id}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-            text: resultText,
-            timestamp: Date.now(),
-          };
+        // Bash tool result — swap placeholder id for real shell_id
+        if (tc.name === 'Bash') {
+          const input = (tc.input || {}) as { run_in_background?: boolean };
+          if (input.run_in_background === true) {
+            // Claude Code prints the shell id in the result, typically as
+            // "Shell ID: bash_<n>" or a JSON blob including shell_id.
+            const shellMatch =
+              resultText.match(/shell[_ ]id[":=\s]+([a-zA-Z0-9_-]+)/i) ||
+              resultText.match(/bash[_-]\d+/i);
+            const shellId = shellMatch ? (shellMatch[1] || shellMatch[0]) : null;
+            if (shellId) {
+              set((state) => {
+                const existing = state.monitorInstances[sessionId] || [];
+                const idx = existing.findIndex((m) => m.id === tc.id);
+                if (idx < 0) return state;
+                const updated = [...existing];
+                updated[idx] = {
+                  ...updated[idx],
+                  id: shellId,
+                  events: resultText
+                    ? [...updated[idx].events, { id: `${shellId}-seed`, text: resultText, timestamp: Date.now() }]
+                    : updated[idx].events,
+                };
+                return { monitorInstances: { ...state.monitorInstances, [sessionId]: updated } };
+              });
+            }
+          }
+        }
 
-          const isDone = tc.status === 'completed' || tc.status === 'error';
-          const updated = [...existing];
-          updated[idx] = {
-            ...updated[idx],
-            events: [...updated[idx].events, newEvent],
-            active: !isDone,
-          };
+        // BashOutput — append polled output to the matching shell's monitor.
+        if (tc.name === 'BashOutput') {
+          const input = (tc.input || {}) as { bash_id?: string; shell_id?: string };
+          const shellId = input.bash_id || input.shell_id;
+          if (shellId) {
+            set((state) => {
+              const existing = state.monitorInstances[sessionId] || [];
+              const idx = existing.findIndex((m) => m.id === shellId);
+              if (idx < 0) return state;
+              const updated = [...existing];
+              // Skip empty polls so the monitor doesn't flood with blanks.
+              if (resultText.trim()) {
+                updated[idx] = {
+                  ...updated[idx],
+                  events: [
+                    ...updated[idx].events,
+                    { id: `${shellId}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, text: resultText, timestamp: Date.now() },
+                  ],
+                };
+              }
+              // Completed status in the Bash process is reflected when the shell exits;
+              // the CLI surfaces this via BashOutput returning exit info.
+              if (/exit code|process exited|command finished/i.test(resultText)) {
+                updated[idx] = { ...updated[idx], active: false };
+              }
+              return { monitorInstances: { ...state.monitorInstances, [sessionId]: updated } };
+            });
+          }
+        }
 
-          return {
-            monitorInstances: {
-              ...state.monitorInstances,
-              [sessionId]: updated,
-            },
-          };
-        });
+        // KillShell — mark the targeted shell inactive.
+        if (tc.name === 'KillShell' || tc.name === 'KillBash') {
+          const input = (tc.input || {}) as { shell_id?: string; bash_id?: string };
+          const shellId = input.shell_id || input.bash_id;
+          if (shellId) {
+            set((state) => {
+              const existing = state.monitorInstances[sessionId] || [];
+              const idx = existing.findIndex((m) => m.id === shellId);
+              if (idx < 0) return state;
+              const updated = [...existing];
+              updated[idx] = { ...updated[idx], active: false };
+              return { monitorInstances: { ...state.monitorInstances, [sessionId]: updated } };
+            });
+          }
+        }
+
+        // Teammate (Agent/Task) result — append the teammate's final message
+        // and mark inactive. This captures when Scaramanga/Q/etc finish.
+        if ((tc.name === 'Agent' || tc.name === 'Task') && tc.id) {
+          set((state) => {
+            const existing = state.monitorInstances[sessionId] || [];
+            const idx = existing.findIndex((m) => m.id === tc.id);
+            if (idx < 0) return state;
+            const isDone = tc.status === 'completed' || tc.status === 'error';
+            const updated = [...existing];
+            updated[idx] = {
+              ...updated[idx],
+              events: resultText.trim()
+                ? [...updated[idx].events, { id: `${tc.id}-done`, text: resultText, timestamp: Date.now() }]
+                : updated[idx].events,
+              active: !isDone,
+            };
+            return { monitorInstances: { ...state.monitorInstances, [sessionId]: updated } };
+          });
+        }
+
+        // SendMessage to a teammate — add as a progress event on the relevant
+        // teammate's monitor. The input.to field names the teammate; we match
+        // on description-prefix since there's no shared id.
+        if (tc.name === 'SendMessage' && tc.id) {
+          const input = (tc.input || {}) as { to?: string; message?: string };
+          const target = input.to;
+          if (target) {
+            set((state) => {
+              const existing = state.monitorInstances[sessionId] || [];
+              // Match by description prefix, e.g. "scaramanga: ..."
+              const idx = existing.findIndex((m) =>
+                m.description.toLowerCase().startsWith(`${target.toLowerCase()}:`)
+              );
+              if (idx < 0) return state;
+              const updated = [...existing];
+              const preview = (input.message || '').slice(0, 120);
+              updated[idx] = {
+                ...updated[idx],
+                events: [
+                  ...updated[idx].events,
+                  { id: `${tc.id}-msg`, text: `→ ${preview}`, timestamp: Date.now() },
+                ],
+              };
+              if (resultText.trim()) {
+                updated[idx].events.push({ id: `${tc.id}-reply`, text: resultText, timestamp: Date.now() });
+              }
+              return { monitorInstances: { ...state.monitorInstances, [sessionId]: updated } };
+            });
+          }
+        }
       }
 
       // Handle Edit tool completion for text replacement feature
@@ -2119,6 +2176,31 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     console.log('[Session Store] Approving permission:', request.requestId, alwaysApprove ? '(always approve)' : '');
     await window.electronAPI.claude.respondToPermission(response);
     setPendingPermission(sessionId, null);
+  },
+
+  /**
+   * Clean-path backgrounding: when a Bash permission is pending, approve it
+   * with `modifiedInput.run_in_background = true` so the SDK spawns the shell
+   * detached instead of running it in-band. Returns true if a pending Bash
+   * permission was found and approved; false otherwise (caller can fall back
+   * to the blunt cancel+reprompt path).
+   */
+  approvePermissionAsBackground: async (sessionId: string): Promise<boolean> => {
+    if (!hasElectronAPI) return false;
+    const { pendingPermission, setPendingPermission } = get();
+    const request = pendingPermission[sessionId];
+    if (!request || request.toolName !== 'Bash') return false;
+
+    const modifiedInput = { ...(request.toolInput || {}), run_in_background: true };
+    const response: PermissionResponse = {
+      requestId: request.requestId,
+      approved: true,
+      modifiedInput,
+    };
+    console.log('[Session Store] Approving Bash permission with run_in_background=true', request.requestId);
+    await window.electronAPI.claude.respondToPermission(response);
+    setPendingPermission(sessionId, null);
+    return true;
   },
 
   denyPermission: async (sessionId) => {
@@ -3100,16 +3182,3 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     };
   },
 }));
-
-// Wire up the watchdog force-reset function now that the store exists
-watchdogForceReset = (sessionId: string) => {
-  console.error(`[StreamWatchdog] Force-resetting isStreaming for ${sessionId}`);
-  useSessionStore.setState((state) => ({
-    isStreaming: { ...state.isStreaming, [sessionId]: false },
-    activeStreamModel: { ...state.activeStreamModel, [sessionId]: undefined },
-    currentStreamContent: { ...state.currentStreamContent, [sessionId]: '' },
-    currentThinkingContent: { ...state.currentThinkingContent, [sessionId]: '' },
-    currentToolCalls: { ...state.currentToolCalls, [sessionId]: [] },
-    streamEvents: { ...state.streamEvents, [sessionId]: [] },
-  }));
-};
