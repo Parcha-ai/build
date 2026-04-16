@@ -103,9 +103,10 @@ export default function QuickSearch() {
     const currentThinkingMode = activeSessionId ? (thinkingMode[activeSessionId] || 'thinking') : 'thinking';
 
     const permissionModeLabels: Record<PermissionMode, string> = {
+      'auto': 'Auto',
       'acceptEdits': 'Accept Edits',
       'default': 'Default',
-      'bypassPermissions': 'Just Build It',
+      'bypassPermissions': 'Bypass Permissions',
       'plan': 'Plan Mode',
       'dontAsk': "Don't Ask",
     };
