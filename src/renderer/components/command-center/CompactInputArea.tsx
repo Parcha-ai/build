@@ -4,6 +4,7 @@ import { useSessionStore, type PermissionMode } from '../../stores/session.store
 import CommandAutocomplete from '../chat/CommandAutocomplete';
 
 const PERMISSION_PROMPTS: Record<PermissionMode, { prompt: string; color: string }> = {
+  auto: { prompt: '⚡', color: 'text-cyan-400' },
   acceptEdits: { prompt: '>>', color: 'text-green-400' },
   default: { prompt: '>', color: 'text-amber-400' },
   bypassPermissions: { prompt: '>>>', color: 'text-purple-400' },
