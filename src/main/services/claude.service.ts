@@ -2935,8 +2935,22 @@ Read or source that file if you need the actual values. Do not print secret valu
         });
       }
 
+      // Resolve [SECURE_KEY:key_xxx] placeholders back to real values before
+      // sending to the model. The renderer replaced detected API keys with
+      // placeholders to keep them out of the transcript/UI, but the model
+      // needs the actual values to function (e.g. curl -H "Authorization: <key>").
+      let resolvedMessage = userMessage.replace(
+        /\[SECURE_KEY:([^\]]+)\]/g,
+        (_match, keyId) => {
+          const realValue = secureKeysService.getKey(keyId);
+          if (realValue) return realValue;
+          console.warn(`[Claude Service] Could not resolve SECURE_KEY placeholder: ${keyId}`);
+          return _match;
+        }
+      );
+
       // GStack mode is injected via system prompt append only (buildSystemPromptAppend)
-      let fullTextMessage = userMessage;
+      let fullTextMessage = resolvedMessage;
       if (hasDomElements) {
         const domContext = domElementAttachments.map((el, i) => {
           return `<selected-element index="${i + 1}" selector="${el.name}">\n${el.content}\n</selected-element>`;
