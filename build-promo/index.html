@@ -1,0 +1,400 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body {
+        margin: 0; width: 1920px; height: 1080px;
+        overflow: hidden; background: #0B090A;
+        font-family: "DM Sans", sans-serif;
+      }
+
+      .scene {
+        position: absolute; top: 0; left: 0;
+        width: 1920px; height: 1080px;
+        overflow: hidden; background: #0B090A;
+      }
+      #scene1 { z-index: 1; }
+      #scene2 { z-index: 2; opacity: 0; }
+      #scene3 { z-index: 3; opacity: 0; }
+      #scene4 { z-index: 4; opacity: 0; }
+      #scene5 { z-index: 5; opacity: 0; }
+
+      /* ── Scene 1: Logo Reveal ── */
+      .s1-content {
+        display: flex; flex-direction: column; align-items: center; justify-content: center;
+        width: 100%; height: 100%; gap: 32px;
+      }
+      .s1-logo {
+        width: 220px; height: 220px;
+      }
+      .s1-logo svg { width: 100%; height: 100%; }
+      .s1-title {
+        font-family: "Space Grotesk", sans-serif;
+        font-size: 140px; font-weight: 900; color: #F0EBD8;
+        letter-spacing: -0.04em;
+      }
+      .s1-tagline {
+        font-family: "IBM Plex Mono", monospace;
+        font-size: 28px; font-weight: 300; color: #748CAB;
+        letter-spacing: 0.12em; text-transform: uppercase;
+      }
+      .s1-glow {
+        position: absolute; width: 600px; height: 600px; border-radius: 50%;
+        background: radial-gradient(circle, rgba(116,140,171,0.15) 0%, rgba(11,9,10,0) 70%);
+        top: 50%; left: 50%; margin-left: -300px; margin-top: -300px;
+      }
+      .s1-scanline {
+        position: absolute; top: 0; left: 0; width: 1920px; height: 3px;
+        background: rgba(240,235,216,0.06);
+      }
+
+      /* ── Scene 2: The Problem ── */
+      .s2-content {
+        display: flex; flex-direction: column; justify-content: center;
+        width: 100%; height: 100%; padding: 120px 180px; gap: 40px;
+      }
+      .s2-headline {
+        font-family: "Space Grotesk", sans-serif;
+        font-size: 88px; font-weight: 800; color: #F0EBD8;
+        letter-spacing: -0.03em; line-height: 1.05; max-width: 1400px;
+      }
+      .s2-subtext {
+        font-family: "IBM Plex Mono", monospace;
+        font-size: 32px; font-weight: 300; color: #748CAB;
+        max-width: 1000px; line-height: 1.5;
+      }
+      .s2-accent-line {
+        width: 120px; height: 4px; background: #3E5C76;
+      }
+      .s2-ghost {
+        position: absolute; font-family: "Space Grotesk", sans-serif;
+        font-size: 280px; font-weight: 900; color: rgba(240,235,216,0.03);
+        top: 50%; right: -40px; transform: translateY(-50%);
+        letter-spacing: -0.05em;
+      }
+
+      /* ── Scene 3: The Solution ── */
+      .s3-content {
+        display: flex; flex-direction: column; justify-content: center;
+        width: 100%; height: 100%; padding: 100px 160px; gap: 48px;
+      }
+      .s3-headline {
+        font-family: "Space Grotesk", sans-serif;
+        font-size: 80px; font-weight: 800; color: #F0EBD8;
+        letter-spacing: -0.03em;
+      }
+      .s3-headline em {
+        font-style: normal; color: #FFC300;
+      }
+      .s3-panels {
+        display: flex; gap: 24px;
+      }
+      .s3-panel {
+        flex: 1; background: rgba(29,45,68,0.4); border: 1px solid rgba(62,92,118,0.3);
+        padding: 40px; display: flex; flex-direction: column; gap: 16px;
+      }
+      .s3-panel-icon {
+        font-family: "IBM Plex Mono", monospace;
+        font-size: 36px; color: #FFC300;
+      }
+      .s3-panel-title {
+        font-family: "Space Grotesk", sans-serif;
+        font-size: 36px; font-weight: 700; color: #F0EBD8;
+      }
+      .s3-panel-desc {
+        font-family: "DM Sans", sans-serif;
+        font-size: 22px; font-weight: 300; color: #748CAB; line-height: 1.5;
+      }
+      .s3-glow {
+        position: absolute; width: 800px; height: 500px; border-radius: 50%;
+        background: radial-gradient(ellipse, rgba(255,195,0,0.06) 0%, rgba(11,9,10,0) 70%);
+        bottom: 0; left: 50%; margin-left: -400px;
+      }
+
+      /* ── Scene 4: Feature Flash ── */
+      .s4-content {
+        display: flex; flex-direction: column; justify-content: center; align-items: center;
+        width: 100%; height: 100%; padding: 80px; gap: 48px;
+      }
+      .s4-grid {
+        display: grid; grid-template-columns: 1fr 1fr; gap: 32px;
+        width: 100%; max-width: 1500px;
+      }
+      .s4-card {
+        background: rgba(29,45,68,0.3); border: 1px solid rgba(62,92,118,0.25);
+        padding: 48px; display: flex; flex-direction: column; gap: 12px;
+      }
+      .s4-card-label {
+        font-family: "IBM Plex Mono", monospace;
+        font-size: 18px; font-weight: 400; color: #FFC300;
+        letter-spacing: 0.08em; text-transform: uppercase;
+      }
+      .s4-card-title {
+        font-family: "Space Grotesk", sans-serif;
+        font-size: 44px; font-weight: 800; color: #F0EBD8;
+        letter-spacing: -0.02em;
+      }
+      .s4-card-desc {
+        font-family: "DM Sans", sans-serif;
+        font-size: 22px; font-weight: 300; color: #748CAB; line-height: 1.4;
+      }
+      .s4-pulse {
+        position: absolute; width: 400px; height: 400px; border-radius: 50%;
+        background: radial-gradient(circle, rgba(62,92,118,0.1) 0%, rgba(11,9,10,0) 70%);
+      }
+      .s4-pulse-1 { top: -100px; right: -100px; }
+      .s4-pulse-2 { bottom: -100px; left: -100px; }
+
+      /* ── Scene 5: Closing ── */
+      .s5-content {
+        display: flex; flex-direction: column; align-items: center; justify-content: center;
+        width: 100%; height: 100%; gap: 40px;
+      }
+      .s5-cta {
+        font-family: "Space Grotesk", sans-serif;
+        font-size: 110px; font-weight: 900; color: #F0EBD8;
+        letter-spacing: -0.04em;
+      }
+      .s5-cta-dot {
+        color: #FFC300;
+      }
+      .s5-logo {
+        width: 80px; height: 80px;
+      }
+      .s5-logo svg { width: 100%; height: 100%; }
+      .s5-url {
+        font-family: "IBM Plex Mono", monospace;
+        font-size: 26px; font-weight: 400; color: #748CAB;
+        letter-spacing: 0.05em;
+      }
+      .s5-glow {
+        position: absolute; width: 900px; height: 900px; border-radius: 50%;
+        background: radial-gradient(circle, rgba(255,195,0,0.08) 0%, rgba(11,9,10,0) 70%);
+        top: 50%; left: 50%; margin-left: -450px; margin-top: -450px;
+      }
+      .s5-ver {
+        font-family: "IBM Plex Mono", monospace;
+        font-size: 18px; font-weight: 300; color: rgba(116,140,171,0.5);
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root" data-composition-id="main" data-start="0" data-duration="30" data-width="1920" data-height="1080">
+
+      <!-- ═══ SCENE 1: Logo Reveal (0–6s) ═══ -->
+      <div id="scene1" class="scene">
+        <div class="s1-glow"></div>
+        <div class="s1-scanline"></div>
+        <div class="s1-content">
+          <div class="s1-logo">
+            <svg viewBox="0 0 923 923" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <rect width="923" height="923" fill="#0B090A"/>
+              <path d="M314 121H605V218H702V414H605V511H702V706H605V804H314V706H217V218H314V121ZM324 228V404H595V228H324ZM324 521V696H595V521H324Z" fill="#F0EBD8" fill-rule="evenodd"/>
+            </svg>
+          </div>
+          <div class="s1-title">Build</div>
+          <div class="s1-tagline">AI-native development environment</div>
+        </div>
+      </div>
+
+      <!-- ═══ SCENE 2: The Problem (6–13s) ═══ -->
+      <div id="scene2" class="scene">
+        <div class="s2-ghost">CLI</div>
+        <div class="s2-content">
+          <div class="s2-accent-line"></div>
+          <div class="s2-headline">AI coding tools live in your terminal. Your app lives everywhere else.</div>
+          <div class="s2-subtext">Copy-paste loops. Context switching. Blind debugging. You deserve better than a chat window.</div>
+        </div>
+      </div>
+
+      <!-- ═══ SCENE 3: The Solution (13–20s) ═══ -->
+      <div id="scene3" class="scene">
+        <div class="s3-glow"></div>
+        <div class="s3-content">
+          <div class="s3-headline">One window. <em>Everything.</em></div>
+          <div class="s3-panels">
+            <div class="s3-panel">
+              <div class="s3-panel-icon">&gt;_</div>
+              <div class="s3-panel-title">Terminal</div>
+              <div class="s3-panel-desc">Full PTY emulation with intelligent command history</div>
+            </div>
+            <div class="s3-panel">
+              <div class="s3-panel-icon">{}</div>
+              <div class="s3-panel-title">Editor</div>
+              <div class="s3-panel-desc">Monaco with live file sync and semantic search</div>
+            </div>
+            <div class="s3-panel">
+              <div class="s3-panel-icon">&#9881;</div>
+              <div class="s3-panel-title">Browser</div>
+              <div class="s3-panel-desc">Live preview with DOM inspector and network monitoring</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ═══ SCENE 4: Feature Flash (20–26s) ═══ -->
+      <div id="scene4" class="scene">
+        <div class="s4-pulse s4-pulse-1"></div>
+        <div class="s4-pulse s4-pulse-2"></div>
+        <div class="s4-content">
+          <div class="s4-grid">
+            <div class="s4-card" id="s4-card-1">
+              <div class="s4-card-label">Intelligence</div>
+              <div class="s4-card-title">Claude + Codex</div>
+              <div class="s4-card-desc">Dual AI with model switching, extended thinking, and agent SDK</div>
+            </div>
+            <div class="s4-card" id="s4-card-2">
+              <div class="s4-card-label">Anywhere</div>
+              <div class="s4-card-title">SSH Remote Dev</div>
+              <div class="s4-card-desc">Full sessions on remote servers over SSH with process management</div>
+            </div>
+            <div class="s4-card" id="s4-card-3">
+              <div class="s4-card-label">Realtime</div>
+              <div class="s4-card-title">Live Preview</div>
+              <div class="s4-card-desc">Browser with element inspector, screenshot capture, console logs</div>
+            </div>
+            <div class="s4-card" id="s4-card-4">
+              <div class="s4-card-label">Natural</div>
+              <div class="s4-card-title">Voice Input</div>
+              <div class="s4-card-desc">Speak your intent with real-time transcription and TTS responses</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ═══ SCENE 5: Closing (26–30s) ═══ -->
+      <div id="scene5" class="scene">
+        <div class="s5-glow"></div>
+        <div class="s5-content">
+          <div class="s5-logo">
+            <svg viewBox="0 0 923 923" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <rect width="923" height="923" fill="#0B090A"/>
+              <path d="M314 121H605V218H702V414H605V511H702V706H605V804H314V706H217V218H314V121ZM324 228V404H595V228H324ZM324 521V696H595V521H324Z" fill="#F0EBD8" fill-rule="evenodd"/>
+            </svg>
+          </div>
+          <div class="s5-cta">Build<span class="s5-cta-dot">.</span> Ship<span class="s5-cta-dot">.</span> Repeat<span class="s5-cta-dot">.</span></div>
+          <div class="s5-url">parcha.ai/build</div>
+          <div class="s5-ver">v0.3.7</div>
+        </div>
+      </div>
+
+    </div>
+
+    <script>
+      window.__timelines = window.__timelines || {};
+      var tl = gsap.timeline({ paused: true });
+
+      // ── SCENE 1: Logo Reveal ──
+      // Ambient glow breathing
+      tl.fromTo(".s1-glow", { scale: 0.8, opacity: 0.5 }, { scale: 1.2, opacity: 1, duration: 5, ease: "sine.inOut", yoyo: true, repeat: 0 }, 0);
+
+      // Scanline drift
+      tl.fromTo(".s1-scanline", { y: 0 }, { y: 1080, duration: 4, ease: "none", repeat: 0 }, 0);
+
+      // Logo entrance — scale + glitch flicker
+      tl.from(".s1-logo", { scale: 3, opacity: 0, duration: 0.8, ease: "expo.out" }, 0.3);
+      tl.fromTo(".s1-logo", { filter: "brightness(3)" }, { filter: "brightness(1)", duration: 0.4, ease: "power3.out" }, 0.3);
+
+      // Title slam in
+      tl.from(".s1-title", { y: 80, opacity: 0, letterSpacing: "0.1em", duration: 0.7, ease: "power4.out" }, 1.0);
+
+      // Tagline fade
+      tl.from(".s1-tagline", { opacity: 0, y: 20, duration: 0.6, ease: "power2.out" }, 1.6);
+
+      // ── TRANSITION 1→2: Blur Crossfade @ 5.5s ──
+      tl.to("#scene1", { filter: "blur(10px)", scale: 1.03, opacity: 0, duration: 0.5, ease: "power2.inOut" }, 5.5);
+      tl.fromTo("#scene2",
+        { filter: "blur(10px)", scale: 0.97, opacity: 0 },
+        { filter: "blur(0px)", scale: 1, opacity: 1, duration: 0.5, ease: "power2.inOut" }, 5.6);
+
+      tl.set("#scene1", { visibility: "hidden" }, 6.1);
+
+      // ── SCENE 2: The Problem ──
+      // Ghost text drift
+      tl.fromTo(".s2-ghost", { x: 40 }, { x: -60, duration: 7, ease: "sine.inOut" }, 6);
+
+      // Accent line wipe in
+      tl.from(".s2-accent-line", { scaleX: 0, transformOrigin: "left center", duration: 0.5, ease: "power3.out" }, 6.2);
+
+      // Headline entrance
+      tl.from(".s2-headline", { x: -60, opacity: 0, duration: 0.7, ease: "expo.out" }, 6.5);
+
+      // Subtext
+      tl.from(".s2-subtext", { y: 30, opacity: 0, duration: 0.5, ease: "power2.out" }, 7.2);
+
+      // ── TRANSITION 2→3: Color Dip to Black @ 12.5s ──
+      tl.to("#scene2", { opacity: 0, duration: 0.3, ease: "power2.in" }, 12.5);
+      tl.fromTo("#scene3", { opacity: 0 }, { opacity: 1, duration: 0.3, ease: "power2.out" }, 12.85);
+
+      tl.set("#scene2", { visibility: "hidden" }, 13.2);
+
+      // ── SCENE 3: The Solution ──
+      // Glow breathe
+      tl.fromTo(".s3-glow", { scale: 0.9, opacity: 0.4 }, { scale: 1.1, opacity: 0.8, duration: 6, ease: "sine.inOut" }, 13);
+
+      // Headline entrance
+      tl.from(".s3-headline", { y: 50, opacity: 0, duration: 0.6, ease: "power3.out" }, 13.2);
+
+      // Panels stagger — varied directions
+      tl.from(".s3-panel:nth-child(1)", { x: -50, opacity: 0, duration: 0.5, ease: "expo.out" }, 14.0);
+      tl.from(".s3-panel:nth-child(2)", { y: 40, opacity: 0, duration: 0.45, ease: "power3.out" }, 14.2);
+      tl.from(".s3-panel:nth-child(3)", { x: 50, opacity: 0, duration: 0.5, ease: "power4.out" }, 14.4);
+
+      // ── TRANSITION 3→4: Blur Crossfade @ 19.5s ──
+      tl.to("#scene3", { filter: "blur(8px)", scale: 1.02, opacity: 0, duration: 0.4, ease: "power2.inOut" }, 19.5);
+      tl.fromTo("#scene4",
+        { filter: "blur(8px)", scale: 0.98, opacity: 0 },
+        { filter: "blur(0px)", scale: 1, opacity: 1, duration: 0.4, ease: "power2.inOut" }, 19.6);
+
+      tl.set("#scene3", { visibility: "hidden" }, 20.05);
+
+      // ── SCENE 4: Feature Flash ──
+      // Ambient pulses
+      tl.fromTo(".s4-pulse-1", { scale: 0.8 }, { scale: 1.3, duration: 5, ease: "sine.inOut" }, 20);
+      tl.fromTo(".s4-pulse-2", { scale: 1.2 }, { scale: 0.7, duration: 5, ease: "sine.inOut" }, 20);
+
+      // Cards stagger — different entrances
+      tl.from("#s4-card-1", { y: 60, opacity: 0, duration: 0.45, ease: "power3.out" }, 20.2);
+      tl.from("#s4-card-2", { x: 50, opacity: 0, duration: 0.4, ease: "expo.out" }, 20.5);
+      tl.from("#s4-card-3", { x: -50, opacity: 0, duration: 0.4, ease: "power4.out" }, 20.8);
+      tl.from("#s4-card-4", { y: 60, opacity: 0, duration: 0.45, ease: "power2.out" }, 21.1);
+
+      // Card border glow pulse
+      tl.fromTo(".s4-card",
+        { borderColor: "rgba(62,92,118,0.25)" },
+        { borderColor: "rgba(255,195,0,0.15)", duration: 1.5, ease: "sine.inOut", stagger: 0.3 }, 22);
+
+      // ── TRANSITION 4→5: Color Dip @ 25.5s ──
+      tl.to("#scene4", { opacity: 0, duration: 0.35, ease: "power2.in" }, 25.5);
+      tl.fromTo("#scene5", { opacity: 0 }, { opacity: 1, duration: 0.35, ease: "power2.out" }, 25.9);
+
+      tl.set("#scene4", { visibility: "hidden" }, 26.25);
+
+      // ── SCENE 5: Closing ──
+      // Glow breathe
+      tl.fromTo(".s5-glow", { scale: 0.7, opacity: 0.3 }, { scale: 1.2, opacity: 1, duration: 3.5, ease: "sine.inOut" }, 26);
+
+      // Logo entrance
+      tl.from(".s5-logo", { scale: 0.5, opacity: 0, rotation: -10, duration: 0.6, ease: "power3.out" }, 26.2);
+
+      // CTA slam — word by word effect via split
+      tl.from(".s5-cta", { y: 60, opacity: 0, letterSpacing: "0.08em", duration: 0.7, ease: "power4.out" }, 26.6);
+
+      // URL fade
+      tl.from(".s5-url", { opacity: 0, y: 15, duration: 0.5, ease: "power2.out" }, 27.3);
+
+      // Version
+      tl.from(".s5-ver", { opacity: 0, duration: 0.4, ease: "sine.out" }, 27.7);
+
+      // Final scene fade out to black
+      tl.to("#scene5 .s5-content > *", { opacity: 0, y: -20, duration: 0.8, ease: "power1.in", stagger: 0.1 }, 29.0);
+      tl.set("#scene5", { visibility: "hidden" }, 30.0);
+
+      window.__timelines["main"] = tl;
+    </script>
+  </body>
+</html>

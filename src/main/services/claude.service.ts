@@ -345,14 +345,19 @@ export class ClaudeService {
     console.log('[Claude Service] Using default Anthropic model list');
     return [
       {
+        id: 'claude-opus-4-7',
+        name: 'Opus 4.7',
+        description: 'Latest and most capable model - best for complex tasks'
+      },
+      {
         id: 'claude-opus-4-6',
         name: 'Opus 4.6',
-        description: 'Latest and most capable model - best for complex tasks'
+        description: 'Highly capable model'
       },
       {
         id: 'claude-opus-4-5-20251101',
         name: 'Opus 4.5',
-        description: 'Highly capable model'
+        description: 'Previous generation Opus'
       },
       {
         id: 'claude-sonnet-4-6',
@@ -2888,12 +2893,18 @@ Read or source that file if you need the actual values. Do not print secret valu
             return 10000; // Balanced effort
           case 'high':
             return isOpus ? 60000 : 100000; // Full capability (default)
+          case 'xhigh':
+            if (!isOpus) {
+              console.warn('[Claude Service] ⚠️  xhigh effort only available on Opus, falling back to high');
+              return 100000;
+            }
+            return 100000; // Extended deep thinking
           case 'max':
             if (!isOpus) {
-              console.warn('[Claude Service] ⚠️  max effort only available on Opus 4.6, falling back to high');
-              return 100000; // Fallback to high for non-Opus
+              console.warn('[Claude Service] ⚠️  max effort only available on Opus, falling back to high');
+              return 100000;
             }
-            return 128000; // Maximum for Opus 4.6
+            return 128000; // Maximum
           default:
             console.warn(`[Claude Service] Unknown effort level: ${effort}, defaulting to medium`);
             return 10000; // Default to medium if unknown
