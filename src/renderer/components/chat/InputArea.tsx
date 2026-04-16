@@ -14,6 +14,12 @@ import { GSTACK_MODE_META } from '../../../shared/types';
 
 // Permission mode config for UI - using terminal-style prompts
 const PERMISSION_MODE_CONFIG: Record<PermissionMode, { prompt: string; label: string; color: string; description: string }> = {
+  auto: {
+    prompt: '⚡',
+    label: 'AUTO',
+    color: 'text-cyan-400',
+    description: 'Smart auto-approve — Claude decides when to ask',
+  },
   acceptEdits: {
     prompt: '>>',
     label: 'ACCEPT EDITS',
@@ -28,9 +34,9 @@ const PERMISSION_MODE_CONFIG: Record<PermissionMode, { prompt: string; label: st
   },
   bypassPermissions: {
     prompt: '>>>',
-    label: 'JUST BUILD IT',
+    label: 'BYPASS',
     color: 'text-purple-400',
-    description: 'Full autonomous mode',
+    description: 'Bypass all permissions — full autonomous',
   },
   plan: {
     prompt: '?',

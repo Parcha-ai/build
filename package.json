@@ -1,7 +1,7 @@
 {
   "name": "build",
   "productName": "Build",
-  "version": "0.3.11",
+  "version": "0.3.12",
   "description": "AI-powered development environment with intelligent code search, multi-session support, and live browser preview",
   "main": ".webpack/main",
   "scripts": {
@@ -63,7 +63,7 @@
     "typescript": "~4.5.4"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.98",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.112",
     "@anthropic-ai/sdk": "^0.71.1",
     "@browserbasehq/stagehand": "^3.0.7",
     "@elevenlabs/client": "^0.14.0-beta.0",

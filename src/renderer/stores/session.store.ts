@@ -12,12 +12,12 @@ interface SystemInfo {
 }
 
 // Permission modes from Claude Agent SDK
-export type PermissionMode = 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'dontAsk';
+export type PermissionMode = 'auto' | 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'dontAsk';
 
 const ALL_PERMISSION_MODES: PermissionMode[] = ['acceptEdits', 'default', 'bypassPermissions', 'plan', 'dontAsk'];
 const DEFAULT_PERMISSION_MODE: PermissionMode = 'bypassPermissions';
 const CODEX_PERMISSION_MODES: PermissionMode[] = ALL_PERMISSION_MODES.filter(
-  (mode): mode is PermissionMode => mode === 'acceptEdits' || mode === 'bypassPermissions' || mode === 'plan',
+  (mode): mode is PermissionMode => mode === 'auto' || mode === 'acceptEdits' || mode === 'bypassPermissions' || mode === 'plan',
 );
 const SUPPLEMENTAL_MESSAGES_STORAGE_PREFIX = 'grep-supplemental-messages-';
 
