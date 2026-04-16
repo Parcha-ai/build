@@ -23,7 +23,7 @@ const SUPPLEMENTAL_MESSAGES_STORAGE_PREFIX = 'grep-supplemental-messages-';
 
 // Effort levels: maps to Claude API's effort parameter
 // low = fast/efficient, medium = balanced, high = full capability (default), max = maximum (Opus only)
-export type EffortLevel = 'low' | 'medium' | 'high' | 'max';
+export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 // Legacy: Keep ThinkingMode as alias for backward compatibility during migration
 export type ThinkingMode = EffortLevel | 'off' | 'thinking' | 'ultrathink';
@@ -35,7 +35,7 @@ export const migrateThinkingMode = (mode: string | undefined): EffortLevel => {
     case 'thinking': return 'medium';
     case 'ultrathink': return 'high';
     // New values pass through:
-    case 'low': case 'medium': case 'high': case 'max': return mode as EffortLevel;
+    case 'low': case 'medium': case 'high': case 'xhigh': case 'max': return mode as EffortLevel;
     default: return 'high'; // Default to high (full capability)
   }
 };
@@ -1217,7 +1217,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
 
   cycleThinkingMode: (sessionId) => {
-    const effortLevels: EffortLevel[] = ['low', 'medium', 'high', 'max'];
+    const effortLevels: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'];
     set((state) => {
       const currentMode = state.thinkingMode[sessionId] || 'high';
       // Migrate old value if present

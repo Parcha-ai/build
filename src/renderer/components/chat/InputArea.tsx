@@ -80,10 +80,16 @@ const EFFORT_LEVEL_CONFIG: Record<ThinkingMode, { label: string; color: string; 
     color: 'text-purple-400',
     description: 'Full capability - deep thinking (default)',
   },
+  xhigh: {
+    label: 'XHIGH',
+    color: 'text-orange-400',
+    description: 'Extended deep thinking - more thorough reasoning',
+    opusOnly: true,
+  },
   max: {
     label: 'MAX',
     color: 'text-pink-400',
-    description: 'Maximum capability (Opus 4.6 only)',
+    description: 'Maximum capability (Opus only)',
     opusOnly: true,
   },
 };
@@ -263,14 +269,14 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
   // Per-session data selectors — only re-render when THIS session's data changes
   const isStreamingState = useSessionStore(useCallback((s) => s.isStreaming[sessionId] || false, [sessionId]));
   const currentMode = useSessionStore(useCallback((s) => normalizePermissionModeForModel(
-    s.selectedModel[sessionId] || 'claude-opus-4-5-20251101',
+    s.selectedModel[sessionId] || 'claude-opus-4-7',
     s.permissionMode[sessionId],
   ), [sessionId]));
   const contextUsage = useSessionStore(useCallback((s) => s.contextUsage[sessionId] || null, [sessionId]));
   const currentThinkingMode = useSessionStore(useCallback((s) => s.thinkingMode[sessionId] || 'thinking', [sessionId]));
   const activeGStackMode = useSessionStore(useCallback((s) => s.gstackMode[sessionId] || null, [sessionId]));
   const queuedMessages = useSessionStore(useCallback((s) => s.messageQueue[sessionId] || EMPTY_QUEUE, [sessionId]));
-  const currentModel = useSessionStore(useCallback((s) => s.selectedModel[sessionId] || 'claude-opus-4-5-20251101', [sessionId]));
+  const currentModel = useSessionStore(useCallback((s) => s.selectedModel[sessionId] || 'claude-opus-4-7', [sessionId]));
   const compactionSwitch = useSessionStore(useCallback((s) => s.compactionSwitch[sessionId] || null, [sessionId]));
   const availableModels = useSessionStore((s) => s.availableModels || EMPTY_MODELS);
 
