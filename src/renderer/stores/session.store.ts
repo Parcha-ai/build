@@ -1452,22 +1452,17 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
       if (mergedMessages.length > 0) {
         set((state) => {
-          const existingMessages = state.messages[sessionId] || [];
-
           // If we're currently streaming, don't replace — the in-memory state is live
           if (state.isStreaming[sessionId]) {
             console.log(`[SessionStore] loadMessages: Skipping replacement for ${sessionId} — currently streaming`);
             return { isLoadingMessages: { ...state.isLoadingMessages, [sessionId]: false } };
           }
 
-          // If existing in-memory messages outnumber transcript messages,
-          // the transcript may be stale (SDK hasn't flushed yet). Keep the longer list
-          // to prevent the chat from appearing to lose messages.
-          if (existingMessages.length > mergedMessages.length) {
-            console.log(`[SessionStore] loadMessages: Keeping ${existingMessages.length} in-memory messages (merged history has ${mergedMessages.length})`);
-            return { isLoadingMessages: { ...state.isLoadingMessages, [sessionId]: false } };
-          }
-
+          // Always replace in-memory with the fresh transcript. The previous
+          // "keep if in-memory has more" guard was wrong — it prevented SSH
+          // sessions from refreshing after re-open because in-memory had
+          // accumulated ephemeral messages (queued, errors, interrupted) that
+          // inflated the count above the transcript's real message count.
           return {
             messages: {
               ...state.messages,
@@ -2577,8 +2572,75 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       });
     });
 
+    // Subscribe to SDK task_notification events (background task completed/failed/stopped).
+    // Routes to MonitorBlock by matching task_id to an existing monitor entry,
+    // and fires a desktop notification so the user knows a background task finished.
+    const unsubTaskNotif = window.electronAPI.claude.onTaskNotification?.((data) => {
+      console.log('[SessionStore] Task notification:', data.taskId, data.status, data.summary?.slice(0, 60));
+
+      // Update MonitorBlock — mark matching task as inactive + append summary
+      if (data.taskId) {
+        set((state) => {
+          const existing = state.monitorInstances[data.sessionId] || [];
+          const idx = existing.findIndex((m) => m.id === data.taskId);
+          if (idx < 0) return state;
+          const updated = [...existing];
+          updated[idx] = {
+            ...updated[idx],
+            active: false,
+            events: data.summary
+              ? [...updated[idx].events, { id: `${data.taskId}-done`, text: `[${data.status}] ${data.summary}`, timestamp: Date.now() }]
+              : updated[idx].events,
+          };
+          return { monitorInstances: { ...state.monitorInstances, [data.sessionId]: updated } };
+        });
+      }
+
+      // Desktop notification when a background task finishes
+      const activeId = get().activeSessionId;
+      const session = get().sessions.find((s) => s.id === data.sessionId);
+      const sessionName = session?.forkName || session?.name || 'Session';
+      const statusEmoji = data.status === 'completed' ? '\u2705' : data.status === 'failed' ? '\u274c' : '\u23f9\ufe0f';
+      try {
+        const notification = new Notification(`${statusEmoji} ${sessionName}`, {
+          body: data.summary || `Task ${data.status || 'finished'}`,
+          silent: data.sessionId === activeId,
+        });
+        notification.onclick = () => {
+          get().setActiveSession(data.sessionId);
+          window.focus();
+        };
+      } catch {
+        // Notifications may not be available
+      }
+    });
+
+    // Subscribe to SDK task_progress / tool_progress events.
+    // Appends progress descriptions to the MonitorBlock entry for live feedback.
+    const unsubTaskProg = window.electronAPI.claude.onTaskProgress?.((data) => {
+      if (!data.taskId && !data.toolUseId) return;
+      const monitorId = data.taskId || data.toolUseId!;
+      const text = data.description || data.summary || (data.toolName ? `${data.toolName}...` : 'working...');
+      set((state) => {
+        const existing = state.monitorInstances[data.sessionId] || [];
+        const idx = existing.findIndex((m) => m.id === monitorId);
+        if (idx < 0) return state;
+        const updated = [...existing];
+        // Dedupe consecutive identical progress messages
+        const lastEvent = updated[idx].events[updated[idx].events.length - 1];
+        if (lastEvent?.text === text) return state;
+        updated[idx] = {
+          ...updated[idx],
+          events: [...updated[idx].events, { id: `prog-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, text, timestamp: Date.now() }],
+        };
+        return { monitorInstances: { ...state.monitorInstances, [data.sessionId]: updated } };
+      });
+    });
+
     return () => {
       unsubscribeOutput?.();
+      unsubTaskNotif?.();
+      unsubTaskProg?.();
     };
   },
 

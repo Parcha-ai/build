@@ -205,6 +205,18 @@ const electronAPI = {
     // Send question response
     respondToQuestion: (response: { requestId: string; answers: Record<string, string> }): Promise<void> =>
       ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_QUESTION_RESPONSE, response),
+    // Task notification (background task completed/failed/stopped)
+    onTaskNotification: (callback: (data: { sessionId: string; taskId?: string; status?: string; outputFile?: string; summary?: string }) => void) => {
+      const handler = (_: IpcRendererEvent, data: any) => callback(data);
+      ipcRenderer.on(IPC_CHANNELS.CLAUDE_TASK_NOTIFICATION, handler);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.CLAUDE_TASK_NOTIFICATION, handler);
+    },
+    // Task progress (intermediate background task / tool progress)
+    onTaskProgress: (callback: (data: { sessionId: string; taskId?: string; toolUseId?: string; toolName?: string; description?: string; summary?: string; elapsedSeconds?: number }) => void) => {
+      const handler = (_: IpcRendererEvent, data: any) => callback(data);
+      ipcRenderer.on(IPC_CHANNELS.CLAUDE_TASK_PROGRESS, handler);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.CLAUDE_TASK_PROGRESS, handler);
+    },
     // Compaction status listener (Smart Compact feature)
     onCompactionStatus: (callback: (status: { sessionId: string; isCompacting: boolean; smartCompact?: { enabled: boolean; originalModel: string; compactingModel: string; reason: string }; preTokens?: number; trigger?: string }) => void) => {
       const handler = (_: IpcRendererEvent, status: any) => callback(status);

@@ -3790,6 +3790,46 @@ Begin by creating the task structure now.
               break;
             }
 
+            // Handle task_notification (background task completed/failed/stopped)
+            if (systemMsg.subtype === 'task_notification') {
+              const notif = systemMsg as typeof systemMsg & {
+                task_id?: string; status?: string; output_file?: string;
+                summary?: string; usage?: Record<string, unknown>;
+              };
+              console.log('[Claude SDK] Task notification:', notif.task_id, notif.status, notif.summary?.slice(0, 80));
+              if (this.mainWindow) {
+                this.mainWindow.webContents.send(IPC_CHANNELS.CLAUDE_TASK_NOTIFICATION, {
+                  sessionId,
+                  taskId: notif.task_id,
+                  status: notif.status,
+                  outputFile: notif.output_file,
+                  summary: notif.summary,
+                });
+              }
+              break;
+            }
+
+            // Handle task_progress (intermediate background task progress)
+            if (systemMsg.subtype === 'task_progress') {
+              const prog = systemMsg as typeof systemMsg & {
+                task_id?: string; description?: string; summary?: string;
+                last_tool_name?: string; usage?: Record<string, unknown>;
+              };
+              if (STREAM_DEBUG) {
+                console.log('[Claude SDK] Task progress:', prog.task_id, prog.description?.slice(0, 80));
+              }
+              if (this.mainWindow) {
+                this.mainWindow.webContents.send(IPC_CHANNELS.CLAUDE_TASK_PROGRESS, {
+                  sessionId,
+                  taskId: prog.task_id,
+                  description: prog.description,
+                  summary: prog.summary,
+                  lastToolName: prog.last_tool_name,
+                });
+              }
+              break;
+            }
+
             // Default system message handling (tool/model info)
             // Store the SDK session ID for future resume calls in separate mappings object
             if (systemMsg.session_id) {
@@ -3939,9 +3979,20 @@ Begin by creating the task structure now.
           case 'tool_progress': {
             // Tool execution progress - may contain tool details we need
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const progressMsg = msg as SDKMessage & { tool_use_id?: string; tool_name?: string; parent_tool_use_id?: string | null; content?: any };
+            const progressMsg = msg as SDKMessage & { tool_use_id?: string; tool_name?: string; parent_tool_use_id?: string | null; content?: any; elapsed_time_seconds?: number; task_id?: string };
             if (STREAM_DEBUG) {
               console.log('[Claude SDK] Tool progress:', JSON.stringify(progressMsg).slice(0, 300));
+            }
+
+            // Emit tool progress to renderer for MonitorBlock + BackgroundTasksBlock
+            if (this.mainWindow && progressMsg.tool_use_id) {
+              this.mainWindow.webContents.send(IPC_CHANNELS.CLAUDE_TASK_PROGRESS, {
+                sessionId,
+                taskId: progressMsg.task_id,
+                toolUseId: progressMsg.tool_use_id,
+                toolName: progressMsg.tool_name,
+                elapsedSeconds: progressMsg.elapsed_time_seconds,
+              });
             }
 
             // Track agent from tool_progress messages too
@@ -5063,6 +5114,12 @@ Begin by creating the task structure now.
         console.log('[Claude] Brand-new SSH session — starting fresh (no transcript search)');
         return [];
       }
+
+      // Always invalidate the SSH transcript cache on getMessages so
+      // returning to a session after hours fetches the real remote
+      // transcript instead of a stale 5-minute cached copy.
+      sshService.invalidateTranscriptCache(sdkSessionId);
+      sshService.invalidateTranscriptCache(sessionId);
 
       // If no stored SDK ID, try to find the most recent transcript on the remote.
       // This handles the case where the mapping was lost (repair, migration, etc.)
