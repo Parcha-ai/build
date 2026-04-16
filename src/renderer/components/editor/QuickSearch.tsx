@@ -119,6 +119,7 @@ export default function QuickSearch() {
       'low': 'Low',
       'medium': 'Medium',
       'high': 'High',
+      'xhigh': 'XHigh',
       'max': 'Max',
     };
 
