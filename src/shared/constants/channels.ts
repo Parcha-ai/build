@@ -77,6 +77,8 @@ export const IPC_CHANNELS = {
   CLAUDE_SET_PERMISSION_MODE: 'claude:set-permission-mode', // Update permission mode mid-stream (used by GREP IT! button)
   CLAUDE_PERMISSION_MODE_CHANGED: 'claude:permission-mode-changed', // Notify renderer of permission mode change from main
   CLAUDE_BACKGROUND_TASK_OUTPUT: 'claude:background-task-output', // Output updates from backgrounded Bash commands
+  CLAUDE_TASK_NOTIFICATION: 'claude:task-notification', // Background task completed/failed/stopped
+  CLAUDE_TASK_PROGRESS: 'claude:task-progress', // Background task intermediate progress
   CLAUDE_BTW_ASK: 'claude:btw-ask', // Ephemeral side question (bypasses conversation history)
   CLAUDE_BTW_RESPONSE: 'claude:btw-response', // Streaming response chunks for /btw
   CLAUDE_RC_START: 'claude:rc-start', // Start remote control session
