@@ -79,7 +79,18 @@ export function GrepTitleBar({
           <PanelRight size={14} />
         </div>
         <div className="p-1 text-claude-text-secondary">
-          <span className="text-xs font-bold font-mono leading-none" style={{ fontSize: '13px' }}>G</span>
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" style={{ imageRendering: 'pixelated' }}>
+            {/* Pixel-art B logo */}
+            <rect x="2" y="1" width="8" height="2" />
+            <rect x="2" y="1" width="2" height="14" />
+            <rect x="2" y="7" width="8" height="2" />
+            <rect x="2" y="13" width="8" height="2" />
+            <rect x="10" y="3" width="2" height="4" />
+            <rect x="10" y="9" width="2" height="4" />
+            <rect x="12" y="3" width="2" height="2" />
+            <rect x="12" y="5" width="0" height="2" />
+            <rect x="12" y="9" width="2" height="2" />
+          </svg>
         </div>
         <div className="p-1 text-claude-text-secondary">
           <Settings size={14} />

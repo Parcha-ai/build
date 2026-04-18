@@ -7,9 +7,9 @@ module.exports = {
         // Hype reel palette
         bg: '#0a0a0a',
         surface: '#1a1a2e',
-        primary: '#8b5cf6',
-        secondary: '#3b82f6',
-        glow: '#a78bfa',
+        primary: '#8B8DFF',
+        secondary: '#A5A7FF',
+        glow: '#8B8DFF',
         muted: '#94a3b8',
         // Claudette/Grep Build exact palette
         'claude-bg': '#1a1a1a',

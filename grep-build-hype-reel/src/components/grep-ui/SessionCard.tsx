@@ -18,8 +18,8 @@ const MODEL_LABELS: Record<string, string> = {
 };
 
 const MODEL_COLORS: Record<string, string> = {
-  'claude-opus-4-6': '#8b5cf6',
-  'claude-sonnet-4-5': '#3b82f6',
+  'claude-opus-4-6': '#8B8DFF',
+  'claude-sonnet-4-5': '#A5A7FF',
   'claude-haiku-3-5': '#22c55e',
 };
 

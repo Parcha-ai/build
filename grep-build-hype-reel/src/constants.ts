@@ -25,9 +25,9 @@ export const TRANSITION_DURATION = 10;
 export const COLORS = {
   bg: '#050505',
   surface: '#1a1a2e',
-  primary: '#8b5cf6',
-  secondary: '#3b82f6',
-  glow: '#a78bfa',
+  primary: '#8B8DFF',
+  secondary: '#A5A7FF',
+  glow: '#8B8DFF',
   text: '#F0F0F0',
   muted: '#94a3b8',
   terminalGreen: '#22c55e',
