@@ -786,10 +786,10 @@ Only return the title, nothing else.`
     // Store the forked session
     this.store.set(`sessions.${forkedSessionId}`, forkedSession);
 
-    // Mark fork as 'new' so the orphan-transcript search in getMessages() doesn't
-    // re-point this fork back to the parent's SDK session. The 'new' sentinel means
-    // "this session should start fresh — do not search for existing transcripts."
-    this.store.set(`sdkSessionMappings.${forkedSessionId}`, 'new');
+    // Map the fork to its own session ID so getMessages() finds the forked transcript
+    // ({forkedSessionId}.jsonl) directly, without triggering orphan-transcript search
+    // that could re-point the fork back to the parent's SDK session.
+    this.store.set(`sdkSessionMappings.${forkedSessionId}`, forkedSessionId);
 
     // Add to discovered sessions cache
     this.discoveredSessionsCache.set(forkedSessionId, forkedSession);
@@ -804,8 +804,11 @@ Only return the title, nothing else.`
   }
 
   /**
-   * Create a conversation fork from a parent session
-   * Similar to rewindAndForkSession but focused on conversation branching rather than git worktrees
+   * Create a conversation fork from a parent session using the Claude Agent SDK's
+   * native `forkSession()`. The SDK handles transcript copying, compaction summary,
+   * and session ID generation — we just create the Build session record and wire
+   * up the relationship fields.
+   *
    * @param parentSessionId ID of the parent session to fork from
    * @param forkPoint Message ID to fork at, or 'end' to fork at current end of conversation
    * @param initialUserMessage Optional first message to send to the fork (not added yet, caller handles sending)
@@ -820,135 +823,47 @@ Only return the title, nothing else.`
       throw new Error(`Parent session ${parentSessionId} not found`);
     }
 
-    // Find the transcript file for the parent session
-    const claudeProjectsDir = getClaudeProjectsDir();
+    // Resolve the SDK session ID for the parent — this is what the SDK knows
+    // the session as (may differ from our internal parentSessionId).
+    const parentSdkSessionId =
+      (this.store.get(`sdkSessionMappings.${parentSessionId}`) as string | undefined) ||
+      parentSession.sdkSessionId ||
+      parentSessionId;
 
-    let transcriptPath: string | null = null;
-    let projectHash: string | null = null;
+    // Use the SDK's native forkSession — it handles transcript copying,
+    // compaction summaries, and proper session lineage inside ~/.claude/projects/.
+    const { forkSession } = await import('@anthropic-ai/claude-agent-sdk');
+    const forkOptions: { upToMessageId?: string; title?: string; dir?: string } = {};
+    if (forkPoint !== 'end') {
+      forkOptions.upToMessageId = forkPoint;
+    }
+    forkOptions.title = `${parentSession.name} (fork)`;
 
-    try {
-      const entries = await fs.readdir(claudeProjectsDir, { withFileTypes: true });
-      for (const entry of entries) {
-        if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
-
-        const projectDir = path.join(claudeProjectsDir, entry.name);
-        const transcriptFile = `${parentSessionId}.jsonl`;
-        const potentialPath = path.join(projectDir, transcriptFile);
-
-        try {
-          await fs.access(potentialPath);
-          transcriptPath = potentialPath;
-          projectHash = entry.name;
-          break;
-        } catch {
-          // File doesn't exist in this directory, continue searching
-        }
-      }
-    } catch (error) {
-      throw new Error(`Failed to search for transcript: ${error}`);
+    // Point the SDK at the right project directory if we have a custom override
+    const projectsDirOverride = process.env.CLAUDE_PROJECTS_DIR;
+    if (projectsDirOverride) {
+      forkOptions.dir = projectsDirOverride;
     }
 
-    // Handle case where transcript doesn't exist yet (new session with no messages)
-    let truncatedLines: string[] = [];
-    let forkPointMessageId = forkPoint;
+    console.log(`[Session] Forking via SDK: parent=${parentSdkSessionId} forkPoint=${forkPoint}`);
+    const result = await forkSession(parentSdkSessionId, forkOptions);
+    const forkedSdkSessionId = result.sessionId;
+    console.log(`[Session] SDK fork created: ${forkedSdkSessionId}`);
 
-    if (!transcriptPath || !projectHash) {
-      console.log(`[Session] No transcript found for parent session ${parentSessionId} - forking empty session`);
-
-      // Derive project hash from repo path (use first project directory as fallback)
-      try {
-        const entries = await fs.readdir(claudeProjectsDir, { withFileTypes: true });
-        const firstProjectDir = entries.find(e => e.isDirectory() && !e.name.startsWith('.'));
-        if (firstProjectDir) {
-          projectHash = firstProjectDir.name;
-        } else {
-          throw new Error('No Claude project directories found');
-        }
-      } catch (error) {
-        throw new Error(`Failed to determine project hash: ${error}`);
-      }
-
-      // Empty transcript - fork will start fresh
-      truncatedLines = [];
-    } else {
-      // Read the transcript
-      const content = await fs.readFile(transcriptPath, 'utf-8');
-      const lines = content.split('\n').filter(l => l.trim());
-
-      // Determine fork point
-      if (forkPoint === 'end') {
-        // Fork at the end - include all messages
-        truncatedLines = lines;
-        forkPointMessageId = 'end';
-      } else {
-        // Fork at specific message ID
-        let foundTargetMessage = false;
-
-        for (let i = 0; i < lines.length; i++) {
-          const line = lines[i];
-          truncatedLines.push(line);
-
-          try {
-            const parsed = JSON.parse(line);
-            if (parsed.uuid === forkPoint) {
-              foundTargetMessage = true;
-              break;
-            }
-          } catch {
-            // Not valid JSON, keep line anyway
-          }
-        }
-
-        if (!foundTargetMessage) {
-          throw new Error(`Fork point message ${forkPoint} not found in transcript`);
-        }
-      }
-    }
-
-    // Generate new session ID for the fork
-    const forkedSessionId = uuid();
-    const forkedTranscriptPath = path.join(
-      claudeProjectsDir,
-      projectHash,
-      `${forkedSessionId}.jsonl`
-    );
-
-    // Update sessionId in all lines to point to the new session
-    const updatedLines = truncatedLines.map(line => {
-      try {
-        const parsed = JSON.parse(line);
-        if (parsed.sessionId === parentSessionId) {
-          parsed.sessionId = forkedSessionId;
-        }
-        return JSON.stringify(parsed);
-      } catch {
-        return line;
-      }
-    });
-
-    // Write the forked transcript (may be empty if parent had no messages)
-    if (updatedLines.length > 0) {
-      await fs.writeFile(forkedTranscriptPath, updatedLines.join('\n') + '\n', 'utf-8');
-    } else {
-      // Create empty transcript file
-      await fs.writeFile(forkedTranscriptPath, '', 'utf-8');
-    }
-
-    // Create the forked session object with conversation fork relationship fields
+    // Create the Build session record with conversation fork relationship fields
+    const forkedSessionId = forkedSdkSessionId; // Use the SDK's session ID directly
     const forkedSession: Session = {
       ...parentSession,
       id: forkedSessionId,
-      name: `${parentSession.name} (fork)`, // Temporary name, will be replaced by AI generation
-      sdkSessionId: undefined, // Fork gets its own SDK session — sharing causes conflicts on resume
+      name: `${parentSession.name} (fork)`,
+      sdkSessionId: forkedSdkSessionId,
       createdAt: new Date(),
       updatedAt: new Date(),
       forkCreatedAt: new Date(),
-      // Conversation fork relationship fields
       parentSessionId: parentSessionId,
       childSessionIds: [],
-      forkPoint: forkPointMessageId,
+      forkPoint: forkPoint,
       isRoot: false,
-      // Preserve important metadata
       model: parentSession.model,
       branch: parentSession.branch,
       worktreePath: parentSession.worktreePath,
@@ -960,16 +875,14 @@ Only return the title, nothing else.`
     // Store the forked session
     this.store.set(`sessions.${forkedSessionId}`, forkedSession);
 
-    // Mark fork as 'new' so the orphan-transcript search in getMessages() doesn't
-    // re-point this fork back to the parent's SDK session. The 'new' sentinel means
-    // "this session should start fresh — do not search for existing transcripts."
-    this.store.set(`sdkSessionMappings.${forkedSessionId}`, 'new');
+    // Map to the SDK session ID so getMessages() finds the transcript
+    this.store.set(`sdkSessionMappings.${forkedSessionId}`, forkedSdkSessionId);
 
     // Update parent session: add to childSessionIds, mark as root if not already
     const updatedParent = {
       ...parentSession,
       childSessionIds: [...(parentSession.childSessionIds || []), forkedSessionId],
-      isRoot: parentSession.isRoot ?? true, // Mark as root if not explicitly set
+      isRoot: parentSession.isRoot ?? true,
     };
     this.store.set(`sessions.${parentSessionId}`, updatedParent);
 

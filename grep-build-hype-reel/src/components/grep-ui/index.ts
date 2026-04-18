@@ -12,3 +12,6 @@ export { GrepExtensionsExplorer } from './GrepExtensionsExplorer';
 export { MessageBubble } from './MessageBubble';
 export { ToolCallCard } from './ToolCallCard';
 export { GrepGStackMenu } from './GrepGStackMenu';
+export { BuildMonitorBlock } from './BuildMonitorBlock';
+export { BuildTasksBlock } from './BuildTasksBlock';
+export { BuildAppFrame } from './BuildAppFrame';

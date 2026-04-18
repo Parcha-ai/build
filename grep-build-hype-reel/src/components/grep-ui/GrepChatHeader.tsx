@@ -40,7 +40,7 @@ export function GrepChatHeader({
               className="flex items-center gap-2 px-4 py-2.5 border-r border-claude-border"
               style={{
                 backgroundColor: isActive ? '#1a1a1a' : 'transparent',
-                borderBottom: isActive ? '2px solid #8b5cf6' : '2px solid transparent',
+                borderBottom: isActive ? '2px solid #8B8DFF' : '2px solid transparent',
                 minWidth: 0,
               }}
             >

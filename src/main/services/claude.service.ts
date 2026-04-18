@@ -2819,15 +2819,10 @@ Read or source that file if you need the actual values. Do not print secret valu
 
       const normalizedSupplementalMessages = this.normalizeConversationMessages(supplementalMessages);
 
-      // Route to Codex when a codex:* model is selected (local only — Codex binary doesn't exist on remote)
+      // Route to Codex when a codex:* model is selected
       if (selectedModel?.startsWith('codex:')) {
-        if (session.sshConfig) {
-          console.warn('[Claude Service] Codex not supported on SSH sessions — falling back to Claude');
-          selectedModel = 'claude-opus-4-6';
-          // Fall through to Claude routing below
-        } else {
         const codexModel = selectedModel.split(':')[1];
-        console.log(`[Claude Service] Routing to Codex model=${codexModel} (local)`);
+        console.log(`[Claude Service] Routing to Codex model=${codexModel} ssh=${!!session.sshConfig}`);
         const projectPath = session.worktreePath || session.repoPath || process.cwd();
 
         // Load conversation history to give Codex context from prior Claude turns
@@ -2854,7 +2849,6 @@ Read or source that file if you need the actual values. Do not print secret valu
           yield event as StreamEvent;
         }
         return;
-        } // end else (local codex)
       }
 
       let supplementalConversationContext = '';

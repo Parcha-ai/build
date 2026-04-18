@@ -18,7 +18,7 @@ export function GrepStatusBar({
   sessionStatus = 'running',
   branch = 'main',
   port = 3000,
-  version = '0.0.69',
+  version = '0.3.7',
   dockerAvailable = true,
   showSubagent = false,
   subagentType = 'IMPLEMENT',
@@ -93,7 +93,7 @@ export function GrepStatusBar({
           <span className="font-bold text-claude-text">{port}</span>
         </div>
         <div className="flex items-center gap-1.5">
-          <span style={{ letterSpacing: '0.05em' }}>GBUILD v{version}</span>
+          <span style={{ letterSpacing: '0.05em' }}>BUILD v{version}</span>
         </div>
       </div>
     </div>

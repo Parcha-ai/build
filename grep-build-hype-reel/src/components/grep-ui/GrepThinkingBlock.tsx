@@ -18,10 +18,10 @@ interface GrepThinkingBlockProps {
 const MODE_CONFIG: Record<ThinkingMode, { label: string; dotClass: string; textClass: string; borderClass: string; color: string }> = {
   default: {
     label: 'Thinking',
-    dotClass: 'bg-purple-500',
-    textClass: 'text-purple-400',
-    borderClass: 'border-purple-500/30',
-    color: '#8b5cf6',
+    dotClass: 'bg-[#8B8DFF]',
+    textClass: 'text-[#A5A7FF]',
+    borderClass: 'border-[#8B8DFF]/30',
+    color: '#8B8DFF',
   },
   ceo: {
     label: 'CEO',
