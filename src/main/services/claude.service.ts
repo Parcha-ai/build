@@ -3403,8 +3403,11 @@ Begin by creating the task structure now.
             ENABLE_TOOL_SEARCH: process.env.ENABLE_TOOL_SEARCH || 'true',
             ...this.getFoundryEnvVars(),
           },
-          // Resume previous conversation if we have an SDK session ID
+          // Resume previous conversation if we have an SDK session ID.
+          // For SSH forks: resume from the parent's SDK session + forkSession: true
+          // so the remote transcript gets forked on the first query.
           ...(sdkSessionId ? { resume: sdkSessionId } : {}),
+          ...((session as any)?.forkFromSdkSessionId ? { resume: (session as any).forkFromSdkSessionId, forkSession: true } : {}),
           // Add MCP servers (browser tools + QMD semantic search if available)
           mcpServers: mcpServersConfig,
           // Spawn Claude Code either locally via a resolved Node binary or remotely over SSH.
@@ -3853,6 +3856,16 @@ Begin by creating the task structure now.
             // Store the SDK session ID for future resume calls in separate mappings object
             if (systemMsg.session_id) {
               this.sessionStore.set(`sdkSessionMappings.${sessionId}`, systemMsg.session_id);
+
+              // After an SSH fork query, clear the forkFromSdkSessionId flag so
+              // subsequent messages don't keep passing --fork-session. Also update
+              // the session object so getMessages() uses the new SDK session ID.
+              const currentSession = this.sessionStore.get(`sessions.${sessionId}`) as Session | undefined;
+              if (currentSession && (currentSession as any).forkFromSdkSessionId) {
+                const { forkFromSdkSessionId: _, ...cleanSession } = currentSession as any;
+                this.sessionStore.set(`sessions.${sessionId}`, { ...cleanSession, sdkSessionId: systemMsg.session_id });
+                console.log(`[Claude SDK] SSH fork complete — cleared forkFromSdkSessionId, new SDK ID: ${systemMsg.session_id}`);
+              }
             }
 
             yield {
