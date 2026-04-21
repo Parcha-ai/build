@@ -286,6 +286,11 @@ const electronAPI = {
       ipcRenderer.on(IPC_CHANNELS.CLAUDE_BTW_RESPONSE, handler);
       return () => ipcRenderer.removeListener(IPC_CHANNELS.CLAUDE_BTW_RESPONSE, handler);
     },
+    // Rewind / History
+    rewindPreview: (sessionId: string, messageId: string): Promise<{ canRewind: boolean; filesChanged: string[]; insertions: number; deletions: number; error?: string }> =>
+      ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_REWIND_PREVIEW, sessionId, messageId),
+    rewindExecute: (sessionId: string, messageId: string): Promise<{ canRewind: boolean; filesChanged: string[]; insertions: number; deletions: number; forkedSessionId?: string; error?: string }> =>
+      ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_REWIND_EXECUTE, sessionId, messageId),
     // Remote control — start/stop
     startRc: (sessionId: string): Promise<void> =>
       ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_RC_START, sessionId),

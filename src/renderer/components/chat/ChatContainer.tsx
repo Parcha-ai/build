@@ -15,7 +15,8 @@ import BtwOverlay from './BtwOverlay';
 import RemoteControlPanel from './RemoteControlPanel';
 // CompactionBar removed - compaction status now shown in ThinkingBlock
 import { SoundVisualization } from './SoundVisualization';
-import { ArrowDown } from 'lucide-react';
+import HistoryPanel from './HistoryPanel';
+import { ArrowDown, History } from 'lucide-react';
 import type { Session, ToolCall } from '../../../shared/types';
 import { GSTACK_MODE_META } from '../../../shared/types';
 
@@ -66,7 +67,7 @@ export default function ChatContainer({ session }: ChatContainerProps) {
   // clearRemoteControl removed — stopRemoteControl handles both IPC kill + state clear
 
   const { audioModeActive, ttsStates } = useAudioStore();
-  const { toggleTerminalPanel, isTerminalPanelOpen } = useUIStore();
+  const { toggleTerminalPanel, isTerminalPanelOpen, isHistoryPanelOpen, toggleHistoryPanel } = useUIStore();
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const [isAtBottom, setIsAtBottom] = useState(true);
@@ -543,7 +544,8 @@ export default function ChatContainer({ session }: ChatContainerProps) {
   }, [session.id, sessionMessages.length]);
 
   return (
-    <div className="flex-1 flex flex-col overflow-hidden font-mono bg-claude-bg min-w-0">
+    <div className="flex-1 flex overflow-hidden min-w-0">
+    <div className={`flex-1 flex flex-col overflow-hidden font-mono bg-claude-bg min-w-0 ${isHistoryPanelOpen ? '' : ''}`}>
       {/* Header - brutalist */}
       <div className="h-10 border-b border-claude-border flex items-center justify-between px-4 bg-claude-surface/50">
         <div className="flex items-center">
@@ -568,19 +570,34 @@ export default function ChatContainer({ session }: ChatContainerProps) {
           )}
         </div>
 
-        {/* Audio visualization - shows when in audio mode and working/speaking */}
-        {isAudioMode && (isSessionStreaming || isTTSPlaying) && (
-          <div className="flex items-center gap-2">
-            <SoundVisualization
-              isActive={true}
-              variant="bars"
-              size="sm"
-            />
-            <span className="text-xs text-blue-400 uppercase font-bold" style={{ letterSpacing: '0.05em' }}>
-              {isTTSPlaying ? 'SPEAKING' : 'THINKING'}
-            </span>
-          </div>
-        )}
+        <div className="flex items-center gap-2">
+          {/* Audio visualization - shows when in audio mode and working/speaking */}
+          {isAudioMode && (isSessionStreaming || isTTSPlaying) && (
+            <div className="flex items-center gap-2">
+              <SoundVisualization
+                isActive={true}
+                variant="bars"
+                size="sm"
+              />
+              <span className="text-xs text-blue-400 uppercase font-bold" style={{ letterSpacing: '0.05em' }}>
+                {isTTSPlaying ? 'SPEAKING' : 'THINKING'}
+              </span>
+            </div>
+          )}
+
+          {/* History panel toggle */}
+          <button
+            onClick={toggleHistoryPanel}
+            className={`p-1.5 transition-colors ${
+              isHistoryPanelOpen
+                ? 'text-orange-400 bg-orange-500/10'
+                : 'text-claude-text-secondary hover:text-claude-text'
+            }`}
+            title="Toggle history panel"
+          >
+            <History size={14} />
+          </button>
+        </div>
       </div>
 
       {/* Error banner for sessions with error status */}
@@ -763,6 +780,14 @@ export default function ChatContainer({ session }: ChatContainerProps) {
         systemInfo={systemInfo}
         isStreaming={isSessionStreaming}
       />
+    </div>
+
+    {/* History Panel - slides in from the right */}
+    {isHistoryPanelOpen && (
+      <div className="w-80 shrink-0 border-l border-claude-border">
+        <HistoryPanel sessionId={session.id} />
+      </div>
+    )}
     </div>
   );
 }
