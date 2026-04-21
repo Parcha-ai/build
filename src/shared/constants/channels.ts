@@ -83,6 +83,8 @@ export const IPC_CHANNELS = {
   CLAUDE_BTW_RESPONSE: 'claude:btw-response', // Streaming response chunks for /btw
   CLAUDE_RC_START: 'claude:rc-start', // Start remote control session
   CLAUDE_RC_STOP: 'claude:rc-stop', // Stop remote control session
+  CLAUDE_REWIND_PREVIEW: 'claude:rewind-preview', // dryRun rewind to see file changes
+  CLAUDE_REWIND_EXECUTE: 'claude:rewind-execute', // actually rewind files + fork session
   CLAUDE_RC_STARTED: 'claude:rc-started', // Remote control session started (URL detected)
   CLAUDE_RC_STOPPED: 'claude:rc-stopped', // Remote control session stopped
 

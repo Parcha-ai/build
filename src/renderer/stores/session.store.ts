@@ -234,6 +234,7 @@ interface SessionState {
   // Conversation fork management
   createForkFromCurrent: (userMessage: string) => Promise<void>;
   getForkSiblings: (sessionId: string) => Session[];
+  getProjectSessions: (sessionId: string) => Session[];
   cycleForkTabs: (direction: 'next' | 'prev') => void;
   // Command Center management
   addToCommandCenter: (sessionId: string) => void;
@@ -3052,6 +3053,50 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       const aDate = typeof aTime === 'string' ? new Date(aTime) : aTime;
       const bDate = typeof bTime === 'string' ? new Date(bTime) : bTime;
       return aDate.getTime() - bDate.getTime();
+    });
+  },
+
+  /**
+   * Get all sessions sharing the same project directory as the given session.
+   * Includes both stored and discovered sessions. For SSH sessions, matches
+   * on host + remoteWorkdir. For local sessions, matches on worktreePath's
+   * parent repo path. These appear in the overflow menu as "adoptable" tabs.
+   */
+  getProjectSessions: (sessionId: string) => {
+    const { sessions } = get();
+    const currentSession = sessions.find(s => s.id === sessionId);
+    if (!currentSession) return [];
+
+    const currentWorkdir = currentSession.worktreePath || currentSession.repoPath || '';
+    const currentHost = (currentSession as any).sshConfig?.host;
+
+    // For SSH: match host + same base project path (strip worktree pool segments)
+    // For local: match same worktreePath or repoPath
+    const matches = sessions.filter(s => {
+      if (s.id === sessionId) return false;
+      const sHost = (s as any).sshConfig?.host;
+      const sWorkdir = s.worktreePath || s.repoPath || '';
+
+      if (currentHost) {
+        // SSH: same host + workdirs share the same project
+        // Compare the last path segment (project name) since worktree pool paths vary
+        if (sHost !== currentHost) return false;
+        const currentProject = currentWorkdir.split('/').filter(Boolean).pop();
+        const sProject = sWorkdir.split('/').filter(Boolean).pop();
+        return currentProject && sProject && currentProject === sProject;
+      } else {
+        // Local: same repo root
+        return sWorkdir === currentWorkdir;
+      }
+    });
+
+    // Sort by most recently updated
+    return matches.sort((a, b) => {
+      const aTime = a.updatedAt || a.createdAt;
+      const bTime = b.updatedAt || b.createdAt;
+      const aDate = typeof aTime === 'string' ? new Date(aTime) : (aTime || new Date(0));
+      const bDate = typeof bTime === 'string' ? new Date(bTime) : (bTime || new Date(0));
+      return bDate.getTime() - aDate.getTime();
     });
   },
 

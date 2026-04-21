@@ -4,6 +4,7 @@ import { IPC_CHANNELS } from '../../shared/constants/channels';
 import { ClaudeService } from '../services/claude.service';
 import { getMainWindow } from '../index';
 import type { QuestionResponse, Attachment, PlanApprovalResponse, ChatMessage } from '../../shared/types';
+import { sessionService } from './session.ipc';
 import { DEFAULT_AUDIO_SETTINGS } from '../../shared/types/audio';
 
 // Settings store for Ralph Loop check
@@ -468,6 +469,40 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
 
   ipcMain.handle(IPC_CHANNELS.CLAUDE_RC_STOP, async (_, sessionId: string) => {
     claudeService.stopRemoteControl(sessionId);
+  });
+
+  // Rewind preview — dry-run to see what files would change
+  ipcMain.handle(IPC_CHANNELS.CLAUDE_REWIND_PREVIEW, async (_, sessionId: string, messageId: string) => {
+    const queryObj = claudeService.getActiveQuery(sessionId);
+    if (!queryObj) {
+      return { canRewind: false, filesChanged: [], insertions: 0, deletions: 0, error: 'No active query for session' };
+    }
+    try {
+      const result = await (queryObj as any).rewindFiles(messageId, { dryRun: true });
+      return result;
+    } catch (error: any) {
+      console.error('[Claude IPC] rewindPreview error:', error);
+      return { canRewind: false, filesChanged: [], insertions: 0, deletions: 0, error: error.message || 'Unknown error' };
+    }
+  });
+
+  // Rewind execute — actually rewind files and fork session
+  ipcMain.handle(IPC_CHANNELS.CLAUDE_REWIND_EXECUTE, async (_, sessionId: string, messageId: string) => {
+    const queryObj = claudeService.getActiveQuery(sessionId);
+    if (!queryObj) {
+      return { canRewind: false, filesChanged: [], insertions: 0, deletions: 0, error: 'No active query for session' };
+    }
+    try {
+      const result = await (queryObj as any).rewindFiles(messageId);
+
+      // Create a fork from the rewind point
+      const forkedSession = await sessionService.createForkFromInput(sessionId, messageId);
+
+      return { ...result, forkedSessionId: forkedSession.id };
+    } catch (error: any) {
+      console.error('[Claude IPC] rewindExecute error:', error);
+      return { canRewind: false, filesChanged: [], insertions: 0, deletions: 0, error: error.message || 'Unknown error' };
+    }
   });
 }
 

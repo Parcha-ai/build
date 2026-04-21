@@ -172,6 +172,13 @@ export class ClaudeService {
   }
 
   /**
+   * Get the active Query object for a session (used by rewind/history features)
+   */
+  getActiveQuery(sessionId: string): any | undefined {
+    return this.activeQueryObjects.get(sessionId);
+  }
+
+  /**
    * Trigger manual compaction for a session by sending /compact command
    * This proactively compacts the conversation history before it gets too large
    */
@@ -3394,6 +3401,7 @@ Begin by creating the task structure now.
           // Enable CLAUDE.md and Skills from both user (~/.claude/) and project (.claude/)
           // Skills are discovered automatically by the SDK from these filesystem locations
           // User skills: ~/.claude/skills/, Project skills: .claude/skills/
+          enableFileCheckpointing: true,
           settingSources: ['user', 'project'],
           // Pass environment with API key and enable agent teams
           env: {

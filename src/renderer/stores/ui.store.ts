@@ -34,6 +34,7 @@ interface UIState {
   isGitPanelOpen: boolean;
   isExtensionsPanelOpen: boolean;
   isPlanPanelOpen: boolean;
+  isHistoryPanelOpen: boolean;
   isInspectorActive: boolean;
   isSettingsOpen: boolean;
   isOnboardingOpen: boolean;
@@ -73,6 +74,7 @@ interface UIState {
   toggleExtensionsPanel: () => void;
   togglePlanPanel: () => void;
   showPlanPanel: () => void;
+  toggleHistoryPanel: () => void;
   setInspectorActive: (active: boolean) => void;
   setSelectedElement: (element: unknown | null) => void;
   cycleSplitRatio: () => void;
@@ -111,6 +113,7 @@ export const useUIStore = create<UIState>((set, get) => ({
   isGitPanelOpen: false,
   isExtensionsPanelOpen: false,
   isPlanPanelOpen: false,
+  isHistoryPanelOpen: false,
   isInspectorActive: false,
   isSettingsOpen: false,
   isOnboardingOpen: false,
@@ -166,7 +169,7 @@ export const useUIStore = create<UIState>((set, get) => ({
     set({
       isBrowserPanelOpen: !state.isBrowserPanelOpen,
       // Close competing panels when opening browser
-      ...((!state.isBrowserPanelOpen) ? { isExtensionsPanelOpen: false, isPlanPanelOpen: false } : {})
+      ...((!state.isBrowserPanelOpen) ? { isExtensionsPanelOpen: false, isPlanPanelOpen: false, isHistoryPanelOpen: false } : {})
     });
     // Also close editor when opening browser (dynamic import to avoid circular dependency)
     if (!state.isBrowserPanelOpen) {
@@ -181,7 +184,7 @@ export const useUIStore = create<UIState>((set, get) => ({
     set({
       isExtensionsPanelOpen: !state.isExtensionsPanelOpen,
       // Close competing panels when opening extensions
-      ...((!state.isExtensionsPanelOpen) ? { isBrowserPanelOpen: false, isPlanPanelOpen: false } : {})
+      ...((!state.isExtensionsPanelOpen) ? { isBrowserPanelOpen: false, isPlanPanelOpen: false, isHistoryPanelOpen: false } : {})
     });
     // Also close editor when opening extensions (dynamic import to avoid circular dependency)
     if (!state.isExtensionsPanelOpen) {
@@ -195,7 +198,7 @@ export const useUIStore = create<UIState>((set, get) => ({
     set({
       isPlanPanelOpen: !state.isPlanPanelOpen,
       // Close competing panels when opening plan
-      ...((!state.isPlanPanelOpen) ? { isBrowserPanelOpen: false, isExtensionsPanelOpen: false } : {})
+      ...((!state.isPlanPanelOpen) ? { isBrowserPanelOpen: false, isExtensionsPanelOpen: false, isHistoryPanelOpen: false } : {})
     });
     // Also close editor when opening plan (dynamic import to avoid circular dependency)
     if (!state.isPlanPanelOpen) {
@@ -205,11 +208,25 @@ export const useUIStore = create<UIState>((set, get) => ({
     }
   },
   showPlanPanel: () => {
-    set({ isPlanPanelOpen: true, isBrowserPanelOpen: false, isExtensionsPanelOpen: false });
+    set({ isPlanPanelOpen: true, isBrowserPanelOpen: false, isExtensionsPanelOpen: false, isHistoryPanelOpen: false });
     // Also close editor when showing plan (dynamic import to avoid circular dependency)
     import('./editor.store').then(({ useEditorStore }) => {
       useEditorStore.getState().closeEditor();
     });
+  },
+  toggleHistoryPanel: () => {
+    const state = useUIStore.getState();
+    set({
+      isHistoryPanelOpen: !state.isHistoryPanelOpen,
+      // Close competing panels when opening history
+      ...(!state.isHistoryPanelOpen ? { isBrowserPanelOpen: false, isExtensionsPanelOpen: false, isPlanPanelOpen: false } : {}),
+    });
+    // Also close editor when opening history
+    if (!state.isHistoryPanelOpen) {
+      import('./editor.store').then(({ useEditorStore }) => {
+        useEditorStore.getState().closeEditor();
+      });
+    }
   },
   setInspectorActive: (active) => set({ isInspectorActive: active }),
   setSelectedElement: (element) => set({ selectedElement: element }),
