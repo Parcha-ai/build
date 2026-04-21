@@ -5,7 +5,7 @@ import { useUIStore } from '../../stores/ui.store';
 import MessageList from '../chat/MessageList';
 import PermissionDialog from '../chat/PermissionDialog';
 import QuestionDialog from '../chat/QuestionDialog';
-import CompactInputArea from './CompactInputArea';
+import InputArea from '../chat/InputArea';
 import type { Session } from '../../../shared/types';
 
 // Stable empty arrays to avoid reference changes
@@ -224,8 +224,8 @@ export default function CommandCenterCell({ session, forks, isFocused }: Command
         </div>
       )}
 
-      {/* Compact input */}
-      <CompactInputArea
+      {/* Full input area — same as chat view */}
+      <InputArea
         sessionId={displayId}
         disabled={displaySession.status !== 'running'}
         isStreaming={isSessionStreaming}
