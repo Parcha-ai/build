@@ -830,33 +830,46 @@ Only return the title, nothing else.`
       parentSession.sdkSessionId ||
       parentSessionId;
 
-    // Use the SDK's native forkSession — it handles transcript copying,
-    // compaction summaries, and proper session lineage inside ~/.claude/projects/.
-    const { forkSession } = await import('@anthropic-ai/claude-agent-sdk');
-    const forkOptions: { upToMessageId?: string; title?: string; dir?: string } = {};
-    if (forkPoint !== 'end') {
-      forkOptions.upToMessageId = forkPoint;
+    let forkedSessionId: string;
+    let forkedSdkSessionId: string;
+
+    // For local sessions, use the SDK's native forkSession which handles
+    // transcript copying with compaction summaries. For SSH sessions the
+    // transcript lives on the remote machine where the SDK can't reach it,
+    // so we create a lightweight fork record and let the first query use
+    // `resume` + `forkSession: true` to fork server-side.
+    if (!parentSession.sshConfig) {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { forkSession } = require('@anthropic-ai/claude-agent-sdk') as { forkSession: (sessionId: string, options?: { upToMessageId?: string; title?: string; dir?: string }) => Promise<{ sessionId: string }> };
+      const forkOptions: { upToMessageId?: string; title?: string; dir?: string } = {};
+      if (forkPoint !== 'end') {
+        forkOptions.upToMessageId = forkPoint;
+      }
+      forkOptions.title = `${parentSession.name} (fork)`;
+      const projectsDirOverride = process.env.CLAUDE_PROJECTS_DIR;
+      if (projectsDirOverride) {
+        forkOptions.dir = projectsDirOverride;
+      }
+
+      console.log(`[Session] Forking via SDK: parent=${parentSdkSessionId} forkPoint=${forkPoint}`);
+      const result = await forkSession(parentSdkSessionId, forkOptions);
+      forkedSessionId = result.sessionId;
+      forkedSdkSessionId = result.sessionId;
+      console.log(`[Session] SDK fork created: ${forkedSdkSessionId}`);
+    } else {
+      // SSH session: create a new session ID. The first sendMessage call will
+      // use `resume: parentSdkSessionId` + `forkSession: true` via the SDK
+      // query options, which forks the remote transcript server-side.
+      forkedSessionId = uuid();
+      forkedSdkSessionId = parentSdkSessionId; // Resume from parent, SDK will fork on first query
+      console.log(`[Session] SSH fork: new session ${forkedSessionId}, will resume+fork from ${parentSdkSessionId}`);
     }
-    forkOptions.title = `${parentSession.name} (fork)`;
 
-    // Point the SDK at the right project directory if we have a custom override
-    const projectsDirOverride = process.env.CLAUDE_PROJECTS_DIR;
-    if (projectsDirOverride) {
-      forkOptions.dir = projectsDirOverride;
-    }
-
-    console.log(`[Session] Forking via SDK: parent=${parentSdkSessionId} forkPoint=${forkPoint}`);
-    const result = await forkSession(parentSdkSessionId, forkOptions);
-    const forkedSdkSessionId = result.sessionId;
-    console.log(`[Session] SDK fork created: ${forkedSdkSessionId}`);
-
-    // Create the Build session record with conversation fork relationship fields
-    const forkedSessionId = forkedSdkSessionId; // Use the SDK's session ID directly
     const forkedSession: Session = {
       ...parentSession,
       id: forkedSessionId,
       name: `${parentSession.name} (fork)`,
-      sdkSessionId: forkedSdkSessionId,
+      sdkSessionId: parentSession.sshConfig ? undefined : forkedSdkSessionId,
       createdAt: new Date(),
       updatedAt: new Date(),
       forkCreatedAt: new Date(),
@@ -870,12 +883,16 @@ Only return the title, nothing else.`
       repoPath: parentSession.repoPath,
       isDevMode: parentSession.isDevMode,
       sshConfig: parentSession.sshConfig,
+      // For SSH forks: tell streamMessage to use resume+forkSession on first query
+      ...(parentSession.sshConfig ? { forkFromSdkSessionId: parentSdkSessionId } : {}),
     };
 
     // Store the forked session
     this.store.set(`sessions.${forkedSessionId}`, forkedSession);
 
-    // Map to the SDK session ID so getMessages() finds the transcript
+    // Map to the SDK session ID so getMessages() finds the transcript.
+    // For SSH forks, map to the parent SDK ID so messages load from parent
+    // until the first query forks the remote transcript.
     this.store.set(`sdkSessionMappings.${forkedSessionId}`, forkedSdkSessionId);
 
     // Update parent session: add to childSessionIds, mark as root if not already
