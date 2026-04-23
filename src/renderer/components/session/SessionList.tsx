@@ -40,6 +40,10 @@ export default function SessionList() {
   // Track sessions that have been visited during this app instance
   const [visitedSessionIds, setVisitedSessionIds] = useState<Set<string>>(new Set());
 
+  // Drag-and-drop reorder for starred sessions
+  const [draggedId, setDraggedId] = useState<string | null>(null);
+  const [dragOverId, setDragOverId] = useState<string | null>(null);
+
   // Add active session to visited sessions when it changes
   useEffect(() => {
     if (activeSessionId && !visitedSessionIds.has(activeSessionId)) {
@@ -309,15 +313,74 @@ export default function SessionList() {
           </div>
           <div>
             {starredSessions.map((session) => (
-              <SessionCard
+              <div
                 key={session.id}
-                session={session}
-                isActive={session.id === activeSessionId}
-                onClick={() => setActiveSession(session.id)}
-                isFork={session.isWorktree}
-                onTeleportRequest={setTeleportSession}
-                onDownload={setDownloadSession}
-              />
+                draggable
+                onDragStart={(e) => {
+                  setDraggedId(session.id);
+                  e.dataTransfer.effectAllowed = 'move';
+                  // Make the drag image semi-transparent
+                  if (e.currentTarget instanceof HTMLElement) {
+                    e.currentTarget.style.opacity = '0.5';
+                  }
+                }}
+                onDragEnd={(e) => {
+                  setDraggedId(null);
+                  setDragOverId(null);
+                  if (e.currentTarget instanceof HTMLElement) {
+                    e.currentTarget.style.opacity = '1';
+                  }
+                }}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  e.dataTransfer.dropEffect = 'move';
+                  if (draggedId && draggedId !== session.id) {
+                    setDragOverId(session.id);
+                  }
+                }}
+                onDragLeave={() => {
+                  if (dragOverId === session.id) setDragOverId(null);
+                }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  if (!draggedId || draggedId === session.id) return;
+
+                  // Reorder: compute new starredAt between neighbours
+                  const fromIdx = starredSessions.findIndex(s => s.id === draggedId);
+                  const toIdx = starredSessions.findIndex(s => s.id === session.id);
+                  if (fromIdx < 0 || toIdx < 0) return;
+
+                  // Build new order
+                  const reordered = [...starredSessions];
+                  const [moved] = reordered.splice(fromIdx, 1);
+                  reordered.splice(toIdx, 0, moved);
+
+                  // Assign new starredAt timestamps to maintain order
+                  // Use epoch base + index * 1000ms so they're monotonically increasing
+                  const base = new Date('2020-01-01T00:00:00Z').getTime();
+                  reordered.forEach((s, i) => {
+                    const newStarredAt = new Date(base + i * 1000).toISOString();
+                    window.electronAPI?.sessions?.update(s.id, {
+                      starredAt: newStarredAt,
+                    } as any).catch(() => {});
+                  });
+
+                  // Reload to reflect new order
+                  loadSessions();
+                  setDraggedId(null);
+                  setDragOverId(null);
+                }}
+                className={dragOverId === session.id ? 'border-t-2 border-claude-accent' : ''}
+              >
+                <SessionCard
+                  session={session}
+                  isActive={session.id === activeSessionId}
+                  onClick={() => setActiveSession(session.id)}
+                  isFork={session.isWorktree}
+                  onTeleportRequest={setTeleportSession}
+                  onDownload={setDownloadSession}
+                />
+              </div>
             ))}
           </div>
         </div>

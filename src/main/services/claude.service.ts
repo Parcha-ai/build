@@ -387,6 +387,11 @@ export class ClaudeService {
         description: 'Fastest model - best for simple tasks'
       },
       {
+        id: 'codex:gpt-5.5',
+        name: 'GPT-5.5 (Codex)',
+        description: 'OpenAI latest — most capable coding model'
+      },
+      {
         id: 'codex:gpt-5.4',
         name: 'GPT-5.4 (Codex)',
         description: 'OpenAI flagship — best for complex coding tasks'
@@ -5129,6 +5134,7 @@ Begin by creating the task structure now.
    * Get messages from SDK transcript files for a session
    * @param limit - Optional limit on number of messages to return (most recent). Default 200 for performance.
    */
+  // limit: positive = most recent N, 0 or negative = full transcript (cat instead of tail)
   async getMessages(sessionId: string, limit: number = 200): Promise<ChatMessage[]> {
     const session = this.sessionStore.get(`sessions.${sessionId}`) as Session | undefined;
     console.log(`[Claude] getMessages called for ${sessionId.substring(0, 8)}, hasSSH: ${!!session?.sshConfig}, hasTeleport: ${!!session?.isTeleported}`);

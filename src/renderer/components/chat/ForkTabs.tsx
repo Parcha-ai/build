@@ -1,4 +1,5 @@
 import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
+import ReactDOM from 'react-dom';
 import { Plus, MoreHorizontal, GitFork, MessageSquare } from 'lucide-react';
 import { useSessionStore } from '../../stores/session.store';
 
@@ -34,9 +35,32 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
   const activeSessionId = useSessionStore(s => s.activeSessionId);
   const createForkFromCurrent = useSessionStore(s => s.createForkFromCurrent);
 
+  const sessions = useSessionStore(s => s.sessions);
+  const loadSessions = useSessionStore(s => s.loadSessions);
+
   const forkSiblings = getForkSiblings(sessionId);
   const projectSessions = getProjectSessions(sessionId);
   const rootId = forkSiblings.find(f => !f.parentSessionId)?.id || sessionId;
+
+  // Auto-scan remote transcripts on mount for SSH sessions.
+  // Creates session records for any orphaned transcripts in the same directory
+  // so they appear in the overflow menu without manual intervention.
+  const hasScanned = useRef(false);
+  useEffect(() => {
+    if (hasScanned.current) return;
+    const session = sessions.find(s => s.id === sessionId);
+    if (!session?.sshConfig) return;
+    hasScanned.current = true;
+
+    window.electronAPI?.sessions?.scanRemoteTranscripts?.(rootId).then((newSessions) => {
+      if (newSessions && newSessions.length > 0) {
+        console.log(`[ForkTabs] Discovered ${newSessions.length} orphaned remote transcript(s)`);
+        loadSessions();
+      }
+    }).catch((err: unknown) => {
+      console.warn('[ForkTabs] Remote scan failed:', err);
+    });
+  }, [sessionId, rootId, sessions, loadSessions]);
 
   // Persist overflow (closed) tabs in localStorage
   const storageKey = `grep-overflow-forks-${rootId}`;
@@ -49,6 +73,8 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
 
   const [showOverflow, setShowOverflow] = useState(false);
   const overflowRef = useRef<HTMLDivElement>(null);
+  const overflowBtnRef = useRef<HTMLButtonElement>(null);
+  const [dropdownPos, setDropdownPos] = useState({ top: 0, right: 0 });
 
   useEffect(() => {
     localStorage.setItem(storageKey, JSON.stringify([...overflowIds]));
@@ -61,8 +87,16 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
         setShowOverflow(false);
       }
     };
-    document.addEventListener('mousedown', handleClick);
-    return () => document.removeEventListener('mousedown', handleClick);
+    // Use click (not mousedown) + requestAnimationFrame so the toggle
+    // button's onClick completes before the outside-click listener fires.
+    // Without this, the dropdown opens and immediately closes in the same tick.
+    const raf = requestAnimationFrame(() => {
+      document.addEventListener('click', handleClick);
+    });
+    return () => {
+      cancelAnimationFrame(raf);
+      document.removeEventListener('click', handleClick);
+    };
   }, [showOverflow]);
 
   const visibleForks = forkSiblings.filter(f => !overflowIds.has(f.id));
@@ -141,83 +175,159 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
           );
         })}
 
-        {/* New fork button */}
+        {/* New session button — creates a fresh session in the same directory */}
         <button
-          onClick={() => createForkFromCurrent('')}
+          onClick={async () => {
+            // Try root first, fall back to current session for sshConfig
+            const rootSession = sessions.find(s => s.id === rootId);
+            const currentSession = sessions.find(s => s.id === sessionId);
+            const session = rootSession?.sshConfig ? rootSession : currentSession;
+            if (session?.sshConfig) {
+              try {
+                const newSession = await window.electronAPI.ssh.createSession({
+                  name: `${session.name} (new)`,
+                  sshConfig: session.sshConfig,
+                });
+                if (newSession) {
+                  // Adopt into fork group
+                  await window.electronAPI.sessions.update(newSession.id, {
+                    parentSessionId: rootId,
+                    isRoot: false,
+                  } as any);
+                  const root = forkSiblings.find(f => f.id === rootId);
+                  if (root) {
+                    const children = [...(root.childSessionIds || [])];
+                    if (!children.includes(newSession.id)) {
+                      children.push(newSession.id);
+                      await window.electronAPI.sessions.update(rootId, {
+                        childSessionIds: children,
+                        isRoot: true,
+                      } as any);
+                    }
+                  }
+                  loadSessions();
+                  setActiveSession(newSession.id);
+                }
+              } catch (err) {
+                console.error('[ForkTabs] Failed to create new session:', err);
+              }
+            } else {
+              createForkFromCurrent('');
+            }
+          }}
           className="flex items-center justify-center px-2 py-1 border-l border-claude-border/30 text-claude-text-secondary hover:text-claude-accent transition-colors"
-          title="Fork conversation (Cmd+T)"
+          title="New session in same directory"
         >
           <Plus size={12} />
         </button>
 
-        {/* Overflow menu — closed forks + project sessions */}
+        {/* Overflow menu trigger — closed forks + project sessions */}
         {hasOverflowItems && (
-          <div className="relative" ref={overflowRef}>
-            <button
-              onClick={() => setShowOverflow(!showOverflow)}
-              className="flex items-center gap-1 px-2 py-1 border-l border-claude-border/30 text-claude-text-secondary hover:text-claude-text transition-colors"
-              title={`${closedForks.length + projectOnlySessions.length} more session${closedForks.length + projectOnlySessions.length > 1 ? 's' : ''}`}
-            >
-              <MoreHorizontal size={12} />
-              <span className="text-[9px]">{closedForks.length + projectOnlySessions.length}</span>
-            </button>
-            {showOverflow && (
-              <div className="absolute top-full right-0 mt-1 bg-claude-surface border border-claude-border shadow-lg z-50 min-w-64 max-h-80 overflow-y-auto">
-                {/* Closed forks section */}
-                {closedForks.length > 0 && (
-                  <>
-                    <div className="px-3 py-1.5 border-b border-claude-border">
-                      <span className="text-[10px] font-semibold text-claude-text-secondary uppercase tracking-wide">Closed Forks</span>
-                    </div>
-                    {closedForks.map(fork => (
-                      <button
-                        key={fork.id}
-                        onClick={() => handleRestore(fork.id)}
-                        className="w-full text-left px-3 py-1.5 hover:bg-claude-bg transition-colors flex items-center gap-2"
-                      >
-                        <GitFork size={10} className="text-claude-accent flex-shrink-0" />
-                        <span className="text-xs truncate flex-1">{fork.aiGeneratedName || fork.forkName || fork.name}</span>
-                        <span className="text-[9px] text-claude-text-secondary flex-shrink-0">
-                          {formatRelativeDate(fork.updatedAt)}
-                        </span>
-                      </button>
-                    ))}
-                  </>
-                )}
+          <button
+            ref={overflowBtnRef}
+            onClick={() => {
+              if (!showOverflow && overflowBtnRef.current) {
+                const rect = overflowBtnRef.current.getBoundingClientRect();
+                setDropdownPos({ top: rect.bottom + 4, right: window.innerWidth - rect.right });
+              }
+              setShowOverflow(!showOverflow);
+            }}
+            className="flex items-center gap-1 px-2 py-1 border-l border-claude-border/30 text-claude-text-secondary hover:text-claude-text transition-colors"
+            title={`${closedForks.length + projectOnlySessions.length} more session${closedForks.length + projectOnlySessions.length > 1 ? 's' : ''}`}
+          >
+            <MoreHorizontal size={12} />
+            <span className="text-[9px]">{closedForks.length + projectOnlySessions.length}</span>
+          </button>
+        )}
 
-                {/* Project sessions section */}
-                {projectOnlySessions.length > 0 && (
-                  <>
-                    <div className="px-3 py-1.5 border-b border-claude-border">
-                      <span className="text-[10px] font-semibold text-claude-text-secondary uppercase tracking-wide">Other Sessions</span>
-                    </div>
-                    {projectOnlySessions.map(session => {
-                      const isFork = !!session.parentSessionId;
-                      return (
-                        <button
-                          key={session.id}
-                          onClick={() => {
-                            setActiveSession(session.id);
-                            setShowOverflow(false);
-                          }}
-                          className="w-full text-left px-3 py-1.5 hover:bg-claude-bg transition-colors flex items-center gap-2"
-                        >
-                          {isFork
-                            ? <GitFork size={10} className="text-purple-400 flex-shrink-0" />
-                            : <MessageSquare size={10} className="text-claude-text-secondary flex-shrink-0" />
-                          }
-                          <span className="text-xs truncate flex-1">{session.aiGeneratedName || session.forkName || session.name}</span>
-                          <span className="text-[9px] text-claude-text-secondary flex-shrink-0">
-                            {formatRelativeDate(session.updatedAt)}
-                          </span>
-                        </button>
-                      );
-                    })}
-                  </>
-                )}
-              </div>
+        {/* Overflow dropdown — rendered via portal to escape overflow:auto clipping */}
+        {showOverflow && ReactDOM.createPortal(
+          <div
+            ref={overflowRef}
+            className="fixed bg-claude-surface border border-claude-border shadow-lg z-[9999] min-w-64 max-h-80 overflow-y-auto text-xs font-mono"
+            style={{ top: dropdownPos.top, right: dropdownPos.right }}
+          >
+            {closedForks.length > 0 && (
+              <>
+                <div className="px-3 py-1.5 border-b border-claude-border">
+                  <span className="text-[10px] font-semibold text-claude-text-secondary uppercase tracking-wide">Closed Forks</span>
+                </div>
+                {closedForks.map(fork => (
+                  <button
+                    key={fork.id}
+                    onClick={() => handleRestore(fork.id)}
+                    className="w-full text-left px-3 py-1.5 hover:bg-claude-bg transition-colors flex items-center gap-2"
+                  >
+                    <GitFork size={10} className="text-claude-accent flex-shrink-0" />
+                    <span className="text-xs truncate flex-1">{fork.aiGeneratedName || fork.forkName || fork.name}</span>
+                    <span className="text-[9px] text-claude-text-secondary flex-shrink-0">
+                      {formatRelativeDate(fork.updatedAt)}
+                    </span>
+                  </button>
+                ))}
+              </>
             )}
-          </div>
+            {projectOnlySessions.length > 0 && (
+              <>
+                <div className="px-3 py-1.5 border-b border-claude-border">
+                  <span className="text-[10px] font-semibold text-claude-text-secondary uppercase tracking-wide">Other Sessions</span>
+                </div>
+                {projectOnlySessions.map(session => {
+                  const isFork = !!session.parentSessionId;
+                  return (
+                    <button
+                      key={session.id}
+                      onClick={async () => {
+                        // Adopt this session into the current fork group so it
+                        // appears as a tab instead of navigating away entirely.
+                        if (!session.parentSessionId || session.parentSessionId !== rootId) {
+                          try {
+                            await window.electronAPI.sessions.update(session.id, {
+                              parentSessionId: rootId,
+                              isRoot: false,
+                            } as any);
+                            // Also update parent's childSessionIds
+                            const root = forkSiblings.find(f => f.id === rootId);
+                            if (root) {
+                              const children = [...(root.childSessionIds || [])];
+                              if (!children.includes(session.id)) {
+                                children.push(session.id);
+                                await window.electronAPI.sessions.update(rootId, {
+                                  childSessionIds: children,
+                                  isRoot: true,
+                                } as any);
+                              }
+                            }
+                          } catch (err) {
+                            console.warn('[ForkTabs] Failed to adopt session into fork group:', err);
+                          }
+                        }
+                        // Remove from overflow so it appears as a visible tab
+                        setOverflowIds(prev => {
+                          const next = new Set(prev);
+                          next.delete(session.id);
+                          return next;
+                        });
+                        setActiveSession(session.id);
+                        setShowOverflow(false);
+                      }}
+                      className="w-full text-left px-3 py-1.5 hover:bg-claude-bg transition-colors flex items-center gap-2"
+                    >
+                      {isFork
+                        ? <GitFork size={10} className="text-purple-400 flex-shrink-0" />
+                        : <MessageSquare size={10} className="text-claude-text-secondary flex-shrink-0" />
+                      }
+                      <span className="text-xs truncate flex-1">{session.aiGeneratedName || session.forkName || session.name}</span>
+                      <span className="text-[9px] text-claude-text-secondary flex-shrink-0">
+                        {formatRelativeDate(session.updatedAt)}
+                      </span>
+                    </button>
+                  );
+                })}
+              </>
+            )}
+          </div>,
+          document.body
         )}
       </div>
     </div>

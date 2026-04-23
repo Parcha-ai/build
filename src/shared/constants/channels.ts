@@ -20,6 +20,7 @@ export const IPC_CHANNELS = {
   SESSION_REWIND_FORK: 'session:rewind-fork',
   SESSION_CREATE_FORK: 'session:create-fork', // Create conversation fork
   SESSION_GET_FORK_GROUP: 'session:get-fork-group', // Get all forks in a conversation group
+  SESSION_SCAN_REMOTE: 'session:scan-remote',
   SESSION_STATUS_CHANGED: 'session:status-changed',
   SESSION_LIST_UPDATED: 'session:list-updated',
 

@@ -77,6 +77,8 @@ const electronAPI = {
       ipcRenderer.invoke(IPC_CHANNELS.SESSION_CREATE_FORK, parentSessionId, forkPoint, initialMessage),
     getForkGroup: (sessionId: string): Promise<Session[]> =>
       ipcRenderer.invoke(IPC_CHANNELS.SESSION_GET_FORK_GROUP, sessionId),
+    scanRemoteTranscripts: (sessionId: string): Promise<Session[]> =>
+      ipcRenderer.invoke(IPC_CHANNELS.SESSION_SCAN_REMOTE, sessionId),
     onStatusChanged: (callback: (session: Session) => void) => {
       const handler = (_: IpcRendererEvent, session: Session) => callback(session);
       ipcRenderer.on(IPC_CHANNELS.SESSION_STATUS_CHANGED, handler);

@@ -3070,22 +3070,17 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const currentWorkdir = currentSession.worktreePath || currentSession.repoPath || '';
     const currentHost = (currentSession as any).sshConfig?.host;
 
-    // For SSH: match host + same base project path (strip worktree pool segments)
-    // For local: match same worktreePath or repoPath
+    // Match sessions with the exact same worktreePath (same working directory).
+    // For SSH: also requires same host.
     const matches = sessions.filter(s => {
       if (s.id === sessionId) return false;
-      const sHost = (s as any).sshConfig?.host;
       const sWorkdir = s.worktreePath || s.repoPath || '';
+      if (!sWorkdir || !currentWorkdir) return false;
 
       if (currentHost) {
-        // SSH: same host + workdirs share the same project
-        // Compare the last path segment (project name) since worktree pool paths vary
-        if (sHost !== currentHost) return false;
-        const currentProject = currentWorkdir.split('/').filter(Boolean).pop();
-        const sProject = sWorkdir.split('/').filter(Boolean).pop();
-        return currentProject && sProject && currentProject === sProject;
+        const sHost = (s as any).sshConfig?.host;
+        return sHost === currentHost && sWorkdir === currentWorkdir;
       } else {
-        // Local: same repo root
         return sWorkdir === currentWorkdir;
       }
     });
