@@ -3808,6 +3808,14 @@ Begin by creating the task structure now.
             if (systemMsg.subtype === 'compact_boundary' && systemMsg.compact_metadata) {
               console.log('[Claude SDK] Compaction complete:', systemMsg.compact_metadata);
 
+              // Clear the cached context percentage so compactIdleSessions()
+              // doesn't re-trigger on stale pre-compaction values. The real
+              // percentage will be set on the next turn's result message.
+              // Without this, the map holds the pre-compaction 85%+ value and
+              // every subsequent compactIdleSessions() call re-compacts.
+              this.sessionContextPercentage.delete(sessionId);
+              console.log(`[Claude SDK] Cleared context percentage for ${sessionId.substring(0, 8)} after compaction`);
+
               const compactionComplete: CompactionComplete = {
                 sessionId,
                 preTokens: systemMsg.compact_metadata.pre_tokens,

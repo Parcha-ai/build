@@ -16,9 +16,94 @@ import RemoteControlPanel from './RemoteControlPanel';
 // CompactionBar removed - compaction status now shown in ThinkingBlock
 import { SoundVisualization } from './SoundVisualization';
 import HistoryPanel from './HistoryPanel';
-import { ArrowDown, History } from 'lucide-react';
+import { ArrowDown, History, GitBranch, Circle, ExternalLink } from 'lucide-react';
 import type { Session, ToolCall } from '../../../shared/types';
 import { GSTACK_MODE_META } from '../../../shared/types';
+
+function SessionGitInfo({ sessionId }: { sessionId: string }) {
+  const [gitInfo, setGitInfo] = useState<{
+    branch?: string;
+    isDirty: boolean;
+    changedFiles: number;
+    prNumber?: number;
+    prUrl?: string;
+  } | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const fetchGitInfo = async () => {
+      try {
+        const status = await window.electronAPI?.git?.getStatus(sessionId);
+        if (cancelled || !status) return;
+
+        const info: typeof gitInfo = {
+          branch: status.current || undefined,
+          isDirty: (status.files?.length || 0) > 0,
+          changedFiles: status.files?.length || 0,
+        };
+
+        // Check for PR on this branch via transcript pr-link entries
+        const session = useSessionStore.getState().sessions.find(s => s.id === sessionId);
+        const messages = useSessionStore.getState().messages[sessionId] || [];
+        // Look for PR references in recent assistant messages
+        for (let i = messages.length - 1; i >= Math.max(0, messages.length - 20); i--) {
+          const msg = messages[i];
+          if (!msg?.content || typeof msg.content !== 'string') continue;
+          const prMatch = msg.content.match(/(?:PR|pull request)\s*#(\d+)/i)
+            || msg.content.match(/github\.com\/[^/]+\/[^/]+\/pull\/(\d+)/);
+          if (prMatch) {
+            info.prNumber = parseInt(prMatch[1]);
+            const repoMatch = msg.content.match(/(https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+)/);
+            info.prUrl = repoMatch?.[1];
+            break;
+          }
+        }
+
+        if (!cancelled) setGitInfo(info);
+      } catch {
+        // Git status not available (e.g., not a git repo)
+      }
+    };
+
+    fetchGitInfo();
+    const interval = setInterval(fetchGitInfo, 30000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, [sessionId]);
+
+  if (!gitInfo) return null;
+
+  return (
+    <div className="flex items-center gap-1.5 flex-shrink-0">
+      {gitInfo.branch && (
+        <span className="flex items-center gap-1 text-[10px] text-claude-text-secondary font-mono">
+          <GitBranch size={10} />
+          {gitInfo.branch}
+        </span>
+      )}
+      {gitInfo.isDirty && (
+        <span className="flex items-center gap-0.5 text-[10px] font-bold text-amber-400" title={`${gitInfo.changedFiles} changed file${gitInfo.changedFiles === 1 ? '' : 's'}`}>
+          <Circle size={6} fill="currentColor" />
+          {gitInfo.changedFiles}
+        </span>
+      )}
+      {gitInfo.prNumber && (
+        <button
+          onClick={() => {
+            if (gitInfo.prUrl) {
+              window.electronAPI?.app?.openExternal?.(gitInfo.prUrl);
+            }
+          }}
+          className="flex items-center gap-0.5 text-[10px] font-bold text-blue-400 hover:text-blue-300"
+          title={gitInfo.prUrl || `PR #${gitInfo.prNumber}`}
+        >
+          PR #{gitInfo.prNumber}
+          {gitInfo.prUrl && <ExternalLink size={8} />}
+        </button>
+      )}
+    </div>
+  );
+}
 
 interface ChatContainerProps {
   session: Session;
@@ -548,13 +633,13 @@ export default function ChatContainer({ session }: ChatContainerProps) {
     <div className={`flex-1 flex flex-col overflow-hidden font-mono bg-claude-bg min-w-0 ${isHistoryPanelOpen ? '' : ''}`}>
       {/* Header - brutalist */}
       <div className="h-10 border-b border-claude-border flex items-center justify-between px-4 bg-claude-surface/50">
-        <div className="flex items-center">
-          <h2 className="text-sm font-bold text-claude-text uppercase" style={{ letterSpacing: '0.1em' }}>
+        <div className="flex items-center gap-2 min-w-0">
+          <h2 className="text-sm font-bold text-claude-text uppercase truncate" style={{ letterSpacing: '0.1em' }}>
             {session.name}
           </h2>
           {session.status === 'running' && (
             <span
-              className="ml-2 px-1.5 py-0.5 text-xs font-bold uppercase bg-green-500/20 text-green-500"
+              className="px-1.5 py-0.5 text-xs font-bold uppercase bg-green-500/20 text-green-500 flex-shrink-0"
               style={{ borderRadius: 0, letterSpacing: '0.05em' }}
             >
               ACTIVE
@@ -562,12 +647,13 @@ export default function ChatContainer({ session }: ChatContainerProps) {
           )}
           {session.status === 'error' && (
             <span
-              className="ml-2 px-1.5 py-0.5 text-xs font-bold uppercase bg-red-500/20 text-red-500"
+              className="px-1.5 py-0.5 text-xs font-bold uppercase bg-red-500/20 text-red-500 flex-shrink-0"
               style={{ borderRadius: 0, letterSpacing: '0.05em' }}
             >
               ERROR
             </span>
           )}
+          <SessionGitInfo sessionId={session.id} />
         </div>
 
         <div className="flex items-center gap-2">
