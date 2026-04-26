@@ -17,7 +17,7 @@ import { browserService } from './browser.service';
 export class CdpProxyService {
   private httpServer: any = null;
   private wss: WebSocketServer | null = null;
-  private port = 9223;
+  private port = Number(process.env.CDP_PROXY_PORT || 9223);
   private activeConnections = new Map<WebSocket, {
     webContentsId: number;
     sessionId: string;

@@ -334,10 +334,21 @@ function ElectronApp() {
         if (now < snoozeExpiry) return; // Still in snooze period
       }
 
-      // Trigger if we're at or past bedtime and haven't logged today
-      if (now.getHours() === bedHour && now.getMinutes() >= bedMinute && bedtimeLogged !== today) {
-        setShowBedtimeModal(true);
-      } else if (now.getHours() > bedHour && bedtimeLogged !== today) {
+      // Bedtime window: from bedtime hour until 6 AM the next morning.
+      // Dismissal lasts until 6 AM — not just until midnight. This prevents
+      // the modal from re-appearing at 00:01 because the date changed.
+      const hour = now.getHours();
+      const MORNING_CUTOFF = 6;
+      const isPastBedtime = (hour === bedHour && now.getMinutes() >= bedMinute) || hour > bedHour;
+      const isBeforeMorning = hour < MORNING_CUTOFF;
+      const inBedtimeWindow = isPastBedtime || isBeforeMorning;
+
+      // Use a timestamp-based dismissal instead of date string so it survives
+      // past midnight. Dismissed = don't show again for 8 hours.
+      const dismissedUntil = localStorage.getItem('bedtime-dismissed-until');
+      const isDismissed = dismissedUntil && now.getTime() < parseInt(dismissedUntil, 10);
+
+      if (inBedtimeWindow && !isDismissed) {
         setShowBedtimeModal(true);
       }
     };
@@ -349,8 +360,11 @@ function ElectronApp() {
   }, []);
 
   const handleBedtimeDismiss = () => {
-    const today = new Date().toDateString();
-    localStorage.setItem('bedtime-logged-date', today);
+    // Dismiss for 8 hours — won't re-appear until after 6 AM even if
+    // midnight rolls over and changes the date string.
+    const dismissUntil = Date.now() + 8 * 60 * 60 * 1000;
+    localStorage.setItem('bedtime-dismissed-until', dismissUntil.toString());
+    localStorage.setItem('bedtime-logged-date', new Date().toDateString());
     setShowBedtimeModal(false);
   };
 

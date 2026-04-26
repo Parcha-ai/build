@@ -95,6 +95,14 @@ export class SSHService {
   private readonly SSH_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
   private remoteBridgeReady = new Map<string, Promise<RemoteBridgeInstall>>();
 
+  private getSafeSessionId(sessionId: string): string {
+    return sessionId.replace(/[^a-zA-Z0-9_-]/g, '-');
+  }
+
+  private getDetachedBridgeSessionDir(sessionId: string): string {
+    return `/tmp/claudette-ssh-bridge/${this.getSafeSessionId(sessionId)}`;
+  }
+
   /**
    * Test an SSH connection and verify Claude Code is installed on the remote
    */
@@ -469,41 +477,59 @@ export class SSHService {
   }
 
   /**
-   * Get the current git branch on the remote for an SSH session.
-   * Returns the branch name or null if not a git repo / connection failed.
-   */
-  /**
-   * Kill all orphaned remote processes across all active SSH connections.
-   * Called on app quit to prevent process accumulation on the server.
+   * Best-effort cleanup for stale Build bridge jobs across active SSH connections.
+   * This is intentionally not called on app quit; remote runs must be allowed to
+   * survive local transport drops and application restarts.
    */
   async killAllRemoteProcesses(): Promise<void> {
     for (const [sessionId, conn] of this.connections.entries()) {
       try {
+        const bridgeDir = this.getDetachedBridgeSessionDir(sessionId);
         await this.execCommand(conn.client,
-          'pkill -f "claude --output-format stream-json" 2>/dev/null; ' +
-          'pkill -f "chrome-devtools-mcp" 2>/dev/null; ' +
+          `if test -d ${this.quoteForShell(bridgeDir)}; then ` +
+          `find ${this.quoteForShell(bridgeDir)} -mindepth 1 -maxdepth 1 -type d -mmin +360 -exec rm -rf {} + 2>/dev/null || true; ` +
+          'fi; ' +
           'true'
         );
-        console.log(`[SSH Service] Cleaned up remote processes via connection ${sessionId}`);
+        console.log(`[SSH Service] Cleaned up stale bridge job metadata via connection ${sessionId}`);
       } catch (error) {
-        console.warn(`[SSH Service] Failed to clean up remote processes for ${sessionId}:`, error);
+        console.warn(`[SSH Service] Failed to clean stale bridge metadata for ${sessionId}:`, error);
       }
     }
   }
 
   /**
-   * Kill orphaned claude processes on the remote server for a given session.
-   * Called on session cleanup, query cancel, and app quit.
+   * Kill remote processes for a single Build SSH session.
+   * Uses bridge pid files and legacy per-session tmux names instead of pkill-ing
+   * every Claude process owned by the remote user.
    */
   async killRemoteProcesses(sessionId: string, config: SSHConfig): Promise<void> {
     try {
       const client = await this.getConnection(sessionId, config);
-      // Kill any claude processes started by this user that are orphaned
-      // (no controlling terminal, which means they were launched via SSH exec)
+      const bridgeDir = this.getDetachedBridgeSessionDir(sessionId);
+      const legacyPrefix = `/tmp/grep-${sessionId.substring(0, 8)}`;
+      const legacyTmuxName = `grep-${sessionId.substring(0, 8)}`;
+
       await this.execCommand(client,
-        'pkill -f "claude --output-format stream-json" 2>/dev/null; ' +
-        'pkill -f "chrome-devtools-mcp" 2>/dev/null; ' +
-        'true' // Always succeed
+        `if test -d ${this.quoteForShell(bridgeDir)}; then ` +
+        `for pidfile in ${this.quoteForShell(bridgeDir)}/*/pid; do ` +
+        'test -f "$pidfile" || continue; ' +
+        'pid="$(cat "$pidfile" 2>/dev/null || true)"; ' +
+        'cmd="$(test -n "$pid" && ps -p "$pid" -o command= 2>/dev/null || true)"; ' +
+        'test -n "$pid" && echo "$cmd" | grep -q "claude" && kill "$pid" 2>/dev/null || true; ' +
+        'done; ' +
+        'sleep 0.2; ' +
+        `for pidfile in ${this.quoteForShell(bridgeDir)}/*/pid; do ` +
+        'test -f "$pidfile" || continue; ' +
+        'pid="$(cat "$pidfile" 2>/dev/null || true)"; ' +
+        'cmd="$(test -n "$pid" && ps -p "$pid" -o command= 2>/dev/null || true)"; ' +
+        'test -n "$pid" && echo "$cmd" | grep -q "claude" && kill -9 "$pid" 2>/dev/null || true; ' +
+        'done; ' +
+        `rm -rf ${this.quoteForShell(bridgeDir)}; ` +
+        'fi; ' +
+        `tmux kill-session -t ${this.quoteForShell(legacyTmuxName)} 2>/dev/null || true; ` +
+        `rm -f ${this.quoteForShell(`${legacyPrefix}-in`)} ${this.quoteForShell(`${legacyPrefix}-out`)} ${this.quoteForShell(`${legacyPrefix}-output.log`)} 2>/dev/null || true; ` +
+        'true'
       );
       console.log(`[SSH Service] Killed remote processes for session ${sessionId}`);
     } catch (error) {
@@ -512,6 +538,39 @@ export class SSHService {
     }
   }
 
+  async hasActiveRemoteProcess(sessionId: string, config: SSHConfig): Promise<boolean> {
+    try {
+      const client = await this.getConnection(sessionId, config);
+      const bridgeDir = this.getDetachedBridgeSessionDir(sessionId);
+      const legacyTmuxName = `grep-${sessionId.substring(0, 8)}`;
+
+      const output = await this.execCommand(client,
+        'active=0; ' +
+        `if test -d ${this.quoteForShell(bridgeDir)}; then ` +
+        `for pidfile in ${this.quoteForShell(bridgeDir)}/*/pid; do ` +
+        'test -f "$pidfile" || continue; ' +
+        'jobdir="$(dirname "$pidfile")"; ' +
+        'pid="$(cat "$pidfile" 2>/dev/null || true)"; ' +
+        'cmd="$(test -n "$pid" && ps -p "$pid" -o command= 2>/dev/null || true)"; ' +
+        'completed="$(test -f "$jobdir/stdout.log" && grep -q \'"type":"result"\' "$jobdir/stdout.log" && echo 1 || echo 0)"; ' +
+        'if test -n "$pid" && echo "$cmd" | grep -q "claude" && test "$completed" = "0"; then active=1; fi; ' +
+        'done; ' +
+        'fi; ' +
+        `if test "$active" = "0" && tmux has-session -t ${this.quoteForShell(legacyTmuxName)} 2>/dev/null; then active=1; fi; ` +
+        'echo "$active"'
+      );
+
+      return output.trim().split('\n').pop() === '1';
+    } catch (error) {
+      console.warn(`[SSH Service] Failed to check active remote process for ${sessionId}:`, error);
+      return false;
+    }
+  }
+
+  /**
+   * Get the current git branch on the remote for an SSH session.
+   * Returns the branch name or null if not a git repo / connection failed.
+   */
   async getRemoteBranch(sessionId: string, config: SSHConfig): Promise<string | null> {
     try {
       const client = await this.getConnection(sessionId, config);
@@ -772,9 +831,8 @@ export class SSHService {
     sessionId: string,
     options: RemoteCommandProcessOptions
   ): DetachedRemoteBridgeConfig {
-    const safeSessionId = sessionId.replace(/[^a-zA-Z0-9_-]/g, '-');
     const jobId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-    const jobDir = `/tmp/claudette-ssh-bridge/${safeSessionId}/${jobId}`;
+    const jobDir = `${this.getDetachedBridgeSessionDir(sessionId)}/${jobId}`;
     const env = Object.fromEntries(
       Object.entries(options.env || {}).filter(([, value]) => value !== undefined)
     ) as Record<string, string>;
@@ -978,6 +1036,7 @@ export class SSHService {
     const closeStdinOnEnd = options.closeStdinOnEnd === true;
     const pendingData: Buffer[] = [];
     let stdinBridgeChannel: ClientChannel | null = null;
+    let stdinBridgeOpening: Promise<void> | null = null;
     let stdinBridgeReady = false;
     let stdinEnded = false;
     let stdinEofSignaled = false;
@@ -1023,49 +1082,115 @@ export class SSHService {
       }
     };
 
-    const openStdinBridge = async (): Promise<void> => {
-      if (finalized || killed || fallbackProcess || stdinBridgeReady || stdinBridgeChannel) return;
-      const install = await this.ensureDetachedRemoteBridge(sessionId, config);
-      const client = await this.getConnection(sessionId, config);
-      const command = `${this.getRemoteCommandPathPrefix(config)} && ${install.nodeCommand} ${this.quoteForShell(install.bridgePath)} stdin ${this.quoteForShell(bridge.socketPath)}`;
+    const writeToStdinBridge = (data: Buffer): boolean => {
+      if (!stdinBridgeReady || !stdinBridgeChannel) return false;
+      stdinBridgeChannel.write(data);
+      return true;
+    };
 
-      await new Promise<void>((resolve, reject) => {
-        client.exec(command, (err, channel) => {
-          if (err) {
-            reject(err);
-            return;
-          }
+    const endStdinBridge = (): void => {
+      if (!stdinBridgeReady || !stdinBridgeChannel) return;
+      stdinBridgeChannel.end();
+    };
 
-          stdinBridgeChannel = channel;
-          stdinBridgeReady = true;
+    const openStdinBridge = (): Promise<void> => {
+      if (finalized || killed || fallbackProcess || stdinBridgeReady || stdinBridgeChannel) {
+        return Promise.resolve();
+      }
+      if (!bridgeLaunched) {
+        return Promise.resolve();
+      }
+      if (stdinBridgeOpening) {
+        return stdinBridgeOpening;
+      }
 
-          channel.on('close', () => {
+      stdinBridgeOpening = (async () => {
+        const install = await this.ensureDetachedRemoteBridge(sessionId, config);
+        const client = await this.getConnection(sessionId, config);
+        const command = `${this.getRemoteCommandPathPrefix(config)} && ${install.nodeCommand} ${this.quoteForShell(install.bridgePath)} stdin ${this.quoteForShell(bridge.socketPath)}`;
+
+        await new Promise<void>((resolve, reject) => {
+          let settled = false;
+          let readyBuffer = '';
+
+          const fail = (error: Error) => {
+            if (settled) return;
+            settled = true;
             stdinBridgeReady = false;
             stdinBridgeChannel = null;
-          });
-          channel.on('error', () => {
-            stdinBridgeReady = false;
-            stdinBridgeChannel = null;
-          });
-          channel.stderr.on('data', () => {
-            // Ignore bridge helper stderr. Connection errors are surfaced via close/error.
-          });
+            reject(error);
+          };
 
-          for (const chunk of pendingData) {
-            channel.stdin.write(chunk);
-          }
-          pendingData.length = 0;
+          const markReady = (channel: ClientChannel) => {
+            if (settled) return;
+            settled = true;
+            stdinBridgeChannel = channel;
+            stdinBridgeReady = true;
 
-          if (stdinEnded && closeStdinOnEnd) {
-            channel.stdin.end();
-            signalRemoteStdinEof().catch((error) => {
-              console.warn('[SSH Service] Failed to signal remote stdin EOF:', error);
+            const queuedBytes = pendingData.reduce((total, chunk) => total + chunk.length, 0);
+            console.log(`[SSH Service] Remote stdin bridge ready for ${sessionId}; flushing ${queuedBytes} queued bytes`);
+
+            for (const chunk of pendingData) {
+              channel.write(chunk);
+            }
+            pendingData.length = 0;
+
+            if (stdinEnded && closeStdinOnEnd) {
+              channel.end();
+              signalRemoteStdinEof().catch((error) => {
+                console.warn('[SSH Service] Failed to signal remote stdin EOF:', error);
+              });
+            }
+
+            resolve();
+          };
+
+          client.exec(command, (err, channel) => {
+            if (err) {
+              fail(err);
+              return;
+            }
+
+            stdinBridgeChannel = channel;
+
+            channel.on('data', (data: Buffer) => {
+              if (settled) return;
+              readyBuffer += data.toString('utf8');
+              if (readyBuffer.includes('[stdin-ready]')) {
+                markReady(channel);
+              }
             });
-          }
-
-          resolve();
+            channel.on('close', () => {
+              const wasReady = stdinBridgeReady;
+              stdinBridgeReady = false;
+              stdinBridgeChannel = null;
+              if (!settled && !wasReady) {
+                fail(new Error('Remote stdin bridge closed before it was ready'));
+              }
+            });
+            channel.on('error', (error: Error) => {
+              stdinBridgeReady = false;
+              stdinBridgeChannel = null;
+              if (!settled) {
+                fail(error);
+              }
+            });
+            channel.stderr.on('data', (data: Buffer) => {
+              const message = data.toString('utf8').trim();
+              if (message) {
+                console.warn('[SSH Service] Remote stdin bridge stderr:', message);
+                if (!settled) {
+                  fail(new Error(message));
+                }
+              }
+            });
+          });
         });
+      })().finally(() => {
+        stdinBridgeOpening = null;
       });
+
+      return stdinBridgeOpening;
     };
 
     const fetchRemainingOutput = async (): Promise<void> => {
@@ -1209,10 +1334,12 @@ export class SSHService {
     options.signal?.addEventListener('abort', abortHandler);
 
     passThrough.stdin.on('data', (data: Buffer) => {
-      if (stdinBridgeReady && stdinBridgeChannel) {
-        stdinBridgeChannel.stdin.write(data);
-      } else {
-        pendingData.push(data);
+      if (writeToStdinBridge(data)) {
+        return;
+      }
+
+      pendingData.push(data);
+      if (bridgeLaunched) {
         void openStdinBridge().catch((error) => {
           console.warn('[SSH Service] Failed to attach remote stdin bridge:', error);
         });
@@ -1222,7 +1349,7 @@ export class SSHService {
     passThrough.stdin.on('end', () => {
       stdinEnded = true;
       if (closeStdinOnEnd && stdinBridgeReady && stdinBridgeChannel) {
-        stdinBridgeChannel.stdin.end();
+        endStdinBridge();
         void signalRemoteStdinEof().catch((error) => {
           console.warn('[SSH Service] Failed to signal remote stdin EOF:', error);
         });
@@ -1334,10 +1461,65 @@ export class SSHService {
     const client = await this.getConnection(sessionId, config);
 
     await this.execCommand(client, `mkdir -p ${this.quoteForShell(bridge.jobDir)}`);
+    await this.execCommand(
+      client,
+      `find ${this.quoteForShell(this.getDetachedBridgeSessionDir(sessionId))} -mindepth 1 -maxdepth 1 -type d -mmin +360 -exec rm -rf {} + 2>/dev/null || true`
+    );
     await this.writeRemoteFile(sessionId, config, `${bridge.jobDir}/config.json`, JSON.stringify(bridge, null, 2));
 
-    const startCommand = `${this.getRemoteCommandPathPrefix(config)} && nohup ${install.nodeCommand} ${this.quoteForShell(install.bridgePath)} spawn ${this.quoteForShell(`${bridge.jobDir}/config.json`)} >/dev/null 2>&1 </dev/null &`;
-    await this.execCommand(client, startCommand);
+    const startCommand = `${this.getRemoteCommandPathPrefix(config)} && (nohup ${install.nodeCommand} ${this.quoteForShell(install.bridgePath)} spawn ${this.quoteForShell(`${bridge.jobDir}/config.json`)} >/dev/null 2>&1 </dev/null & echo __claudette_bridge_started__)`;
+    await new Promise<void>((resolve, reject) => {
+      client.exec(startCommand, (err, channel) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+
+        let settled = false;
+        let stderr = '';
+        const timeout = setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          try {
+            channel.close();
+          } catch {
+            // The background bridge is detached; channel close is best-effort.
+          }
+          resolve();
+        }, 3000);
+
+        const finish = () => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeout);
+          try {
+            channel.close();
+          } catch {
+            // The background bridge is detached; channel close is best-effort.
+          }
+          resolve();
+        };
+
+        channel.on('data', (data: Buffer) => {
+          if (data.toString('utf8').includes('__claudette_bridge_started__')) {
+            finish();
+          }
+        });
+        channel.stderr.on('data', (data: Buffer) => {
+          stderr += data.toString('utf8');
+        });
+        channel.on('close', (code: number) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeout);
+          if (code !== 0 && stderr.trim()) {
+            reject(new Error(stderr.trim()));
+          } else {
+            resolve();
+          }
+        });
+      });
+    });
 
     const deadline = Date.now() + 10000;
     while (Date.now() < deadline) {
@@ -1395,6 +1577,7 @@ export class SSHService {
     const filteredEnv = Object.fromEntries(Object.entries(sdkOptions.env)
       .filter(([key, value]) => value !== undefined && includeVars.includes(key))
     ) as Record<string, string | undefined>;
+    filteredEnv.CLAUDETTE_SESSION_ID = this.getSafeSessionId(sessionId);
 
     // Build the command using the SDK's args
     // The SDK passes args like: ["/path/to/cli.js", "--output-format", "stream-json", "--verbose", ...]
@@ -1413,16 +1596,16 @@ export class SSHService {
     console.log('[SSH Service] SDK args (original):', sdkOptions.args);
     console.log('[SSH Service] SDK args (filtered):', filteredArgs);
 
-    // Use direct SSH exec — the detached bridge is unreliable and causes
-    // orphaned processes, channel conflicts, and reconnection failures.
-    // TODO: Replace with tmux-based persistence when implemented.
-    return this.createDirectCommandProcess(sessionId, config, {
+    // Use the detached bridge instead of direct SSH exec. The bridge keeps the
+    // remote Claude process alive across SSH transport drops, streams stdout
+    // from an append-only log, and avoids the old tmux/FIFO deadlocks.
+    return this.createDetachedCommandProcess(sessionId, config, {
       command: 'claude',
       args: filteredArgs,
       cwd: config.remoteWorkdir,
       env: filteredEnv,
       signal: sdkOptions.signal,
-      closeStdinOnEnd: false,
+      closeStdinOnEnd: true,
     });
   }
 

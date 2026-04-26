@@ -922,4 +922,18 @@ export function registerSSHHandlers(ipcMain: IpcMain): void {
       }
     }
   );
+
+  ipcMain.handle(
+    IPC_CHANNELS.SSH_HAS_ACTIVE_REMOTE_PROCESS,
+    async (_event, sessionId: string) => {
+      try {
+        const session = sessionStore.get(`sessions.${sessionId}`) as Session | undefined;
+        if (!session?.sshConfig) return false;
+        return sshService.hasActiveRemoteProcess(sessionId, session.sshConfig);
+      } catch (error) {
+        console.warn('[SSH IPC] Failed to check active remote process:', error);
+        return false;
+      }
+    }
+  );
 }

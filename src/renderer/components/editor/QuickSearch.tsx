@@ -1,11 +1,9 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
-  Search,
   FileText,
   Hash,
   X,
   Loader2,
-  FolderOpen,
   Terminal,
   Globe,
   GitBranch,
@@ -15,12 +13,13 @@ import {
   Shield,
   Zap,
   Command,
-  RotateCcw,
   Layout,
+  MessageSquare,
 } from 'lucide-react';
 import { useEditorStore } from '../../stores/editor.store';
 import { useSessionStore, PermissionMode, ThinkingMode, getSupportedPermissionModes, isCodexModel, normalizePermissionModeForModel } from '../../stores/session.store';
 import { useUIStore } from '../../stores/ui.store';
+import type { Session } from '../../../shared/types';
 
 interface FileEntry {
   name: string;
@@ -49,10 +48,10 @@ interface CommandEntry {
   action: () => void;
 }
 
-type SearchMode = 'all' | 'files' | 'symbols' | 'commands';
+type SearchMode = 'all' | 'files' | 'symbols' | 'commands' | 'sessions';
 
 interface SearchResult {
-  type: 'file' | 'symbol' | 'command';
+  type: 'file' | 'symbol' | 'command' | 'session';
   id: string;
   name: string;
   path?: string;
@@ -62,11 +61,58 @@ interface SearchResult {
   icon: React.ReactNode;
   shortcut?: string;
   action?: () => void;
+  sessionId?: string;
+}
+
+function getSessionLocation(session: Session): string {
+  if (session.sshConfig) {
+    return `${session.sshConfig.username}@${session.sshConfig.host}:${session.sshConfig.remoteWorkdir}`;
+  }
+  return session.worktreePath || session.repoPath || session.id;
+}
+
+function getSessionSearchFields(session: Session): string[] {
+  return [
+    session.name,
+    session.id,
+    session.sdkSessionId,
+    ...(session.relatedSessionIds || []),
+    session.branch,
+    session.worktreePath,
+    session.repoPath,
+    session.sshConfig?.host,
+    session.sshConfig?.remoteWorkdir,
+  ].filter((value): value is string => Boolean(value));
+}
+
+function getSessionIds(session: Session): string[] {
+  const ids = [
+    session.id,
+    session.sdkSessionId,
+    ...(session.relatedSessionIds || []),
+  ].filter((value): value is string => Boolean(value));
+  return Array.from(new Set(ids));
+}
+
+function getSessionSearchScore(session: Session, searchQuery: string): number {
+  if (!searchQuery) return 0;
+
+  const name = (session.name || '').toLowerCase();
+  const sessionIds = getSessionIds(session).map((id) => id.toLowerCase());
+  const branch = (session.branch || '').toLowerCase();
+
+  if (sessionIds.some((id) => id === searchQuery)) return 100;
+  if (sessionIds.some((id) => id.startsWith(searchQuery))) return 90;
+  if (name.startsWith(searchQuery)) return 80;
+  if (name.includes(searchQuery)) return 70;
+  if (branch.startsWith(searchQuery)) return 60;
+  if (branch.includes(searchQuery)) return 50;
+  return 10;
 }
 
 export default function QuickSearch() {
   const { isQuickSearchOpen, closeQuickSearch, openFile } = useEditorStore();
-  const { activeSessionId, sessions, permissionMode, thinkingMode, selectedModel, cyclePermissionMode, setPermissionMode, cycleThinkingMode, setThinkingMode } = useSessionStore();
+  const { activeSessionId, sessions, permissionMode, thinkingMode, selectedModel, setActiveSession, cyclePermissionMode, setPermissionMode, cycleThinkingMode, setThinkingMode } = useSessionStore();
   const {
     toggleSidebar,
     toggleTerminalPanel,
@@ -77,6 +123,8 @@ export default function QuickSearch() {
     isBrowserPanelOpen,
     isGitPanelOpen,
     isSidebarOpen,
+    isCommandCenterActive,
+    toggleCommandCenter,
     cycleSplitRatio,
   } = useUIStore();
 
@@ -337,6 +385,8 @@ export default function QuickSearch() {
       setSearchMode('commands');
     } else if (query.startsWith('@')) {
       setSearchMode('symbols');
+    } else if (query.startsWith('#')) {
+      setSearchMode('sessions');
     } else if (query.startsWith('/')) {
       setSearchMode('files');
     } else {
@@ -381,7 +431,7 @@ export default function QuickSearch() {
   // Filter results based on query and mode
   const filteredResults = useMemo(() => {
     const results: SearchResult[] = [];
-    const searchQuery = query.replace(/^[>@/]/, '').toLowerCase().trim();
+    const searchQuery = query.replace(/^[>@/#]/, '').toLowerCase().trim();
 
     // Add commands - always search commands in 'all' mode or 'commands' mode
     if (searchMode === 'commands' || searchMode === 'all') {
@@ -409,6 +459,37 @@ export default function QuickSearch() {
           icon: cmd.icon,
           shortcut: cmd.shortcut,
           action: cmd.action,
+        });
+      });
+    }
+
+    // Add sessions. Normal Cmd+K searches include matching sessions; # narrows to sessions.
+    if (searchMode === 'sessions' || (searchMode === 'all' && searchQuery)) {
+      const sessionResults = sessions
+        .filter((session) => {
+          if (!searchQuery) return true;
+          return getSessionSearchFields(session)
+            .some((field) => field.toLowerCase().includes(searchQuery));
+        })
+        .sort((a, b) => {
+          const scoreDelta = getSessionSearchScore(b, searchQuery) - getSessionSearchScore(a, searchQuery);
+          if (scoreDelta !== 0) return scoreDelta;
+          return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+        })
+        .slice(0, searchMode === 'all' ? 8 : 30);
+
+      sessionResults.forEach((session) => {
+        const sessionIds = getSessionIds(session).join(' / ');
+
+        results.push({
+          type: 'session',
+          id: `session-${session.id}`,
+          sessionId: session.id,
+          name: session.name,
+          relativePath: getSessionLocation(session),
+          detail: `${session.branch || 'no branch'} - ${sessionIds}`,
+          icon: <MessageSquare size={16} className={session.sshConfig ? 'text-cyan-400' : 'text-emerald-400'} />,
+          shortcut: session.status,
         });
       });
     }
@@ -466,7 +547,7 @@ export default function QuickSearch() {
     // Symbols are loaded via useEffect below
 
     return results;
-  }, [query, searchMode, allFiles, commands]);
+  }, [query, searchMode, allFiles, commands, sessions]);
 
   // Async symbol search
   useEffect(() => {
@@ -535,7 +616,8 @@ export default function QuickSearch() {
         // Cycle through search modes
         if (e.shiftKey) {
           setQuery(prev => {
-            if (prev.startsWith('>')) return '@' + prev.slice(1);
+            if (prev.startsWith('>')) return '#' + prev.slice(1);
+            if (prev.startsWith('#')) return '@' + prev.slice(1);
             if (prev.startsWith('@')) return '/' + prev.slice(1);
             if (prev.startsWith('/')) return prev.slice(1);
             return '>' + prev;
@@ -543,7 +625,8 @@ export default function QuickSearch() {
         } else {
           setQuery(prev => {
             if (prev.startsWith('>')) return prev.slice(1);
-            if (prev.startsWith('@')) return '>' + prev.slice(1);
+            if (prev.startsWith('#')) return '>' + prev.slice(1);
+            if (prev.startsWith('@')) return '#' + prev.slice(1);
             if (prev.startsWith('/')) return '@' + prev.slice(1);
             return '/' + prev;
           });
@@ -557,13 +640,19 @@ export default function QuickSearch() {
     if (result.type === 'command' && result.action) {
       result.action();
       closeQuickSearch();
+    } else if (result.type === 'session' && result.sessionId) {
+      if (isCommandCenterActive) {
+        toggleCommandCenter();
+      }
+      setActiveSession(result.sessionId);
+      closeQuickSearch();
     } else if (result.type === 'file' || result.type === 'symbol') {
       if (result.path) {
         openFile(result.path, result.lineNumber);
       }
       closeQuickSearch();
     }
-  }, [openFile, closeQuickSearch]);
+  }, [isCommandCenterActive, toggleCommandCenter, setActiveSession, openFile, closeQuickSearch]);
 
   // Scroll selected item into view
   useEffect(() => {
@@ -587,12 +676,14 @@ export default function QuickSearch() {
     switch (searchMode) {
       case 'commands':
         return 'Type a command...';
+      case 'sessions':
+        return 'Search sessions by name or ID...';
       case 'symbols':
         return 'Search symbols...';
       case 'files':
         return 'Search files...';
       default:
-        return 'Search files, symbols, or commands...';
+        return 'Search sessions, files, symbols, or commands...';
     }
   };
 
@@ -601,6 +692,8 @@ export default function QuickSearch() {
     switch (searchMode) {
       case 'commands':
         return <span className="text-xs text-purple-400 bg-purple-400/20 px-1.5 py-0.5 rounded">Commands</span>;
+      case 'sessions':
+        return <span className="text-xs text-cyan-400 bg-cyan-400/20 px-1.5 py-0.5 rounded">Sessions</span>;
       case 'symbols':
         return <span className="text-xs text-blue-400 bg-blue-400/20 px-1.5 py-0.5 rounded">Symbols</span>;
       case 'files':
@@ -656,6 +749,7 @@ export default function QuickSearch() {
                   <p>Type to search...</p>
                   <div className="flex justify-center gap-4 text-xs">
                     <span><kbd className="px-1 bg-claude-bg rounded">&gt;</kbd> commands</span>
+                    <span><kbd className="px-1 bg-claude-bg rounded">#</kbd> sessions</span>
                     <span><kbd className="px-1 bg-claude-bg rounded">@</kbd> symbols</span>
                     <span><kbd className="px-1 bg-claude-bg rounded">/</kbd> files</span>
                   </div>

@@ -20,8 +20,9 @@ echo "Setting up QMD..."
 npm run setup-qmd
 echo ""
 
-# Kill any existing process on port 9000
-lsof -ti:9000 | xargs kill -9 2>/dev/null || true
+# Dev uses port 9001 to avoid conflicting with production (port 9000)
+export DEV_WEBPACK_PORT=9001
+lsof -ti:$DEV_WEBPACK_PORT | xargs kill -9 2>/dev/null || true
 
 # Use a separate user data directory for dev so it doesn't touch production data
 export GREP_DEV_USER_DATA="/tmp/grep-build-dev"

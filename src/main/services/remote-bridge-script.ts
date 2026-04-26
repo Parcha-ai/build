@@ -129,6 +129,9 @@ function runSpawn(configPath) {
 
 function runStdin(socketPath) {
   const socket = net.createConnection(socketPath);
+  socket.on('connect', () => {
+    process.stdout.write('[stdin-ready]\n');
+  });
   socket.on('error', (error) => {
     process.stderr.write(String(error instanceof Error ? error.message : error));
     process.exit(1);

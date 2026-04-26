@@ -3726,32 +3726,37 @@ Begin by creating the task structure now.
 
       // Batching for stream events to reduce render overhead
       let textBuffer = '';
+      let textBufferAgentId: string | undefined = undefined;
       let thinkingBuffer = '';
       let lastFlush = Date.now();
       const FLUSH_INTERVAL_MS = 100; // Batch updates every 100ms for smoother rendering
 
-      const flushBuffers = () => {
+      const flushBuffers = (): StreamEvent[] => {
+        const events: StreamEvent[] = [];
+
         if (textBuffer) {
+          const agentId = textBufferAgentId;
           fullContent += textBuffer;
           const content = textBuffer;
           textBuffer = '';
+          textBufferAgentId = undefined;
 
           // Add or extend text block in contentBlocks (only merge if same agent)
           const lastBlock = contentBlocks[contentBlocks.length - 1];
-          if (lastBlock && lastBlock.type === 'text' && lastBlock.agentId === currentAgentId) {
+          if (lastBlock && lastBlock.type === 'text' && lastBlock.agentId === agentId) {
             lastBlock.text = (lastBlock.text || '') + content;
           } else {
-            contentBlocks.push({ type: 'text', text: content, agentId: currentAgentId });
+            contentBlocks.push({ type: 'text', text: content, agentId });
           }
 
-          return { text: content, agentId: currentAgentId };
+          events.push({ type: 'text_delta', content, agentId });
         }
         if (thinkingBuffer) {
           const content = thinkingBuffer;
           thinkingBuffer = '';
-          return { thinking: content };
+          events.push({ type: 'thinking_delta', content });
         }
-        return null;
+        return events;
       };
 
       let queryComplete = false;
@@ -3764,6 +3769,12 @@ Begin by creating the task structure now.
 
         if (STREAM_DEBUG) {
           console.log('[Claude SDK] Message:', msg.type, JSON.stringify(msg).slice(0, 200));
+        }
+
+        if (msg.type !== 'stream_event') {
+          for (const event of flushBuffers()) {
+            yield event;
+          }
         }
 
         // Handle different message types from the SDK
@@ -3974,15 +3985,21 @@ Begin by creating the task structure now.
 
               if (event.type === 'content_block_delta' && event.delta) {
                 if (event.delta.type === 'text_delta' && event.delta.text) {
+                  if (textBuffer && textBufferAgentId !== currentAgentId) {
+                    for (const flushed of flushBuffers()) {
+                      yield flushed;
+                    }
+                    lastFlush = Date.now();
+                  }
                   // Buffer text deltas for batching
+                  textBufferAgentId = currentAgentId;
                   textBuffer += event.delta.text;
 
                   // Flush if enough time has passed or buffer is large
                   const now = Date.now();
                   if (now - lastFlush >= FLUSH_INTERVAL_MS || textBuffer.length >= 100) {
-                    const flushed = flushBuffers();
-                    if (flushed?.text) {
-                      yield { type: 'text_delta', content: flushed.text, agentId: currentAgentId };
+                    for (const flushed of flushBuffers()) {
+                      yield flushed;
                     }
                     lastFlush = now;
                   }
@@ -3993,15 +4010,24 @@ Begin by creating the task structure now.
                   // Flush if enough time has passed or buffer is large
                   const now = Date.now();
                   if (now - lastFlush >= FLUSH_INTERVAL_MS || thinkingBuffer.length >= 100) {
-                    const flushed = flushBuffers();
-                    if (flushed?.thinking) {
-                      yield { type: 'thinking_delta', content: flushed.thinking };
+                    for (const flushed of flushBuffers()) {
+                      yield flushed;
                     }
                     lastFlush = now;
                   }
+                } else {
+                  // Tool input JSON deltas can run for a long time without text.
+                  // Flush any visible text/thinking before those otherwise-invisible
+                  // events so SSH sessions don't appear stalled until the final result.
+                  for (const flushed of flushBuffers()) {
+                    yield flushed;
+                  }
                 }
-                // Silently ignore input_json_delta - handled via full tool_use block
               } else if (event.type === 'content_block_start' && event.content_block) {
+                for (const flushed of flushBuffers()) {
+                  yield flushed;
+                }
+
                 // Handle tool use start events from streaming
                 if (event.content_block.type === 'tool_use' && event.content_block.name) {
                   // Check if we already have this tool call (from assistant message)
@@ -4023,6 +4049,14 @@ Begin by creating the task structure now.
                     contentBlocks.push({ type: 'tool_use', toolCallId: toolCall.id, agentId: currentAgentId });
                     yield { type: 'tool_use', toolCall, agentId: currentAgentId };
                   }
+                }
+              } else if (
+                event.type === 'content_block_stop'
+                || event.type === 'message_delta'
+                || event.type === 'message_stop'
+              ) {
+                for (const flushed of flushBuffers()) {
+                  yield flushed;
                 }
               }
             }
@@ -4251,12 +4285,8 @@ Begin by creating the task structure now.
 
             // Final result message with cost info - this marks end of query
             // Flush any remaining buffered content
-            const finalFlushed = flushBuffers();
-            if (finalFlushed?.text) {
-              yield { type: 'text_delta', content: finalFlushed.text };
-            }
-            if (finalFlushed?.thinking) {
-              yield { type: 'thinking_delta', content: finalFlushed.thinking };
+            for (const flushed of flushBuffers()) {
+              yield flushed;
             }
 
             // Extract terminal_reason from result message (SDK v0.2.91+)
@@ -4351,12 +4381,8 @@ Begin by creating the task structure now.
       }
 
       // Final flush before creating message
-      const endFlushed = flushBuffers();
-      if (endFlushed?.text) {
-        yield { type: 'text_delta', content: endFlushed.text };
-      }
-      if (endFlushed?.thinking) {
-        yield { type: 'thinking_delta', content: endFlushed.thinking };
+      for (const flushed of flushBuffers()) {
+        yield flushed;
       }
 
       // Post-process content blocks to merge adjacent text blocks only

@@ -1062,10 +1062,41 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
       return;
     }
 
-    // Cmd+T: Fork the current chat (empty fork — user types in new tab)
+    // Cmd+T: New fresh tab in same session group (NOT a fork — Option+Enter forks with transcript)
     if (e.key === 't' && e.metaKey && !e.shiftKey && !e.altKey) {
       e.preventDefault();
-      useSessionStore.getState().createForkFromCurrent('');
+      const state = useSessionStore.getState();
+      const currentSession = state.sessions.find(s => s.id === sessionId);
+      if (currentSession?.sshConfig) {
+        // Find root of fork group
+        let rootId = sessionId;
+        let walk: typeof currentSession | undefined = currentSession;
+        while (walk?.parentSessionId) {
+          rootId = walk.parentSessionId;
+          walk = state.sessions.find(s => s.id === rootId);
+        }
+        const root = state.sessions.find(s => s.id === rootId);
+
+        // Strip worktreeScript — reuse existing directory, don't re-run setup
+        const { worktreeScript: _, ...cleanConfig } = currentSession.sshConfig as any;
+        window.electronAPI.ssh.createSession({
+          name: `${(root || currentSession).name} (new)`,
+          sshConfig: { ...cleanConfig, syncSettings: false },
+        }).then(async (newSession) => {
+          if (!newSession) return;
+          // Add as sibling tab in the fork group
+          await window.electronAPI.sessions.update(newSession.id, { parentSessionId: rootId, isRoot: false } as any);
+          if (root) {
+            const children = [...(root.childSessionIds || [])];
+            if (!children.includes(newSession.id)) {
+              children.push(newSession.id);
+              await window.electronAPI.sessions.update(rootId, { childSessionIds: children, isRoot: true } as any);
+            }
+          }
+          state.loadSessions();
+          state.setActiveSession(newSession.id);
+        }).catch(err => console.error('[InputArea] Cmd+T new tab failed:', err));
+      }
       return;
     }
 

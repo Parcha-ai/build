@@ -201,6 +201,7 @@ export const IPC_CHANNELS = {
   SSH_DOWNLOAD_PROGRESS: 'ssh:download-progress',
   SSH_RECONNECT: 'ssh:reconnect',
   SSH_CONNECTION_LOST: 'ssh:connection-lost',
+  SSH_HAS_ACTIVE_REMOTE_PROCESS: 'ssh:has-active-remote-process',
   SSH_BROWSE_REMOTE_FILES: 'ssh:browse-remote-files',
 
   // Secure Keys channels (API key/token interception)

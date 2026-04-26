@@ -130,8 +130,11 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
     setShowOverflow(false);
   }, [setActiveSession]);
 
-  // Show tabs if multiple forks exist OR there are project sessions to discover
-  if (forkSiblings.length <= 1 && projectOnlySessions.length === 0) return null;
+  // Always show for SSH sessions (so the + button is accessible).
+  // For local sessions, only show when there are forks or project siblings.
+  const currentSession = sessions.find(s => s.id === sessionId);
+  const isSSH = !!(currentSession as any)?.sshConfig;
+  if (!isSSH && forkSiblings.length <= 1 && projectOnlySessions.length === 0) return null;
 
   return (
     <div className="border-b border-claude-border bg-claude-bg/50 text-xs font-mono">
@@ -175,21 +178,24 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
           );
         })}
 
-        {/* New session button — creates a fresh session in the same directory */}
+        {/* New tab — fresh session in the same directory, added as a sibling tab
+            (same fork group, clean transcript). NOT a fork — Option+Enter forks with transcript. */}
         <button
           onClick={async () => {
-            // Try root first, fall back to current session for sshConfig
-            const rootSession = sessions.find(s => s.id === rootId);
             const currentSession = sessions.find(s => s.id === sessionId);
+            const rootSession = sessions.find(s => s.id === rootId);
             const session = rootSession?.sshConfig ? rootSession : currentSession;
             if (session?.sshConfig) {
               try {
+                // Strip worktreeScript so it doesn't re-run setup — we're
+                // connecting to the SAME directory, not creating a new worktree.
+                const { worktreeScript: _, ...cleanConfig } = session.sshConfig as any;
                 const newSession = await window.electronAPI.ssh.createSession({
                   name: `${session.name} (new)`,
-                  sshConfig: session.sshConfig,
+                  sshConfig: { ...cleanConfig, syncSettings: false },
                 });
                 if (newSession) {
-                  // Adopt into fork group
+                  // Add to the fork group as a sibling tab (same UI, clean transcript)
                   await window.electronAPI.sessions.update(newSession.id, {
                     parentSessionId: rootId,
                     isRoot: false,
@@ -209,14 +215,12 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
                   setActiveSession(newSession.id);
                 }
               } catch (err) {
-                console.error('[ForkTabs] Failed to create new session:', err);
+                console.error('[ForkTabs] Failed to create new tab:', err);
               }
-            } else {
-              createForkFromCurrent('');
             }
           }}
           className="flex items-center justify-center px-2 py-1 border-l border-claude-border/30 text-claude-text-secondary hover:text-claude-accent transition-colors"
-          title="New session in same directory"
+          title="New tab — fresh session (Cmd+T)"
         >
           <Plus size={12} />
         </button>

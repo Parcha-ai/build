@@ -189,7 +189,7 @@ interface SessionState {
   setSelectedModel: (sessionId: string, model: string) => void;
   loadAvailableModels: () => Promise<void>;
   sendMessage: (sessionId: string, message: string, attachments?: unknown[], opts?: { existingMessageId?: string }) => Promise<void>;
-  loadMessages: (sessionId: string) => Promise<void>;
+  loadMessages: (sessionId: string, options?: LoadMessagesOptions) => Promise<void>;
   subscribeToClaude: () => () => void;
   // Permission handling
   setPendingPermission: (sessionId: string, request: PermissionRequest | null) => void;
@@ -292,6 +292,98 @@ const PREFERRED_CODEX_FALLBACK_MODELS = [
   'codex:o3',
   'codex:gpt-5.4-mini',
 ];
+
+interface LoadMessagesOptions {
+  replaceWhileStreaming?: boolean;
+}
+
+const remoteProcessPollers = new Set<string>();
+
+function startRemoteProcessMonitor(
+  sessionId: string,
+  getState: () => SessionState,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  setState: any,
+  loadMessages: (sessionId: string, options?: LoadMessagesOptions) => Promise<void>,
+) {
+  window.electronAPI.ssh.hasActiveRemoteProcess(sessionId)
+    .then((hasActiveRemoteProcess) => {
+      if (!hasActiveRemoteProcess) return;
+
+      const hasLocalLiveStream = () => {
+        const state = getState();
+        return Boolean(
+          (state.currentStreamContent[sessionId] || '').trim()
+          || (state.currentThinkingContent[sessionId] || '').trim()
+          || (state.currentToolCalls[sessionId] || []).length
+          || (state.streamEvents[sessionId] || []).length
+        );
+      };
+
+      console.log(`[SessionStore] SSH session ${sessionId} has active remote Claude process — preserving queue state`);
+      setState((state: SessionState) => ({
+        isStreaming: { ...state.isStreaming, [sessionId]: true },
+        sessionActivity: { ...state.sessionActivity, [sessionId]: 'active' },
+      }));
+
+      if (remoteProcessPollers.has(sessionId)) return;
+      remoteProcessPollers.add(sessionId);
+
+      void (async () => {
+        try {
+          if (!hasLocalLiveStream()) {
+            console.log(`[SessionStore] Refreshing active SSH transcript for ${sessionId}`);
+            await loadMessages(sessionId, { replaceWhileStreaming: true });
+          }
+
+          while (remoteProcessPollers.has(sessionId)) {
+            await new Promise(resolve => setTimeout(resolve, 5000));
+            const stillActive = await window.electronAPI.ssh.hasActiveRemoteProcess(sessionId);
+            if (stillActive) {
+              if (!hasLocalLiveStream()) {
+                console.log(`[SessionStore] Refreshing active SSH transcript for ${sessionId}`);
+                await loadMessages(sessionId, { replaceWhileStreaming: true });
+              }
+              continue;
+            }
+
+            console.log(`[SessionStore] Remote Claude process finished for ${sessionId}; refreshing transcript`);
+            setState((state: SessionState) => ({
+              isStreaming: { ...state.isStreaming, [sessionId]: false },
+              sessionActivity: { ...state.sessionActivity, [sessionId]: 'idle' },
+              currentStreamContent: { ...state.currentStreamContent, [sessionId]: '' },
+              currentThinkingContent: { ...state.currentThinkingContent, [sessionId]: '' },
+              currentToolCalls: { ...state.currentToolCalls, [sessionId]: [] },
+              streamEvents: { ...state.streamEvents, [sessionId]: [] },
+            }));
+            await loadMessages(sessionId);
+
+            const queue = getState().messageQueue[sessionId] || [];
+            if (queue.length > 0) {
+              const nextMsg = queue[0];
+              setState((state: SessionState) => ({
+                messageQueue: {
+                  ...state.messageQueue,
+                  [sessionId]: (state.messageQueue[sessionId] || []).slice(1),
+                },
+              }));
+              setTimeout(() => {
+                getState().sendMessage(sessionId, nextMsg.message, nextMsg.attachments, { existingMessageId: nextMsg.id });
+              }, 100);
+            }
+            break;
+          }
+        } catch (error) {
+          console.warn('[SessionStore] Failed while polling remote SSH process:', error);
+        } finally {
+          remoteProcessPollers.delete(sessionId);
+        }
+      })();
+    })
+    .catch((error) => {
+      console.warn('[SessionStore] Failed to check active remote SSH process:', error);
+    });
+}
 
 function getPreferredCompactionFallbackModel(availableModels: ModelInfo[], sourceModel?: string): string | undefined {
   const preferredModels = isCodexModel(sourceModel)
@@ -599,7 +691,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // 4. Load messages in background (non-blocking)
       loadMessages(sessionId); // Don't await
 
-      // 5. Check if this session has worktree instructions that haven't been sent yet
+      // 5. If the app was closed while a detached SSH run continued remotely,
+      // preserve streaming/queue semantics until that remote process exits.
+      if (session?.sshConfig) {
+        startRemoteProcessMonitor(sessionId, get, set, loadMessages);
+      }
+
+      // 6. Check if this session has worktree instructions that haven't been sent yet
       const currentSession = get().sessions.find(s => s.id === sessionId);
       if (currentSession?.worktreeInstructions && !currentSession.worktreeInstructionsSent) {
         console.log('[SessionStore] Session has worktree instructions, sending as first message');
@@ -690,6 +788,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       if (validActiveSessionId) {
         const { loadMessages } = get();
         loadMessages(validActiveSessionId);
+        if (activeSession?.sshConfig) {
+          startRemoteProcessMonitor(validActiveSessionId, get, set, loadMessages);
+        }
       }
     } catch (error) {
       console.error('Failed to load sessions:', error);
@@ -1440,7 +1541,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
   },
 
-  loadMessages: async (sessionId) => {
+  loadMessages: async (sessionId, options = {}) => {
     if (!hasElectronAPI) return;
 
     const perfStart = performance.now();
@@ -1453,8 +1554,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
       if (mergedMessages.length > 0) {
         set((state) => {
-          // If we're currently streaming, don't replace — the in-memory state is live
-          if (state.isStreaming[sessionId]) {
+          // Normal live streams own their in-memory state. Reconnected SSH
+          // sessions have no attached stream reader, so poll the transcript.
+          if (state.isStreaming[sessionId] && !options.replaceWhileStreaming) {
             console.log(`[SessionStore] loadMessages: Skipping replacement for ${sessionId} — currently streaming`);
             return { isLoadingMessages: { ...state.isLoadingMessages, [sessionId]: false } };
           }

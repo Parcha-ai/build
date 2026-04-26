@@ -126,6 +126,7 @@ const config: ForgeConfig = {
     new WebpackPlugin({
       mainConfig,
       devServer: {
+        port: parseInt(process.env.DEV_WEBPACK_PORT || '9000', 10),
         // Filter out Monaco editor disposal errors from the error overlay
         // These are harmless race conditions in @monaco-editor/react
         client: {

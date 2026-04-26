@@ -438,22 +438,25 @@ Only return the title, nothing else.`
    */
   private getMergedSessions(): Session[] {
     const storedSessions = this.getSessions();
+    const sdkSessionMappings = (this.store.get('sdkSessionMappings') || {}) as Record<string, string>;
     const sessionMap = new Map<string, Session>();
 
-    storedSessions.forEach(s => sessionMap.set(s.id, s));
+    storedSessions.forEach(s => sessionMap.set(s.id, this.attachSessionIds(s, sdkSessionMappings)));
 
     this.discoveredSessionsCache.forEach((s, id) => {
       const existing = sessionMap.get(id);
       if (existing) {
-        sessionMap.set(id, {
+        sessionMap.set(id, this.attachSessionIds({
           ...s,
           model: existing.model,
           lastBrowserUrl: existing.lastBrowserUrl,
           isStarred: existing.isStarred,
           starredAt: existing.starredAt,
-        });
+          sdkSessionId: existing.sdkSessionId || s.sdkSessionId || sdkSessionMappings[id],
+          relatedSessionIds: existing.relatedSessionIds || s.relatedSessionIds,
+        }, sdkSessionMappings));
       } else {
-        sessionMap.set(id, s);
+        sessionMap.set(id, this.attachSessionIds(s, sdkSessionMappings));
       }
     });
 
@@ -461,6 +464,36 @@ Only return the title, nothing else.`
     allSessions.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
     return allSessions;
+  }
+
+  private attachSessionIds(session: Session, sdkSessionMappings: Record<string, string>): Session {
+    const sdkSessionId = session.sdkSessionId || sdkSessionMappings[session.id];
+    const relatedSessionIds = new Set(session.relatedSessionIds || []);
+
+    if (sdkSessionId) {
+      relatedSessionIds.add(sdkSessionId);
+    }
+
+    Object.entries(sdkSessionMappings).forEach(([localSessionId, mappedSdkSessionId]) => {
+      if (localSessionId === session.id && mappedSdkSessionId) {
+        relatedSessionIds.add(mappedSdkSessionId);
+      }
+      if (mappedSdkSessionId === session.id && localSessionId) {
+        relatedSessionIds.add(localSessionId);
+      }
+    });
+
+    relatedSessionIds.delete(session.id);
+
+    if (!sdkSessionId && relatedSessionIds.size === 0) {
+      return session;
+    }
+
+    return {
+      ...session,
+      ...(sdkSessionId ? { sdkSessionId } : {}),
+      ...(relatedSessionIds.size > 0 ? { relatedSessionIds: Array.from(relatedSessionIds) } : {}),
+    };
   }
 
   private getSessions(): Session[] {

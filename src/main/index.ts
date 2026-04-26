@@ -11,9 +11,10 @@ if (process.env.GREP_DEV_USER_DATA) {
   console.log(`[Electron] Using dev userData: ${process.env.GREP_DEV_USER_DATA}`);
 }
 
-// Enable remote debugging for CDP access (used by Stagehand to control webviews)
-// Use different port for dev (9223) vs production (9222) to allow both to run simultaneously
-const CDP_PORT = process.env.NODE_ENV === 'development' || DEV_INSTANCE_NAME ? '9223' : '9222';
+// Enable remote debugging for CDP access. The override is important for dev
+// because production/stable builds may already own the default port.
+const CDP_PORT = process.env.ELECTRON_CDP_PORT
+  || (process.env.NODE_ENV === 'development' || DEV_INSTANCE_NAME ? '9223' : '9222');
 app.commandLine.appendSwitch('remote-debugging-port', CDP_PORT);
 console.log(`[Electron] Using CDP port: ${CDP_PORT}`);
 
@@ -587,9 +588,10 @@ app.on('ready', async () => {
 
 // Clean up power management on quit
 app.on('will-quit', () => {
-  // Kill remote processes before quitting to prevent orphans on the server
-  const { sshService } = require('./services/ssh.service');
-  sshService.killAllRemoteProcesses().catch(() => {});
+  // Do not kill SSH remote Claude jobs here. They are launched through the
+  // detached bridge specifically so in-flight remote work survives app quits,
+  // laptop sleep, and transient network drops. Explicit session deletion/cancel
+  // still performs targeted remote cleanup.
   powerService.dispose();
 });
 

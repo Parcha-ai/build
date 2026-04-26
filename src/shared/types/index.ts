@@ -61,6 +61,7 @@ export interface Session {
   teleportedFrom?: string; // Original local session ID if teleported to SSH
   downloadedFrom?: string; // Session ID of source SSH session (reverse teleport)
   sdkSessionId?: string; // Claude Agent SDK session ID for transcript resumption
+  relatedSessionIds?: string[]; // Alternate local/SDK IDs that resolve to the same conversation
   continuedFromSessionId?: string; // Existing local Build session that this session resumed from
   // Starring/favorites
   isStarred?: boolean; // True if session is starred
