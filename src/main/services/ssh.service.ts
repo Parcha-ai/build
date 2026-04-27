@@ -1677,7 +1677,26 @@ export class SSHService {
    * for authoritative connection state. If this exec-based heartbeat times out
    * under load, force-disconnecting creates reconnect loops.
    */
+  // Track which sessions are actively being used (streaming, sending messages).
+  // Only these get health checks — idle connections are cleaned up on next use.
+  private activeSessionIds = new Set<string>();
+
+  markSessionActive(sessionId: string): void {
+    this.activeSessionIds.add(sessionId);
+  }
+
+  markSessionInactive(sessionId: string): void {
+    this.activeSessionIds.delete(sessionId);
+    this.stopHealthCheck(sessionId);
+  }
+
   private startHealthCheck(sessionId: string): void {
+    // Only health-check sessions that are actively being used.
+    // With 128+ SSH sessions, health-checking all of them saturates the
+    // SSH connection to the remote host and causes beachballs/crashes.
+    if (!this.activeSessionIds.has(sessionId)) {
+      return;
+    }
     this.stopHealthCheck(sessionId); // Clear any existing interval
     this.healthCheckFailures.delete(sessionId);
 

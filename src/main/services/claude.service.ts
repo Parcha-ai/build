@@ -381,67 +381,19 @@ export class ClaudeService {
 
     // Fallback to default Anthropic models
     console.log('[Claude Service] Using default Anthropic model list');
-    return [
-      {
-        id: 'claude-opus-4-7',
-        name: 'Opus 4.7',
-        description: 'Latest and most capable model - best for complex tasks'
-      },
-      {
-        id: 'claude-opus-4-6',
-        name: 'Opus 4.6',
-        description: 'Highly capable model'
-      },
-      {
-        id: 'claude-opus-4-5-20251101',
-        name: 'Opus 4.5',
-        description: 'Previous generation Opus'
-      },
-      {
-        id: 'claude-sonnet-4-6',
-        name: 'Sonnet 4.6',
-        description: 'Latest Sonnet - excellent balance of speed and capability'
-      },
-      {
-        id: 'claude-sonnet-4-5-20250929',
-        name: 'Sonnet 4.5',
-        description: 'Balanced performance and speed'
-      },
-      {
-        id: 'claude-sonnet-4-20250514',
-        name: 'Sonnet 4',
-        description: 'Fast and capable'
-      },
-      {
-        id: 'claude-haiku-4-5-20251001',
-        name: 'Haiku 4.5',
-        description: 'Fastest model - best for simple tasks'
-      },
-      {
-        id: 'codex:gpt-5.5',
-        name: 'GPT-5.5 (Codex)',
-        description: 'OpenAI latest — most capable coding model'
-      },
-      {
-        id: 'codex:gpt-5.4',
-        name: 'GPT-5.4 (Codex)',
-        description: 'OpenAI flagship — best for complex coding tasks'
-      },
-      {
-        id: 'codex:gpt-5.4-mini',
-        name: 'GPT-5.4 Mini (Codex)',
-        description: 'OpenAI fast — good balance of speed and capability'
-      },
-      {
-        id: 'codex:gpt-5.3-codex',
-        name: 'GPT-5.3 Codex (Codex)',
-        description: 'OpenAI coding-optimised — purpose-built for agents'
-      },
-      {
-        id: 'codex:o3',
-        name: 'o3 (Codex)',
-        description: 'OpenAI o3 — deep reasoning model'
-      },
+    const models: Array<{ id: string; name: string; description: string }> = [
+      { id: 'claude-opus-4-7', name: 'Opus 4.7', description: 'Latest and most capable model - best for complex tasks' },
+      { id: 'claude-opus-4-6', name: 'Opus 4.6', description: 'Highly capable model' },
+      { id: 'claude-opus-4-5-20251101', name: 'Opus 4.5', description: 'Previous generation Opus' },
+      { id: 'claude-sonnet-4-6', name: 'Sonnet 4.6', description: 'Latest Sonnet - excellent balance of speed and capability' },
+      { id: 'claude-sonnet-4-5-20250929', name: 'Sonnet 4.5', description: 'Balanced performance and speed' },
+      { id: 'claude-sonnet-4-20250514', name: 'Sonnet 4', description: 'Fast and capable' },
+      { id: 'claude-haiku-4-5-20251001', name: 'Haiku 4.5', description: 'Fastest model - best for simple tasks' },
+      { id: 'codex:gpt-5.5', name: 'GPT-5.5 (Codex)', description: 'OpenAI latest — most capable coding model' },
+      { id: 'codex:gpt-5.4', name: 'GPT-5.4 (Codex)', description: 'OpenAI flagship — best for complex coding tasks' },
+      { id: 'codex:gpt-5.4-mini', name: 'GPT-5.4 Mini (Codex)', description: 'OpenAI fast — good balance of speed and capability' },
+      { id: 'codex:gpt-5.3-codex', name: 'GPT-5.3 Codex (Codex)', description: 'OpenAI coding-optimised — purpose-built for agents' },
+      { id: 'codex:o3', name: 'o3 (Codex)', description: 'OpenAI o3 — deep reasoning model' },
     ];
 
     // Append custom models from settings (Kimi, Gemini, etc via API proxy)
@@ -3415,6 +3367,9 @@ Begin by creating the task structure now.
         console.log('[Claude Service] SSH config:', { host: session.sshConfig.host, user: session.sshConfig.username, remoteWorkdir: session.sshConfig.remoteWorkdir });
       }
       const sshConfig = session.sshConfig;
+      // Mark this session as actively streaming so its SSH connection gets health checks.
+      // Idle sessions (128+ of them) skip health checks to avoid saturating the remote.
+      if (sshConfig) sshService.markSessionActive(sessionId);
       const localNodeExecutable = session.sshConfig ? undefined : this.resolveLocalNodeExecutable();
       if (!session.sshConfig) {
         if (localNodeExecutable) {
@@ -4513,6 +4468,9 @@ Begin by creating the task structure now.
     } finally {
       this.activeQueries.delete(sessionId);
       this.activeQueryObjects.delete(sessionId);
+      // Stop health-checking this session's SSH connection now that it's idle.
+      const sess = this.sessionStore.get(`sessions.${sessionId}`) as Session | undefined;
+      if (sess?.sshConfig) sshService.markSessionInactive(sessionId);
       powerService.sessionEnded();
     }
   }
@@ -5241,11 +5199,12 @@ Begin by creating the task structure now.
         return [];
       }
 
-      // Always invalidate the SSH transcript cache on getMessages so
-      // returning to a session after hours fetches the real remote
-      // transcript instead of a stale 5-minute cached copy.
-      sshService.invalidateTranscriptCache(sdkSessionId);
-      sshService.invalidateTranscriptCache(sessionId);
+      // Only invalidate cache for full fetches (limit <= 0, used by HistoryPanel).
+      // Normal loads use the 5-minute cache to avoid hammering SSH on every tab switch.
+      if (limit <= 0) {
+        sshService.invalidateTranscriptCache(sdkSessionId);
+        sshService.invalidateTranscriptCache(sessionId);
+      }
 
       // If no stored SDK ID, try to find the most recent transcript on the remote.
       // This handles the case where the mapping was lost (repair, migration, etc.)
