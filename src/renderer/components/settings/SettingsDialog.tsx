@@ -111,6 +111,8 @@ export default function SettingsDialog() {
   const [foundryDefaultHaikuModel, setFoundryDefaultHaikuModel] = useState('');
   const [foundryDefaultOpusModel, setFoundryDefaultOpusModel] = useState('');
 
+  // Custom models (Kimi, Gemini, etc via API proxy)
+  const [customModels, setCustomModels] = useState<Array<{ id: string; name: string; modelId: string; baseUrl: string; apiKey: string; description?: string }>>([]);
 
   // QMD status
   const [qmdStatus, setQmdStatus] = useState<{ installed: boolean; bundled: boolean } | null>(null);
@@ -134,15 +136,15 @@ export default function SettingsDialog() {
   }, []);
 
   // Auto-save app settings (toggles and time picker)
-  const autoSaveAppSettings = useCallback(async (updates: { qmdEnabled?: boolean; ultraPlanMode?: boolean; lunchReminderEnabled?: boolean; lunchReminderTime?: string; bedtimeReminderEnabled?: boolean; bedtimeReminderTime?: string; foundryEnabled?: boolean; foundryBaseUrl?: string; foundryApiKey?: string; foundryDefaultSonnetModel?: string; foundryDefaultHaikuModel?: string; foundryDefaultOpusModel?: string }) => {
+  const autoSaveAppSettings = useCallback(async (updates: { qmdEnabled?: boolean; ultraPlanMode?: boolean; lunchReminderEnabled?: boolean; lunchReminderTime?: string; bedtimeReminderEnabled?: boolean; bedtimeReminderTime?: string; foundryEnabled?: boolean; foundryBaseUrl?: string; foundryApiKey?: string; foundryDefaultSonnetModel?: string; foundryDefaultHaikuModel?: string; foundryDefaultOpusModel?: string; customModels?: typeof customModels }) => {
     showSaveIndicator();
     try {
       await window.electronAPI.settings.set(updates);
       console.log('[SettingsDialog] Auto-saved app settings:', updates);
 
       // Reload available models if Foundry settings changed
-      const isFoundryUpdate = 'foundryEnabled' in updates || 'foundryDefaultSonnetModel' in updates || 'foundryDefaultHaikuModel' in updates || 'foundryDefaultOpusModel' in updates;
-      if (isFoundryUpdate) {
+      const isModelUpdate = 'foundryEnabled' in updates || 'foundryDefaultSonnetModel' in updates || 'foundryDefaultHaikuModel' in updates || 'foundryDefaultOpusModel' in updates || 'customModels' in updates;
+      if (isModelUpdate) {
         console.log('[SettingsDialog] Foundry settings changed, reloading available models');
         await loadAvailableModels();
       }
@@ -227,6 +229,7 @@ export default function SettingsDialog() {
           setFoundryDefaultSonnetModel(appSettings.foundryDefaultSonnetModel || '');
           setFoundryDefaultHaikuModel(appSettings.foundryDefaultHaikuModel || '');
           setFoundryDefaultOpusModel(appSettings.foundryDefaultOpusModel || '');
+          setCustomModels((appSettings as any).customModels || []);
           setQmdStatus(qmdStatusResult);
           setIsLoading(false);
         })
@@ -857,6 +860,105 @@ export default function SettingsDialog() {
             </div>
           </div>
         )}
+      </div>
+
+      {/* Custom Models (Kimi, Gemini, etc via Anthropic-compatible proxy) */}
+      <div className="space-y-3 pt-4 border-t border-claude-border">
+        <div className="flex items-center justify-between">
+          <label className="block text-xs font-mono text-claude-text-secondary uppercase tracking-wider">
+            Custom Models
+          </label>
+          <button
+            onClick={() => {
+              const newModel = {
+                id: `model-${Date.now()}`,
+                name: '',
+                modelId: '',
+                baseUrl: '',
+                apiKey: '',
+                description: '',
+              };
+              const updated = [...customModels, newModel];
+              setCustomModels(updated);
+            }}
+            className="px-2 py-0.5 text-[10px] font-mono text-claude-accent border border-claude-accent/30 hover:bg-claude-accent/10 uppercase"
+            style={{ borderRadius: 0 }}
+          >
+            + Add Model
+          </button>
+        </div>
+        <p className="text-[9px] text-claude-text-secondary">
+          Add third-party models via Anthropic-compatible API proxies (e.g. Kimi K2.6, Gemini).
+        </p>
+        {customModels.map((model, index) => (
+          <div key={model.id} className="space-y-2 pl-2 border-l-2 border-cyan-500/30 pb-3">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-mono text-cyan-400 uppercase">Model {index + 1}</span>
+              <button
+                onClick={() => {
+                  const updated = customModels.filter((_, i) => i !== index);
+                  setCustomModels(updated);
+                  autoSaveAppSettings({ customModels: updated });
+                }}
+                className="text-[10px] text-red-400 hover:text-red-300"
+              >
+                Remove
+              </button>
+            </div>
+            <input
+              type="text"
+              value={model.name}
+              onChange={(e) => {
+                const updated = [...customModels];
+                updated[index] = { ...updated[index], name: e.target.value };
+                setCustomModels(updated);
+                handleDebouncedChange(e.target.value, () => autoSaveAppSettings({ customModels: updated }));
+              }}
+              placeholder="Display name (e.g. Kimi K2.6)"
+              className="w-full px-3 py-1.5 bg-claude-bg border border-claude-border text-claude-text font-mono text-xs placeholder:text-claude-text-secondary focus:outline-none focus:border-claude-accent"
+              style={{ borderRadius: 0 }}
+            />
+            <input
+              type="text"
+              value={model.modelId}
+              onChange={(e) => {
+                const updated = [...customModels];
+                updated[index] = { ...updated[index], modelId: e.target.value };
+                setCustomModels(updated);
+                handleDebouncedChange(e.target.value, () => autoSaveAppSettings({ customModels: updated }));
+              }}
+              placeholder="Model ID (e.g. kimi-k2.6-0528)"
+              className="w-full px-3 py-1.5 bg-claude-bg border border-claude-border text-claude-text font-mono text-xs placeholder:text-claude-text-secondary focus:outline-none focus:border-claude-accent"
+              style={{ borderRadius: 0 }}
+            />
+            <input
+              type="text"
+              value={model.baseUrl}
+              onChange={(e) => {
+                const updated = [...customModels];
+                updated[index] = { ...updated[index], baseUrl: e.target.value };
+                setCustomModels(updated);
+                handleDebouncedChange(e.target.value, () => autoSaveAppSettings({ customModels: updated }));
+              }}
+              placeholder="API base URL (e.g. https://api.moonshot.ai/anthropic)"
+              className="w-full px-3 py-1.5 bg-claude-bg border border-claude-border text-claude-text font-mono text-xs placeholder:text-claude-text-secondary focus:outline-none focus:border-claude-accent"
+              style={{ borderRadius: 0 }}
+            />
+            <input
+              type="password"
+              value={model.apiKey}
+              onChange={(e) => {
+                const updated = [...customModels];
+                updated[index] = { ...updated[index], apiKey: e.target.value };
+                setCustomModels(updated);
+                handleDebouncedChange(e.target.value, () => autoSaveAppSettings({ customModels: updated }));
+              }}
+              placeholder="API key"
+              className="w-full px-3 py-1.5 bg-claude-bg border border-claude-border text-claude-text font-mono text-xs placeholder:text-claude-text-secondary focus:outline-none focus:border-claude-accent"
+              style={{ borderRadius: 0 }}
+            />
+          </div>
+        ))}
       </div>
 
       {/* Info */}

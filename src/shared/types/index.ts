@@ -267,6 +267,17 @@ export interface AppSettings {
   foundryDefaultHaikuModel?: string;
   foundryDefaultOpusModel?: string;
   onboardingSkipped?: boolean;
+  // Custom models via API proxy (e.g. Kimi K2.6 via Anthropic-compatible endpoint)
+  customModels?: CustomModelConfig[];
+}
+
+export interface CustomModelConfig {
+  id: string;          // Unique ID for the model picker (e.g. "kimi-k26")
+  name: string;        // Display name (e.g. "Kimi K2.6")
+  modelId: string;     // Model ID sent to the API (e.g. "kimi-k2.6-0528")
+  baseUrl: string;     // API base URL (e.g. "https://api.moonshot.ai/anthropic")
+  apiKey: string;      // API key for this endpoint
+  description?: string;
 }
 
 // Permission request from Agent SDK

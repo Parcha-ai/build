@@ -122,6 +122,37 @@ export class ClaudeService {
   /**
    * Get Foundry environment variables from settings (when Foundry is enabled)
    */
+  /**
+   * When a custom:* model is selected, override ANTHROPIC_BASE_URL and
+   * ANTHROPIC_API_KEY to route through the custom model's API proxy.
+   * The model name is resolved separately in streamMessage.
+   */
+  private getCustomModelEnvVars(selectedModel?: string): Record<string, string> {
+    if (!selectedModel?.startsWith('custom:')) return {};
+    const customId = selectedModel.replace('custom:', '');
+    const settings = this.store.get('settings', {}) as Record<string, unknown>;
+    const customModels = (settings.customModels || []) as Array<{ id: string; modelId: string; baseUrl: string; apiKey: string }>;
+    const config = customModels.find(m => m.id === customId);
+    if (!config) return {};
+
+    const vars: Record<string, string> = {};
+    if (config.baseUrl) vars.ANTHROPIC_BASE_URL = config.baseUrl.trim();
+    if (config.apiKey) vars.ANTHROPIC_API_KEY = config.apiKey.trim();
+    return vars;
+  }
+
+  /**
+   * Resolve a custom:* model ID to the actual model name to send to the API.
+   */
+  private resolveCustomModelId(selectedModel: string): string {
+    if (!selectedModel.startsWith('custom:')) return selectedModel;
+    const customId = selectedModel.replace('custom:', '');
+    const settings = this.store.get('settings', {}) as Record<string, unknown>;
+    const customModels = (settings.customModels || []) as Array<{ id: string; modelId: string }>;
+    const config = customModels.find(m => m.id === customId);
+    return config?.modelId || selectedModel;
+  }
+
   private getFoundryEnvVars(): Record<string, string> {
     const settings = this.store.get('settings', {}) as Record<string, unknown>;
     if (!settings.foundryEnabled) return {};
@@ -412,6 +443,20 @@ export class ClaudeService {
         description: 'OpenAI o3 — deep reasoning model'
       },
     ];
+
+    // Append custom models from settings (Kimi, Gemini, etc via API proxy)
+    const customModels = (settings.customModels || []) as Array<{ id: string; name: string; modelId: string; description?: string }>;
+    for (const cm of customModels) {
+      if (cm.id && cm.name) {
+        models.push({
+          id: `custom:${cm.id}`,
+          name: cm.name,
+          description: cm.description || 'Custom model via API proxy',
+        });
+      }
+    }
+
+    return models;
   }
 
   /**
@@ -3386,8 +3431,8 @@ Begin by creating the task structure now.
           permissionMode: sdkPermissionMode,
           ...(requiresDangerFlag ? { allowDangerouslySkipPermissions: true } : {}),
           includePartialMessages: true,
-          // Use computed model (respects UI selection → session saved model → Foundry → default)
-          model: selectedModel,
+          // Use computed model — resolve custom:* IDs to actual API model names
+          model: this.resolveCustomModelId(selectedModel),
           // 1M context is native for Opus 4.6/Sonnet 4.6 (no beta needed since Mar 13 2026)
           // Legacy models (Sonnet 4.5, Sonnet 4) still need the beta until Apr 30 2026
           // Skip betas for Foundry (custom betas not supported)
@@ -3415,6 +3460,7 @@ Begin by creating the task structure now.
             CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
             ENABLE_TOOL_SEARCH: process.env.ENABLE_TOOL_SEARCH || 'true',
             ...this.getFoundryEnvVars(),
+            ...this.getCustomModelEnvVars(selectedModel),
           },
           // Resume previous conversation if we have an SDK session ID.
           // For SSH forks: resume from the parent's SDK session + forkSession: true
