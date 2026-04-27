@@ -278,8 +278,8 @@ export function normalizePermissionModeForModel(model?: string | null, mode?: Pe
 }
 
 const PREFERRED_CLAUDE_FALLBACK_MODELS = [
+  'claude-opus-4-7',
   'claude-opus-4-6',
-  'claude-opus-4-5-20251101',
   'claude-sonnet-4-6',
   'claude-sonnet-4-5-20250929',
   'claude-sonnet-4-20250514',
@@ -1377,10 +1377,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
       for (const [sessionId, modelId] of Object.entries(state.selectedModel)) {
         // Old wrong IDs to migrate
-        if (modelId === 'claude-opus-4-6-20260125') {
-          fixedSelections[sessionId] = 'claude-opus-4-5-20251101';
+        if (modelId === 'claude-opus-4-6-20260125' || modelId === 'claude-opus-4-5-20251101') {
+          fixedSelections[sessionId] = 'claude-opus-4-7';
           needsUpdate = true;
-          console.log(`[SessionStore] Migrating session ${sessionId} from invalid model ID to Opus 4.5`);
+          console.log(`[SessionStore] Migrating session ${sessionId} from ${modelId} to Opus 4.7`);
         } else if (modelId === 'codex') {
           fixedSelections[sessionId] = 'codex:o3';
           needsUpdate = true;

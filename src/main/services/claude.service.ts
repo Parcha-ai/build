@@ -2792,9 +2792,11 @@ Read or source that file if you need the actual values. Do not print secret valu
       // to leave room for the actual response (~4,000 tokens buffer)
       // Model selection priority:
       // 1. Explicit model parameter (from UI selector)
+      // Model resolution priority:
+      // 1. Explicit model from UI (passed as parameter)
       // 2. Session's saved model (session.model)
-      // 3. Foundry default sonnet (if Foundry enabled)
-      // 4. Anthropic default (claude-opus-4-5-20251101)
+      // 3. Foundry default (if Foundry enabled)
+      // 4. First model in the available models list (always the top/latest)
       let selectedModel = model;
 
       if (!selectedModel && session.model) {
@@ -2815,8 +2817,10 @@ Read or source that file if you need the actual values. Do not print secret valu
       }
 
       if (!selectedModel) {
-        selectedModel = 'claude-opus-4-5-20251101';
-        console.log('[Claude Service] Using Anthropic default:', selectedModel);
+        // Use the first model in the available list — always the latest/best
+        const available = await this.getAvailableModels();
+        selectedModel = available[0]?.id || 'claude-opus-4-7';
+        console.log('[Claude Service] Using top available model:', selectedModel);
       }
 
       let secureEnvContext: string | undefined;
@@ -5537,6 +5541,18 @@ Begin by creating the task structure now.
     if (type === 'user' || type === 'human') {
       const content = this.extractContent(entry);
       if (!content) return null;
+
+      // Filter out system notifications injected as user messages by the CLI
+      // (e.g. <task-notification>, <system-reminder>, compaction summaries).
+      // These are internal bookkeeping, not actual user input.
+      const trimmed = content.trim();
+      if (trimmed.startsWith('<task-notification') ||
+          trimmed.startsWith('<system-reminder') ||
+          trimmed.startsWith('<command-name>') ||
+          trimmed.startsWith('<local-command')) {
+        return null;
+      }
+
       return {
         msg: {
           id: (entry.uuid as string) || `user-${Date.now()}-${Math.random()}`,

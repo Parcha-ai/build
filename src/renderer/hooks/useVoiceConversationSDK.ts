@@ -54,7 +54,10 @@ export const useVoiceConversationSDK = ({
     audioLevel: 0,
   });
 
-  // Conversation instance ref
+  // Per-session conversation instances — survives session switches so you can
+  // talk to multiple sessions without reconnecting each time.
+  const conversationMapRef = useRef<Map<string, Conversation>>(new Map());
+  // Shorthand for the current session's conversation
   const conversationRef = useRef<Conversation | null>(null);
   const isConnectedRef = useRef(false);
 
@@ -223,6 +226,7 @@ export const useVoiceConversationSDK = ({
       });
 
       conversationRef.current = conversation;
+      conversationMapRef.current.set(sessionId, conversation);
 
       // Patch SDK's handleErrorEvent to handle malformed error events (e.g., quota errors)
       try {
@@ -319,9 +323,10 @@ export const useVoiceConversationSDK = ({
       audioLevelIntervalRef.current = null;
     }
 
-    // End the SDK session
+    // End the SDK session and remove from the map
     if (conversationRef.current) {
       await conversationRef.current.endSession();
+      conversationMapRef.current.delete(sessionId);
       conversationRef.current = null;
     }
 
@@ -335,7 +340,7 @@ export const useVoiceConversationSDK = ({
       error: null,
       audioLevel: 0,
     });
-  }, []);
+  }, [sessionId]);
 
   /**
    * Send text for TTS (to speak Claude's response)
@@ -384,40 +389,73 @@ export const useVoiceConversationSDK = ({
   // Track previous sessionId to detect session switches
   const previousSessionIdRef = useRef(sessionId);
 
-  // Disconnect when sessionId changes (user switched sessions)
+  // On session switch: keep the old conversation alive in the map, swap to
+  // the new session's conversation (if one exists). This lets you switch
+  // between sessions without reconnecting each time. The audio stream is
+  // paused on the old conversation and resumed on the new one.
   useEffect(() => {
-    if (previousSessionIdRef.current !== sessionId && conversationRef.current) {
-      console.log('[VoiceConversationSDK] Session changed from', previousSessionIdRef.current, 'to', sessionId, '- disconnecting voice');
-      // Disconnect the old session's voice connection
+    if (previousSessionIdRef.current !== sessionId) {
+      const oldId = previousSessionIdRef.current;
+      console.log('[VoiceConversationSDK] Session switch:', oldId, '→', sessionId);
+
+      // Stop audio level polling for the old session
       if (audioLevelIntervalRef.current) {
         clearInterval(audioLevelIntervalRef.current);
         audioLevelIntervalRef.current = null;
       }
-      conversationRef.current.endSession();
-      conversationRef.current = null;
-      isConnectedRef.current = false;
-      setState({
-        isConnected: false,
-        isConnecting: false,
-        isRecording: false,
-        isSpeaking: false,
-        currentTranscript: '',
-        error: null,
-        audioLevel: 0,
-      });
+
+      // Check if the new session already has a conversation
+      const existingConversation = conversationMapRef.current.get(sessionId);
+      if (existingConversation) {
+        console.log('[VoiceConversationSDK] Resuming existing conversation for', sessionId);
+        conversationRef.current = existingConversation;
+        isConnectedRef.current = true;
+        setState({
+          isConnected: true,
+          isConnecting: false,
+          isRecording: false,
+          isSpeaking: false,
+          currentTranscript: '',
+          error: null,
+          audioLevel: 0,
+        });
+
+        // Restart audio level polling for the resumed session
+        audioLevelIntervalRef.current = setInterval(() => {
+          if (conversationRef.current) {
+            const volume = conversationRef.current.getInputVolume();
+            setState(s => ({ ...s, audioLevel: volume }));
+          }
+        }, 100);
+      } else {
+        // No existing conversation for this session — reset state
+        conversationRef.current = null;
+        isConnectedRef.current = false;
+        setState({
+          isConnected: false,
+          isConnecting: false,
+          isRecording: false,
+          isSpeaking: false,
+          currentTranscript: '',
+          error: null,
+          audioLevel: 0,
+        });
+      }
     }
     previousSessionIdRef.current = sessionId;
   }, [sessionId]);
 
-  // Cleanup on unmount
+  // Cleanup on unmount — end ALL conversations across all sessions
   useEffect(() => {
     return () => {
       if (audioLevelIntervalRef.current) {
         clearInterval(audioLevelIntervalRef.current);
       }
-      if (conversationRef.current) {
-        conversationRef.current.endSession();
+      for (const [id, conv] of conversationMapRef.current.entries()) {
+        console.log('[VoiceConversationSDK] Cleanup: ending conversation for session', id);
+        conv.endSession();
       }
+      conversationMapRef.current.clear();
     };
   }, []);
 

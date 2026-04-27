@@ -200,10 +200,17 @@ ${messageSummary || 'No messages yet'}`;
         if (instruction) {
           console.log('[MicrophoneButton] Executing Build command:', instruction.slice(0, 100));
 
-          // Send to Build/Agent SDK
-          onTranscriptionComplete?.(instruction);
+          // Send directly via session store — don't rely on onTranscriptionComplete
+          // callback which requires isVoiceModeActive to be in sync (fails after
+          // session switches). Direct sendMessage always works.
+          const { sendMessage: directSend, interruptAndSend } = useSessionStore.getState();
+          const currentlyStreaming = useSessionStore.getState().isStreaming[sessionId];
+          if (currentlyStreaming) {
+            await interruptAndSend(sessionId, instruction);
+          } else {
+            await directSend(sessionId, instruction);
+          }
 
-          // Return a clear "in progress" response
           return `TASK SUBMITTED. Build is now working on: "${instruction.slice(0, 50)}...". Call get_task_status every 5-10 seconds to check progress and announce what Build is doing.`;
         }
         return 'No instruction provided';
@@ -520,6 +527,68 @@ ${messageSummary || 'No messages yet'}`;
       }
     };
   }, [hookConnected, isStreaming, sendUserActivity]);
+
+  // Send thinking content updates to the agent as they stream in.
+  // Throttled to every 3 seconds to avoid flooding the WebRTC channel.
+  const prevThinkingRef = useRef('');
+  const thinkingThrottleRef = useRef<NodeJS.Timeout | null>(null);
+
+  useEffect(() => {
+    if (!hookConnected || !isStreaming || !currentThinkingContent) return;
+
+    // Only send if content actually changed substantially
+    if (currentThinkingContent.length - prevThinkingRef.current.length < 50) return;
+
+    // Throttle: wait 3s after last thinking change before sending
+    if (thinkingThrottleRef.current) clearTimeout(thinkingThrottleRef.current);
+    thinkingThrottleRef.current = setTimeout(() => {
+      const newThinking = currentThinkingContent.slice(prevThinkingRef.current.length);
+      const lastChunk = newThinking.slice(-300);
+      prevThinkingRef.current = currentThinkingContent;
+
+      const context = JSON.stringify({
+        type: 'thinking_update',
+        thinking: lastChunk,
+        note: 'Build is thinking about this right now. Summarize briefly if the user asks what Build is doing.',
+      });
+      console.log('[MicrophoneButton] Thinking update:', lastChunk.slice(0, 80));
+      updateContext(context);
+    }, 3000);
+
+    return () => {
+      if (thinkingThrottleRef.current) clearTimeout(thinkingThrottleRef.current);
+    };
+  }, [hookConnected, isStreaming, currentThinkingContent, updateContext]);
+
+  // Also send stream content (assistant text) updates as they arrive
+  const prevStreamContentRef = useRef('');
+
+  useEffect(() => {
+    if (!hookConnected || !isStreaming || !currentStreamContent) return;
+    if (currentStreamContent.length - prevStreamContentRef.current.length < 100) return;
+
+    if (thinkingThrottleRef.current) clearTimeout(thinkingThrottleRef.current);
+    thinkingThrottleRef.current = setTimeout(() => {
+      const newContent = currentStreamContent.slice(prevStreamContentRef.current.length);
+      const lastChunk = newContent.slice(-300);
+      prevStreamContentRef.current = currentStreamContent;
+
+      const context = JSON.stringify({
+        type: 'stream_update',
+        content: lastChunk,
+        note: 'Build is writing this response right now.',
+      });
+      updateContext(context);
+    }, 5000);
+  }, [hookConnected, isStreaming, currentStreamContent, updateContext]);
+
+  // Reset refs when streaming ends
+  useEffect(() => {
+    if (!isStreaming) {
+      prevThinkingRef.current = '';
+      prevStreamContentRef.current = '';
+    }
+  }, [isStreaming]);
 
   // Event-driven status updates - send tool changes as silent context (no verbal prompt)
   // The agent can reference this if needed, but thinking updates are the primary verbal updates
