@@ -2726,8 +2726,27 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       const text = data.description || data.summary || (data.toolName ? `${data.toolName}...` : 'working...');
       set((state) => {
         const existing = state.monitorInstances[data.sessionId] || [];
-        const idx = existing.findIndex((m) => m.id === monitorId);
-        if (idx < 0) return state;
+        let idx = existing.findIndex((m) => m.id === monitorId);
+
+        // Auto-create a monitor entry if one doesn't exist yet.
+        // Monitor tool events arrive as SDK notifications with a key but
+        // no prior onToolCall, so the entry wouldn't have been pre-created.
+        if (idx < 0) {
+          const newEntry = {
+            id: monitorId,
+            description: data.description || monitorId,
+            events: [],
+            active: true,
+            startedAt: Date.now(),
+          };
+          const withNew = [...existing, newEntry];
+          idx = withNew.length - 1;
+          // Dedupe check
+          const newEvent = { id: `prog-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, text, timestamp: Date.now() };
+          withNew[idx] = { ...withNew[idx], events: [newEvent] };
+          return { monitorInstances: { ...state.monitorInstances, [data.sessionId]: withNew } };
+        }
+
         const updated = [...existing];
         // Dedupe consecutive identical progress messages
         const lastEvent = updated[idx].events[updated[idx].events.length - 1];

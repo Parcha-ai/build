@@ -3849,6 +3849,40 @@ Begin by creating the task structure now.
               break;
             }
 
+            // Handle SDK notifications (Monitor tool events, loop notifications).
+            // These are real-time updates from background monitors — the key
+            // identifies the source, text is the event content.
+            if (systemMsg.subtype === 'notification') {
+              const notif = systemMsg as typeof systemMsg & {
+                key?: string; text?: string; priority?: string;
+              };
+              console.log('[Claude SDK] Notification:', notif.key, notif.text?.slice(0, 100));
+              if (this.mainWindow && notif.text) {
+                this.mainWindow.webContents.send(IPC_CHANNELS.CLAUDE_TASK_PROGRESS, {
+                  sessionId,
+                  taskId: notif.key,
+                  description: notif.text,
+                });
+              }
+              break;
+            }
+
+            // Handle task_started (background task beginning)
+            if (systemMsg.subtype === 'task_started') {
+              const started = systemMsg as typeof systemMsg & {
+                task_id?: string; description?: string; task_type?: string;
+              };
+              console.log('[Claude SDK] Task started:', started.task_id, started.description?.slice(0, 80));
+              if (this.mainWindow) {
+                this.mainWindow.webContents.send(IPC_CHANNELS.CLAUDE_TASK_PROGRESS, {
+                  sessionId,
+                  taskId: started.task_id,
+                  description: `Started: ${started.description || started.task_type || 'task'}`,
+                });
+              }
+              break;
+            }
+
             // Handle task_notification (background task completed/failed/stopped)
             if (systemMsg.subtype === 'task_notification') {
               const notif = systemMsg as typeof systemMsg & {
