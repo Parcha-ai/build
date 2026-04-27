@@ -2,6 +2,7 @@ import { IpcMain, dialog } from 'electron';
 import { IPC_CHANNELS } from '../../shared/constants/channels';
 import { v4 as uuid } from 'uuid';
 import Store from 'electron-store';
+import { CachedStore } from '../cached-store';
 import { getSessionStoreName } from '../store-names';
 import simpleGit from 'simple-git';
 import type { Session } from '../../shared/types';
@@ -88,7 +89,7 @@ function getPathHash(repoPath: string): string {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const store: any = new Store({ name: getSessionStoreName() });
+const store: any = new CachedStore({ name: getSessionStoreName() });
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const settingsStore: any = new Store({ name: 'claudette-settings' });
 

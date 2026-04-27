@@ -1,6 +1,7 @@
 import { type IpcMain } from 'electron';
 import { spawn } from 'child_process';
 import Store from 'electron-store';
+import { CachedStore } from '../cached-store';
 import { getSessionStoreName } from '../store-names';
 import { extensionService } from '../services/extension.service';
 import { sshService } from '../services/ssh.service';
@@ -8,7 +9,7 @@ import { IPC_CHANNELS } from '../../shared/constants/channels';
 import type { Session } from '../../shared/types';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const sessionStore: any = new Store({ name: getSessionStoreName() });
+const sessionStore: any = new CachedStore({ name: getSessionStoreName() });
 
 /**
  * Get a session by ID from the store

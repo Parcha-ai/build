@@ -1,5 +1,6 @@
 import { EventEmitter } from 'events';
 import Store from 'electron-store';
+import { CachedStore } from '../cached-store';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { v4 as uuid } from 'uuid';
@@ -59,7 +60,7 @@ export class SessionService extends EventEmitter {
 
   constructor() {
     super();
-    this.store = new Store({ name: getSessionStoreName() });
+    this.store = new CachedStore({ name: getSessionStoreName() }) as any;
     this.dockerService = new DockerService();
     this.gitService = new GitService();
     this.sessionsPath = path.join(app.getPath('userData'), 'sessions');

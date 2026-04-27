@@ -1,6 +1,7 @@
 import { IpcMain, BrowserWindow } from 'electron';
 import { v4 as uuid } from 'uuid';
 import Store from 'electron-store';
+import { CachedStore } from '../cached-store';
 import { getSessionStoreName } from '../store-names';
 import simpleGit from 'simple-git';
 import path from 'path';
@@ -12,7 +13,7 @@ import { sshService } from '../services/ssh.service';
 import type { SSHConfig, Session, SavedSSHConfig, DownloadSessionConfig, SSHResumeCandidate } from '../../shared/types';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const sessionStore: any = new Store({ name: getSessionStoreName() });
+const sessionStore: any = new CachedStore({ name: getSessionStoreName() });
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const settingsStore: any = new Store({ name: 'claudette-settings' });
 

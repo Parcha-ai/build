@@ -3,6 +3,7 @@ import type { SDKMessage, SDKUserMessage, Query, SpawnedProcess, TerminalReason 
 import type { ImageBlockParam, TextBlockParam } from '@anthropic-ai/sdk/resources';
 import { z } from 'zod';
 import Store from 'electron-store';
+import { CachedStore } from '../cached-store';
 import { getSessionStoreName } from '../store-names';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -111,8 +112,8 @@ export class ClaudeService {
 
   constructor() {
     this.store = new Store({ name: 'claudette-settings' });
-    this.sessionStore = new Store({ name: getSessionStoreName() });
-    this.messageCacheStore = new Store({ name: 'claudette-message-cache' });
+    this.sessionStore = new CachedStore({ name: getSessionStoreName() }) as any;
+    this.messageCacheStore = new CachedStore({ name: 'claudette-message-cache' }) as any;
   }
 
   setMainWindow(window: BrowserWindow | null): void {

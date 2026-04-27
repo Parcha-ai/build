@@ -1,6 +1,7 @@
 import * as pty from 'node-pty';
 import { v4 as uuid } from 'uuid';
 import Store from 'electron-store';
+import { CachedStore } from '../cached-store';
 import { ClientChannel } from 'ssh2';
 import { getSessionStoreName } from '../store-names';
 import { DockerService } from './docker.service';
@@ -32,7 +33,7 @@ export class TerminalService {
   private dockerService: DockerService;
 
   constructor() {
-    this.store = new Store({ name: getSessionStoreName() });
+    this.store = new CachedStore({ name: getSessionStoreName() }) as any;
     this.dockerService = new DockerService();
   }
 

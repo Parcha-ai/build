@@ -123,7 +123,8 @@ export function registerSessionHandlers(ipcMain: IpcMain): void {
       const transcripts = await sshService.listRemoteTranscripts(probeId, session.sshConfig, workdir);
 
       // Build set of SDK session IDs we already know about
-      const sessionStore = new Store({ name: getSessionStoreName() }) as any;
+      const { CachedStore } = require('../cached-store');
+      const sessionStore = new CachedStore({ name: getSessionStoreName() }) as any;
       const mappings = (sessionStore.get('sdkSessionMappings') || {}) as Record<string, string>;
       const knownSdkIds = new Set(Object.values(mappings));
       // Also include session IDs themselves (some map to themselves)

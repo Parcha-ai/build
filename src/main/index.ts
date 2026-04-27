@@ -588,6 +588,10 @@ app.on('ready', async () => {
 
 // Clean up power management on quit
 app.on('will-quit', () => {
+  // Flush all cached stores to disk before quitting so no data is lost
+  const { CachedStore } = require('./cached-store');
+  CachedStore.flushAll();
+
   // Do not kill SSH remote Claude jobs here. They are launched through the
   // detached bridge specifically so in-flight remote work survives app quits,
   // laptop sleep, and transient network drops. Explicit session deletion/cancel

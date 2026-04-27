@@ -1,5 +1,6 @@
 import { IpcMain, BrowserWindow } from 'electron';
 import Store from 'electron-store';
+import { CachedStore } from '../cached-store';
 import { IPC_CHANNELS } from '../../shared/constants/channels';
 import { GitService } from '../services/git.service';
 import { sshService } from '../services/ssh.service';
@@ -8,7 +9,7 @@ import type { Session } from '../../shared/types';
 
 const gitService = new GitService();
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const sessionStore = new Store({ name: getSessionStoreName() }) as any;
+const sessionStore = new CachedStore({ name: getSessionStoreName() }) as any;
 
 // Set up branch change callback to emit to all windows
 gitService.onBranchChange((sessionId, branch) => {
