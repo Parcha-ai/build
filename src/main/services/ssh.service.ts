@@ -2955,6 +2955,30 @@ CONFIG_EOF`);
     } catch (err) {
       console.warn('[SSH Service] Could not sync skills to remote:', err);
     }
+
+    // Sync MCP auth tokens (~/.mcp-auth/) so OAuth-based MCP servers
+    // (Linear, Sentry, etc via mcp-remote) work on the remote without
+    // needing a browser for the OAuth flow.
+    try {
+      const localMcpAuth = path.join(os.homedir(), '.mcp-auth');
+      const stats = await fsPromises.stat(localMcpAuth).catch(() => null);
+      if (stats?.isDirectory()) {
+        const { execSync } = await import('child_process');
+        const host = config.host;
+        const user = config.username;
+        const port = config.port || 22;
+        const keyPath = config.privateKeyPath;
+        const keyFlag = keyPath ? `-e "ssh -i ${keyPath} -p ${port} -o StrictHostKeyChecking=no"` : `-e "ssh -p ${port} -o StrictHostKeyChecking=no"`;
+
+        await this.execCommand(client, 'mkdir -p ~/.mcp-auth');
+        const rsyncCmd = `rsync -az ${keyFlag} ${localMcpAuth}/ ${user}@${host}:~/.mcp-auth/`;
+        console.log('[SSH Service] Syncing MCP auth tokens to remote...');
+        execSync(rsyncCmd, { timeout: 30000, stdio: 'pipe' });
+        console.log('[SSH Service] MCP auth tokens synced to remote');
+      }
+    } catch (err) {
+      console.warn('[SSH Service] Could not sync MCP auth tokens:', err);
+    }
   }
 
   /**

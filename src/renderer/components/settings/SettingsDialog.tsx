@@ -101,6 +101,9 @@ export default function SettingsDialog() {
   const [lunchReminderTime, setLunchReminderTime] = useState('12:00');
   const [bedtimeReminderEnabled, setBedtimeReminderEnabled] = useState(false);
   const [bedtimeReminderTime, setBedtimeReminderTime] = useState('23:00');
+  const [dailyReviewEnabled, setDailyReviewEnabled] = useState(true);
+  const [dailyReviewTime, setDailyReviewTime] = useState('09:00');
+  const [bedtimeTaskReviewEnabled, setBedtimeTaskReviewEnabled] = useState(true);
 
   // Foundry settings
   const [foundryEnabled, setFoundryEnabled] = useState(false);
@@ -136,7 +139,7 @@ export default function SettingsDialog() {
   }, []);
 
   // Auto-save app settings (toggles and time picker)
-  const autoSaveAppSettings = useCallback(async (updates: { qmdEnabled?: boolean; ultraPlanMode?: boolean; lunchReminderEnabled?: boolean; lunchReminderTime?: string; bedtimeReminderEnabled?: boolean; bedtimeReminderTime?: string; foundryEnabled?: boolean; foundryBaseUrl?: string; foundryApiKey?: string; foundryDefaultSonnetModel?: string; foundryDefaultHaikuModel?: string; foundryDefaultOpusModel?: string; customModels?: typeof customModels }) => {
+  const autoSaveAppSettings = useCallback(async (updates: { qmdEnabled?: boolean; ultraPlanMode?: boolean; lunchReminderEnabled?: boolean; lunchReminderTime?: string; bedtimeReminderEnabled?: boolean; bedtimeReminderTime?: string; dailyReviewEnabled?: boolean; dailyReviewTime?: string; bedtimeTaskReviewEnabled?: boolean; foundryEnabled?: boolean; foundryBaseUrl?: string; foundryApiKey?: string; foundryDefaultSonnetModel?: string; foundryDefaultHaikuModel?: string; foundryDefaultOpusModel?: string; customModels?: typeof customModels }) => {
     showSaveIndicator();
     try {
       await window.electronAPI.settings.set(updates);
@@ -222,6 +225,9 @@ export default function SettingsDialog() {
           setLunchReminderTime(appSettings.lunchReminderTime || '12:00');
           setBedtimeReminderEnabled(appSettings.bedtimeReminderEnabled || false);
           setBedtimeReminderTime(appSettings.bedtimeReminderTime || '23:00');
+          setDailyReviewEnabled((appSettings as any).dailyReviewEnabled ?? true);
+          setDailyReviewTime((appSettings as any).dailyReviewTime || '09:00');
+          setBedtimeTaskReviewEnabled((appSettings as any).bedtimeTaskReviewEnabled ?? true);
           // Foundry settings
           setFoundryEnabled(appSettings.foundryEnabled || false);
           setFoundryBaseUrl(appSettings.foundryBaseUrl || '');
@@ -478,6 +484,76 @@ export default function SettingsDialog() {
           <p className="text-[10px] font-mono text-claude-text-secondary">
             Clock turns indigo → amber → red as bedtime approaches. Dialog locks the app at bedtime.
           </p>
+        </div>
+      </div>
+
+      {/* Daily Task Review */}
+      <div className="space-y-4 pt-4 border-t border-claude-border">
+        <h3 className="text-xs font-mono text-claude-text uppercase tracking-wider">
+          Task Reviews
+        </h3>
+
+        <div className="flex items-center justify-between">
+          <div>
+            <label className="block text-xs font-mono text-claude-text-secondary uppercase tracking-wider">
+              Daily Task Review
+            </label>
+            <p className="text-[10px] font-mono text-claude-text-secondary mt-1">
+              Morning prompt to review and plan your tasks
+            </p>
+          </div>
+          <Toggle
+            enabled={dailyReviewEnabled}
+            onChange={(value) => {
+              setDailyReviewEnabled(value);
+              autoSaveAppSettings({ dailyReviewEnabled: value });
+            }}
+            disabled={isLoading}
+            color="bg-emerald-500"
+          />
+        </div>
+
+        {dailyReviewEnabled && (
+          <div className="space-y-2">
+            <label className="block text-xs font-mono text-claude-text-secondary uppercase tracking-wider">
+              Review Time
+            </label>
+            <input
+              type="time"
+              value={dailyReviewTime}
+              onChange={(e) => {
+                const value = e.target.value;
+                setDailyReviewTime(value);
+                autoSaveAppSettings({ dailyReviewTime: value });
+              }}
+              disabled={isLoading}
+              className="w-full px-3 py-2 bg-claude-bg border border-claude-border text-claude-text font-mono text-sm focus:outline-none focus:border-claude-accent disabled:opacity-50"
+              style={{ borderRadius: 0 }}
+            />
+            <p className="text-[10px] font-mono text-claude-text-secondary">
+              Shows a task review modal after this time (until 6 PM)
+            </p>
+          </div>
+        )}
+
+        <div className="flex items-center justify-between">
+          <div>
+            <label className="block text-xs font-mono text-claude-text-secondary uppercase tracking-wider">
+              Bedtime Task Review
+            </label>
+            <p className="text-[10px] font-mono text-claude-text-secondary mt-1">
+              Review tasks 30 minutes before bedtime
+            </p>
+          </div>
+          <Toggle
+            enabled={bedtimeTaskReviewEnabled}
+            onChange={(value) => {
+              setBedtimeTaskReviewEnabled(value);
+              autoSaveAppSettings({ bedtimeTaskReviewEnabled: value });
+            }}
+            disabled={isLoading}
+            color="bg-indigo-500"
+          />
         </div>
       </div>
 

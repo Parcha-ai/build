@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { ChevronRight, ChevronDown, Folder, Plus, Zap, Loader2, Search, GitFork, Server, Star } from 'lucide-react';
+import { ChevronRight, ChevronDown, Folder, Plus, Zap, Loader2, Search, GitFork, Server, Star, Focus } from 'lucide-react';
 import { useSessionStore } from '../../stores/session.store';
 import SessionCard from './SessionCard';
 import NewSessionDialog from './NewSessionDialog';
 import TeleportDialog from './TeleportDialog';
 import DownloadSessionDialog from './DownloadSessionDialog';
 import { useUIStore } from '../../stores/ui.store';
+import { useTaskStore } from '../../stores/task.store';
 import type { Session } from '../../../shared/types';
 
 interface ProjectGroup {
@@ -300,8 +301,38 @@ export default function SessionList() {
     );
   }
 
+  // Focus Mode: dim entire session list when active
+  const focusModeEnabled = useTaskStore?.((s: any) => s.focusModeEnabled) || false;
+  const focusActiveTaskId = useTaskStore?.((s: any) => s.activeTaskId) || null;
+  const focusTasks = useTaskStore?.((s: any) => s.tasks) || [];
+  const activeTask = focusModeEnabled ? focusTasks.find((t: any) => t.id === focusActiveTaskId) : null;
+  const focusSessionId = activeTask?.sessionId;
+
   return (
     <div className="pb-2">
+      {/* Focus Mode: show the active task's session prominently */}
+      {focusModeEnabled && focusSessionId && (() => {
+        const focusSession = sessions.find(s => s.id === focusSessionId);
+        if (!focusSession) return null;
+        return (
+          <div className="mb-3 border-b border-green-500/30">
+            <div className="px-3 py-1.5 flex items-center gap-2">
+              <Focus size={12} className="text-green-400" />
+              <span className="text-[10px] font-bold text-green-400 uppercase tracking-wider">
+                Focus
+              </span>
+            </div>
+            <SessionCard
+              session={focusSession}
+              isActive={focusSession.id === activeSessionId}
+              onClick={() => setActiveSession(focusSession.id)}
+            />
+          </div>
+        );
+      })()}
+
+      {/* Rest of sessions — dimmed in Focus Mode */}
+      <div className={focusModeEnabled ? 'opacity-20 pointer-events-none' : ''}>
       {/* Starred Sessions section */}
       {starredSessions.length > 0 && (
         <div className="mb-3">
@@ -598,6 +629,7 @@ export default function SessionList() {
           }}
         />
       )}
+    </div>
     </div>
   );
 }

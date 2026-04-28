@@ -16,6 +16,8 @@ import SessionSwitcher from './components/session/SessionSwitcher';
 import QMDPrompt from './components/qmd/QMDPrompt';
 import LunchLockModal from './components/layout/LunchLockModal';
 import BedtimeLockModal from './components/layout/BedtimeLockModal';
+import DailyReviewModal from './components/tasks/DailyReviewModal';
+import BedtimeTaskReviewModal from './components/tasks/BedtimeTaskReviewModal';
 import { Terminal, Globe, PanelRight, Settings, PanelLeftClose, Monitor, AlertTriangle, Package, FileText, FileCode, ClipboardList, GitBranch } from 'lucide-react';
 
 // Check if we're running in Electron (has electronAPI) or browser preview mode
@@ -246,6 +248,8 @@ function ElectronApp() {
   const [showBedtimeModal, setShowBedtimeModal] = useState(false);
   const [bedtimeReminderEnabled, setBedtimeReminderEnabled] = useState(false);
   const [bedtimeTime, setBedtimeTime] = useState('23:00');
+  const [showDailyReviewModal, setShowDailyReviewModal] = useState(false);
+  const [showBedtimeTaskReviewModal, setShowBedtimeTaskReviewModal] = useState(false);
 
   const activeSession = sessions.find((s) => s.id === activeSessionId);
 
@@ -373,6 +377,74 @@ function ElectronApp() {
     const snoozeUntil = new Date(Date.now() + 5 * 60 * 1000).toISOString();
     localStorage.setItem('bedtime-snooze-until', snoozeUntil);
     setShowBedtimeModal(false);
+  };
+
+  // Daily task review check — runs every 60s
+  useEffect(() => {
+    const checkDailyReview = async () => {
+      const settings = await window.electronAPI.settings.get();
+      if (!(settings as any).dailyReviewEnabled) return;
+
+      const now = new Date();
+      const configuredTime = (settings as any).dailyReviewTime || '09:00';
+      const [reviewHour, reviewMinute] = configuredTime.split(':').map(Number);
+
+      // Show if: past review time, before 6 PM, not yet reviewed today
+      const hour = now.getHours();
+      const isPastReviewTime = hour > reviewHour || (hour === reviewHour && now.getMinutes() >= reviewMinute);
+      const isBeforeEvening = hour < 18;
+      const reviewedToday = localStorage.getItem('daily-review-date') === now.toDateString();
+
+      if (isPastReviewTime && isBeforeEvening && !reviewedToday) {
+        setShowDailyReviewModal(true);
+      }
+    };
+
+    const interval = setInterval(checkDailyReview, 60000);
+    checkDailyReview();
+    return () => clearInterval(interval);
+  }, []);
+
+  // Bedtime task review check — fires 30min before bedtime
+  useEffect(() => {
+    const checkBedtimeTaskReview = async () => {
+      const settings = await window.electronAPI.settings.get();
+      if (!(settings as any).bedtimeTaskReviewEnabled) return;
+      if (!settings.bedtimeReminderEnabled) return;
+
+      const now = new Date();
+      const bedtime = settings.bedtimeReminderTime || '23:00';
+      const [bedHour, bedMin] = bedtime.split(':').map(Number);
+
+      // 30 min before bedtime
+      let reviewHour = bedHour;
+      let reviewMin = bedMin - 30;
+      if (reviewMin < 0) { reviewHour -= 1; reviewMin += 60; }
+
+      const hour = now.getHours();
+      const min = now.getMinutes();
+      const isPastReviewTime = hour > reviewHour || (hour === reviewHour && min >= reviewMin);
+      const isBeforeBedtime = hour < bedHour || (hour === bedHour && min < bedMin);
+      const reviewedToday = localStorage.getItem('bedtime-task-review-date') === now.toDateString();
+
+      if (isPastReviewTime && isBeforeBedtime && !reviewedToday) {
+        setShowBedtimeTaskReviewModal(true);
+      }
+    };
+
+    const interval = setInterval(checkBedtimeTaskReview, 60000);
+    checkBedtimeTaskReview();
+    return () => clearInterval(interval);
+  }, []);
+
+  const handleDailyReviewDismiss = () => {
+    localStorage.setItem('daily-review-date', new Date().toDateString());
+    setShowDailyReviewModal(false);
+  };
+
+  const handleBedtimeTaskReviewDismiss = () => {
+    localStorage.setItem('bedtime-task-review-date', new Date().toDateString());
+    setShowBedtimeTaskReviewModal(false);
   };
 
   useEffect(() => {
@@ -727,6 +799,12 @@ function ElectronApp() {
       )}
       {showLunchModal && (
         <LunchLockModal onConfirm={handleLunchConfirmed} />
+      )}
+      {showDailyReviewModal && (
+        <DailyReviewModal onDismiss={handleDailyReviewDismiss} />
+      )}
+      {showBedtimeTaskReviewModal && (
+        <BedtimeTaskReviewModal onDismiss={handleBedtimeTaskReviewDismiss} />
       )}
 
       {/* QMD Semantic Search Prompt */}
