@@ -36,6 +36,14 @@ export NODE_ENV=development
   gstackEnabled: false,
   // Foundry - disabled by default
   foundryEnabled: false,
+  // Focus tasks - empty by default
+  focusTasks: [],
+  focusModeEnabled: false,
+  // Daily review - enabled by default at 09:00
+  dailyReviewEnabled: true,
+  dailyReviewTime: '09:00',
+  // Bedtime task review - enabled by default
+  bedtimeTaskReviewEnabled: true,
 };
 
 export class SettingsService {

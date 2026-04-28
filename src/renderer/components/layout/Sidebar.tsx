@@ -2,6 +2,7 @@ import React, { useState, useCallback } from 'react';
 import { useAuthStore } from '../../stores/auth.store';
 import { useUIStore } from '../../stores/ui.store';
 import SessionList from '../session/SessionList';
+import TaskList from '../tasks/TaskList';
 import NewSessionDialog from '../session/NewSessionDialog';
 import { Plus, LogOut, GripVertical, LayoutGrid } from 'lucide-react';
 
@@ -39,6 +40,9 @@ export default function Sidebar() {
         className="flex flex-col font-mono bg-claude-surface"
         style={{ width: sidebarWidth }}
       >
+      {/* Task List — above everything */}
+      <TaskList />
+
       {/* Sessions Header */}
       <div className="px-3 py-2 flex items-center justify-between border-b border-claude-border">
         <h3

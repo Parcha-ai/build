@@ -239,6 +239,16 @@ export interface ContainerStats {
   networkTx: number;
 }
 
+export interface FocusTask {
+  id: string;
+  title: string;
+  order: number;
+  status: 'pending' | 'active' | 'done';
+  sessionId?: string;
+  createdAt: string;
+  completedAt?: string;
+}
+
 export interface AppSettings {
   theme: 'dark' | 'light' | 'system';
   fontSize: number;
@@ -269,6 +279,12 @@ export interface AppSettings {
   onboardingSkipped?: boolean;
   // Custom models via API proxy (e.g. Kimi K2.6 via Anthropic-compatible endpoint)
   customModels?: CustomModelConfig[];
+  focusTasks?: FocusTask[];
+  focusModeEnabled?: boolean;
+  focusModeActiveTaskId?: string;
+  dailyReviewEnabled?: boolean;
+  dailyReviewTime?: string;
+  bedtimeTaskReviewEnabled?: boolean;
 }
 
 export interface CustomModelConfig {

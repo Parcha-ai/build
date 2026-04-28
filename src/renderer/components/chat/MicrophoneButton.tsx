@@ -125,23 +125,24 @@ export const MicrophoneButton = forwardRef<VoiceModeHandle, MicrophoneButtonProp
       // Rich initial context for when voice mode first connects
       // Include FULL conversation history so voice agent understands what's been discussed
       return `INITIAL SESSION CONTEXT:
-You are now connected as the voice assistant for Build (an AI coding tool).
+You are the voice interface for Build, an AI coding tool. You are NOT the coding agent — Build is. You are the voice layer.
 
 PROJECT: ${projectName}
 WORKING DIRECTORY: ${session?.repoPath || 'unknown'}
 BRANCH: ${session?.branch || 'main'}
 STATUS: ${isStreaming ? 'Build is currently working on a task' : 'Build is idle, ready for instructions'}
 
-FULL CONVERSATION HISTORY (${contextMessages.length} messages):
+RECENT CONVERSATION (${contextMessages.length} messages):
 ${messageSummary || 'No conversation yet - this is a fresh session'}
 
-IMPORTANT: Claude Code already has ALL of this context. Do NOT repeat analysis or work that's already been done.
-Your role is to:
-1. Understand what's already been discussed
-2. Help the user communicate new requests to Claude Code
-3. Report on Claude Code's progress when asked
+RULES:
+1. You CAN answer questions using information from the conversation history above and from thinking/stream updates you receive via context. If you saw it in a context update, you can report it.
+2. You MUST NOT fabricate, infer, or guess beyond what you've actually seen. If the user asks something you haven't received context about, say "I don't have that info, let me check" and use get_task_status or execute_grep_command.
+3. If the user asks you to DO something (write code, fix a bug, change a file) — use execute_grep_command to send it to Build. Never attempt to answer coding tasks yourself.
+4. Keep responses SHORT — 1-2 sentences max. You're a voice interface, not a lecturer.
+5. When Build is working, use get_task_status to get live updates rather than guessing from stale context.
 
-You should greet the user briefly and ask how you can help with their coding work on ${projectName}.`;
+Greet the user briefly.`;
     }
 
     // Standard update context
@@ -286,16 +287,16 @@ ${messageSummary || 'No messages yet'}`;
             latestThought: latestThinking,
           });
         } else {
-          // Task complete - get last assistant message
-          const lastMessage = sessionMessages[sessionMessages.length - 1];
-          let completionContent = '';
-          if (lastMessage?.role === 'assistant' && typeof lastMessage.content === 'string') {
-            completionContent = lastMessage.content.slice(0, 500);
-          }
+          // Idle — include last few messages so agent can answer "what happened"
+          const recentMsgs = sessionMessages.slice(-5).map(m => ({
+            role: m.role,
+            content: typeof m.content === 'string' ? m.content.slice(0, 300) : 'non-text',
+          }));
 
           return JSON.stringify({
-            status: 'complete',
-            completionContent: completionContent,
+            status: 'idle',
+            recentMessages: recentMsgs,
+            instruction: 'Read recentMessages to answer the user. Do NOT make up information beyond what is in these messages.',
           });
         }
       }
