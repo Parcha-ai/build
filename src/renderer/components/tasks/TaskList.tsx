@@ -17,6 +17,9 @@ export default function TaskList() {
     reorderTasks,
     markTaskDone,
     toggleFocusMode,
+    addSubtask,
+    toggleSubtask,
+    deleteSubtask,
   } = useTaskStore();
 
   const [isAdding, setIsAdding] = useState(false);
@@ -177,6 +180,9 @@ export default function TaskList() {
                 onUpdate={updateTask}
                 onDelete={deleteTask}
                 onToggleDone={handleToggleDone}
+                onAddSubtask={addSubtask}
+                onToggleSubtask={toggleSubtask}
+                onDeleteSubtask={deleteSubtask}
                 onDragStart={handleDragStart}
                 onDragOver={handleDragOver}
                 onDrop={handleDrop}

@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { X, Image, FileCode, Target, File, Folder, AtSign, Brain, Square, Code, Smartphone, RefreshCw, Slash } from 'lucide-react';
+import { X, Image, FileCode, Target, File, Folder, AtSign, Brain, Square, Code, Smartphone, RefreshCw, Slash, Eraser } from 'lucide-react';
 import { useSessionStore, type PermissionMode, type ThinkingMode, type EffortLevel, migrateThinkingMode, normalizePermissionModeForModel } from '../../stores/session.store';
 import { useUIStore } from '../../stores/ui.store';
 import { useAudioStore } from '../../stores/audio.store';
@@ -1687,6 +1687,22 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
             title={remoteControl ? 'Remote control active — click to stop' : 'Control from phone'}
           >
             <Smartphone size={14} />
+          </button>
+          <button
+            onClick={async () => {
+              try {
+                // Send /compact to summarise and compress the conversation context
+                await window.electronAPI.claude.injectMessage(sessionId, '/compact');
+              } catch (err) {
+                console.error('[InputArea] Compact failed:', err);
+              }
+            }}
+            disabled={disabled || isSending}
+            className="p-1 transition-colors hover:bg-claude-bg text-claude-text-secondary hover:text-amber-400 disabled:opacity-40 disabled:cursor-not-allowed"
+            style={{ borderRadius: 0 }}
+            title="Summarize & compact context"
+          >
+            <Eraser size={14} />
           </button>
           {isSending && (
             <button

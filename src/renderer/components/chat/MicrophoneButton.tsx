@@ -369,6 +369,19 @@ ${messageSummary || 'No messages yet'}`;
   }), [hookConnected, hookConnecting, connect, disconnect, startRecording, sessionId,
       setVoiceModeConnecting, setVoiceModeDisconnected, setVoiceModeUserSpeaking, setVoiceModeError, setAudioMode]);
 
+  // Clean up old session's audio store state on session switch
+  const prevSessionIdRef = useRef(sessionId);
+  useEffect(() => {
+    if (prevSessionIdRef.current !== sessionId) {
+      const oldId = prevSessionIdRef.current;
+      // Force-disconnect the old session in the audio store
+      setVoiceModeDisconnected(oldId);
+      setAudioMode(oldId, false);
+      setVoiceModeUserSpeaking(oldId, false);
+      prevSessionIdRef.current = sessionId;
+    }
+  }, [sessionId, setVoiceModeDisconnected, setAudioMode, setVoiceModeUserSpeaking]);
+
   // Sync hook state to store
   useEffect(() => {
     if (hookConnecting && !isConnecting) {

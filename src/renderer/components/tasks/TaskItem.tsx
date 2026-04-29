@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { GripVertical, X, Square, CheckSquare, Link2, Unlink } from 'lucide-react';
+import { GripVertical, X, Square, CheckSquare, Link2, Unlink, Plus, ChevronDown, ChevronRight } from 'lucide-react';
 import { useSessionStore } from '../../stores/session.store';
 import type { FocusTask } from '../../../shared/types';
 
@@ -9,6 +9,9 @@ interface TaskItemProps {
   onUpdate: (id: string, updates: Partial<FocusTask>) => void;
   onDelete: (id: string) => void;
   onToggleDone: (id: string) => void;
+  onAddSubtask: (taskId: string, title: string) => void;
+  onToggleSubtask: (taskId: string, subtaskId: string) => void;
+  onDeleteSubtask: (taskId: string, subtaskId: string) => void;
   onDragStart: (e: React.DragEvent, id: string) => void;
   onDragOver: (e: React.DragEvent) => void;
   onDrop: (e: React.DragEvent, id: string) => void;
@@ -20,6 +23,9 @@ export default function TaskItem({
   onUpdate,
   onDelete,
   onToggleDone,
+  onAddSubtask,
+  onToggleSubtask,
+  onDeleteSubtask,
   onDragStart,
   onDragOver,
   onDrop,
@@ -27,7 +33,11 @@ export default function TaskItem({
   const [isEditing, setIsEditing] = useState(false);
   const [editValue, setEditValue] = useState(task.title);
   const [showSessionPicker, setShowSessionPicker] = useState(false);
+  const [showSubtasks, setShowSubtasks] = useState(false);
+  const [addingSubtask, setAddingSubtask] = useState(false);
+  const [newSubtaskTitle, setNewSubtaskTitle] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
+  const subtaskInputRef = useRef<HTMLInputElement>(null);
   const pickerRef = useRef<HTMLDivElement>(null);
   const sessions = useSessionStore((s) => s.sessions);
 
@@ -76,6 +86,7 @@ export default function TaskItem({
   const isDone = task.status === 'done';
 
   return (
+    <>
     <div
       draggable
       onDragStart={(e) => onDragStart(e, task.id)}
@@ -96,11 +107,21 @@ export default function TaskItem({
         className="flex-shrink-0 text-claude-text-secondary hover:text-claude-text transition-colors"
       >
         {isDone ? (
-          <CheckSquare size={12} className="text-green-500" />
+          <CheckSquare size={14} className="text-green-500" />
         ) : (
-          <Square size={12} />
+          <Square size={14} />
         )}
       </button>
+
+      {/* Subtask expand toggle */}
+      {(task.subtasks?.length || 0) > 0 && (
+        <button
+          onClick={(e) => { e.stopPropagation(); setShowSubtasks(!showSubtasks); }}
+          className="flex-shrink-0 text-claude-text-secondary hover:text-claude-text"
+        >
+          {showSubtasks ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
+        </button>
+      )}
 
       {/* Title */}
       {isEditing ? (
@@ -111,18 +132,23 @@ export default function TaskItem({
           onChange={(e) => setEditValue(e.target.value)}
           onBlur={handleSave}
           onKeyDown={handleKeyDown}
-          className="flex-1 min-w-0 bg-transparent text-[11px] font-mono text-claude-text focus:outline-none border-b border-claude-accent"
+          className="flex-1 min-w-0 bg-transparent text-xs font-mono text-claude-text focus:outline-none border-b border-claude-accent"
         />
       ) : (
         <span
           onClick={() => setIsEditing(true)}
-          className={`flex-1 min-w-0 text-[11px] font-mono break-words cursor-text ${
+          className={`flex-1 min-w-0 text-xs font-mono break-words cursor-text ${
             isDone
               ? 'line-through text-claude-text-secondary/50'
               : 'text-claude-text'
           }`}
         >
           {task.title}
+          {(task.subtasks?.length || 0) > 0 && (
+            <span className="ml-1 text-[9px] text-claude-text-secondary">
+              {task.subtasks!.filter(st => st.done).length}/{task.subtasks!.length}
+            </span>
+          )}
         </span>
       )}
 
@@ -185,6 +211,15 @@ export default function TaskItem({
         )}
       </div>
 
+      {/* Add subtask button */}
+      <button
+        onClick={(e) => { e.stopPropagation(); setAddingSubtask(true); setShowSubtasks(true); }}
+        className="flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity text-claude-text-secondary hover:text-emerald-400"
+        title="Add subtask"
+      >
+        <Plus size={10} />
+      </button>
+
       {/* Delete button */}
       <button
         onClick={() => onDelete(task.id)}
@@ -193,5 +228,62 @@ export default function TaskItem({
         <X size={10} />
       </button>
     </div>
+
+    {/* Subtasks */}
+    {showSubtasks && (task.subtasks?.length || addingSubtask) && (
+      <div className="ml-8 border-l border-claude-border/30 pl-2 pb-1">
+        {(task.subtasks || []).map(st => (
+          <div key={st.id} className="group/sub flex items-center gap-1.5 py-0.5">
+            <button
+              onClick={() => onToggleSubtask(task.id, st.id)}
+              className="flex-shrink-0 text-claude-text-secondary hover:text-claude-text"
+            >
+              {st.done ? (
+                <CheckSquare size={11} className="text-green-500/70" />
+              ) : (
+                <Square size={11} />
+              )}
+            </button>
+            <span className={`text-[11px] font-mono flex-1 ${st.done ? 'line-through text-claude-text-secondary/40' : 'text-claude-text-secondary'}`}>
+              {st.title}
+            </span>
+            <button
+              onClick={() => onDeleteSubtask(task.id, st.id)}
+              className="opacity-0 group-hover/sub:opacity-100 text-claude-text-secondary hover:text-red-400"
+            >
+              <X size={8} />
+            </button>
+          </div>
+        ))}
+        {addingSubtask && (
+          <input
+            ref={subtaskInputRef}
+            type="text"
+            value={newSubtaskTitle}
+            onChange={(e) => setNewSubtaskTitle(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && newSubtaskTitle.trim()) {
+                onAddSubtask(task.id, newSubtaskTitle.trim());
+                setNewSubtaskTitle('');
+              } else if (e.key === 'Escape') {
+                setAddingSubtask(false);
+                setNewSubtaskTitle('');
+              }
+            }}
+            onBlur={() => {
+              if (newSubtaskTitle.trim()) {
+                onAddSubtask(task.id, newSubtaskTitle.trim());
+              }
+              setNewSubtaskTitle('');
+              setAddingSubtask(false);
+            }}
+            placeholder="Subtask..."
+            className="w-full bg-transparent text-[11px] font-mono text-claude-text placeholder:text-claude-text-secondary/50 focus:outline-none border-b border-claude-border/30 focus:border-emerald-500 py-0.5"
+            autoFocus
+          />
+        )}
+      </div>
+    )}
+    </>
   );
 }

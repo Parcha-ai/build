@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { v4 as uuid } from 'uuid';
-import type { FocusTask } from '../../shared/types';
+import type { FocusTask, FocusSubtask } from '../../shared/types';
 
 interface TaskState {
   tasks: FocusTask[];
@@ -16,6 +16,9 @@ interface TaskState {
   setTasks: (tasks: FocusTask[]) => Promise<void>;
   toggleFocusMode: () => Promise<void>;
   markTaskDone: (id: string) => Promise<void>;
+  addSubtask: (taskId: string, title: string) => Promise<void>;
+  toggleSubtask: (taskId: string, subtaskId: string) => Promise<void>;
+  deleteSubtask: (taskId: string, subtaskId: string) => Promise<void>;
 }
 
 const persistTasks = async (tasks: FocusTask[], extras?: Record<string, unknown>) => {
@@ -141,5 +144,38 @@ export const useTaskStore = create<TaskState>((set, get) => ({
 
     set({ tasks: updated });
     await persistTasks(updated);
+  },
+
+  addSubtask: async (taskId, title) => {
+    const tasks = get().tasks.map(t => {
+      if (t.id !== taskId) return t;
+      const subtask: FocusSubtask = { id: uuid(), title, done: false };
+      return { ...t, subtasks: [...(t.subtasks || []), subtask] };
+    });
+    set({ tasks });
+    await persistTasks(tasks);
+  },
+
+  toggleSubtask: async (taskId, subtaskId) => {
+    const tasks = get().tasks.map(t => {
+      if (t.id !== taskId) return t;
+      return {
+        ...t,
+        subtasks: (t.subtasks || []).map(st =>
+          st.id === subtaskId ? { ...st, done: !st.done } : st
+        ),
+      };
+    });
+    set({ tasks });
+    await persistTasks(tasks);
+  },
+
+  deleteSubtask: async (taskId, subtaskId) => {
+    const tasks = get().tasks.map(t => {
+      if (t.id !== taskId) return t;
+      return { ...t, subtasks: (t.subtasks || []).filter(st => st.id !== subtaskId) };
+    });
+    set({ tasks });
+    await persistTasks(tasks);
   },
 }));

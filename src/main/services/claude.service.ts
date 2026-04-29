@@ -3787,6 +3787,10 @@ Begin by creating the task structure now.
         switch (msg.type) {
           case 'system': {
             // System messages can have different subtypes
+            const subtype = (msg as any).subtype;
+            if (subtype && subtype !== 'status') {
+              console.log('[Claude SDK] System message subtype:', subtype, JSON.stringify(msg).slice(0, 300));
+            }
             const systemMsg = msg as SDKMessage & {
               subtype?: string;
               session_id?: string;
@@ -4400,7 +4404,10 @@ Begin by creating the task structure now.
           }
 
           default:
-            // Silently ignore unhandled message types
+            // Log unhandled types so we can catch notifications/monitors we're missing
+            if (STREAM_DEBUG || (msg as any).subtype === 'notification' || (msg as any).subtype === 'task_notification' || (msg as any).subtype === 'task_progress' || (msg as any).subtype === 'task_started') {
+              console.log('[Claude SDK] Unhandled message type:', msg.type, 'subtype:', (msg as any).subtype, JSON.stringify(msg).slice(0, 200));
+            }
             break;
         }
 

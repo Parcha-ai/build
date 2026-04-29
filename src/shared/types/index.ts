@@ -247,6 +247,13 @@ export interface FocusTask {
   sessionId?: string;
   createdAt: string;
   completedAt?: string;
+  subtasks?: FocusSubtask[];
+}
+
+export interface FocusSubtask {
+  id: string;
+  title: string;
+  done: boolean;
 }
 
 export interface AppSettings {

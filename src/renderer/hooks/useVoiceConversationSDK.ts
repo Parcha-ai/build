@@ -54,12 +54,13 @@ export const useVoiceConversationSDK = ({
     audioLevel: 0,
   });
 
-  // Per-session conversation instances — survives session switches so you can
-  // talk to multiple sessions without reconnecting each time.
-  const conversationMapRef = useRef<Map<string, Conversation>>(new Map());
-  // Shorthand for the current session's conversation
+  // Single conversation instance — only one WebRTC connection at a time.
+  // Multiple simultaneous WebRTC connections share one mic and cause chaos.
   const conversationRef = useRef<Conversation | null>(null);
   const isConnectedRef = useRef(false);
+
+  // Track which sessions had voice active — auto-reconnect when switching back
+  const voiceActiveSessionsRef = useRef<Set<string>>(new Set());
 
   // Refs for callbacks to avoid stale closures
   const onTranscriptRef = useRef(onTranscript);
@@ -141,6 +142,7 @@ export const useVoiceConversationSDK = ({
         onConnect: ({ conversationId }) => {
           console.log('[VoiceConversationSDK] Connected, conversationId:', conversationId);
           isConnectedRef.current = true;
+          voiceActiveSessionsRef.current.add(sessionId);
           setState(s => ({ ...s, isConnected: true, isConnecting: false }));
         },
 
@@ -226,7 +228,6 @@ export const useVoiceConversationSDK = ({
       });
 
       conversationRef.current = conversation;
-      conversationMapRef.current.set(sessionId, conversation);
 
       // Patch SDK's handleErrorEvent to handle malformed error events (e.g., quota errors)
       try {
@@ -323,12 +324,13 @@ export const useVoiceConversationSDK = ({
       audioLevelIntervalRef.current = null;
     }
 
-    // End the SDK session and remove from the map
     if (conversationRef.current) {
       await conversationRef.current.endSession();
-      conversationMapRef.current.delete(sessionId);
       conversationRef.current = null;
     }
+
+    // Explicit disconnect — remove from auto-reconnect set
+    voiceActiveSessionsRef.current.delete(sessionId);
 
     isConnectedRef.current = false;
     setState({
@@ -389,73 +391,56 @@ export const useVoiceConversationSDK = ({
   // Track previous sessionId to detect session switches
   const previousSessionIdRef = useRef(sessionId);
 
-  // On session switch: keep the old conversation alive in the map, swap to
-  // the new session's conversation (if one exists). This lets you switch
-  // between sessions without reconnecting each time. The audio stream is
-  // paused on the old conversation and resumed on the new one.
+  // On session switch: disconnect current conversation, auto-reconnect if
+  // the new session previously had voice active.
   useEffect(() => {
     if (previousSessionIdRef.current !== sessionId) {
       const oldId = previousSessionIdRef.current;
       console.log('[VoiceConversationSDK] Session switch:', oldId, '→', sessionId);
 
-      // Stop audio level polling for the old session
       if (audioLevelIntervalRef.current) {
         clearInterval(audioLevelIntervalRef.current);
         audioLevelIntervalRef.current = null;
       }
 
-      // Check if the new session already has a conversation
-      const existingConversation = conversationMapRef.current.get(sessionId);
-      if (existingConversation) {
-        console.log('[VoiceConversationSDK] Resuming existing conversation for', sessionId);
-        conversationRef.current = existingConversation;
-        isConnectedRef.current = true;
-        setState({
-          isConnected: true,
-          isConnecting: false,
-          isRecording: false,
-          isSpeaking: false,
-          currentTranscript: '',
-          error: null,
-          audioLevel: 0,
-        });
-
-        // Restart audio level polling for the resumed session
-        audioLevelIntervalRef.current = setInterval(() => {
-          if (conversationRef.current) {
-            const volume = conversationRef.current.getInputVolume();
-            setState(s => ({ ...s, audioLevel: volume }));
-          }
-        }, 100);
-      } else {
-        // No existing conversation for this session — reset state
+      if (conversationRef.current) {
+        conversationRef.current.endSession();
         conversationRef.current = null;
-        isConnectedRef.current = false;
-        setState({
-          isConnected: false,
-          isConnecting: false,
-          isRecording: false,
-          isSpeaking: false,
-          currentTranscript: '',
-          error: null,
-          audioLevel: 0,
-        });
+      }
+
+      isConnectedRef.current = false;
+      setState({
+        isConnected: false,
+        isConnecting: false,
+        isRecording: false,
+        isSpeaking: false,
+        currentTranscript: '',
+        error: null,
+        audioLevel: 0,
+      });
+
+      // Auto-reconnect if the new session previously had voice on
+      if (voiceActiveSessionsRef.current.has(sessionId)) {
+        console.log('[VoiceConversationSDK] Auto-reconnecting voice for session', sessionId);
+        // Small delay to let the disconnect settle before reconnecting
+        setTimeout(() => {
+          connect();
+        }, 300);
       }
     }
     previousSessionIdRef.current = sessionId;
-  }, [sessionId]);
+  }, [sessionId, connect]);
 
-  // Cleanup on unmount — end ALL conversations across all sessions
+  // Cleanup on unmount
   useEffect(() => {
     return () => {
       if (audioLevelIntervalRef.current) {
         clearInterval(audioLevelIntervalRef.current);
       }
-      for (const [id, conv] of conversationMapRef.current.entries()) {
-        console.log('[VoiceConversationSDK] Cleanup: ending conversation for session', id);
-        conv.endSession();
+      if (conversationRef.current) {
+        conversationRef.current.endSession();
+        conversationRef.current = null;
       }
-      conversationMapRef.current.clear();
     };
   }, []);
 

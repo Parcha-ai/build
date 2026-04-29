@@ -2711,7 +2711,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const unsubTaskNotif = window.electronAPI.claude.onTaskNotification?.((data) => {
       console.log('[SessionStore] Task notification:', data.taskId, data.status, data.summary?.slice(0, 60));
 
-      // Update MonitorBlock — mark matching task as inactive + append summary
+      // Update MonitorBlock — mark matching task as inactive + append summary,
+      // then auto-remove after 10 seconds so completed monitors don't accumulate.
       if (data.taskId) {
         set((state) => {
           const existing = state.monitorInstances[data.sessionId] || [];
@@ -2727,6 +2728,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           };
           return { monitorInstances: { ...state.monitorInstances, [data.sessionId]: updated } };
         });
+
+        // Auto-remove completed monitor after 10s
+        setTimeout(() => {
+          set((state) => {
+            const existing = state.monitorInstances[data.sessionId] || [];
+            const filtered = existing.filter((m) => m.id !== data.taskId);
+            return { monitorInstances: { ...state.monitorInstances, [data.sessionId]: filtered } };
+          });
+        }, 10000);
       }
 
       // Desktop notification when a background task finishes
