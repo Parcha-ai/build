@@ -15,101 +15,99 @@ export function useSessionSwitcher() {
     orderedSessionIds: [],
   });
 
-  const ctrlHeldRef = useRef(false);
+  // Refs to avoid stale closures in event handlers
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  const activeSessionIdRef = useRef(activeSessionId);
+  activeSessionIdRef.current = activeSessionId;
   const switcherActiveRef = useRef(false);
 
-  // Get sessions ordered by recent activity (MRU order) - only running sessions
   const getOrderedSessions = useCallback(() => {
     return [...sessions]
-      .filter(s => s.status === 'running')  // Only active sessions
+      .filter(s => s.status === 'running' && !s.parentSessionId)
       .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
       .map(s => s.id);
   }, [sessions]);
 
   const openSwitcher = useCallback(() => {
     const ordered = getOrderedSessions();
-    if (ordered.length <= 1) {
-      // Don't open if only one or zero sessions
-      return;
-    }
-    setState({
+    if (ordered.length <= 1) return;
+    const newState: SwitcherState = {
       isOpen: true,
-      // Start at second item (index 1) since current session is first (index 0)
       selectedIndex: 1,
       orderedSessionIds: ordered,
-    });
+    };
+    setState(newState);
+    stateRef.current = newState;
     switcherActiveRef.current = true;
   }, [getOrderedSessions]);
 
-  const closeSwitcher = useCallback((selectCurrent: boolean) => {
-    if (selectCurrent && state.isOpen) {
-      const selectedId = state.orderedSessionIds[state.selectedIndex];
-      if (selectedId && selectedId !== activeSessionId) {
+  const confirmAndClose = useCallback(() => {
+    const s = stateRef.current;
+    if (s.isOpen) {
+      const selectedId = s.orderedSessionIds[s.selectedIndex];
+      if (selectedId && selectedId !== activeSessionIdRef.current) {
         setActiveSession(selectedId);
       }
     }
-    setState(prev => ({ ...prev, isOpen: false }));
+    const closed: SwitcherState = { isOpen: false, selectedIndex: 0, orderedSessionIds: [] };
+    setState(closed);
+    stateRef.current = closed;
     switcherActiveRef.current = false;
-  }, [state.isOpen, state.orderedSessionIds, state.selectedIndex, activeSessionId, setActiveSession]);
+  }, [setActiveSession]);
+
+  const cancelAndClose = useCallback(() => {
+    const closed: SwitcherState = { isOpen: false, selectedIndex: 0, orderedSessionIds: [] };
+    setState(closed);
+    stateRef.current = closed;
+    switcherActiveRef.current = false;
+  }, []);
 
   const cycleNext = useCallback(() => {
-    setState(prev => ({
-      ...prev,
-      selectedIndex: (prev.selectedIndex + 1) % prev.orderedSessionIds.length,
-    }));
+    setState(prev => {
+      const next = { ...prev, selectedIndex: (prev.selectedIndex + 1) % prev.orderedSessionIds.length };
+      stateRef.current = next;
+      return next;
+    });
   }, []);
 
   const cyclePrev = useCallback(() => {
-    setState(prev => ({
-      ...prev,
-      selectedIndex: prev.selectedIndex === 0
-        ? prev.orderedSessionIds.length - 1
-        : prev.selectedIndex - 1,
-    }));
+    setState(prev => {
+      const next = {
+        ...prev,
+        selectedIndex: prev.selectedIndex === 0 ? prev.orderedSessionIds.length - 1 : prev.selectedIndex - 1,
+      };
+      stateRef.current = next;
+      return next;
+    });
   }, []);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Track Ctrl state
-      if (e.key === 'Control') {
-        ctrlHeldRef.current = true;
-      }
-
-      // Ctrl+Tab: Open/cycle switcher
       if (e.ctrlKey && e.key === 'Tab') {
         e.preventDefault();
         e.stopPropagation();
-
         if (!switcherActiveRef.current) {
           openSwitcher();
+        } else if (e.shiftKey) {
+          cyclePrev();
         } else {
-          if (e.shiftKey) {
-            cyclePrev();
-          } else {
-            cycleNext();
-          }
+          cycleNext();
         }
       }
 
-      // Escape: Cancel without switching
       if (e.key === 'Escape' && switcherActiveRef.current) {
         e.preventDefault();
-        e.stopPropagation();
-        closeSwitcher(false);
+        cancelAndClose();
       }
     };
 
     const handleKeyUp = (e: KeyboardEvent) => {
-      // Ctrl release: Confirm selection and close
-      if (e.key === 'Control') {
-        ctrlHeldRef.current = false;
-        if (switcherActiveRef.current) {
-          closeSwitcher(true);
-        }
+      if (e.key === 'Control' && switcherActiveRef.current) {
+        confirmAndClose();
       }
     };
 
-    // Use capture phase to intercept before other handlers
     window.addEventListener('keydown', handleKeyDown, true);
     window.addEventListener('keyup', handleKeyUp, true);
 
@@ -117,12 +115,12 @@ export function useSessionSwitcher() {
       window.removeEventListener('keydown', handleKeyDown, true);
       window.removeEventListener('keyup', handleKeyUp, true);
     };
-  }, [openSwitcher, closeSwitcher, cycleNext, cyclePrev]);
+  }, [openSwitcher, confirmAndClose, cancelAndClose, cycleNext, cyclePrev]);
 
   return {
     isOpen: state.isOpen,
     selectedIndex: state.selectedIndex,
     orderedSessionIds: state.orderedSessionIds,
-    closeSwitcher,
+    closeSwitcher: cancelAndClose,
   };
 }

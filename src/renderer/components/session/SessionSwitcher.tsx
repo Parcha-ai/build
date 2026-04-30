@@ -45,7 +45,9 @@ export default function SessionSwitcher() {
   return (
     <div
       className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70"
-      onClick={() => closeSwitcher(false)}
+      onClick={() => closeSwitcher()}
+      tabIndex={-1}
+      ref={(el) => el?.focus()}
     >
       <div
         className="bg-claude-surface border border-claude-border p-6 max-w-[90vw]"
@@ -78,7 +80,7 @@ export default function SessionSwitcher() {
                   if (sessionId !== activeSessionId) {
                     useSessionStore.getState().setActiveSession(sessionId);
                   }
-                  closeSwitcher(false);
+                  closeSwitcher();
                 }}
               >
                 {/* Color block representing the session */}
@@ -126,7 +128,7 @@ export default function SessionSwitcher() {
           <button
             onClick={() => {
               useUIStore.getState().toggleCommandCenter();
-              closeSwitcher(false);
+              closeSwitcher();
             }}
             className={`flex items-center gap-2 px-3 py-1.5 text-[10px] font-bold uppercase border transition-colors ${
               useUIStore.getState().isCommandCenterActive

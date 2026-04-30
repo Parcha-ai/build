@@ -569,23 +569,7 @@ function ElectronApp() {
         case 'next-fork':
           useSessionStore.getState().cycleForkTabs('next');
           return;
-        case 'session-switch-next':
-        case 'session-switch-prev':
-          // Forward to SessionSwitcher via synthetic keyboard event
-          window.dispatchEvent(new KeyboardEvent('keydown', {
-            key: 'Tab',
-            ctrlKey: true,
-            shiftKey: action === 'session-switch-prev',
-            bubbles: true,
-          }));
-          return;
-        case 'session-switch-confirm':
-          // Forward Ctrl release to SessionSwitcher
-          window.dispatchEvent(new KeyboardEvent('keyup', {
-            key: 'Control',
-            bubbles: true,
-          }));
-          return;
+        // Ctrl+Tab session switching handled entirely by useSessionSwitcher hook
         case 'background-task':
           if (!useSessionStore.getState().activeSessionId) {
             return;

@@ -331,8 +331,10 @@ function startRemoteProcessMonitor(
 
       void (async () => {
         try {
-          if (!hasLocalLiveStream()) {
-            console.log(`[SessionStore] Refreshing active SSH transcript for ${sessionId}`);
+          // Only load initial messages if we don't have ANY yet
+          const existingMessages = getState().messages[sessionId] || [];
+          if (existingMessages.length === 0) {
+            console.log(`[SessionStore] Loading initial SSH transcript for ${sessionId}`);
             await loadMessages(sessionId, { replaceWhileStreaming: true });
           }
 
@@ -340,10 +342,9 @@ function startRemoteProcessMonitor(
             await new Promise(resolve => setTimeout(resolve, 5000));
             const stillActive = await window.electronAPI.ssh.hasActiveRemoteProcess(sessionId);
             if (stillActive) {
-              if (!hasLocalLiveStream()) {
-                console.log(`[SessionStore] Refreshing active SSH transcript for ${sessionId}`);
-                await loadMessages(sessionId, { replaceWhileStreaming: true });
-              }
+              // DON'T reload messages while the process is running — the SDK
+              // stream delivers content via IPC and loadMessages would replace
+              // in-memory messages with a stale transcript snapshot.
               continue;
             }
 
