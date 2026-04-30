@@ -348,13 +348,13 @@ function startRemoteProcessMonitor(
             }
 
             console.log(`[SessionStore] Remote Claude process finished for ${sessionId}; refreshing transcript`);
+            // DON'T clear currentStreamContent here — onStreamEnd needs it
+            // to add the final message. Only clear activity state.
+            // The normal STREAM_END handler will clear stream content after
+            // adding the message. Clearing here was causing lost turns.
             setState((state: SessionState) => ({
               isStreaming: { ...state.isStreaming, [sessionId]: false },
               sessionActivity: { ...state.sessionActivity, [sessionId]: 'idle' },
-              currentStreamContent: { ...state.currentStreamContent, [sessionId]: '' },
-              currentThinkingContent: { ...state.currentThinkingContent, [sessionId]: '' },
-              currentToolCalls: { ...state.currentToolCalls, [sessionId]: [] },
-              streamEvents: { ...state.streamEvents, [sessionId]: [] },
             }));
             await loadMessages(sessionId);
 
