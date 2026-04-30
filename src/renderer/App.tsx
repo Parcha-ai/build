@@ -12,7 +12,7 @@ import SettingsDialog from './components/settings/SettingsDialog';
 import ApiKeyOnboarding from './components/onboarding/ApiKeyOnboarding';
 import QuickSearch from './components/editor/QuickSearch';
 import FileContentSearch from './components/editor/FileContentSearch';
-import SessionSwitcher from './components/session/SessionSwitcher';
+// SessionSwitcher removed — Ctrl+Tab directly switches sessions via App shortcut handler
 import QMDPrompt from './components/qmd/QMDPrompt';
 import LunchLockModal from './components/layout/LunchLockModal';
 import BedtimeLockModal from './components/layout/BedtimeLockModal';
@@ -804,7 +804,7 @@ function ElectronApp() {
       <FileContentSearch />
 
       {/* Session Switcher (Ctrl+Tab) */}
-      <SessionSwitcher />
+      {/* Ctrl+Tab handled directly in shortcut handler — no overlay */}
 
       {/* Lunch Lock Modal */}
       {showBedtimeModal && (
