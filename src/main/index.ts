@@ -275,13 +275,19 @@ const createWindow = (): void => {
   // Intercept app shortcuts in the main process so packaged builds do not depend on
   // renderer focus state to deliver keyboard commands.
   mainWindow.webContents.on('before-input-event', (event, input) => {
+    const key = (input.key || '').toLowerCase();
+
+    // Ctrl release: forward to renderer so SessionSwitcher can confirm selection
+    if (input.type === 'keyUp' && key === 'control') {
+      sendShortcutToRenderer('session-switch-confirm');
+      return;
+    }
+
     if (input.type !== 'keyDown') {
       return;
     }
 
-    const key = (input.key || '').toLowerCase();
-
-    // Ctrl+Tab / Ctrl+Shift+Tab: direct session switching (no overlay)
+    // Ctrl+Tab / Ctrl+Shift+Tab: session switcher
     if (input.control && key === 'tab') {
       event.preventDefault();
       sendShortcutToRenderer(input.shift ? 'session-switch-prev' : 'session-switch-next');

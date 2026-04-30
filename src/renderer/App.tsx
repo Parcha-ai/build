@@ -12,7 +12,7 @@ import SettingsDialog from './components/settings/SettingsDialog';
 import ApiKeyOnboarding from './components/onboarding/ApiKeyOnboarding';
 import QuickSearch from './components/editor/QuickSearch';
 import FileContentSearch from './components/editor/FileContentSearch';
-// SessionSwitcher removed — Ctrl+Tab directly switches sessions via App shortcut handler
+import SessionSwitcher from './components/session/SessionSwitcher';
 import QMDPrompt from './components/qmd/QMDPrompt';
 import LunchLockModal from './components/layout/LunchLockModal';
 import BedtimeLockModal from './components/layout/BedtimeLockModal';
@@ -570,18 +570,22 @@ function ElectronApp() {
           useSessionStore.getState().cycleForkTabs('next');
           return;
         case 'session-switch-next':
-        case 'session-switch-prev': {
-          const ss = useSessionStore.getState();
-          const running = [...ss.sessions]
-            .filter(s => s.status === 'running' && !s.parentSessionId)
-            .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
-          if (running.length <= 1) return;
-          const currentIdx = running.findIndex(s => s.id === ss.activeSessionId);
-          const delta = action === 'session-switch-next' ? 1 : -1;
-          const nextIdx = (currentIdx + delta + running.length) % running.length;
-          ss.setActiveSession(running[nextIdx].id);
+        case 'session-switch-prev':
+          // Forward to SessionSwitcher via synthetic keyboard event
+          window.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Tab',
+            ctrlKey: true,
+            shiftKey: action === 'session-switch-prev',
+            bubbles: true,
+          }));
           return;
-        }
+        case 'session-switch-confirm':
+          // Forward Ctrl release to SessionSwitcher
+          window.dispatchEvent(new KeyboardEvent('keyup', {
+            key: 'Control',
+            bubbles: true,
+          }));
+          return;
         case 'background-task':
           if (!useSessionStore.getState().activeSessionId) {
             return;
@@ -804,7 +808,7 @@ function ElectronApp() {
       <FileContentSearch />
 
       {/* Session Switcher (Ctrl+Tab) */}
-      {/* Ctrl+Tab handled directly in shortcut handler — no overlay */}
+      <SessionSwitcher />
 
       {/* Lunch Lock Modal */}
       {showBedtimeModal && (
