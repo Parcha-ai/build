@@ -350,12 +350,15 @@ function startRemoteProcessMonitor(
             console.log(`[SessionStore] Remote Claude process finished for ${sessionId}; refreshing transcript`);
             // DON'T clear currentStreamContent here — onStreamEnd needs it
             // to add the final message. Only clear activity state.
-            // The normal STREAM_END handler will clear stream content after
-            // adding the message. Clearing here was causing lost turns.
             setState((state: SessionState) => ({
               isStreaming: { ...state.isStreaming, [sessionId]: false },
               sessionActivity: { ...state.sessionActivity, [sessionId]: 'idle' },
             }));
+            // Wait for onStreamEnd to fire and add the final message before
+            // reloading from transcript. Without this delay, loadMessages
+            // replaces in-memory messages with stale transcript data, losing
+            // the streamed content.
+            await new Promise(resolve => setTimeout(resolve, 2000));
             await loadMessages(sessionId);
 
             const queue = getState().messageQueue[sessionId] || [];
