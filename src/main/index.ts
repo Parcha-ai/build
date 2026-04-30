@@ -281,9 +281,11 @@ const createWindow = (): void => {
 
     const key = (input.key || '').toLowerCase();
 
-    // Ctrl+Tab / Ctrl+Shift+Tab: session switcher (works globally regardless of focus)
+    // Ctrl+Tab / Ctrl+Shift+Tab: session switching (works globally regardless of focus)
+    // Don't preventDefault — let the renderer's keyboard handler also fire for the
+    // switcher overlay UI. The main process path is the fallback for when webviews
+    // swallow the event.
     if (input.control && key === 'tab') {
-      event.preventDefault();
       sendShortcutToRenderer(input.shift ? 'session-switch-prev' : 'session-switch-next');
       return;
     }

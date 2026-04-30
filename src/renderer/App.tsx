@@ -570,11 +570,18 @@ function ElectronApp() {
           useSessionStore.getState().cycleForkTabs('next');
           return;
         case 'session-switch-next':
-          window.dispatchEvent(new CustomEvent('grep-session-switch', { detail: { direction: 'next' } }));
+        case 'session-switch-prev': {
+          const ss = useSessionStore.getState();
+          const running = [...ss.sessions]
+            .filter(s => s.status === 'running' && !s.parentSessionId)
+            .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+          if (running.length <= 1) return;
+          const currentIdx = running.findIndex(s => s.id === ss.activeSessionId);
+          const delta = action === 'session-switch-next' ? 1 : -1;
+          const nextIdx = (currentIdx + delta + running.length) % running.length;
+          ss.setActiveSession(running[nextIdx].id);
           return;
-        case 'session-switch-prev':
-          window.dispatchEvent(new CustomEvent('grep-session-switch', { detail: { direction: 'prev' } }));
-          return;
+        }
         case 'background-task':
           if (!useSessionStore.getState().activeSessionId) {
             return;
