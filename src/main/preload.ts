@@ -752,7 +752,7 @@ const electronAPI = {
       claudeCodeVersion?: string;
       hostname?: string;
     }> => ipcRenderer.invoke(IPC_CHANNELS.SSH_TEST_CONNECTION, config),
-    createSession: (data: { name: string; sshConfig: SSHConfig; resumeSessionId?: string }): Promise<Session> =>
+    createSession: (data: { name: string; sshConfig: SSHConfig; resumeSessionId?: string; parentSessionId?: string }): Promise<Session> =>
       ipcRenderer.invoke(IPC_CHANNELS.SSH_CREATE_SESSION, data),
     listResumeCandidates: (config: SSHConfig): Promise<SSHResumeCandidate[]> =>
       ipcRenderer.invoke(IPC_CHANNELS.SSH_LIST_RESUME_CANDIDATES, config),

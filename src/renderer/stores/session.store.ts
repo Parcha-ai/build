@@ -2014,12 +2014,17 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const unsubEnd = window.electronAPI.claude.onStreamEnd(({ sessionId, message }) => {
       const currentState = get();
 
-      // Ignore stale STREAM_END from a cancelled stream that races in after a
-      // new stream has started. Without this guard the handler re-runs queue
-      // processing and duplicates the user message.
+      // If streaming is already false, this is a late-arriving STREAM_END.
+      // Still add the message if it has content — don't drop the turn.
+      // Only skip if a NEW stream has started (generation counter changed).
       if (!currentState.isStreaming[sessionId]) {
-        console.log(`[SessionStore] onStreamEnd SKIPPED for ${sessionId} — streaming already false (stale event from cancelled stream)`);
-        return;
+        const hasContent = (message.content && message.content.length > 0) ||
+          (currentState.currentStreamContent[sessionId] || '').length > 0;
+        if (!hasContent) {
+          console.log(`[SessionStore] onStreamEnd SKIPPED for ${sessionId} — streaming false, no content`);
+          return;
+        }
+        console.log(`[SessionStore] onStreamEnd for ${sessionId} — streaming was false but message has content, adding anyway`);
       }
 
       const queueLength = (currentState.messageQueue[sessionId] || []).length;

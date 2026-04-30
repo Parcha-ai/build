@@ -140,6 +140,7 @@ export function registerSSHHandlers(ipcMain: IpcMain): void {
         name: string;
         sshConfig: SSHConfig;
         resumeSessionId?: string;
+        parentSessionId?: string;
       }
     ) => {
       console.log('[SSH IPC] Creating SSH session:', data.name);
@@ -165,6 +166,7 @@ export function registerSSHHandlers(ipcMain: IpcMain): void {
           setupScript: '',
           isDevMode: true, // Mark as dev mode (no Docker)
           ...(data.resumeSessionId ? { sdkSessionId: data.resumeSessionId } : {}),
+          ...(data.parentSessionId ? { parentSessionId: data.parentSessionId } : {}),
         };
 
         const localResumeSource = data.resumeSessionId

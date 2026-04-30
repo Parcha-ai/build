@@ -72,14 +72,19 @@ export default function PlanPanel() {
     }
   }, [pendingApproval]);
 
-  // Auto-load plan from messages if no plan content exists
+  // Auto-load plan from messages ONLY on first mount if no plan content exists.
+  // Previously this ran on every sessionMessages change, causing race conditions
+  // that could overwrite live plan content with stale message data.
+  const hasAutoLoadedRef = React.useRef(false);
   React.useEffect(() => {
+    if (hasAutoLoadedRef.current) return;
     if (!activeSessionId || !sessionMessages || sessionMessages.length === 0) return;
-    if (planContent) return; // Already have plan content
+    if (planContent) return;
 
-    console.log('[PlanPanel] No plan content, auto-loading from messages...');
+    hasAutoLoadedRef.current = true;
+    console.log('[PlanPanel] First mount, no plan content — auto-loading from messages');
     handleLoadFromMessages();
-  }, [activeSessionId, sessionMessages]); // Run when session or messages change
+  }, [activeSessionId]); // Only on session change, not message changes
 
   const handleClear = () => {
     if (activeSessionId) {

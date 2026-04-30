@@ -147,14 +147,9 @@ export const useUIStore = create<UIState>((set, get) => ({
   sessionSelectedElement: {},
   sessionEditingText: {},
   sessionPlanContent: (() => {
-    try {
-      const stored = localStorage.getItem('grep-plan-content');
-      if (stored) {
-        return JSON.parse(stored);
-      }
-    } catch (e) {
-      console.warn('[UI Store] Failed to load persisted plan content:', e);
-    }
+    // Plan content is no longer persisted to localStorage (was causing
+    // silent data loss at 25MB+ localStorage). Plans are re-fetched from
+    // the plan file or reconstructed from messages on panel mount.
     return {};
   })(),
 
@@ -268,29 +263,13 @@ export const useUIStore = create<UIState>((set, get) => ({
   closeOnboarding: () => set({ isOnboardingOpen: false }),
 
   // Plan content methods
-  setPlanContent: (sessionId: string, content: string) => set((state) => {
-    const newContent = { ...state.sessionPlanContent, [sessionId]: content };
-    // Persist to localStorage
-    try {
-      localStorage.setItem('grep-plan-content', JSON.stringify(newContent));
-    } catch (e) {
-      console.warn('[UI Store] Failed to persist plan content:', e);
-    }
-    return {
-      sessionPlanContent: newContent,
-      // Auto-open plan panel when content is set
-      isPlanPanelOpen: true,
-    };
-  }),
+  setPlanContent: (sessionId: string, content: string) => set((state) => ({
+    sessionPlanContent: { ...state.sessionPlanContent, [sessionId]: content },
+    isPlanPanelOpen: true,
+  })),
   clearPlanContent: (sessionId: string) => set((state) => {
     const newContent = { ...state.sessionPlanContent };
     delete newContent[sessionId];
-    // Persist to localStorage
-    try {
-      localStorage.setItem('grep-plan-content', JSON.stringify(newContent));
-    } catch (e) {
-      console.warn('[UI Store] Failed to persist plan content:', e);
-    }
     return { sessionPlanContent: newContent };
   }),
 

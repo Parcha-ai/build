@@ -190,17 +190,17 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
                 // Strip worktreeScript so it doesn't re-run setup — we're
                 // connecting to the SAME directory, not creating a new worktree.
                 const { worktreeScript: _, ...cleanConfig } = session.sshConfig as any;
+                // Pre-update root's childSessionIds so the new session is in the
+                // fork group BEFORE it gets broadcast via SESSION_LIST_UPDATED.
+                const root = forkSiblings.find(f => f.id === rootId);
+
                 const newSession = await window.electronAPI.ssh.createSession({
                   name: `${session.name} (new)`,
                   sshConfig: { ...cleanConfig, syncSettings: false },
+                  parentSessionId: rootId,
                 });
                 if (newSession) {
-                  // Add to the fork group as a sibling tab (same UI, clean transcript)
-                  await window.electronAPI.sessions.update(newSession.id, {
-                    parentSessionId: rootId,
-                    isRoot: false,
-                  } as any);
-                  const root = forkSiblings.find(f => f.id === rootId);
+                  // Update root's children list
                   if (root) {
                     const children = [...(root.childSessionIds || [])];
                     if (!children.includes(newSession.id)) {

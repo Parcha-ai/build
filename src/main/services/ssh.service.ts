@@ -2974,6 +2974,28 @@ CONFIG_EOF`);
         const rsyncCmd = `rsync -az ${keyFlag} ${localMcpAuth}/ ${user}@${host}:~/.mcp-auth/`;
         console.log('[SSH Service] Syncing MCP auth tokens to remote...');
         execSync(rsyncCmd, { timeout: 30000, stdio: 'pipe' });
+
+        // mcp-remote stores tokens per-version (e.g., mcp-remote-0.1.29/).
+        // Local and remote may run different versions. Copy token files from
+        // the newest local version into ALL remote version folders so tokens
+        // are found regardless of which mcp-remote version the remote uses.
+        try {
+          await this.execCommand(client, `
+            cd ~/.mcp-auth && \
+            SRC=$(ls -d mcp-remote-* 2>/dev/null | sort -V | while read d; do \
+              ls "$d"/*_tokens.json >/dev/null 2>&1 && echo "$d"; \
+            done | tail -1) && \
+            if [ -n "$SRC" ]; then \
+              for DST in mcp-remote-*; do \
+                [ "$DST" = "$SRC" ] && continue; \
+                ls "$DST"/*_tokens.json >/dev/null 2>&1 && continue; \
+                cp "$SRC"/*_tokens.json "$SRC"/*_client_info.json "$SRC"/*_code_verifier.txt "$DST/" 2>/dev/null; \
+              done; \
+            fi
+          `);
+        } catch {
+          // Non-critical — tokens may already be in the right place
+        }
         console.log('[SSH Service] MCP auth tokens synced to remote');
       }
     } catch (err) {
