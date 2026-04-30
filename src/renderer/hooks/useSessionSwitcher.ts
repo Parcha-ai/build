@@ -109,13 +109,37 @@ export function useSessionSwitcher() {
       }
     };
 
+    // Listen for main process shortcut events (works even when webview/editor has focus)
+    const handleMainProcessSwitch = (e: Event) => {
+      const direction = (e as CustomEvent).detail?.direction;
+      if (!switcherActiveRef.current) {
+        ctrlHeldRef.current = true;
+        openSwitcher();
+      } else {
+        if (direction === 'prev') {
+          cyclePrev();
+        } else {
+          cycleNext();
+        }
+      }
+      // Auto-close after 1.5s if Ctrl isn't released (main process can't detect keyup reliably)
+      setTimeout(() => {
+        if (switcherActiveRef.current) {
+          closeSwitcher(true);
+          ctrlHeldRef.current = false;
+        }
+      }, 1500);
+    };
+
     // Use capture phase to intercept before other handlers
     window.addEventListener('keydown', handleKeyDown, true);
     window.addEventListener('keyup', handleKeyUp, true);
+    window.addEventListener('grep-session-switch', handleMainProcessSwitch);
 
     return () => {
       window.removeEventListener('keydown', handleKeyDown, true);
       window.removeEventListener('keyup', handleKeyUp, true);
+      window.removeEventListener('grep-session-switch', handleMainProcessSwitch);
     };
   }, [openSwitcher, closeSwitcher, cycleNext, cyclePrev]);
 

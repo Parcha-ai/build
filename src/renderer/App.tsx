@@ -569,6 +569,12 @@ function ElectronApp() {
         case 'next-fork':
           useSessionStore.getState().cycleForkTabs('next');
           return;
+        case 'session-switch-next':
+          window.dispatchEvent(new CustomEvent('grep-session-switch', { detail: { direction: 'next' } }));
+          return;
+        case 'session-switch-prev':
+          window.dispatchEvent(new CustomEvent('grep-session-switch', { detail: { direction: 'prev' } }));
+          return;
         case 'background-task':
           if (!useSessionStore.getState().activeSessionId) {
             return;

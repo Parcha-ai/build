@@ -280,6 +280,14 @@ const createWindow = (): void => {
     }
 
     const key = (input.key || '').toLowerCase();
+
+    // Ctrl+Tab / Ctrl+Shift+Tab: session switcher (works globally regardless of focus)
+    if (input.control && key === 'tab') {
+      event.preventDefault();
+      sendShortcutToRenderer(input.shift ? 'session-switch-prev' : 'session-switch-next');
+      return;
+    }
+
     // On macOS, Control-based chords are normal textarea editing shortcuts
     // (for example Ctrl+F/Ctrl+B/Ctrl+K/Ctrl+T). Only treat Command as the
     // app shortcut modifier there.
