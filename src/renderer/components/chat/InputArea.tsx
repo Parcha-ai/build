@@ -352,6 +352,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
 
   // Model selector state
   const [showModelDropdown, setShowModelDropdown] = useState(false);
+  const [hoverHarness, setHoverHarness] = useState<string | null>(null);
   const modelDropdownRef = useRef<HTMLDivElement>(null);
 
   // Effort level selector state
@@ -1860,25 +1861,119 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
           >
             {isStreamingProp && systemInfo ? (systemInfo.model || currentModelInfo.name) : currentModelInfo.name}
           </button>
-          {showModelDropdown && (
-            <div className="absolute bottom-full left-0 mb-1 bg-claude-surface border border-claude-border shadow-lg z-50 min-w-48">
-              {availableModels.map((model) => (
-                <button
-                  key={model.id}
-                  onClick={() => {
-                    setSelectedModel(sessionId, model.id);
-                    setShowModelDropdown(false);
-                  }}
-                  className={`w-full text-left px-3 py-2 hover:bg-claude-bg transition-colors ${
-                    model.id === currentModel ? 'bg-claude-bg text-claude-accent' : 'text-claude-text'
-                  }`}
-                >
-                  <div className="font-mono text-xs">{model.name}</div>
-                  <div className="text-[10px] text-claude-text-secondary">{model.description}</div>
-                </button>
-              ))}
-            </div>
-          )}
+          {showModelDropdown && (() => {
+            // Two-level menu: Harness → Models
+
+            const groups: Record<string, typeof availableModels> = {};
+            const groupOrder = ['claude', 'cursor', 'codex', 'opencode', 'custom'];
+            const groupLabels: Record<string, string> = {
+              claude: 'Claude',
+              cursor: 'Cursor',
+              codex: 'Codex',
+              opencode: 'DeepSeek',
+              custom: 'Custom',
+            };
+
+            for (const model of availableModels) {
+              let group = 'claude';
+              if (model.id.startsWith('codex:')) group = 'codex';
+              else if (model.id.startsWith('cursor:')) group = 'cursor';
+              else if (model.id.startsWith('opencode:')) group = 'opencode';
+              else if (model.id.startsWith('custom:')) group = 'custom';
+              if (!groups[group]) groups[group] = [];
+              groups[group].push(model);
+            }
+
+            // Recently used: last 3
+            const recentIds: string[] = JSON.parse(localStorage.getItem('grep-recent-models') || '[]').slice(0, 3);
+            const recentModels = recentIds.map(id => availableModels.find(m => m.id === id)).filter(Boolean) as typeof availableModels;
+
+            const selectModel = (modelId: string) => {
+              setSelectedModel(sessionId, modelId);
+              setShowModelDropdown(false);
+              const recent = JSON.parse(localStorage.getItem('grep-recent-models') || '[]') as string[];
+              const updated = [modelId, ...recent.filter(id => id !== modelId)].slice(0, 5);
+              localStorage.setItem('grep-recent-models', JSON.stringify(updated));
+            };
+
+            // Current harness for highlight
+            let currentHarness = 'claude';
+            if (currentModel.startsWith('codex:')) currentHarness = 'codex';
+            else if (currentModel.startsWith('cursor:')) currentHarness = 'cursor';
+            else if (currentModel.startsWith('opencode:')) currentHarness = 'opencode';
+            else if (currentModel.startsWith('custom:')) currentHarness = 'custom';
+
+            const activeHarness = hoverHarness || currentHarness;
+            const activeModels = groups[activeHarness] || [];
+
+            return (
+              <div className="absolute bottom-full left-0 mb-1 flex z-50">
+                {/* Level 1: Harness list */}
+                <div className="bg-claude-surface border border-claude-border shadow-lg min-w-32">
+                  {/* Recently used quick-picks */}
+                  {recentModels.length > 0 && (
+                    <>
+                      <div className="px-3 py-1 text-[8px] font-bold text-claude-text-secondary uppercase tracking-wider bg-claude-bg/50">
+                        Recent
+                      </div>
+                      {recentModels.map(m => (
+                        <button
+                          key={`recent-${m.id}`}
+                          onClick={() => selectModel(m.id)}
+                          className={`w-full text-left px-3 py-1 hover:bg-claude-bg text-[10px] font-mono ${
+                            m.id === currentModel ? 'text-claude-accent' : 'text-claude-text-secondary'
+                          }`}
+                        >
+                          {m.name}
+                        </button>
+                      ))}
+                      <div className="border-b border-claude-border/30 my-0.5" />
+                    </>
+                  )}
+                  {/* Harness options */}
+                  {groupOrder.map(key => {
+                    const models = groups[key];
+                    if (!models || models.length === 0) return null;
+                    const isActive = activeHarness === key;
+                    const hasCurrentModel = models.some(m => m.id === currentModel);
+                    return (
+                      <button
+                        key={key}
+                        onMouseEnter={() => setHoverHarness(key)}
+                        onClick={() => setHoverHarness(key)}
+                        className={`w-full text-left px-3 py-1.5 flex items-center justify-between transition-colors ${
+                          isActive ? 'bg-claude-bg text-claude-text' : 'text-claude-text-secondary hover:bg-claude-bg/50'
+                        }`}
+                      >
+                        <span className="font-mono text-xs">
+                          {hasCurrentModel && <span className="text-claude-accent mr-1">●</span>}
+                          {groupLabels[key]}
+                        </span>
+                        <span className="text-[10px] text-claude-text-secondary">›</span>
+                      </button>
+                    );
+                  })}
+                </div>
+                {/* Level 2: Models for selected harness */}
+                <div className="bg-claude-surface border border-claude-border border-l-0 shadow-lg min-w-44 max-h-64 overflow-y-auto">
+                  <div className="px-3 py-1 text-[8px] font-bold text-claude-text-secondary uppercase tracking-wider bg-claude-bg/50 sticky top-0">
+                    {groupLabels[activeHarness]} Models
+                  </div>
+                  {activeModels.map(model => (
+                    <button
+                      key={model.id}
+                      onClick={() => selectModel(model.id)}
+                      className={`w-full text-left px-3 py-1.5 hover:bg-claude-bg transition-colors ${
+                        model.id === currentModel ? 'bg-claude-bg text-claude-accent' : 'text-claude-text'
+                      }`}
+                    >
+                      <div className="font-mono text-xs">{model.name.replace(/ \(Cursor\)| \(Codex\)/, '')}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
         </div>
         {/* Context usage indicator — pushed to far right */}
         {contextUsage && (

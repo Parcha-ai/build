@@ -727,6 +727,102 @@ export default function SettingsDialog() {
         </p>
       </div>
 
+      {/* Anthropic Foundry */}
+      <div className="space-y-3 pt-4 border-t border-claude-border">
+        <div className="flex items-center justify-between">
+          <label className="block text-xs font-mono text-claude-text-secondary uppercase tracking-wider">
+            Anthropic Foundry
+          </label>
+          <button
+            onClick={() => {
+              const newValue = !foundryEnabled;
+              setFoundryEnabled(newValue);
+              autoSaveAppSettings({ foundryEnabled: newValue });
+            }}
+            className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
+              foundryEnabled ? 'bg-claude-accent' : 'bg-claude-border'
+            }`}
+          >
+            <span
+              className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${
+                foundryEnabled ? 'translate-x-[18px]' : 'translate-x-[3px]'
+              }`}
+            />
+          </button>
+        </div>
+        {foundryEnabled && (
+          <div className="space-y-3 pl-2 border-l-2 border-claude-accent/30">
+            <div>
+              <label className="block text-[10px] font-mono text-claude-text-secondary mb-1">Base URL</label>
+              <input
+                type="text"
+                value={foundryBaseUrl}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setFoundryBaseUrl(val);
+                  handleDebouncedChange(val, (v) => autoSaveAppSettings({ foundryBaseUrl: v }));
+                }}
+                placeholder="https://your-foundry-endpoint/v1/messages"
+                className="w-full px-3 py-2 bg-claude-bg border border-claude-border text-claude-text font-mono text-sm placeholder:text-claude-text-secondary focus:outline-none focus:border-claude-accent"
+                style={{ borderRadius: 0 }}
+              />
+            </div>
+            <div>
+              <label className="block text-[10px] font-mono text-claude-text-secondary mb-1">Foundry API Key</label>
+              <ApiKeyInput
+                value={foundryApiKey}
+                onChange={setFoundryApiKey}
+                show={showFoundryApiKey}
+                onToggleShow={() => setShowFoundryApiKey(!showFoundryApiKey)}
+                placeholder="foundry-..."
+                onSave={(value) => autoSaveAppSettings({ foundryApiKey: value })}
+                isLoading={isLoading}
+                handleDebouncedChange={handleDebouncedChange}
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="block text-[10px] font-mono text-claude-text-secondary">Model Overrides (optional)</label>
+              <input
+                type="text"
+                value={foundryDefaultSonnetModel}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setFoundryDefaultSonnetModel(val);
+                  handleDebouncedChange(val, (v) => autoSaveAppSettings({ foundryDefaultSonnetModel: v }));
+                }}
+                placeholder="Sonnet model name"
+                className="w-full px-3 py-1.5 bg-claude-bg border border-claude-border text-claude-text font-mono text-xs placeholder:text-claude-text-secondary focus:outline-none focus:border-claude-accent"
+                style={{ borderRadius: 0 }}
+              />
+              <input
+                type="text"
+                value={foundryDefaultHaikuModel}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setFoundryDefaultHaikuModel(val);
+                  handleDebouncedChange(val, (v) => autoSaveAppSettings({ foundryDefaultHaikuModel: v }));
+                }}
+                placeholder="Haiku model name"
+                className="w-full px-3 py-1.5 bg-claude-bg border border-claude-border text-claude-text font-mono text-xs placeholder:text-claude-text-secondary focus:outline-none focus:border-claude-accent"
+                style={{ borderRadius: 0 }}
+              />
+              <input
+                type="text"
+                value={foundryDefaultOpusModel}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setFoundryDefaultOpusModel(val);
+                  handleDebouncedChange(val, (v) => autoSaveAppSettings({ foundryDefaultOpusModel: v }));
+                }}
+                placeholder="Opus model name"
+                className="w-full px-3 py-1.5 bg-claude-bg border border-claude-border text-claude-text font-mono text-xs placeholder:text-claude-text-secondary focus:outline-none focus:border-claude-accent"
+                style={{ borderRadius: 0 }}
+              />
+            </div>
+          </div>
+        )}
+      </div>
+
       {/* OpenAI API Key */}
       <div className="space-y-2 pt-4 border-t border-claude-border">
         <label className="block text-xs font-mono text-claude-text-secondary uppercase tracking-wider">
@@ -840,102 +936,6 @@ export default function SettingsDialog() {
             Get key
           </a>
         </p>
-      </div>
-
-      {/* Anthropic Foundry (Azure) */}
-      <div className="space-y-3 pt-4 border-t border-claude-border">
-        <div className="flex items-center justify-between">
-          <label className="block text-xs font-mono text-claude-text-secondary uppercase tracking-wider">
-            Anthropic Foundry (Azure)
-          </label>
-          <button
-            onClick={() => {
-              const newValue = !foundryEnabled;
-              setFoundryEnabled(newValue);
-              autoSaveAppSettings({ foundryEnabled: newValue });
-            }}
-            className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
-              foundryEnabled ? 'bg-claude-accent' : 'bg-claude-border'
-            }`}
-          >
-            <span
-              className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${
-                foundryEnabled ? 'translate-x-[18px]' : 'translate-x-[3px]'
-              }`}
-            />
-          </button>
-        </div>
-        {foundryEnabled && (
-          <div className="space-y-3 pl-2 border-l-2 border-claude-accent/30">
-            <div>
-              <label className="block text-[10px] font-mono text-claude-text-secondary mb-1">Base URL</label>
-              <input
-                type="text"
-                value={foundryBaseUrl}
-                onChange={(e) => {
-                  const val = e.target.value;
-                  setFoundryBaseUrl(val);
-                  handleDebouncedChange(val, (v) => autoSaveAppSettings({ foundryBaseUrl: v }));
-                }}
-                placeholder="https://your-endpoint.cognitiveservices.azure.com/anthropic/v1/messages"
-                className="w-full px-3 py-2 bg-claude-bg border border-claude-border text-claude-text font-mono text-sm placeholder:text-claude-text-secondary focus:outline-none focus:border-claude-accent"
-                style={{ borderRadius: 0 }}
-              />
-            </div>
-            <div>
-              <label className="block text-[10px] font-mono text-claude-text-secondary mb-1">Foundry API Key</label>
-              <ApiKeyInput
-                value={foundryApiKey}
-                onChange={setFoundryApiKey}
-                show={showFoundryApiKey}
-                onToggleShow={() => setShowFoundryApiKey(!showFoundryApiKey)}
-                placeholder="foundry-..."
-                onSave={(value) => autoSaveAppSettings({ foundryApiKey: value })}
-                isLoading={isLoading}
-                handleDebouncedChange={handleDebouncedChange}
-              />
-            </div>
-            <div className="space-y-2">
-              <label className="block text-[10px] font-mono text-claude-text-secondary">Model Overrides (optional)</label>
-              <input
-                type="text"
-                value={foundryDefaultSonnetModel}
-                onChange={(e) => {
-                  const val = e.target.value;
-                  setFoundryDefaultSonnetModel(val);
-                  handleDebouncedChange(val, (v) => autoSaveAppSettings({ foundryDefaultSonnetModel: v }));
-                }}
-                placeholder="Sonnet model name"
-                className="w-full px-3 py-1.5 bg-claude-bg border border-claude-border text-claude-text font-mono text-xs placeholder:text-claude-text-secondary focus:outline-none focus:border-claude-accent"
-                style={{ borderRadius: 0 }}
-              />
-              <input
-                type="text"
-                value={foundryDefaultHaikuModel}
-                onChange={(e) => {
-                  const val = e.target.value;
-                  setFoundryDefaultHaikuModel(val);
-                  handleDebouncedChange(val, (v) => autoSaveAppSettings({ foundryDefaultHaikuModel: v }));
-                }}
-                placeholder="Haiku model name"
-                className="w-full px-3 py-1.5 bg-claude-bg border border-claude-border text-claude-text font-mono text-xs placeholder:text-claude-text-secondary focus:outline-none focus:border-claude-accent"
-                style={{ borderRadius: 0 }}
-              />
-              <input
-                type="text"
-                value={foundryDefaultOpusModel}
-                onChange={(e) => {
-                  const val = e.target.value;
-                  setFoundryDefaultOpusModel(val);
-                  handleDebouncedChange(val, (v) => autoSaveAppSettings({ foundryDefaultOpusModel: v }));
-                }}
-                placeholder="Opus model name"
-                className="w-full px-3 py-1.5 bg-claude-bg border border-claude-border text-claude-text font-mono text-xs placeholder:text-claude-text-secondary focus:outline-none focus:border-claude-accent"
-                style={{ borderRadius: 0 }}
-              />
-            </div>
-          </div>
-        )}
       </div>
 
       {/* Custom Models (Kimi, Gemini, etc via Anthropic-compatible proxy) */}

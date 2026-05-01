@@ -1595,16 +1595,29 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             return { isLoadingMessages: { ...state.isLoadingMessages, [sessionId]: false } };
           }
 
-          // Always replace in-memory with the fresh transcript. The previous
-          // "keep if in-memory has more" guard was wrong — it prevented SSH
-          // sessions from refreshing after re-open because in-memory had
-          // accumulated ephemeral messages (queued, errors, interrupted) that
-          // inflated the count above the transcript's real message count.
+          // Merge: use transcript as base but keep any in-memory messages
+          // that are newer (added by onStreamEnd after the transcript was read).
+          // Simply replacing caused data loss when loadMessages raced with
+          // onStreamEnd — the freshly added response got wiped.
+          const existing = state.messages[sessionId] || [];
+          if (existing.length > 0 && mergedMessages.length > 0) {
+            // Find messages in memory that aren't in the transcript (by ID)
+            const transcriptIds = new Set(mergedMessages.map(m => m.id));
+            const extraInMemory = existing.filter(m => !transcriptIds.has(m.id));
+
+            // If we have extra in-memory messages (from streaming), append them
+            const finalMessages = extraInMemory.length > 0
+              ? [...mergedMessages, ...extraInMemory]
+              : mergedMessages;
+
+            return {
+              messages: { ...state.messages, [sessionId]: finalMessages },
+              isLoadingMessages: { ...state.isLoadingMessages, [sessionId]: false },
+            };
+          }
+
           return {
-            messages: {
-              ...state.messages,
-              [sessionId]: mergedMessages,
-            },
+            messages: { ...state.messages, [sessionId]: mergedMessages },
             isLoadingMessages: { ...state.isLoadingMessages, [sessionId]: false },
           };
         });

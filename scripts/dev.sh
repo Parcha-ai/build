@@ -20,6 +20,13 @@ echo "Setting up QMD..."
 npm run setup-qmd
 echo ""
 
+# Kill any existing dev Electron instances (orphaned from previous runs).
+# These hold the single instance lock and silently prevent new launches.
+# Only kill Electron processes running from node_modules (dev builds),
+# NOT from out/ (production builds).
+pgrep -f "node_modules/electron/dist/Electron.app" | xargs kill -9 2>/dev/null || true
+pkill -9 -f "electron-forge" 2>/dev/null || true
+
 # Dev uses port 9001 to avoid conflicting with production (port 9000)
 export DEV_WEBPACK_PORT=9001
 lsof -ti:$DEV_WEBPACK_PORT | xargs kill -9 2>/dev/null || true
