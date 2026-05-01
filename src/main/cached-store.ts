@@ -38,7 +38,12 @@ export class CachedStore {
 
   private loadCache(): Record<string, unknown> {
     if (!this.cache) {
-      this.cache = (this.store as any).store || {};
+      // Deep copy to avoid sharing references with electron-store's internal
+      // Proxy. If another raw Store instance writes to the same file,
+      // electron-store's internal object gets replaced — but our cache would
+      // still reference the old (freed) object, causing V8 SIGSEGV crashes.
+      const raw = (this.store as any).store || {};
+      this.cache = JSON.parse(JSON.stringify(raw));
     }
     return this.cache!;
   }

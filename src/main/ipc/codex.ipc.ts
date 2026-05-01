@@ -78,7 +78,8 @@ export function registerCodexHandlers(ipcMain: IpcMain): void {
       // Determine working directory from session
       const Store = (await import('electron-store')).default;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const sessionsStore = new Store({ name: getSessionStoreName() }) as any;
+      const { CachedStore } = require('../cached-store');
+      const sessionsStore = new CachedStore({ name: getSessionStoreName() }) as any;
       const sessionData =
         sessionsStore.get(`sessions.${sessionId}`) as { worktreePath?: string; repoPath?: string; sshConfig?: SSHConfig } | undefined
         || sessionsStore.get(`discoveredSessions.${sessionId}`) as { worktreePath?: string; repoPath?: string; sshConfig?: SSHConfig } | undefined;
