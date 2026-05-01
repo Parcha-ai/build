@@ -420,6 +420,11 @@ const electronAPI = {
         ipcRenderer.removeListener(IPC_CHANNELS.APP_SHORTCUT_TRIGGERED, handler);
       };
     },
+    onSessionSwitcher: (callback: (data: { action: string }) => void) => {
+      const handler = (_: IpcRendererEvent, data: { action: string }) => callback(data);
+      ipcRenderer.on('session-switcher', handler);
+      return () => { ipcRenderer.removeListener('session-switcher', handler); };
+    },
     openBrowserWindow: (): Promise<void> =>
       ipcRenderer.invoke(IPC_CHANNELS.APP_OPEN_BROWSER_WINDOW),
     closeBrowserWindow: (): Promise<void> =>

@@ -275,11 +275,23 @@ const createWindow = (): void => {
   // Intercept app shortcuts in the main process so packaged builds do not depend on
   // renderer focus state to deliver keyboard commands.
   mainWindow.webContents.on('before-input-event', (event, input) => {
-    if (input.type !== 'keyDown') {
+    const key = (input.key || '').toLowerCase();
+
+    // Ctrl+Tab and Ctrl release: forward via IPC so session switcher works
+    // even when webview has focus (webview swallows native keyboard events)
+    if (input.type === 'keyDown' && input.control && key === 'tab') {
+      event.preventDefault();
+      mainWindow?.webContents.send('session-switcher', { action: input.shift ? 'prev' : 'next' });
+      return;
+    }
+    if (input.type === 'keyUp' && key === 'control') {
+      mainWindow?.webContents.send('session-switcher', { action: 'confirm' });
       return;
     }
 
-    const key = (input.key || '').toLowerCase();
+    if (input.type !== 'keyDown') {
+      return;
+    }
 
     // On macOS, Control-based chords are normal textarea editing shortcuts
     // (for example Ctrl+F/Ctrl+B/Ctrl+K/Ctrl+T). Only treat Command as the
@@ -393,6 +405,20 @@ const createWindow = (): void => {
   // After webview is attached, set up event handlers
   mainWindow.webContents.on('did-attach-webview', (event, webviewContents) => {
     console.log('[Main] Webview attached, id:', webviewContents.id);
+
+    // Forward Ctrl+Tab from webview to main window renderer so the session
+    // switcher works even when the browser preview has focus. Webview has
+    // its own renderer process — keyboard events don't reach the parent.
+    webviewContents.on('before-input-event', (evt, input) => {
+      const k = (input.key || '').toLowerCase();
+      if (input.type === 'keyDown' && input.control && k === 'tab') {
+        evt.preventDefault();
+        mainWindow?.webContents.send('session-switcher', { action: input.shift ? 'prev' : 'next' });
+      }
+      if (input.type === 'keyUp' && k === 'control') {
+        mainWindow?.webContents.send('session-switcher', { action: 'confirm' });
+      }
+    });
 
     webviewContents.on('did-finish-load', () => {
       console.log('[Main] Webview finished loading:', webviewContents.getURL());

@@ -15,7 +15,6 @@ export function useSessionSwitcher() {
     orderedSessionIds: [],
   });
 
-  // Refs to avoid stale closures in event handlers
   const stateRef = useRef(state);
   stateRef.current = state;
   const activeSessionIdRef = useRef(activeSessionId);
@@ -29,18 +28,29 @@ export function useSessionSwitcher() {
       .map(s => s.id);
   }, [sessions]);
 
-  const openSwitcher = useCallback(() => {
+  // Core actions — used by both native keyboard and IPC paths
+  const doOpen = useCallback(() => {
     const ordered = getOrderedSessions();
     if (ordered.length <= 1) return;
-    const newState: SwitcherState = {
-      isOpen: true,
-      selectedIndex: 1,
-      orderedSessionIds: ordered,
-    };
+    const newState: SwitcherState = { isOpen: true, selectedIndex: 1, orderedSessionIds: ordered };
     setState(newState);
     stateRef.current = newState;
     switcherActiveRef.current = true;
   }, [getOrderedSessions]);
+
+  const doCycle = useCallback((direction: 'next' | 'prev') => {
+    setState(prev => {
+      const len = prev.orderedSessionIds.length;
+      const next = {
+        ...prev,
+        selectedIndex: direction === 'next'
+          ? (prev.selectedIndex + 1) % len
+          : (prev.selectedIndex === 0 ? len - 1 : prev.selectedIndex - 1),
+      };
+      stateRef.current = next;
+      return next;
+    });
+  }, []);
 
   const confirmAndClose = useCallback(() => {
     const s = stateRef.current;
@@ -63,39 +73,15 @@ export function useSessionSwitcher() {
     switcherActiveRef.current = false;
   }, []);
 
-  const cycleNext = useCallback(() => {
-    setState(prev => {
-      const next = { ...prev, selectedIndex: (prev.selectedIndex + 1) % prev.orderedSessionIds.length };
-      stateRef.current = next;
-      return next;
-    });
-  }, []);
-
-  const cyclePrev = useCallback(() => {
-    setState(prev => {
-      const next = {
-        ...prev,
-        selectedIndex: prev.selectedIndex === 0 ? prev.orderedSessionIds.length - 1 : prev.selectedIndex - 1,
-      };
-      stateRef.current = next;
-      return next;
-    });
-  }, []);
-
   useEffect(() => {
+    // Native keyboard — works when renderer (chat/sidebar) has focus
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.ctrlKey && e.key === 'Tab') {
         e.preventDefault();
         e.stopPropagation();
-        if (!switcherActiveRef.current) {
-          openSwitcher();
-        } else if (e.shiftKey) {
-          cyclePrev();
-        } else {
-          cycleNext();
-        }
+        if (!switcherActiveRef.current) doOpen();
+        else doCycle(e.shiftKey ? 'prev' : 'next');
       }
-
       if (e.key === 'Escape' && switcherActiveRef.current) {
         e.preventDefault();
         cancelAndClose();
@@ -108,14 +94,26 @@ export function useSessionSwitcher() {
       }
     };
 
+    // IPC from main process — works when webview has focus
+    // (webview's before-input-event forwards Ctrl+Tab/Ctrl release)
+    const ipcUnsub = (window as any).electronAPI?.app?.onSessionSwitcher?.((data: { action: string }) => {
+      if (data.action === 'next' || data.action === 'prev') {
+        if (!switcherActiveRef.current) doOpen();
+        else doCycle(data.action);
+      } else if (data.action === 'confirm') {
+        if (switcherActiveRef.current) confirmAndClose();
+      }
+    });
+
     window.addEventListener('keydown', handleKeyDown, true);
     window.addEventListener('keyup', handleKeyUp, true);
 
     return () => {
       window.removeEventListener('keydown', handleKeyDown, true);
       window.removeEventListener('keyup', handleKeyUp, true);
+      ipcUnsub?.();
     };
-  }, [openSwitcher, confirmAndClose, cancelAndClose, cycleNext, cyclePrev]);
+  }, [doOpen, doCycle, confirmAndClose, cancelAndClose]);
 
   return {
     isOpen: state.isOpen,
