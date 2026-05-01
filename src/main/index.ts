@@ -275,19 +275,12 @@ const createWindow = (): void => {
   // Intercept app shortcuts in the main process so packaged builds do not depend on
   // renderer focus state to deliver keyboard commands.
   mainWindow.webContents.on('before-input-event', (event, input) => {
-    const key = (input.key || '').toLowerCase();
+    // NOTE: Ctrl+Tab interception is ONLY on webview's before-input-event
+    // (see did-attach-webview handler below). Don't intercept here on the
+    // main window — it kills native keydown/keyup events that the renderer's
+    // useSessionSwitcher hook needs for the chat-focused case.
 
-    // Ctrl+Tab and Ctrl release: forward via IPC so session switcher works
-    // even when webview has focus (webview swallows native keyboard events)
-    if (input.type === 'keyDown' && input.control && key === 'tab') {
-      event.preventDefault();
-      mainWindow?.webContents.send('session-switcher', { action: input.shift ? 'prev' : 'next' });
-      return;
-    }
-    if (input.type === 'keyUp' && key === 'control') {
-      mainWindow?.webContents.send('session-switcher', { action: 'confirm' });
-      return;
-    }
+    const key = (input.key || '').toLowerCase();
 
     if (input.type !== 'keyDown') {
       return;
