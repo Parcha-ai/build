@@ -2558,10 +2558,17 @@ Read or source that file if you need the actual values. Do not print secret valu
       try {
         console.log('[Claude Service] /btw via SDK askSideQuestion (live query)');
         const answer = await liveQueryAny.askSideQuestion(question);
-        if (answer) {
+        // SDK may return string or object — extract text content
+        let answerText = '';
+        if (typeof answer === 'string') {
+          answerText = answer;
+        } else if (answer && typeof answer === 'object') {
+          answerText = (answer as any).content || (answer as any).text || (answer as any).result || JSON.stringify(answer);
+        }
+        if (answerText) {
           this.mainWindow?.webContents.send(IPC_CHANNELS.CLAUDE_BTW_RESPONSE, {
             sessionId,
-            content: answer,
+            content: answerText,
             done: false,
           });
         }
