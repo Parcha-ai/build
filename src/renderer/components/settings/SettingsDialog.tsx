@@ -97,6 +97,7 @@ export default function SettingsDialog() {
   // General settings
   const [qmdEnabled, setQmdEnabled] = useState(false);
   const [ultraPlanMode, setUltraPlanMode] = useState(false);
+  const [showClearContextOnPlanAccept, setShowClearContextOnPlanAccept] = useState(false);
   const [lunchReminderEnabled, setLunchReminderEnabled] = useState(false);
   const [lunchReminderTime, setLunchReminderTime] = useState('12:00');
   const [bedtimeReminderEnabled, setBedtimeReminderEnabled] = useState(false);
@@ -139,7 +140,7 @@ export default function SettingsDialog() {
   }, []);
 
   // Auto-save app settings (toggles and time picker)
-  const autoSaveAppSettings = useCallback(async (updates: { qmdEnabled?: boolean; ultraPlanMode?: boolean; lunchReminderEnabled?: boolean; lunchReminderTime?: string; bedtimeReminderEnabled?: boolean; bedtimeReminderTime?: string; dailyReviewEnabled?: boolean; dailyReviewTime?: string; bedtimeTaskReviewEnabled?: boolean; foundryEnabled?: boolean; foundryBaseUrl?: string; foundryApiKey?: string; foundryDefaultSonnetModel?: string; foundryDefaultHaikuModel?: string; foundryDefaultOpusModel?: string; customModels?: typeof customModels }) => {
+  const autoSaveAppSettings = useCallback(async (updates: { qmdEnabled?: boolean; ultraPlanMode?: boolean; showClearContextOnPlanAccept?: boolean; lunchReminderEnabled?: boolean; lunchReminderTime?: string; bedtimeReminderEnabled?: boolean; bedtimeReminderTime?: string; dailyReviewEnabled?: boolean; dailyReviewTime?: string; bedtimeTaskReviewEnabled?: boolean; foundryEnabled?: boolean; foundryBaseUrl?: string; foundryApiKey?: string; foundryDefaultSonnetModel?: string; foundryDefaultHaikuModel?: string; foundryDefaultOpusModel?: string; customModels?: typeof customModels }) => {
     showSaveIndicator();
     try {
       await window.electronAPI.settings.set(updates);
@@ -221,6 +222,7 @@ export default function SettingsDialog() {
           setElevenLabsApiKey(elevenLabsKey || '');
           setQmdEnabled(appSettings.qmdEnabled || false);
           setUltraPlanMode(appSettings.ultraPlanMode || false);
+          setShowClearContextOnPlanAccept((appSettings as any).showClearContextOnPlanAccept || false);
           setLunchReminderEnabled(appSettings.lunchReminderEnabled || false);
           setLunchReminderTime(appSettings.lunchReminderTime || '12:00');
           setBedtimeReminderEnabled(appSettings.bedtimeReminderEnabled || false);
@@ -580,6 +582,26 @@ export default function SettingsDialog() {
             onChange={(value) => {
               setUltraPlanMode(value);
               autoSaveAppSettings({ ultraPlanMode: value });
+            }}
+            disabled={isLoading}
+            color="bg-purple-500"
+          />
+        </div>
+
+        <div className="flex items-center justify-between">
+          <div>
+            <label className="block text-xs font-mono text-claude-text-secondary uppercase tracking-wider">
+              Clear Context on Plan Accept
+            </label>
+            <p className="text-[10px] font-mono text-claude-text-secondary mt-1">
+              Show option to summarize and start with clean context when approving a plan
+            </p>
+          </div>
+          <Toggle
+            enabled={showClearContextOnPlanAccept}
+            onChange={(value) => {
+              setShowClearContextOnPlanAccept(value);
+              autoSaveAppSettings({ showClearContextOnPlanAccept: value });
             }}
             disabled={isLoading}
             color="bg-purple-500"

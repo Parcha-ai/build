@@ -292,6 +292,7 @@ export interface AppSettings {
   dailyReviewEnabled?: boolean;
   dailyReviewTime?: string;
   bedtimeTaskReviewEnabled?: boolean;
+  showClearContextOnPlanAccept?: boolean;
 }
 
 export interface CustomModelConfig {

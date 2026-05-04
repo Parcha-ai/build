@@ -3431,6 +3431,22 @@ Begin by creating the task structure now.
           console.warn('[Claude Service] Could not resolve a local Node executable explicitly; falling back to PATH lookup');
         }
       }
+      // Sync showClearContextOnPlanAccept to ~/.claude/settings.json
+      try {
+        const userClaudeSettings = path.join(os.homedir(), '.claude', 'settings.json');
+        let claudeSettings: Record<string, unknown> = {};
+        if (fs.existsSync(userClaudeSettings)) {
+          claudeSettings = JSON.parse(fs.readFileSync(userClaudeSettings, 'utf-8'));
+        }
+        const wantClear = !!(settings as any).showClearContextOnPlanAccept;
+        if (claudeSettings.showClearContextOnPlanAccept !== wantClear) {
+          claudeSettings.showClearContextOnPlanAccept = wantClear;
+          fs.writeFileSync(userClaudeSettings, JSON.stringify(claudeSettings, null, 2));
+        }
+      } catch (e) {
+        console.warn('[Claude Service] Could not sync showClearContextOnPlanAccept:', e);
+      }
+
       const messages = query({
         prompt,
         options: {
