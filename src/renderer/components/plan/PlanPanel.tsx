@@ -1,9 +1,80 @@
 import React from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { X, FileText, Trash2, Check, XCircle, RefreshCw, ClipboardList, FileCheck } from 'lucide-react';
+import { X, FileText, Trash2, Check, XCircle, RefreshCw, ClipboardList, FileCheck, MessageSquarePlus, Send } from 'lucide-react';
+import { v4 as uuid } from 'uuid';
 import { useUIStore } from '../../stores/ui.store';
 import { useSessionStore } from '../../stores/session.store';
+
+interface PlanComment {
+  id: string;
+  selectedText: string;
+  comment: string;
+  startOffset: number;
+  endOffset: number;
+}
+
+/**
+ * Applies highlight <mark> wrappers around commented text regions in the plan content DOM.
+ * Uses a text-node walker to locate substring matches and wrap them, then attaches
+ * hover listeners to display tooltips.
+ */
+function applyCommentHighlights(
+  container: HTMLElement,
+  comments: PlanComment[],
+  setTooltip: React.Dispatch<React.SetStateAction<{ text: string; x: number; y: number } | null>>,
+) {
+  // Remove existing highlights first
+  container.querySelectorAll('mark[data-comment-id]').forEach((mark) => {
+    const parent = mark.parentNode;
+    if (parent) {
+      while (mark.firstChild) parent.insertBefore(mark.firstChild, mark);
+      parent.removeChild(mark);
+      parent.normalize();
+    }
+  });
+
+  for (const comment of comments) {
+    const target = comment.selectedText;
+    if (!target) continue;
+
+    const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+    let node: Text | null;
+    let found = false;
+
+    while ((node = walker.nextNode() as Text | null)) {
+      if (found) break;
+      const idx = node.textContent?.indexOf(target) ?? -1;
+      if (idx === -1) continue;
+
+      // Don't re-highlight inside an existing <mark>
+      if (node.parentElement?.closest('mark[data-comment-id]')) continue;
+
+      const range = document.createRange();
+      range.setStart(node, idx);
+      range.setEnd(node, idx + target.length);
+
+      const mark = document.createElement('mark');
+      mark.setAttribute('data-comment-id', comment.id);
+      mark.className = 'bg-amber-500/20 cursor-pointer relative';
+      mark.title = comment.comment;
+
+      mark.addEventListener('mouseenter', () => {
+        const rect = mark.getBoundingClientRect();
+        const containerRect = container.getBoundingClientRect();
+        setTooltip({
+          text: comment.comment,
+          x: rect.left - containerRect.left,
+          y: rect.bottom - containerRect.top + 4,
+        });
+      });
+      mark.addEventListener('mouseleave', () => setTooltip(null));
+
+      range.surroundContents(mark);
+      found = true;
+    }
+  }
+}
 
 function SpecMetadataBar({ content }: { content: string }) {
   const frontmatterMatch = content.match(/^---\n([\s\S]*?)\n---/);
@@ -54,6 +125,160 @@ export default function PlanPanel() {
   const pendingApproval = activeSessionId ? pendingPlanApproval[activeSessionId] : null;
   const sessionMessages = activeSessionId ? messages[activeSessionId] : [];
   const isSpecFile = !!(planContent?.startsWith('---\n') && planContent?.includes('[@test]'));
+
+  // Inline comment state
+  const [comments, setComments] = React.useState<PlanComment[]>([]);
+  const [activeSelection, setActiveSelection] = React.useState<{
+    text: string;
+    rect: DOMRect;
+    startOffset: number;
+    endOffset: number;
+  } | null>(null);
+  const [commentInput, setCommentInput] = React.useState('');
+  const [showCommentInput, setShowCommentInput] = React.useState(false);
+  const [tooltip, setTooltip] = React.useState<{ text: string; x: number; y: number } | null>(null);
+  const planContentRef = React.useRef<HTMLDivElement>(null);
+  const commentInputRef = React.useRef<HTMLInputElement>(null);
+
+  // Clear comments when plan content changes (they're ephemeral per review)
+  React.useEffect(() => {
+    setComments([]);
+    setActiveSelection(null);
+    setShowCommentInput(false);
+    setCommentInput('');
+  }, [planContent]);
+
+  // Apply comment highlights to the rendered DOM
+  React.useEffect(() => {
+    if (!planContentRef.current || comments.length === 0) return;
+    // Small delay to let ReactMarkdown finish rendering
+    const timer = setTimeout(() => {
+      if (planContentRef.current) {
+        applyCommentHighlights(planContentRef.current, comments, setTooltip);
+      }
+    }, 50);
+    return () => clearTimeout(timer);
+  }, [comments, planContent]);
+
+  // Handle text selection in the plan content
+  React.useEffect(() => {
+    const container = planContentRef.current;
+    if (!container) return;
+
+    const handleMouseUp = () => {
+      // Small delay so the selection is finalised
+      setTimeout(() => {
+        const sel = window.getSelection();
+        if (!sel || sel.isCollapsed || !sel.rangeCount) {
+          // Don't dismiss if we're in the comment input flow
+          if (!showCommentInput) setActiveSelection(null);
+          return;
+        }
+
+        const text = sel.toString().trim();
+        if (!text || text.length < 2) {
+          if (!showCommentInput) setActiveSelection(null);
+          return;
+        }
+
+        // Ensure the selection is inside our plan content
+        const range = sel.getRangeAt(0);
+        if (!container.contains(range.commonAncestorContainer)) {
+          return;
+        }
+
+        const rect = range.getBoundingClientRect();
+        const containerRect = container.getBoundingClientRect();
+
+        // Compute character offset within the plan text
+        const beforeRange = document.createRange();
+        beforeRange.setStart(container, 0);
+        beforeRange.setEnd(range.startContainer, range.startOffset);
+        const startOffset = beforeRange.toString().length;
+
+        setActiveSelection({
+          text,
+          rect: new DOMRect(
+            rect.left - containerRect.left,
+            rect.top - containerRect.top,
+            rect.width,
+            rect.height,
+          ),
+          startOffset,
+          endOffset: startOffset + text.length,
+        });
+        setShowCommentInput(false);
+        setCommentInput('');
+      }, 10);
+    };
+
+    container.addEventListener('mouseup', handleMouseUp);
+    return () => container.removeEventListener('mouseup', handleMouseUp);
+  }, [showCommentInput]);
+
+  // Focus the comment input when it appears
+  React.useEffect(() => {
+    if (showCommentInput && commentInputRef.current) {
+      commentInputRef.current.focus();
+    }
+  }, [showCommentInput]);
+
+  const handleAddCommentClick = () => {
+    setShowCommentInput(true);
+  };
+
+  const handleSubmitComment = () => {
+    if (!activeSelection || !commentInput.trim()) return;
+
+    const newComment: PlanComment = {
+      id: uuid(),
+      selectedText: activeSelection.text,
+      comment: commentInput.trim(),
+      startOffset: activeSelection.startOffset,
+      endOffset: activeSelection.endOffset,
+    };
+
+    setComments((prev) => [...prev, newComment]);
+    setActiveSelection(null);
+    setShowCommentInput(false);
+    setCommentInput('');
+    window.getSelection()?.removeAllRanges();
+  };
+
+  const handleDeleteComment = (commentId: string) => {
+    setComments((prev) => prev.filter((c) => c.id !== commentId));
+    // Re-render highlights after removal
+    if (planContentRef.current) {
+      setTimeout(() => {
+        if (planContentRef.current) {
+          const remaining = comments.filter((c) => c.id !== commentId);
+          applyCommentHighlights(planContentRef.current!, remaining, setTooltip);
+        }
+      }, 10);
+    }
+  };
+
+  const handleSubmitAllComments = async () => {
+    if (!activeSessionId || comments.length === 0) return;
+
+    const feedbackParts = comments.map((c, i) => {
+      return `### Comment ${i + 1}\n**On:** "${c.selectedText}"\n**Comment:** ${c.comment}`;
+    });
+
+    const structuredFeedback = `## Plan Review Comments\n\n${feedbackParts.join('\n\n')}`;
+
+    await rejectPlan(activeSessionId, structuredFeedback);
+    setComments([]);
+    setFeedback('');
+    setShowFeedback(false);
+  };
+
+  const handleCancelComment = () => {
+    setActiveSelection(null);
+    setShowCommentInput(false);
+    setCommentInput('');
+    window.getSelection()?.removeAllRanges();
+  };
 
   // Debug logging
   React.useEffect(() => {
@@ -212,6 +437,12 @@ export default function PlanPanel() {
               SDD
             </span>
           )}
+          {comments.length > 0 && (
+            <span className="px-2 py-0.5 text-xs font-medium bg-amber-500/20 text-amber-400 border border-amber-500/30 flex items-center gap-1">
+              <MessageSquarePlus size={10} />
+              {comments.length}
+            </span>
+          )}
           {pendingApproval && (
             <span className="px-2 py-0.5 text-xs font-medium bg-amber-500/20 text-amber-400 border border-amber-500/30">
               Awaiting Approval
@@ -269,6 +500,15 @@ export default function PlanPanel() {
                 <RefreshCw size={16} />
                 Request Updates
               </button>
+              {comments.length > 0 && (
+                <button
+                  onClick={handleSubmitAllComments}
+                  className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white font-medium text-sm transition-colors"
+                >
+                  <Send size={16} />
+                  Submit Feedback ({comments.length})
+                </button>
+              )}
             </div>
           ) : (
             <div className="space-y-2">
@@ -331,8 +571,90 @@ export default function PlanPanel() {
           </div>
         )}
         {planContent ? (
-          <div className="prose prose-invert prose-sm max-w-none font-mono">
+          <div className="prose prose-invert prose-sm max-w-none font-mono relative" ref={planContentRef}>
             {isSpecFile && <SpecMetadataBar content={planContent} />}
+
+            {/* Floating "Add Comment" button near selection */}
+            {activeSelection && !showCommentInput && (
+              <div
+                className="absolute z-20"
+                style={{
+                  left: Math.max(0, activeSelection.rect.left),
+                  top: activeSelection.rect.top + activeSelection.rect.height + 4,
+                }}
+              >
+                <button
+                  onClick={handleAddCommentClick}
+                  onMouseDown={(e) => e.preventDefault()}
+                  className="flex items-center gap-1.5 px-2 py-1 text-xs font-mono bg-amber-500/90 text-black hover:bg-amber-400 transition-colors shadow-lg"
+                >
+                  <MessageSquarePlus size={12} />
+                  Add Comment
+                </button>
+              </div>
+            )}
+
+            {/* Inline comment input */}
+            {activeSelection && showCommentInput && (
+              <div
+                className="absolute z-20"
+                style={{
+                  left: 0,
+                  top: activeSelection.rect.top + activeSelection.rect.height + 4,
+                  right: 0,
+                }}
+              >
+                <div className="bg-claude-surface border border-amber-500/50 p-2 shadow-lg">
+                  <div className="text-[10px] font-mono text-amber-400 mb-1 truncate">
+                    &ldquo;{activeSelection.text.length > 80 ? activeSelection.text.slice(0, 80) + '...' : activeSelection.text}&rdquo;
+                  </div>
+                  <div className="flex gap-1">
+                    <input
+                      ref={commentInputRef}
+                      type="text"
+                      value={commentInput}
+                      onChange={(e) => setCommentInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && commentInput.trim()) {
+                          e.preventDefault();
+                          handleSubmitComment();
+                        }
+                        if (e.key === 'Escape') {
+                          e.preventDefault();
+                          handleCancelComment();
+                        }
+                      }}
+                      placeholder="Type your comment..."
+                      className="flex-1 px-2 py-1 text-xs font-mono bg-claude-bg border border-claude-border text-claude-text placeholder-claude-text-secondary focus:outline-none focus:border-amber-500/50"
+                    />
+                    <button
+                      onClick={handleSubmitComment}
+                      disabled={!commentInput.trim()}
+                      className="px-2 py-1 text-xs font-mono bg-amber-500/90 text-black hover:bg-amber-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                    >
+                      <Check size={12} />
+                    </button>
+                    <button
+                      onClick={handleCancelComment}
+                      className="px-2 py-1 text-xs font-mono bg-claude-bg border border-claude-border text-claude-text-secondary hover:text-claude-text transition-colors"
+                    >
+                      <X size={12} />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Comment tooltip on hover */}
+            {tooltip && (
+              <div
+                className="absolute z-30 max-w-xs px-2 py-1 text-xs font-mono bg-claude-surface border border-amber-500/40 text-claude-text shadow-lg pointer-events-none"
+                style={{ left: tooltip.x, top: tooltip.y }}
+              >
+                {tooltip.text}
+              </div>
+            )}
+
             <ReactMarkdown
               remarkPlugins={[remarkGfm]}
               components={{
@@ -466,6 +788,45 @@ export default function PlanPanel() {
             >
               {planContent}
             </ReactMarkdown>
+
+            {/* Comment summary list */}
+            {comments.length > 0 && (
+              <div className="mt-6 border-t border-amber-500/30 pt-4">
+                <div className="flex items-center gap-2 mb-3">
+                  <MessageSquarePlus size={14} className="text-amber-400" />
+                  <span className="text-xs font-bold uppercase tracking-wider text-amber-400">
+                    Comments ({comments.length})
+                  </span>
+                </div>
+                <div className="space-y-2">
+                  {comments.map((c, i) => (
+                    <div
+                      key={c.id}
+                      className="flex items-start gap-2 p-2 bg-claude-surface border border-claude-border group"
+                    >
+                      <span className="text-[10px] font-mono text-amber-400 mt-0.5 shrink-0">
+                        {i + 1}.
+                      </span>
+                      <div className="flex-1 min-w-0">
+                        <div className="text-[10px] font-mono text-claude-text-secondary truncate mb-0.5">
+                          &ldquo;{c.selectedText.length > 60 ? c.selectedText.slice(0, 60) + '...' : c.selectedText}&rdquo;
+                        </div>
+                        <div className="text-xs font-mono text-claude-text">
+                          {c.comment}
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => handleDeleteComment(c.id)}
+                        className="p-0.5 text-claude-text-secondary hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+                        title="Remove comment"
+                      >
+                        <X size={12} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         ) : (!sessionMessages || sessionMessages.length === 0) && (
           <div className="h-full flex flex-col items-center justify-center text-claude-text-secondary">

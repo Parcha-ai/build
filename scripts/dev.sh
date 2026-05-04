@@ -35,13 +35,15 @@ lsof -ti:$DEV_WEBPACK_PORT | xargs kill -9 2>/dev/null || true
 export GREP_DEV_USER_DATA="/tmp/grep-build-dev"
 mkdir -p "$GREP_DEV_USER_DATA"
 
-# Copy settings from production so API keys etc. are available in dev
-DEV_SETTINGS="$GREP_DEV_USER_DATA/claudette-settings.json"
+# Copy from prod ONLY if dev settings don't exist yet.
+# Never overwrite — preserves custom models, API keys configured in dev.
+# Never symlink — CachedStore flush will corrupt prod settings.
 for PROD_DIR in "$HOME/Library/Application Support/Build" "$HOME/Library/Application Support/G-Build" "$HOME/Library/Application Support/Grep Build"; do
-  PROD_SETTINGS="$PROD_DIR/claudette-settings.json"
-  if [ -f "$PROD_SETTINGS" ]; then
-    cp "$PROD_SETTINGS" "$DEV_SETTINGS"
-    echo "Synced settings from $PROD_DIR"
+  if [ -d "$PROD_DIR" ]; then
+    [ ! -f "$GREP_DEV_USER_DATA/claudette-settings.json" ] && [ -f "$PROD_DIR/claudette-settings.json" ] && cp "$PROD_DIR/claudette-settings.json" "$GREP_DEV_USER_DATA/claudette-settings.json"
+    [ ! -f "$GREP_DEV_USER_DATA/claudette-mcp-servers.json" ] && [ -f "$PROD_DIR/claudette-mcp-servers.json" ] && cp "$PROD_DIR/claudette-mcp-servers.json" "$GREP_DEV_USER_DATA/claudette-mcp-servers.json"
+    [ -f "$PROD_DIR/claudette-sessions.json" ] && cp "$PROD_DIR/claudette-sessions.json" "$GREP_DEV_USER_DATA/claudette-sessions.json" 2>/dev/null
+    echo "Synced from $PROD_DIR (settings: $([ -f $GREP_DEV_USER_DATA/claudette-settings.json ] && echo 'kept' || echo 'copied'))"
     break
   fi
 done

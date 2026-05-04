@@ -138,7 +138,22 @@ export class ClaudeService {
 
     const vars: Record<string, string> = {};
     if (config.baseUrl) vars.ANTHROPIC_BASE_URL = config.baseUrl.trim();
-    if (config.apiKey) vars.ANTHROPIC_API_KEY = config.apiKey.trim();
+    if (config.apiKey) {
+      // Set BOTH auth env vars — ANTHROPIC_AUTH_TOKEN is used by third-party
+      // providers (Fireworks, etc) as a passthrough token, while ANTHROPIC_API_KEY
+      // is the standard Anthropic auth. The SDK/CLI picks the right one.
+      vars.ANTHROPIC_API_KEY = config.apiKey.trim();
+      vars.ANTHROPIC_AUTH_TOKEN = config.apiKey.trim();
+    }
+    if (config.modelId) {
+      const modelId = config.modelId.trim();
+      vars.ANTHROPIC_MODEL = modelId;
+      vars.ANTHROPIC_SMALL_FAST_MODEL = modelId;
+      // Replace Sonnet tier — custom models typically match Sonnet's
+      // context/capability level. Leave Opus and Haiku as Claude defaults
+      // so sub-agents and compaction use the right models.
+      vars.ANTHROPIC_DEFAULT_SONNET_MODEL = modelId;
+    }
     return vars;
   }
 
@@ -335,7 +350,8 @@ export class ClaudeService {
   }
 
   getApiKey(): string | undefined {
-    return this.store.get('anthropicApiKey') as string | undefined;
+    const key = this.store.get('anthropicApiKey') as string | undefined;
+    return key?.trim() || undefined; // Treat empty string as no key
   }
 
   // Get available Claude models - use Foundry models if configured
@@ -3421,14 +3437,24 @@ Begin by creating the task structure now.
           enableFileCheckpointing: true,
           settingSources: ['user', 'project'],
           // Pass environment with API key and enable agent teams
-          env: {
-            ...process.env,
-            ...(apiKey ? { ANTHROPIC_API_KEY: apiKey } : {}),
-            CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
-            ENABLE_TOOL_SEARCH: process.env.ENABLE_TOOL_SEARCH || 'true',
-            ...this.getFoundryEnvVars(),
-            ...this.getCustomModelEnvVars(selectedModel),
-          },
+          env: (() => {
+            // Start with process.env but STRIP any stale custom model vars
+            const { ANTHROPIC_BASE_URL: _, ANTHROPIC_MODEL: _m, ANTHROPIC_SMALL_FAST_MODEL: _s, ...cleanEnv } = process.env;
+            const customVars = this.getCustomModelEnvVars(selectedModel);
+            const foundryVars = this.getFoundryEnvVars();
+            const finalEnv = {
+              ...cleanEnv,
+              ...(apiKey ? { ANTHROPIC_API_KEY: apiKey } : {}),
+              CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
+              ENABLE_TOOL_SEARCH: process.env.ENABLE_TOOL_SEARCH || 'true',
+              ...foundryVars,
+              ...customVars,
+            };
+            if (Object.keys(customVars).length > 0) {
+              console.log('[Claude Service] Custom model env:', { baseUrl: customVars.ANTHROPIC_BASE_URL, model: customVars.ANTHROPIC_MODEL, hasKey: !!customVars.ANTHROPIC_API_KEY });
+            }
+            return finalEnv;
+          })(),
           // Resume previous conversation if we have an SDK session ID.
           // For SSH forks: resume from the parent's SDK session + forkSession: true
           // so the remote transcript gets forked on the first query.

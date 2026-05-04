@@ -807,11 +807,11 @@ ${data.textContent ? `**Text Content:** "${data.textContent.slice(0, 100)}${data
           const insertEvent = new CustomEvent('grep-insert-chat', {
             detail: {
               sessionId: session.id,
-              content: '', // No visible text - context is in attachments
+              content: '',
               screenshot: screenshotBase64,
               elementContext: {
                 selector: data.selector,
-                outerHTML: data.outerHTML || '',
+                outerHTML: `[Page: ${url}]\n\n${data.outerHTML || ''}`,
                 tagName: data.tagName,
                 reactComponent: data.reactComponent,
               },
@@ -828,9 +828,12 @@ ${data.textContent ? `**Text Content:** "${data.textContent.slice(0, 100)}${data
       }
     };
 
+    // Remove previous listener before adding new one (prevents duplicates on re-inject)
+    if ((webview as any)._inspectorCleanup) {
+      (webview as any)._inspectorCleanup();
+    }
     webview.addEventListener('console-message', handleConsoleMessage as any);
 
-    // Store cleanup function
     (webview as any)._inspectorCleanup = () => {
       webview.removeEventListener('console-message', handleConsoleMessage as any);
     };

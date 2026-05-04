@@ -467,6 +467,8 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
       const newAttachments: Attachment[] = [];
 
       // Add element context as a dom_element attachment (shows as chip, sent as context)
+      // When both element context AND screenshot exist, combine into one chip
+      // (don't create two separate chips for a single inspector click)
       if (elementContext) {
         const displayName = elementContext.reactComponent
           ? `<${elementContext.reactComponent}>`
@@ -476,14 +478,13 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
           type: 'dom_element',
           name: displayName,
           content: elementContext.outerHTML,
-        });
-      }
-
-      // Add screenshot as an image attachment
-      if (screenshot) {
+          screenshot: screenshot || undefined,
+        } as Attachment);
+      } else if (screenshot) {
+        // Standalone screenshot (no element context) — e.g., screenshot button
         newAttachments.push({
           type: 'image',
-          name: 'element-screenshot.png',
+          name: 'screenshot.png',
           content: screenshot,
         });
       }
