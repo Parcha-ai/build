@@ -2862,6 +2862,27 @@ Read or source that file if you need the actual values. Do not print secret valu
         console.log(`[Claude Service] Routing to Codex model=${codexModel} ssh=${!!session.sshConfig}`);
         const projectPath = session.worktreePath || session.repoPath || process.cwd();
 
+        // Enable Codex goals when Ralph Loop is on
+        const audioSettings = this.store.get('audioSettings') as Record<string, unknown> | undefined;
+        if (audioSettings?.ralphLoopEnabled) {
+          try {
+            const fs = require('fs');
+            const os = require('os');
+            const path = require('path');
+            const configPath = path.join(os.homedir(), '.codex', 'config.toml');
+            const configContent = fs.existsSync(configPath) ? fs.readFileSync(configPath, 'utf-8') : '';
+            if (!configContent.includes('goals = true')) {
+              const goalsSection = configContent.includes('[features]')
+                ? configContent.replace('[features]', '[features]\ngoals = true')
+                : configContent + '\n\n[features]\ngoals = true\n';
+              fs.writeFileSync(configPath, goalsSection);
+              console.log('[Claude Service] Enabled Codex goals for Ralph Loop');
+            }
+          } catch (e) {
+            console.warn('[Claude Service] Could not enable Codex goals:', e);
+          }
+        }
+
         // Load conversation history to give Codex context from prior Claude turns
         let conversationContext = '';
         try {
@@ -2882,7 +2903,11 @@ Read or source that file if you need the actual values. Do not print secret valu
 
         const codexContext = [secureEnvContext, conversationContext].filter(Boolean).join('\n\n');
 
-        for await (const event of codexService.streamAsChat(sessionId, userMessage, projectPath, session.sshConfig, codexContext, codexModel, attachments, sdkPermissionMode)) {
+        // When Ralph Loop is on, prepend /goal so Codex sets up goal tracking
+        const ralphWithGoals = audioSettings?.ralphLoopEnabled && permissionMode === 'bypassPermissions';
+        const codexPrompt = ralphWithGoals ? `/goal ${userMessage}` : userMessage;
+
+        for await (const event of codexService.streamAsChat(sessionId, codexPrompt, projectPath, session.sshConfig, codexContext, codexModel, attachments, sdkPermissionMode)) {
           yield event as StreamEvent;
         }
         return;
