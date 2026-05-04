@@ -23,7 +23,7 @@ export function useSessionSwitcher() {
 
   const getOrderedSessions = useCallback(() => {
     return [...sessions]
-      .filter(s => s.status === 'running' && !s.parentSessionId)
+      .filter(s => s.status === 'running')
       .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
       .map(s => s.id);
   }, [sessions]);

@@ -99,7 +99,37 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
     };
   }, [showOverflow]);
 
-  const visibleForks = forkSiblings.filter(f => !overflowIds.has(f.id));
+  // Drag-and-drop reorder state
+  const [tabOrder, setTabOrder] = useState<string[]>([]);
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [dragOverId, setDragOverId] = useState<string | null>(null);
+
+  // Persist tab order in localStorage
+  const orderKey = `grep-tab-order-${rootId}`;
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem(orderKey);
+      if (stored) setTabOrder(JSON.parse(stored));
+    } catch { /* ignore */ }
+  }, [orderKey]);
+
+  const saveTabOrder = useCallback((order: string[]) => {
+    setTabOrder(order);
+    localStorage.setItem(orderKey, JSON.stringify(order));
+  }, [orderKey]);
+
+  // Build visible forks with custom ordering
+  const visibleForks = useMemo(() => {
+    const visible = forkSiblings.filter(f => !overflowIds.has(f.id));
+    if (tabOrder.length === 0) return visible;
+    // Sort by saved order; any new tabs not in the order go to the end
+    const orderMap = new Map(tabOrder.map((id, i) => [id, i]));
+    return [...visible].sort((a, b) => {
+      const ai = orderMap.get(a.id) ?? Infinity;
+      const bi = orderMap.get(b.id) ?? Infinity;
+      return ai - bi;
+    });
+  }, [forkSiblings, overflowIds, tabOrder]);
 
   // Overflow: closed forks + project sessions not already in the fork group
   const forkGroupIds = new Set(forkSiblings.map(f => f.id));
@@ -114,8 +144,7 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
     if (forkId === activeSessionId) {
       const remaining = forkSiblings.filter(f => f.id !== forkId && !overflowIds.has(f.id));
       if (remaining.length > 0) {
-        const root = remaining.find(f => !f.parentSessionId);
-        setActiveSession(root?.id || remaining[0].id);
+        setActiveSession(remaining[0].id);
       }
     }
   }, [activeSessionId, forkSiblings, overflowIds, setActiveSession]);
@@ -130,6 +159,49 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
     setShowOverflow(false);
   }, [setActiveSession]);
 
+  // Drag-and-drop handlers
+  const handleDragStart = useCallback((e: React.DragEvent, id: string) => {
+    setDragId(id);
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', id);
+    // Make the drag image slightly transparent
+    if (e.currentTarget instanceof HTMLElement) {
+      e.currentTarget.style.opacity = '0.5';
+    }
+  }, []);
+
+  const handleDragEnd = useCallback((e: React.DragEvent) => {
+    if (e.currentTarget instanceof HTMLElement) {
+      e.currentTarget.style.opacity = '1';
+    }
+    setDragId(null);
+    setDragOverId(null);
+  }, []);
+
+  const handleDragOver = useCallback((e: React.DragEvent, id: string) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    if (id !== dragId) setDragOverId(id);
+  }, [dragId]);
+
+  const handleDrop = useCallback((e: React.DragEvent, targetId: string) => {
+    e.preventDefault();
+    if (!dragId || dragId === targetId) return;
+
+    const currentOrder = visibleForks.map(f => f.id);
+    const fromIdx = currentOrder.indexOf(dragId);
+    const toIdx = currentOrder.indexOf(targetId);
+    if (fromIdx === -1 || toIdx === -1) return;
+
+    const newOrder = [...currentOrder];
+    newOrder.splice(fromIdx, 1);
+    newOrder.splice(toIdx, 0, dragId);
+    saveTabOrder(newOrder);
+
+    setDragId(null);
+    setDragOverId(null);
+  }, [dragId, visibleForks, saveTabOrder]);
+
   // Always show for SSH sessions (so the + button is accessible).
   // For local sessions, only show when there are forks or project siblings.
   const currentSession = sessions.find(s => s.id === sessionId);
@@ -142,18 +214,24 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
         {visibleForks.map((fork, index) => {
           const isActive = fork.id === activeSessionId;
           const displayName = fork.aiGeneratedName || fork.forkName || fork.name;
-          const isRoot = !fork.parentSessionId;
+          const isDragOver = fork.id === dragOverId;
 
           return (
             <div
               key={fork.id}
+              draggable
+              onDragStart={(e) => handleDragStart(e, fork.id)}
+              onDragEnd={handleDragEnd}
+              onDragOver={(e) => handleDragOver(e, fork.id)}
+              onDrop={(e) => handleDrop(e, fork.id)}
               className={`
-                flex items-center gap-2 px-3 py-1 whitespace-nowrap uppercase group
+                flex items-center gap-2 px-3 py-1 whitespace-nowrap uppercase group cursor-grab active:cursor-grabbing
                 ${isActive
                   ? 'text-claude-text border-b-2 border-claude-accent'
                   : 'text-claude-text-secondary hover:text-claude-text'
                 }
                 ${index > 0 ? 'border-l border-claude-border/30' : ''}
+                ${isDragOver ? 'bg-claude-accent/10' : ''}
               `}
               style={{ letterSpacing: '0.05em' }}
             >
@@ -163,13 +241,13 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
                 title={fork.name}
               >
                 {isActive && '> '}
-                {isRoot ? 'ROOT' : displayName}
+                {displayName}
               </button>
-              {!isRoot && (
+              {visibleForks.length > 1 && (
                 <button
                   onClick={(e) => handleClose(e, fork.id)}
                   className="opacity-0 group-hover:opacity-100 text-claude-text-secondary hover:text-red-400 transition-opacity"
-                  title="Close fork"
+                  title="Close tab"
                 >
                   ×
                 </button>
@@ -254,7 +332,7 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
             {closedForks.length > 0 && (
               <>
                 <div className="px-3 py-1.5 border-b border-claude-border">
-                  <span className="text-[10px] font-semibold text-claude-text-secondary uppercase tracking-wide">Closed Forks</span>
+                  <span className="text-[10px] font-semibold text-claude-text-secondary uppercase tracking-wide">Closed Tabs</span>
                 </div>
                 {closedForks.map(fork => (
                   <button
