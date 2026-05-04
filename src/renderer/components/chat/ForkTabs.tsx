@@ -384,6 +384,8 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
                             console.warn('[ForkTabs] Failed to adopt session into fork group:', err);
                           }
                         }
+                        // Refresh store so forkSiblings includes the adopted session
+                        await loadSessions();
                         // Remove from overflow so it appears as a visible tab
                         setOverflowIds(prev => {
                           const next = new Set(prev);

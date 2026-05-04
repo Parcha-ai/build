@@ -632,39 +632,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   setActiveSession: async (sessionId) => {
     const { loadMessages, startSession } = get();
-    const perfStart = performance.now();
 
-    // Focus Mode guard: only allow switching to the active task's session
-    // (or its forks). If the user tries to switch elsewhere, block with confirm.
-    if (sessionId) {
-      try {
-        const { useTaskStore } = await import('./task.store');
-        const taskState = useTaskStore.getState();
-        if (taskState.focusModeEnabled && taskState.activeTaskId) {
-          const activeTask = taskState.tasks.find(t => t.id === taskState.activeTaskId);
-          if (activeTask?.sessionId) {
-            // Allow the active task's session and its forks
-            const allowedRoot = activeTask.sessionId;
-            const currentSessions = get().sessions;
-            const targetSession = currentSessions.find(s => s.id === sessionId);
-            const isAllowed = sessionId === allowedRoot ||
-              targetSession?.parentSessionId === allowedRoot ||
-              currentSessions.find(s => s.id === allowedRoot)?.childSessionIds?.includes(sessionId);
-
-            if (!isAllowed) {
-              const proceed = window.confirm(
-                `Focus Mode is active.\n\nCurrent task: "${activeTask.title}"\n\nSwitch away from this task?`
-              );
-              if (!proceed) return;
-            }
-          }
-        }
-      } catch {
-        // task store not loaded yet — skip guard
-      }
-    }
-
-    // 1. Synchronous state update (instant UI response)
+    // 1. Synchronous state update FIRST (instant UI response)
     set((state) => {
       // Update the session's updatedAt timestamp when it becomes active
       const updatedSessions = sessionId
@@ -700,7 +669,39 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       };
     });
 
-    console.log(`[Perf] Session switch (UI update) took ${performance.now() - perfStart}ms`);
+    // Focus Mode guard: if switching away from the active task, confirm with user.
+    // Runs AFTER the UI update so the tab switch feels instant; reverts if user cancels.
+    if (sessionId) {
+      try {
+        const { useTaskStore } = await import('./task.store');
+        const taskState = useTaskStore.getState();
+        if (taskState.focusModeEnabled && taskState.activeTaskId) {
+          const activeTask = taskState.tasks.find(t => t.id === taskState.activeTaskId);
+          if (activeTask?.sessionId) {
+            const allowedRoot = activeTask.sessionId;
+            const currentSessions = get().sessions;
+            const targetSession = currentSessions.find(s => s.id === sessionId);
+            const isAllowed = sessionId === allowedRoot ||
+              targetSession?.parentSessionId === allowedRoot ||
+              currentSessions.find(s => s.id === allowedRoot)?.childSessionIds?.includes(sessionId);
+
+            if (!isAllowed) {
+              const proceed = window.confirm(
+                `Focus Mode is active.\n\nCurrent task: "${activeTask.title}"\n\nSwitch away from this task?`
+              );
+              if (!proceed) {
+                // Revert to previous session
+                const previousId = activeTask.sessionId;
+                set({ activeSessionId: previousId });
+                return;
+              }
+            }
+          }
+        }
+      } catch {
+        // task store not loaded yet — skip guard
+      }
+    }
 
     // Auto-open plan panel if switching to a session with pending plan approval
     if (sessionId && get().pendingPlanApproval[sessionId]) {
