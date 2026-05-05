@@ -64,8 +64,9 @@ export default function SessionList() {
 
     // First pass: separate SSH and local sessions, create project groups
     sessions.forEach(session => {
-      // Skip conversation forks - they're shown in horizontal tabs when viewing the parent
-      if (session.parentSessionId) {
+      // Skip conversation forks UNLESS it's the active session — active session
+      // must always be visible in the sidebar so the user can find where they are.
+      if (session.parentSessionId && session.id !== activeSessionId) {
         return;
       }
 
