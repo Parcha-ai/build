@@ -673,8 +673,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // Runs AFTER the UI update so the tab switch feels instant; reverts if user cancels.
     if (sessionId) {
       try {
-        const { useTaskStore } = await import('./task.store');
-        const taskState = useTaskStore.getState();
+        const taskModule = await import('./task.store');
+        const taskState = taskModule.useTaskStore.getState();
         if (taskState.focusModeEnabled && taskState.activeTaskId) {
           const activeTask = taskState.tasks.find(t => t.id === taskState.activeTaskId);
           if (activeTask?.sessionId) {
@@ -724,11 +724,17 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }
 
       // 4. Load messages in background (non-blocking)
-      loadMessages(sessionId); // Don't await
+      // Skip if we already have messages cached — avoids expensive IPC/SSH reads
+      // that block the main process and freeze the UI on every tab switch.
+      const cachedMessages = get().messages[sessionId];
+      if (!cachedMessages || cachedMessages.length === 0) {
+        loadMessages(sessionId); // Don't await
+      }
 
       // 5. If the app was closed while a detached SSH run continued remotely,
       // preserve streaming/queue semantics until that remote process exits.
-      if (session?.sshConfig) {
+      // Only start if not already monitoring (avoid duplicate monitors on tab switch).
+      if (session?.sshConfig && !get().isStreaming[sessionId]) {
         startRemoteProcessMonitor(sessionId, get, set, loadMessages);
       }
 
