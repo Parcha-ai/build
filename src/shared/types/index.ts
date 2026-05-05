@@ -76,6 +76,7 @@ export interface Session {
   isRoot?: boolean; // True for original conversation (no parent)
   forkCreatedAt?: Date; // When this conversation fork was created
   gstackMode?: string; // Active GStack skill name (dynamic, from disk)
+  tabHidden?: boolean; // True if user closed this tab (persists across restarts)
 }
 
 // GStack mode is now a dynamic string (skill ID from disk), not a fixed union

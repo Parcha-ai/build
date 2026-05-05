@@ -1,7 +1,7 @@
 {
   "name": "build",
   "productName": "Build",
-  "version": "0.3.50",
+  "version": "0.3.51",
   "description": "AI-powered development environment with intelligent code search, multi-session support, and live browser preview",
   "main": ".webpack/main",
   "scripts": {

@@ -62,12 +62,17 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
     });
   }, [sessionId, rootId, sessions, loadSessions]);
 
-  // Persist overflow (closed) tabs in localStorage
+  // Persist overflow (closed) tabs — merge localStorage + backend tabHidden flag
   const storageKey = `grep-overflow-forks-${rootId}`;
   const [overflowIds, setOverflowIds] = useState<Set<string>>(() => {
     try {
       const stored = localStorage.getItem(storageKey);
-      return stored ? new Set(JSON.parse(stored)) : new Set();
+      const fromStorage = stored ? new Set<string>(JSON.parse(stored)) : new Set<string>();
+      // Also include sessions flagged as tabHidden from backend
+      for (const s of forkSiblings) {
+        if ((s as any).tabHidden) fromStorage.add(s.id);
+      }
+      return fromStorage;
     } catch { return new Set(); }
   });
 
@@ -98,6 +103,33 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
       document.removeEventListener('click', handleClick);
     };
   }, [showOverflow]);
+
+  // Inline rename state
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState('');
+  const renameInputRef = useRef<HTMLInputElement>(null);
+
+  const handleRenameStart = useCallback((forkId: string, currentName: string) => {
+    setRenamingId(forkId);
+    setRenameValue(currentName);
+    setTimeout(() => renameInputRef.current?.select(), 0);
+  }, []);
+
+  const handleRenameCommit = useCallback(async () => {
+    if (!renamingId || !renameValue.trim()) {
+      setRenamingId(null);
+      return;
+    }
+    try {
+      await window.electronAPI.sessions.update(renamingId, {
+        aiGeneratedName: renameValue.trim(),
+      } as any);
+      loadSessions();
+    } catch (e) {
+      console.warn('[ForkTabs] Rename failed:', e);
+    }
+    setRenamingId(null);
+  }, [renamingId, renameValue, loadSessions]);
 
   // Drag-and-drop reorder state
   const [tabOrder, setTabOrder] = useState<string[]>([]);
@@ -140,6 +172,8 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
   const handleClose = useCallback((e: React.MouseEvent, forkId: string) => {
     e.stopPropagation();
     setOverflowIds(prev => new Set(prev).add(forkId));
+    // Persist to backend so it survives restart
+    window.electronAPI.sessions.update(forkId, { tabHidden: true } as any).catch(() => {});
 
     if (forkId === activeSessionId) {
       const remaining = forkSiblings.filter(f => f.id !== forkId && !overflowIds.has(f.id));
@@ -155,6 +189,8 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
       next.delete(forkId);
       return next;
     });
+    // Clear backend hidden flag
+    window.electronAPI.sessions.update(forkId, { tabHidden: false } as any).catch(() => {});
     setActiveSession(forkId);
     setShowOverflow(false);
   }, [setActiveSession]);
@@ -213,19 +249,20 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
       <div className="flex items-center px-3 py-1 overflow-x-auto">
         {visibleForks.map((fork, index) => {
           const isActive = fork.id === activeSessionId;
-          const displayName = fork.aiGeneratedName || fork.forkName || fork.name;
+          const displayName = fork.aiGeneratedName || fork.name;
           const isDragOver = fork.id === dragOverId;
+          const isRenaming = renamingId === fork.id;
 
           return (
             <div
               key={fork.id}
-              draggable
+              draggable={!isRenaming}
               onDragStart={(e) => handleDragStart(e, fork.id)}
               onDragEnd={handleDragEnd}
               onDragOver={(e) => handleDragOver(e, fork.id)}
               onDrop={(e) => handleDrop(e, fork.id)}
               className={`
-                flex items-center gap-2 px-3 py-1 whitespace-nowrap uppercase group cursor-grab active:cursor-grabbing
+                flex items-center gap-2 px-3 py-1 whitespace-nowrap uppercase group ${isRenaming ? '' : 'cursor-grab active:cursor-grabbing'}
                 ${isActive
                   ? 'text-claude-text border-b-2 border-claude-accent'
                   : 'text-claude-text-secondary hover:text-claude-text'
@@ -235,15 +272,35 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
               `}
               style={{ letterSpacing: '0.05em' }}
             >
-              <button
-                onClick={() => setActiveSession(fork.id)}
-                className="flex-1 text-left"
-                title={fork.name}
-              >
-                {isActive && '> '}
-                {displayName}
-              </button>
-              {visibleForks.length > 1 && (
+              {isRenaming ? (
+                <input
+                  ref={renameInputRef}
+                  value={renameValue}
+                  onChange={(e) => setRenameValue(e.target.value)}
+                  onBlur={handleRenameCommit}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') handleRenameCommit();
+                    if (e.key === 'Escape') setRenamingId(null);
+                  }}
+                  className="flex-1 bg-transparent border-b border-claude-accent text-claude-text text-xs font-mono uppercase outline-none px-0 py-0"
+                  style={{ letterSpacing: '0.05em', minWidth: '60px' }}
+                  autoFocus
+                />
+              ) : (
+                <button
+                  onClick={() => setActiveSession(fork.id)}
+                  onDoubleClick={(e) => {
+                    e.preventDefault();
+                    handleRenameStart(fork.id, displayName);
+                  }}
+                  className="flex-1 text-left"
+                  title="Double-click to rename"
+                >
+                  {isActive && '> '}
+                  {displayName}
+                </button>
+              )}
+              {visibleForks.length > 1 && !isRenaming && (
                 <button
                   onClick={(e) => handleClose(e, fork.id)}
                   className="opacity-0 group-hover:opacity-100 text-claude-text-secondary hover:text-red-400 transition-opacity"
