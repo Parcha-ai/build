@@ -460,7 +460,11 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
     }
     const handleInsertChat = (event: CustomEvent<InsertChatDetail>) => {
       const { sessionId: targetSessionId, content, screenshot, elementContext } = event.detail;
-      if (targetSessionId !== sessionId) return;
+      // Accept events from this session OR its root (BrowserPreview uses root session ID)
+      const sessions = useSessionStore.getState().sessions;
+      const thisSession = sessions.find(s => s.id === sessionId);
+      const rootId = thisSession?.parentSessionId || sessionId;
+      if (targetSessionId !== sessionId && targetSessionId !== rootId) return;
 
       console.log('[InputArea] Received grep-insert-chat event');
 
@@ -518,7 +522,10 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
   useEffect(() => {
     const handleSendAnnotation = (event: CustomEvent<{ sessionId: string; content: string; screenshot?: string; alsoPopulateInput?: boolean }>) => {
       const { sessionId: targetSessionId, content, screenshot, alsoPopulateInput } = event.detail;
-      if (targetSessionId !== sessionId) return;
+      const sessions = useSessionStore.getState().sessions;
+      const thisSession = sessions.find(s => s.id === sessionId);
+      const rootId = thisSession?.parentSessionId || sessionId;
+      if (targetSessionId !== sessionId && targetSessionId !== rootId) return;
 
       console.log('[InputArea] Received grep-send-annotation event - sending immediately');
 
