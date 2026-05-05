@@ -2279,6 +2279,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // For idle disconnects, stay silent — reconnection is automatic on next message.
     });
 
+    // Listen for wakeup timer fires — auto-send the prompt to the session
+    const unsubWakeup = window.electronAPI.claude.onWakeupFired?.((data: { sessionId: string; prompt: string; reason: string }) => {
+      console.log(`[SessionStore] Wakeup fired for ${data.sessionId}: ${data.reason}`);
+      const { sendMessage } = get();
+      sendMessage(data.sessionId, data.prompt);
+    }) || (() => {});
+
     return () => {
       unsubChunk();
       unsubThinking();
@@ -2294,6 +2301,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       unsubPlanApproval();
       unsubPermissionModeChanged();
       unsubConnectionLost();
+      unsubWakeup();
     };
   },
 

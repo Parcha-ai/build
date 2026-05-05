@@ -525,6 +525,16 @@ function registerIPCHandlers(): void {
   registerPluginHandlers(ipcMain);
   registerCodexHandlers(ipcMain);
 
+  // Wakeup scheduler — fires timers for ScheduleWakeup/CronCreate and sends
+  // the prompt back to the renderer so it flows through the normal sendMessage path.
+  const { wakeupScheduler } = require('./services/wakeup.service');
+  wakeupScheduler.on('wakeup', ({ sessionId, prompt, reason }: { sessionId: string; prompt: string; reason: string }) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      console.log(`[Main] Wakeup fired for ${sessionId}: ${reason}`);
+      mainWindow.webContents.send(IPC_CHANNELS.CLAUDE_WAKEUP_FIRED, { sessionId, prompt, reason });
+    }
+  });
+
   // GStack workflow skills
   ipcMain.handle(IPC_CHANNELS.GSTACK_GET_MODES, () => getGStackModes());
   ipcMain.handle(IPC_CHANNELS.GSTACK_IS_INSTALLED, () => isGStackInstalled());
@@ -617,6 +627,12 @@ app.on('will-quit', () => {
   // laptop sleep, and transient network drops. Explicit session deletion/cancel
   // still performs targeted remote cleanup.
   powerService.dispose();
+
+  // Clean up wakeup timers
+  try {
+    const { wakeupScheduler } = require('./services/wakeup.service');
+    wakeupScheduler.destroy();
+  } catch { /* ignore */ }
 });
 
 // Quit when all windows are closed, except on macOS.

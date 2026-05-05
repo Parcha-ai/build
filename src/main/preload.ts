@@ -174,6 +174,11 @@ const electronAPI = {
       ipcRenderer.on(IPC_CHANNELS.CLAUDE_STREAM_ERROR, handler);
       return () => ipcRenderer.removeListener(IPC_CHANNELS.CLAUDE_STREAM_ERROR, handler);
     },
+    onWakeupFired: (callback: (data: { sessionId: string; prompt: string; reason: string }) => void) => {
+      const handler = (_: IpcRendererEvent, data: { sessionId: string; prompt: string; reason: string }) => callback(data);
+      ipcRenderer.on(IPC_CHANNELS.CLAUDE_WAKEUP_FIRED, handler);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.CLAUDE_WAKEUP_FIRED, handler);
+    },
     onToolCall: (callback: (data: { sessionId: string; toolCall: unknown; agentId?: string }) => void) => {
       const handler = (_: IpcRendererEvent, data: { sessionId: string; toolCall: unknown; agentId?: string }) => callback(data);
       ipcRenderer.on(IPC_CHANNELS.CLAUDE_TOOL_CALL, handler);

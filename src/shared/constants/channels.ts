@@ -70,6 +70,7 @@ export const IPC_CHANNELS = {
   CLAUDE_COMPACTION_STATUS: 'claude:compaction-status',
   CLAUDE_CONTEXT_USAGE: 'claude:context-usage',
   CLAUDE_COMPACTION_COMPLETE: 'claude:compaction-complete',
+  CLAUDE_WAKEUP_FIRED: 'claude:wakeup-fired',
   CLAUDE_PLAN_CONTENT: 'claude:plan-content',
   CLAUDE_PLAN_APPROVAL_REQUEST: 'claude:plan-approval-request',
   CLAUDE_PLAN_APPROVAL_RESPONSE: 'claude:plan-approval-response',
