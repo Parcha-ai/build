@@ -347,13 +347,14 @@ function ElectronApp() {
       const isBeforeMorning = hour < MORNING_CUTOFF;
       const inBedtimeWindow = isPastBedtime || isBeforeMorning;
 
-      // Use a timestamp-based dismissal instead of date string so it survives
-      // past midnight. Dismissed = don't show again for 8 hours.
-      const dismissedUntil = localStorage.getItem('bedtime-dismissed-until');
-      const isDismissed = dismissedUntil && now.getTime() < parseInt(dismissedUntil, 10);
-
-      if (inBedtimeWindow && !isDismissed) {
+      // Hard stop: always show in bedtime window. Snooze gives 5 min,
+      // then locks completely until morning. No dismiss.
+      if (inBedtimeWindow) {
         setShowBedtimeModal(true);
+      } else {
+        setShowBedtimeModal(false);
+        // Reset snooze tracker when morning comes
+        localStorage.removeItem('bedtime-snooze-used-today');
       }
     };
 
@@ -364,12 +365,9 @@ function ElectronApp() {
   }, []);
 
   const handleBedtimeDismiss = () => {
-    // Dismiss for 8 hours — won't re-appear until after 6 AM even if
-    // midnight rolls over and changes the date string.
-    const dismissUntil = Date.now() + 8 * 60 * 60 * 1000;
-    localStorage.setItem('bedtime-dismissed-until', dismissUntil.toString());
-    localStorage.setItem('bedtime-logged-date', new Date().toDateString());
-    setShowBedtimeModal(false);
+    // "Go to Bed" closes the window. The modal will re-appear if reopened
+    // during bedtime window. Hard stop — no dismissal.
+    window.close();
   };
 
   const handleBedtimeSnooze = () => {
@@ -386,16 +384,14 @@ function ElectronApp() {
       if (!(settings as any).dailyReviewEnabled) return;
 
       const now = new Date();
-      const configuredTime = (settings as any).dailyReviewTime || '09:00';
-      const [reviewHour, reviewMinute] = configuredTime.split(':').map(Number);
-
-      // Show if: past review time, before 6 PM, not yet reviewed today
       const hour = now.getHours();
-      const isPastReviewTime = hour > reviewHour || (hour === reviewHour && now.getMinutes() >= reviewMinute);
+
+      // Show if: after 6 AM, before 6 PM, not yet reviewed today
+      const isAfterMorning = hour >= 6;
       const isBeforeEvening = hour < 18;
       const reviewedToday = localStorage.getItem('daily-review-date') === now.toDateString();
 
-      if (isPastReviewTime && isBeforeEvening && !reviewedToday) {
+      if (isAfterMorning && isBeforeEvening && !reviewedToday) {
         setShowDailyReviewModal(true);
       }
     };
