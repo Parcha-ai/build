@@ -127,6 +127,7 @@ declare const MAIN_WINDOW_WEBPACK_ENTRY: string;
 declare const MAIN_WINDOW_PRELOAD_WEBPACK_ENTRY: string;
 
 let mainWindow: BrowserWindow | null = null;
+const allWindows = new Set<BrowserWindow>();
 
 if (process.env.GREP_DISABLE_SINGLE_INSTANCE !== '1') {
   const gotSingleInstanceLock = app.requestSingleInstanceLock();
@@ -190,6 +191,16 @@ const createWindow = (): void => {
         { role: 'unhide' },
         { type: 'separator' },
         { role: 'quit' },
+      ],
+    },
+    {
+      label: 'File',
+      submenu: [
+        {
+          label: 'New Window',
+          accelerator: 'CommandOrControl+N',
+          click: () => createNewWindow(),
+        },
       ],
     },
     {
@@ -455,10 +466,49 @@ const createWindow = (): void => {
   // Open DevTools for debugging (disabled for production builds)
   // mainWindow.webContents.openDevTools();
 
+  allWindows.add(mainWindow);
+
   mainWindow.on('closed', () => {
+    allWindows.delete(mainWindow!);
     mainWindow = null;
   });
 };
+
+function createNewWindow(): void {
+  const win = new BrowserWindow({
+    width: 1400,
+    height: 900,
+    minWidth: 1000,
+    minHeight: 700,
+    show: false,
+    center: true,
+    titleBarStyle: 'hiddenInset',
+    trafficLightPosition: { x: 15, y: 10 },
+    backgroundColor: '#1a1a1a',
+    webPreferences: {
+      preload: MAIN_WINDOW_PRELOAD_WEBPACK_ENTRY,
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+      webviewTag: true,
+    },
+  });
+
+  allWindows.add(win);
+
+  win.once('ready-to-show', () => {
+    win.show();
+    win.focus();
+  });
+
+  win.on('closed', () => {
+    allWindows.delete(win);
+  });
+
+  win.loadURL(MAIN_WINDOW_WEBPACK_ENTRY)
+    .then(() => console.log('[Main] New window loaded'))
+    .catch(err => console.error('[Main] New window failed:', err));
+}
 
 // Register custom protocols
 app.whenReady().then(() => {
@@ -531,7 +581,7 @@ function registerIPCHandlers(): void {
   wakeupScheduler.on('wakeup', ({ sessionId, prompt, reason }: { sessionId: string; prompt: string; reason: string }) => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       console.log(`[Main] Wakeup fired for ${sessionId}: ${reason}`);
-      mainWindow.webContents.send(IPC_CHANNELS.CLAUDE_WAKEUP_FIRED, { sessionId, prompt, reason });
+      broadcastToAll(IPC_CHANNELS.CLAUDE_WAKEUP_FIRED, { sessionId, prompt, reason });
     }
   });
 
@@ -649,7 +699,23 @@ app.on('activate', () => {
   }
 });
 
-// Export mainWindow for use in IPC handlers
+// Export mainWindow for use in IPC handlers.
+// Returns the focused window, falling back to the primary or any open window.
 export function getMainWindow(): BrowserWindow | null {
-  return mainWindow;
+  const focused = BrowserWindow.getFocusedWindow();
+  if (focused && allWindows.has(focused)) return focused;
+  if (mainWindow && !mainWindow.isDestroyed()) return mainWindow;
+  for (const w of allWindows) {
+    if (!w.isDestroyed()) return w;
+  }
+  return null;
+}
+
+// Broadcast an IPC event to ALL open windows (each renderer filters by sessionId)
+export function broadcastToAll(channel: string, ...args: unknown[]): void {
+  for (const w of allWindows) {
+    if (!w.isDestroyed()) {
+      w.webContents.send(channel, ...args);
+    }
+  }
 }

@@ -2,7 +2,7 @@ import { IpcMain } from 'electron';
 import { IPC_CHANNELS } from '../../shared/constants/channels';
 import { Session } from '../../shared/types';
 import { SessionService } from '../services/session.service';
-import { getMainWindow } from '../index';
+import { getMainWindow, broadcastToAll } from '../index';
 import { browserService } from '../services/browser.service';
 import { claudeService } from './claude.ipc';
 import { sshService } from '../services/ssh.service';
@@ -18,18 +18,11 @@ export { sessionService };
 export function registerSessionHandlers(ipcMain: IpcMain): void {
   // Subscribe to session status changes
   sessionService.on('statusChanged', (session) => {
-    const mainWindow = getMainWindow();
-    if (mainWindow) {
-      mainWindow.webContents.send(IPC_CHANNELS.SESSION_STATUS_CHANGED, session);
-    }
+    broadcastToAll(IPC_CHANNELS.SESSION_STATUS_CHANGED, session);
   });
 
-  // Subscribe to sessions list updates (from background discovery)
   sessionService.on('sessionsUpdated', (sessions) => {
-    const mainWindow = getMainWindow();
-    if (mainWindow) {
-      mainWindow.webContents.send(IPC_CHANNELS.SESSION_LIST_UPDATED, sessions);
-    }
+    broadcastToAll(IPC_CHANNELS.SESSION_LIST_UPDATED, sessions);
   });
 
   ipcMain.handle(IPC_CHANNELS.SESSION_CREATE, async (_, config) => {
