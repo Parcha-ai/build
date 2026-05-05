@@ -2,7 +2,7 @@ import { IpcMain } from 'electron';
 import Store from 'electron-store';
 import { IPC_CHANNELS } from '../../shared/constants/channels';
 import { ClaudeService } from '../services/claude.service';
-import { getMainWindow, broadcastToAll } from '../index';
+import { getMainWindow } from '../index';
 import type { QuestionResponse, Attachment, PlanApprovalResponse, ChatMessage } from '../../shared/types';
 import { sessionService } from './session.ipc';
 import { DEFAULT_AUDIO_SETTINGS } from '../../shared/types/audio';
@@ -91,9 +91,19 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
 
   ipcMain.handle(
     IPC_CHANNELS.CLAUDE_SEND_MESSAGE,
-    async (_, sessionId: string, message: string, attachments?: Attachment[], permissionMode?: string, thinkingMode?: string, model?: string, gstackMode?: string, supplementalMessages?: ChatMessage[]) => {
+    async (event, sessionId: string, message: string, attachments?: Attachment[], permissionMode?: string, thinkingMode?: string, model?: string, gstackMode?: string, supplementalMessages?: ChatMessage[]) => {
       const mainWindow = getMainWindow();
       if (!mainWindow) return;
+
+      // Send stream events to the SENDER window only (not all windows).
+      // This prevents the second window from getting re-render storms
+      // from streams it didn't initiate.
+      const senderContents = event.sender;
+      const sendToSender = (channel: string, ...args: unknown[]) => {
+        if (!senderContents.isDestroyed()) {
+          senderContents.send(channel, ...args);
+        }
+      };
 
       // Ensure claudeService has the mainWindow reference for browser updates
       claudeService.setMainWindow(mainWindow);
@@ -108,8 +118,8 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
       // Create batcher for this session
       const batcher = new ChunkBatcher(
         sessionId,
-        (content, agentId) => broadcastToAll(IPC_CHANNELS.CLAUDE_STREAM_CHUNK, { sessionId, content, agentId }),
-        (content) => broadcastToAll(IPC_CHANNELS.CLAUDE_THINKING_CHUNK, { sessionId, content })
+        (content, agentId) => sendToSender(IPC_CHANNELS.CLAUDE_STREAM_CHUNK, { sessionId, content, agentId }),
+        (content) => sendToSender(IPC_CHANNELS.CLAUDE_THINKING_CHUNK, { sessionId, content })
       );
 
       let fullMessageContent = '';
@@ -143,7 +153,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
 
               case 'tool_use':
                 if (event.toolCall) accumulatedToolCalls.push(event.toolCall as typeof accumulatedToolCalls[0]);
-                broadcastToAll(IPC_CHANNELS.CLAUDE_TOOL_CALL, {
+                sendToSender(IPC_CHANNELS.CLAUDE_TOOL_CALL, {
                   sessionId,
                   toolCall: event.toolCall,
                   agentId: event.agentId,
@@ -160,7 +170,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
                     accumulatedToolCalls.push(event.toolCall as typeof accumulatedToolCalls[0]);
                   }
                 }
-                broadcastToAll(IPC_CHANNELS.CLAUDE_TOOL_RESULT, {
+                sendToSender(IPC_CHANNELS.CLAUDE_TOOL_RESULT, {
                   sessionId,
                   toolCall: event.toolCall,
                   agentId: event.agentId,
@@ -168,14 +178,14 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
                 break;
 
               case 'system':
-                broadcastToAll(IPC_CHANNELS.CLAUDE_SYSTEM_INFO, {
+                sendToSender(IPC_CHANNELS.CLAUDE_SYSTEM_INFO, {
                   sessionId,
                   systemInfo: event.systemInfo,
                 });
                 break;
 
               case 'permission_request':
-                broadcastToAll(IPC_CHANNELS.CLAUDE_PERMISSION_REQUEST, {
+                sendToSender(IPC_CHANNELS.CLAUDE_PERMISSION_REQUEST, {
                   ...event,
                   sessionId,
                 });
@@ -184,7 +194,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
               case 'context_usage':
                 // Forward context usage info to renderer for progress display
                 // Includes rich breakdown from SDK getContextUsage() when available (v0.2.86+)
-                broadcastToAll(IPC_CHANNELS.CLAUDE_CONTEXT_USAGE, {
+                sendToSender(IPC_CHANNELS.CLAUDE_CONTEXT_USAGE, {
                   sessionId,
                   inputTokens: (event as any).inputTokens,
                   contextWindowSize: (event as any).contextWindowSize,
@@ -195,12 +205,12 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
 
               case 'compaction_status':
                 // Forward compaction status to renderer
-                broadcastToAll(IPC_CHANNELS.CLAUDE_COMPACTION_STATUS, event.compactionStatus);
+                sendToSender(IPC_CHANNELS.CLAUDE_COMPACTION_STATUS, event.compactionStatus);
                 break;
 
               case 'compaction_complete':
                 // Forward compaction complete to renderer
-                broadcastToAll(IPC_CHANNELS.CLAUDE_COMPACTION_COMPLETE, event.compactionComplete);
+                sendToSender(IPC_CHANNELS.CLAUDE_COMPACTION_COMPLETE, event.compactionComplete);
 
                 // If we're waiting to retry after compaction, do it now
                 if (needsCompactionRetry) {
@@ -211,7 +221,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
                   await new Promise(resolve => setTimeout(resolve, 1000));
 
                   // Show retrying message to user
-                  broadcastToAll(IPC_CHANNELS.CLAUDE_SYSTEM_INFO, {
+                  sendToSender(IPC_CHANNELS.CLAUDE_SYSTEM_INFO, {
                     sessionId,
                     systemInfo: { message: 'Compaction complete - retrying your message...' },
                   });
@@ -238,14 +248,14 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
                             timestamp: new Date(),
                           };
                           sentStreamEnd = true;
-                          broadcastToAll(IPC_CHANNELS.CLAUDE_STREAM_END, {
+                          sendToSender(IPC_CHANNELS.CLAUDE_STREAM_END, {
                             sessionId,
                             message: retryMessage,
                           });
                           break;
                         case 'error':
                           batcher.flush();
-                          broadcastToAll(IPC_CHANNELS.CLAUDE_STREAM_ERROR, {
+                          sendToSender(IPC_CHANNELS.CLAUDE_STREAM_ERROR, {
                             sessionId,
                             error: retryEvent.error,
                           });
@@ -255,7 +265,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
                     }
                   } catch (retryError) {
                     console.error('[Claude IPC] Retry after compaction failed:', retryError);
-                    broadcastToAll(IPC_CHANNELS.CLAUDE_STREAM_ERROR, {
+                    sendToSender(IPC_CHANNELS.CLAUDE_STREAM_ERROR, {
                       sessionId,
                       error: 'Failed to retry after compaction',
                     });
@@ -282,7 +292,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
                   toolCalls: accumulatedToolCalls.length > 0 ? accumulatedToolCalls : undefined,
                 };
                 sentStreamEnd = true;
-                broadcastToAll(IPC_CHANNELS.CLAUDE_STREAM_END, {
+                sendToSender(IPC_CHANNELS.CLAUDE_STREAM_END, {
                   sessionId,
                   message: finalMessage,
                   // Surface terminal_reason from SDK result (v0.2.91+)
@@ -301,7 +311,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
 
                   // Show user-friendly compaction message
                   batcher.flush();
-                  broadcastToAll(IPC_CHANNELS.CLAUDE_STREAM_ERROR, {
+                  sendToSender(IPC_CHANNELS.CLAUDE_STREAM_ERROR, {
                     sessionId,
                     error: event.error,
                   });
@@ -313,7 +323,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
 
                 // Regular error handling
                 batcher.flush();
-                broadcastToAll(IPC_CHANNELS.CLAUDE_STREAM_ERROR, {
+                sendToSender(IPC_CHANNELS.CLAUDE_STREAM_ERROR, {
                   sessionId,
                   error: event.error,
                 });
@@ -324,7 +334,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
         } catch (error) {
           // Flush any remaining batched content before error
           batcher.flush();
-          broadcastToAll(IPC_CHANNELS.CLAUDE_STREAM_ERROR, {
+          sendToSender(IPC_CHANNELS.CLAUDE_STREAM_ERROR, {
             sessionId,
             error: error instanceof Error ? error.message : 'Unknown error',
           });
@@ -336,7 +346,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
           // Without this, the UI gets permanently stuck in "thinking..." state.
           if (!hadError && !sentStreamEnd) {
             console.log('[Claude IPC] Safety net: generator exited without STREAM_END or error for', sessionId, 'fullMessageContent:', fullMessageContent.length);
-            broadcastToAll(IPC_CHANNELS.CLAUDE_STREAM_END, {
+            sendToSender(IPC_CHANNELS.CLAUDE_STREAM_END, {
               sessionId,
               message: {
                 id: Date.now().toString(),
