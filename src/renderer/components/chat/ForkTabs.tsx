@@ -262,10 +262,10 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
               onDragOver={(e) => handleDragOver(e, fork.id)}
               onDrop={(e) => handleDrop(e, fork.id)}
               className={`
-                flex items-center gap-2 px-3 py-1 whitespace-nowrap uppercase group ${isRenaming ? '' : 'cursor-grab active:cursor-grabbing'}
+                flex items-center gap-2 px-3 py-1.5 whitespace-nowrap uppercase group ${isRenaming ? '' : 'cursor-grab active:cursor-grabbing'}
                 ${isActive
-                  ? 'text-claude-text border-b-2 border-claude-accent'
-                  : 'text-claude-text-secondary hover:text-claude-text'
+                  ? 'text-claude-text bg-claude-accent/15 border-b-2 border-claude-accent font-bold'
+                  : 'text-claude-text-secondary hover:text-claude-text hover:bg-claude-bg/80'
                 }
                 ${index > 0 ? 'border-l border-claude-border/30' : ''}
                 ${isDragOver ? 'bg-claude-accent/10' : ''}
@@ -335,19 +335,26 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
                   parentSessionId: rootId,
                 });
                 if (newSession) {
-                  // Update root's children list
-                  if (root) {
-                    const children = [...(root.childSessionIds || [])];
-                    if (!children.includes(newSession.id)) {
-                      children.push(newSession.id);
-                      await window.electronAPI.sessions.update(rootId, {
-                        childSessionIds: children,
-                        isRoot: true,
-                      } as any);
-                    }
-                  }
-                  loadSessions();
+                  // Optimistic update — add to store immediately
+                  useSessionStore.setState((state) => ({
+                    sessions: [
+                      ...state.sessions.map(s => {
+                        if (s.id === rootId) {
+                          const children = [...(s.childSessionIds || [])];
+                          if (!children.includes(newSession.id)) children.push(newSession.id);
+                          return { ...s, childSessionIds: children, isRoot: true } as typeof s;
+                        }
+                        return s;
+                      }),
+                      { ...newSession, parentSessionId: rootId } as any,
+                    ],
+                  }));
                   setActiveSession(newSession.id);
+                  // Persist in background
+                  window.electronAPI.sessions.update(rootId, {
+                    childSessionIds: [...(root?.childSessionIds || []), newSession.id],
+                    isRoot: true,
+                  } as any).catch(() => {});
                 }
               } catch (err) {
                 console.error('[ForkTabs] Failed to create new tab:', err);

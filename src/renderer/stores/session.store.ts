@@ -3248,11 +3248,23 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       if (!session) break; // Guard against missing parent
     }
 
-    // Collect root + all descendants
+    // Collect root + ALL descendants (not just direct children)
     const root = sessions.find(s => s.id === rootId);
     if (!root) return [];
 
-    const forkGroup = [root, ...sessions.filter(s => s.parentSessionId === rootId)];
+    const forkGroup: Session[] = [root];
+    const visited = new Set<string>([rootId]);
+    const queue = [rootId];
+    while (queue.length > 0) {
+      const parentId = queue.shift()!;
+      for (const s of sessions) {
+        if (s.parentSessionId === parentId && !visited.has(s.id)) {
+          forkGroup.push(s);
+          visited.add(s.id);
+          queue.push(s.id);
+        }
+      }
+    }
 
     // Sort by creation order
     return forkGroup.sort((a, b) => {
