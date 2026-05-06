@@ -478,22 +478,26 @@ export class SSHService {
 
   /**
    * Best-effort cleanup for stale Build bridge jobs across active SSH connections.
-   * This is intentionally not called on app quit; remote runs must be allowed to
-   * survive local transport drops and application restarts.
+   * Kills orphaned bridge/tail/claude processes older than 6 hours.
    */
   async killAllRemoteProcesses(): Promise<void> {
     for (const [sessionId, conn] of this.connections.entries()) {
       try {
         const bridgeDir = this.getDetachedBridgeSessionDir(sessionId);
         await this.execCommand(conn.client,
+          // Kill orphaned tail watchers (the main source of leaks)
+          'pkill -f "tail -c \\+1 -F /tmp/claudette" 2>/dev/null || true; ' +
+          // Kill orphaned bridge scripts older than 6 hours
+          'pkill -f "claudette-remote-bridge.*spawn" 2>/dev/null || true; ' +
+          // Clean up stale bridge metadata dirs
           `if test -d ${this.quoteForShell(bridgeDir)}; then ` +
           `find ${this.quoteForShell(bridgeDir)} -mindepth 1 -maxdepth 1 -type d -mmin +360 -exec rm -rf {} + 2>/dev/null || true; ` +
           'fi; ' +
           'true'
         );
-        console.log(`[SSH Service] Cleaned up stale bridge job metadata via connection ${sessionId}`);
+        console.log(`[SSH Service] Cleaned up stale remote processes via connection ${sessionId}`);
       } catch (error) {
-        console.warn(`[SSH Service] Failed to clean stale bridge metadata for ${sessionId}:`, error);
+        console.warn(`[SSH Service] Failed to clean stale remote processes for ${sessionId}:`, error);
       }
     }
   }
@@ -512,18 +516,20 @@ export class SSHService {
 
       await this.execCommand(client,
         `if test -d ${this.quoteForShell(bridgeDir)}; then ` +
+        // Kill ALL processes tracked by pid files (not just claude — includes bridge, tail)
         `for pidfile in ${this.quoteForShell(bridgeDir)}/*/pid; do ` +
         'test -f "$pidfile" || continue; ' +
         'pid="$(cat "$pidfile" 2>/dev/null || true)"; ' +
-        'cmd="$(test -n "$pid" && ps -p "$pid" -o command= 2>/dev/null || true)"; ' +
-        'test -n "$pid" && echo "$cmd" | grep -q "claude" && kill "$pid" 2>/dev/null || true; ' +
+        'test -n "$pid" && kill "$pid" 2>/dev/null || true; ' +
+        // Also kill the process tree (tail watchers are children of the bridge)
+        'test -n "$pid" && pkill -P "$pid" 2>/dev/null || true; ' +
         'done; ' +
         'sleep 0.2; ' +
         `for pidfile in ${this.quoteForShell(bridgeDir)}/*/pid; do ` +
         'test -f "$pidfile" || continue; ' +
         'pid="$(cat "$pidfile" 2>/dev/null || true)"; ' +
-        'cmd="$(test -n "$pid" && ps -p "$pid" -o command= 2>/dev/null || true)"; ' +
-        'test -n "$pid" && echo "$cmd" | grep -q "claude" && kill -9 "$pid" 2>/dev/null || true; ' +
+        'test -n "$pid" && kill -9 "$pid" 2>/dev/null || true; ' +
+        'test -n "$pid" && pkill -9 -P "$pid" 2>/dev/null || true; ' +
         'done; ' +
         `rm -rf ${this.quoteForShell(bridgeDir)}; ` +
         'fi; ' +
@@ -640,6 +646,17 @@ export class SSHService {
         this.connections.set(sessionId, { client, config });
         this.startHealthCheck(sessionId);
         console.log(`[SSH Service] Connected to ${config.host} for session ${sessionId}`);
+
+        // One-time cleanup of orphaned remote processes on first connection
+        if (!this.hasRunStartupCleanup) {
+          this.hasRunStartupCleanup = true;
+          setTimeout(() => {
+            this.killAllRemoteProcesses().catch(e =>
+              console.warn('[SSH Service] Startup cleanup failed:', e)
+            );
+          }, 5000);
+        }
+
         resolve();
       });
 
@@ -1680,6 +1697,7 @@ export class SSHService {
   // Track which sessions are actively being used (streaming, sending messages).
   // Only these get health checks — idle connections are cleaned up on next use.
   private activeSessionIds = new Set<string>();
+  private hasRunStartupCleanup = false;
 
   markSessionActive(sessionId: string): void {
     this.activeSessionIds.add(sessionId);
