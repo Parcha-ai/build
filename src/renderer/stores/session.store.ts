@@ -1137,6 +1137,23 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   setStreaming: (sessionId, isStreaming) => {
     console.log(`[SessionStore] setStreaming called for ${sessionId}: ${isStreaming}`);
 
+    // Watchdog: auto-clear stuck streaming state after 5 minutes of no events
+    if (isStreaming) {
+      const watchdogKey = `_streamWatchdog_${sessionId}`;
+      const existing = (window as any)[watchdogKey];
+      if (existing) clearTimeout(existing);
+      (window as any)[watchdogKey] = setTimeout(() => {
+        const state = get();
+        if (state.isStreaming[sessionId]) {
+          console.warn(`[SessionStore] Watchdog: clearing stuck isStreaming for ${sessionId} after 5min`);
+          set((s) => ({ isStreaming: { ...s.isStreaming, [sessionId]: false } }));
+        }
+      }, 5 * 60 * 1000);
+    } else {
+      const watchdogKey = `_streamWatchdog_${sessionId}`;
+      const existing = (window as any)[watchdogKey];
+      if (existing) { clearTimeout(existing); delete (window as any)[watchdogKey]; }
+    }
 
     set((state) => ({
       isStreaming: { ...state.isStreaming, [sessionId]: isStreaming },
@@ -2038,17 +2055,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const unsubEnd = window.electronAPI.claude.onStreamEnd(({ sessionId, message }) => {
       const currentState = get();
 
-      // If streaming is already false, this is a late-arriving STREAM_END.
-      // Still add the message if it has content — don't drop the turn.
-      // Only skip if a NEW stream has started (generation counter changed).
+      // Always process STREAM_END — even if isStreaming is already false.
+      // Skipping caused silent failures where the assistant response was dropped.
       if (!currentState.isStreaming[sessionId]) {
-        const hasContent = (message.content && message.content.length > 0) ||
-          (currentState.currentStreamContent[sessionId] || '').length > 0;
-        if (!hasContent) {
-          console.log(`[SessionStore] onStreamEnd SKIPPED for ${sessionId} — streaming false, no content`);
-          return;
-        }
-        console.log(`[SessionStore] onStreamEnd for ${sessionId} — streaming was false but message has content, adding anyway`);
+        console.log(`[SessionStore] onStreamEnd for ${sessionId} — streaming was already false, processing anyway`);
       }
 
       const queueLength = (currentState.messageQueue[sessionId] || []).length;
