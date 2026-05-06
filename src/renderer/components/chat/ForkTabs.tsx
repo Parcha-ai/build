@@ -417,39 +417,43 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
                     <button
                       key={session.id}
                       onClick={async () => {
-                        // Adopt into fork group + clear hidden flag in one update
-                        try {
-                          await window.electronAPI.sessions.update(session.id, {
-                            parentSessionId: rootId,
-                            isRoot: false,
-                            tabHidden: false,
-                          } as any);
-                          const root = forkSiblings.find(f => f.id === rootId);
-                          if (root) {
-                            const children = [...(root.childSessionIds || [])];
-                            if (!children.includes(session.id)) {
-                              children.push(session.id);
-                              await window.electronAPI.sessions.update(rootId, {
-                                childSessionIds: children,
-                                isRoot: true,
-                              } as any);
+                        // Optimistically update the local store FIRST so the tab
+                        // appears immediately — don't wait for backend round-trip.
+                        useSessionStore.setState((state) => ({
+                          sessions: state.sessions.map(s => {
+                            if (s.id === session.id) {
+                              return { ...s, parentSessionId: rootId, isRoot: false, tabHidden: false } as typeof s;
                             }
-                          }
-                        } catch (err) {
-                          console.warn('[ForkTabs] Failed to adopt session:', err);
-                        }
-                        // Remove from overflow BEFORE loadSessions so it's visible on next render
+                            if (s.id === rootId) {
+                              const children = [...(s.childSessionIds || [])];
+                              if (!children.includes(session.id)) children.push(session.id);
+                              return { ...s, childSessionIds: children, isRoot: true } as typeof s;
+                            }
+                            return s;
+                          }),
+                        }));
+                        // Remove from overflow
                         setOverflowIds(prev => {
                           const next = new Set(prev);
                           next.delete(session.id);
                           return next;
                         });
                         setShowOverflow(false);
-                        // Switch immediately — the tab may not be in forkSiblings yet
-                        // but setActiveSession will show the session's chat
                         setActiveSession(session.id);
-                        // Refresh store in background — triggers re-render with updated forkSiblings
-                        loadSessions();
+                        // Persist to backend in background
+                        window.electronAPI.sessions.update(session.id, {
+                          parentSessionId: rootId, isRoot: false, tabHidden: false,
+                        } as any).catch(() => {});
+                        const root = forkSiblings.find(f => f.id === rootId);
+                        if (root) {
+                          const children = [...(root.childSessionIds || [])];
+                          if (!children.includes(session.id)) {
+                            children.push(session.id);
+                            window.electronAPI.sessions.update(rootId, {
+                              childSessionIds: children, isRoot: true,
+                            } as any).catch(() => {});
+                          }
+                        }
                       }}
                       className="w-full text-left px-3 py-1.5 hover:bg-claude-bg transition-colors flex items-center gap-2"
                     >
