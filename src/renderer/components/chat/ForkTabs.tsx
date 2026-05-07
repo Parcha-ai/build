@@ -36,28 +36,26 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
   const sessions = useSessionStore(s => s.sessions);
   const loadSessions = useSessionStore(s => s.loadSessions);
 
-  // Group tabs by location (same host + workdir), not by fork tree
   const currentSession = sessions.find(s => s.id === sessionId);
   const workdir = currentSession?.worktreePath || currentSession?.repoPath || '';
   const host = (currentSession as any)?.sshConfig?.host || '';
   const locationKey = host ? `${host}:${workdir}` : workdir || sessionId;
 
+  // Memoize by locationKey (stable string), not by sessions array ref
   const locationSiblings = React.useMemo(() => {
     if (!workdir) return [];
     return sessions.filter(s => {
       if (s.status !== 'running') return false;
-      const sWorkdir = s.worktreePath || s.repoPath || '';
-      if (!sWorkdir) return false;
-      if (host) {
-        return (s as any).sshConfig?.host === host && sWorkdir === workdir;
-      }
-      return sWorkdir === workdir;
+      const swd = s.worktreePath || s.repoPath || '';
+      if (!swd) return false;
+      return host ? ((s as any).sshConfig?.host === host && swd === workdir) : swd === workdir;
     }).sort((a, b) => {
-      const aTime = a.createdAt ? new Date(a.createdAt).getTime() : 0;
-      const bTime = b.createdAt ? new Date(b.createdAt).getTime() : 0;
-      return aTime - bTime;
+      const at = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+      const bt = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+      return at - bt;
     });
-  }, [sessions, workdir, host]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [locationKey, sessions.length]);
 
   // Auto-scan remote transcripts on mount for SSH sessions.
   // Creates session records for any orphaned transcripts in the same directory
