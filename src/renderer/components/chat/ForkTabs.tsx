@@ -139,9 +139,13 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
       return;
     }
     try {
+      // Save to both places so it survives session discovery
       await window.electronAPI.sessions.update(renamingId, {
         aiGeneratedName: renameValue.trim(),
+        name: renameValue.trim(),
       } as any);
+      // Also save to sessionNames in settings (authoritative source)
+      await window.electronAPI.settings.set({ [`sessionNames.${renamingId}`]: renameValue.trim() });
       loadSessions();
     } catch (e) {
       console.warn('[ForkTabs] Rename failed:', e);
@@ -168,9 +172,9 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
     try { localStorage.setItem(orderKey, JSON.stringify(order)); } catch { /* quota */ }
   }, [orderKey]);
 
-  // Build visible forks with custom ordering
+  // Build visible forks with custom ordering — active session is ALWAYS visible
   const visibleForks = useMemo(() => {
-    const visible = forkSiblings.filter(f => !overflowIds.has(f.id));
+    const visible = forkSiblings.filter(f => !overflowIds.has(f.id) || f.id === activeSessionId);
     if (tabOrder.length === 0) return visible;
     // Sort by saved order; any new tabs not in the order go to the end
     const orderMap = new Map(tabOrder.map((id, i) => [id, i]));
