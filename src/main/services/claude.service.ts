@@ -4088,6 +4088,17 @@ Begin by creating the task structure now.
             if (systemMsg.session_id) {
               this.sessionStore.set(`sdkSessionMappings.${sessionId}`, systemMsg.session_id);
 
+              // Fetch session summary from SDK and use as display name
+              try {
+                const { getSessionInfo } = require('@anthropic-ai/claude-agent-sdk') as { getSessionInfo: (id: string, opts?: { dir?: string }) => Promise<{ summary?: string } | undefined> };
+                const info = await getSessionInfo(systemMsg.session_id, { dir: projectPath });
+                if (info?.summary) {
+                  const settingsStore = new (require('../cached-store').CachedStore)({ name: 'claudette-settings' });
+                  settingsStore.set(`sessionNames.${sessionId}`, info.summary);
+                  console.log(`[Claude SDK] Session name from SDK: "${info.summary}"`);
+                }
+              } catch { /* non-fatal */ }
+
               // After an SSH fork query, clear the forkFromSdkSessionId flag so
               // subsequent messages don't keep passing --fork-session. Also update
               // the session object so getMessages() uses the new SDK session ID.
