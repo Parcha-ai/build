@@ -2239,8 +2239,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // Import ui.store dynamically to avoid circular dependency
       import('./ui.store').then(({ useUIStore }) => {
         console.log('[Session Store] Setting plan content in UI store');
-        useUIStore.getState().setPlanContent(data.sessionId, data.planContent);
-        console.log('[Session Store] Plan content set, current content:', useUIStore.getState().sessionPlanContent[data.sessionId]?.substring(0, 100));
+        useUIStore.getState().setPlanContent(data.sessionId, data.planContent, data.planFilePath);
+        console.log('[Session Store] Plan content set, file:', data.planFilePath);
       });
     });
 
@@ -2252,7 +2252,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // Also update the plan content in UI store for display
       import('./ui.store').then(({ useUIStore }) => {
         console.log('[Session Store] Setting plan content from approval request');
-        useUIStore.getState().setPlanContent(request.sessionId, request.planContent);
+        useUIStore.getState().setPlanContent(request.sessionId, request.planContent, request.planFilePath);
         // Only auto-open plan panel if this is the active session
         if (request.sessionId === activeSessionId) {
           console.log('[Session Store] Plan content set in approval flow, opening panel');

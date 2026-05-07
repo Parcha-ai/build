@@ -62,6 +62,7 @@ interface UIState {
   sessionSelectedElement: Record<string, unknown | null>;
   // Per-session plan content (markdown)
   sessionPlanContent: Record<string, string>;
+  sessionPlanFilePath: Record<string, string>;
   // Per-session text editing state (used for loading animation during text replacement)
   sessionEditingText: Record<string, boolean>;
 
@@ -87,7 +88,7 @@ interface UIState {
   checkApiKey: () => Promise<boolean>;
   openOnboarding: () => void;
   closeOnboarding: () => void;
-  setPlanContent: (sessionId: string, content: string) => void;
+  setPlanContent: (sessionId: string, content: string, filePath?: string) => void;
   clearPlanContent: (sessionId: string) => void;
 
   // Command Center methods
@@ -146,6 +147,7 @@ export const useUIStore = create<UIState>((set, get) => ({
   sessionInspectorActive: {},
   sessionSelectedElement: {},
   sessionEditingText: {},
+  sessionPlanFilePath: {},
   sessionPlanContent: (() => {
     // Plan content is no longer persisted to localStorage (was causing
     // silent data loss at 25MB+ localStorage). Plans are re-fetched from
@@ -263,8 +265,9 @@ export const useUIStore = create<UIState>((set, get) => ({
   closeOnboarding: () => set({ isOnboardingOpen: false }),
 
   // Plan content methods
-  setPlanContent: (sessionId: string, content: string) => set((state) => ({
+  setPlanContent: (sessionId: string, content: string, filePath?: string) => set((state) => ({
     sessionPlanContent: { ...state.sessionPlanContent, [sessionId]: content },
+    ...(filePath ? { sessionPlanFilePath: { ...state.sessionPlanFilePath, [sessionId]: filePath } } : {}),
     isPlanPanelOpen: true,
   })),
   clearPlanContent: (sessionId: string) => set((state) => {

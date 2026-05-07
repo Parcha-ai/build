@@ -116,12 +116,14 @@ function SpecMetadataBar({ content }: { content: string }) {
 }
 
 export default function PlanPanel() {
-  const { togglePlanPanel, sessionPlanContent, clearPlanContent, setPlanContent } = useUIStore();
+  const { togglePlanPanel, sessionPlanContent, sessionPlanFilePath, clearPlanContent, setPlanContent } = useUIStore();
   const { activeSessionId, pendingPlanApproval, approvePlan, rejectPlan, messages } = useSessionStore();
   const [feedback, setFeedback] = React.useState('');
   const [showFeedback, setShowFeedback] = React.useState(false);
 
   const planContent = activeSessionId ? sessionPlanContent[activeSessionId] : null;
+  const planFilePath = activeSessionId ? sessionPlanFilePath[activeSessionId] : undefined;
+  const planFileName = planFilePath ? planFilePath.split('/').pop() : null;
   const pendingApproval = activeSessionId ? pendingPlanApproval[activeSessionId] : null;
   const sessionMessages = activeSessionId ? messages[activeSessionId] : [];
   const isSpecFile = !!(planContent?.startsWith('---\n') && planContent?.includes('[@test]'));
@@ -380,7 +382,7 @@ export default function PlanPanel() {
 
                 if (content && content.length > (isSpecFile ? 200 : 500)) {
                   console.log('[PlanPanel] ✅ Loading plan from Write tool call:', filePath);
-                  setPlanContent(activeSessionId, content);
+                  setPlanContent(activeSessionId, content, filePath);
                   return;
                 }
               }
@@ -432,6 +434,11 @@ export default function PlanPanel() {
         <div className="flex items-center gap-2">
           {isSpecFile ? <FileCheck size={14} className="text-teal-400" /> : <ClipboardList size={14} className="text-claude-accent" />}
           <span className="text-sm font-medium">{isSpecFile ? 'Spec' : 'Plan'}</span>
+          {planFileName && (
+            <span className="text-xs text-claude-text-secondary font-mono truncate max-w-[200px]" title={planFilePath}>
+              {planFileName}
+            </span>
+          )}
           {isSpecFile && (
             <span className="px-2 py-0.5 text-xs font-medium bg-teal-500/20 text-teal-400 border border-teal-500/30">
               SDD
