@@ -38,14 +38,16 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
 
   // Group tabs by location (same host + workdir), not by fork tree
   const currentSession = sessions.find(s => s.id === sessionId);
+  const workdir = currentSession?.worktreePath || currentSession?.repoPath || '';
+  const host = (currentSession as any)?.sshConfig?.host || '';
+  const locationKey = host ? `${host}:${workdir}` : workdir || sessionId;
+
   const locationSiblings = React.useMemo(() => {
-    if (!currentSession) return [];
-    const workdir = currentSession.worktreePath || currentSession.repoPath || '';
-    const host = (currentSession as any).sshConfig?.host;
+    if (!workdir) return [];
     return sessions.filter(s => {
       if (s.status !== 'running') return false;
       const sWorkdir = s.worktreePath || s.repoPath || '';
-      if (!sWorkdir || !workdir) return false;
+      if (!sWorkdir) return false;
       if (host) {
         return (s as any).sshConfig?.host === host && sWorkdir === workdir;
       }
@@ -55,10 +57,7 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
       const bTime = b.createdAt ? new Date(b.createdAt).getTime() : 0;
       return aTime - bTime;
     });
-  }, [sessions, currentSession]);
-  const locationKey = currentSession
-    ? `${(currentSession as any).sshConfig?.host || 'local'}:${currentSession.worktreePath || currentSession.repoPath || ''}`
-    : sessionId;
+  }, [sessions, workdir, host]);
 
   // Auto-scan remote transcripts on mount for SSH sessions.
   // Creates session records for any orphaned transcripts in the same directory
@@ -87,8 +86,10 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
       const stored = localStorage.getItem(storageKey);
       const fromStorage = stored ? new Set<string>(JSON.parse(stored)) : new Set<string>();
       // Also include sessions flagged as tabHidden from backend
-      for (const s of locationSiblings) {
-        if ((s as any).tabHidden) fromStorage.add(s.id);
+      if (locationSiblings) {
+        for (const s of locationSiblings) {
+          if ((s as any).tabHidden) fromStorage.add(s.id);
+        }
       }
       return fromStorage;
     } catch { return new Set(); }

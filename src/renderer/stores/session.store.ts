@@ -3239,13 +3239,16 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const currentSession = sessions.find(s => s.id === sessionId);
     if (!currentSession) return [];
 
-    // Find root (walk up parentSessionId chain)
+    // Find root (walk up parentSessionId chain, with cycle guard)
     let rootId = sessionId;
     let session: Session | undefined = currentSession;
+    const seen = new Set<string>([sessionId]);
     while (session?.parentSessionId) {
+      if (seen.has(session.parentSessionId)) break;
       rootId = session.parentSessionId;
+      seen.add(rootId);
       session = sessions.find(s => s.id === rootId);
-      if (!session) break; // Guard against missing parent
+      if (!session) break;
     }
 
     // Collect root + ALL descendants (not just direct children)
