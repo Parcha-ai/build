@@ -761,7 +761,20 @@ export class SSHService {
       }
     }
 
-    await this.connect(sessionId, config);
+    // Deduplicate: if a connect is already in progress for this session, wait for it
+    const pendingKey = `_pending_${sessionId}`;
+    if ((this as any)[pendingKey]) {
+      await (this as any)[pendingKey];
+      const recheck = this.connections.get(sessionId);
+      if (recheck) return recheck.client;
+    }
+    const connectPromise = this.connect(sessionId, config);
+    (this as any)[pendingKey] = connectPromise;
+    try {
+      await connectPromise;
+    } finally {
+      delete (this as any)[pendingKey];
+    }
     const conn = this.connections.get(sessionId);
     if (!conn) {
       throw new Error('Failed to establish connection');
