@@ -464,7 +464,14 @@ const createWindow = (): void => {
   });
 
   // Open DevTools for debugging (disabled for production builds)
-  // mainWindow.webContents.openDevTools();
+  // Capture renderer console + crash info in main process logs
+  mainWindow.webContents.on('console-message', (_e, level, message) => {
+    if (level >= 2) console.log(`[Renderer Console] ${message.substring(0, 500)}`);
+  });
+  mainWindow.webContents.on('render-process-gone', (_e, details) => {
+    console.error(`[RENDERER CRASHED] reason=${details.reason} exitCode=${details.exitCode}`);
+  });
+  if (process.env.GREP_DEV_USER_DATA) mainWindow.webContents.openDevTools();
 
   allWindows.add(mainWindow);
 

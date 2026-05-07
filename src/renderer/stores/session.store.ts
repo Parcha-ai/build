@@ -3253,21 +3253,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       depth++;
     }
 
-    // Collect root + ALL descendants (not just direct children)
+    // Collect root + direct children only (not deep descendants — deep
+    // trees with 17+ nodes caused O(n*d) iterations that froze React)
     const root = sessions.find(s => s.id === rootId);
     if (!root) return [];
 
     const forkGroup: Session[] = [root];
-    const visited = new Set<string>([rootId]);
-    const queue = [rootId];
-    while (queue.length > 0) {
-      const parentId = queue.shift()!;
-      for (const s of sessions) {
-        if (s.parentSessionId === parentId && !visited.has(s.id)) {
-          forkGroup.push(s);
-          visited.add(s.id);
-          queue.push(s.id);
-        }
+    for (const s of sessions) {
+      if (s.parentSessionId === rootId && s.id !== rootId) {
+        forkGroup.push(s);
       }
     }
 
