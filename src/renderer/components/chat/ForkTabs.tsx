@@ -1,6 +1,6 @@
 import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import ReactDOM from 'react-dom';
-import { Plus, MoreHorizontal, GitFork, MessageSquare } from 'lucide-react';
+import { Plus, MoreHorizontal, GitFork } from 'lucide-react';
 import { useSessionStore } from '../../stores/session.store';
 
 interface ForkTabsProps {
@@ -29,8 +29,6 @@ function formatRelativeDate(date: Date | string | undefined): string {
  * allowing any session to be promoted to a tab.
  */
 export default function ForkTabs({ sessionId }: ForkTabsProps) {
-  const getForkSiblings = useSessionStore(s => s.getForkSiblings);
-  const getProjectSessions = useSessionStore(s => s.getProjectSessions);
   const setActiveSession = useSessionStore(s => s.setActiveSession);
   const activeSessionId = useSessionStore(s => s.activeSessionId);
   const createForkFromCurrent = useSessionStore(s => s.createForkFromCurrent);
@@ -38,9 +36,29 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
   const sessions = useSessionStore(s => s.sessions);
   const loadSessions = useSessionStore(s => s.loadSessions);
 
-  const forkSiblings = getForkSiblings(sessionId);
-  const projectSessions = getProjectSessions(sessionId);
-  const rootId = forkSiblings.find(f => !f.parentSessionId)?.id || sessionId;
+  // Group tabs by location (same host + workdir), not by fork tree
+  const currentSession = sessions.find(s => s.id === sessionId);
+  const locationSiblings = React.useMemo(() => {
+    if (!currentSession) return [];
+    const workdir = currentSession.worktreePath || currentSession.repoPath || '';
+    const host = (currentSession as any).sshConfig?.host;
+    return sessions.filter(s => {
+      if (s.status !== 'running') return false;
+      const sWorkdir = s.worktreePath || s.repoPath || '';
+      if (!sWorkdir || !workdir) return false;
+      if (host) {
+        return (s as any).sshConfig?.host === host && sWorkdir === workdir;
+      }
+      return sWorkdir === workdir;
+    }).sort((a, b) => {
+      const aTime = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+      const bTime = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+      return aTime - bTime;
+    });
+  }, [sessions, currentSession]);
+  const locationKey = currentSession
+    ? `${(currentSession as any).sshConfig?.host || 'local'}:${currentSession.worktreePath || currentSession.repoPath || ''}`
+    : sessionId;
 
   // Auto-scan remote transcripts on mount for SSH sessions.
   // Creates session records for any orphaned transcripts in the same directory
@@ -52,7 +70,7 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
     if (!session?.sshConfig) return;
     hasScanned.current = true;
 
-    window.electronAPI?.sessions?.scanRemoteTranscripts?.(rootId).then((newSessions) => {
+    window.electronAPI?.sessions?.scanRemoteTranscripts?.(sessionId).then((newSessions) => {
       if (newSessions && newSessions.length > 0) {
         console.log(`[ForkTabs] Discovered ${newSessions.length} orphaned remote transcript(s)`);
         loadSessions();
@@ -60,16 +78,16 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
     }).catch((err: unknown) => {
       console.warn('[ForkTabs] Remote scan failed:', err);
     });
-  }, [sessionId, rootId, sessions, loadSessions]);
+  }, [sessionId, locationKey, sessions, loadSessions]);
 
   // Persist overflow (closed) tabs — merge localStorage + backend tabHidden flag
-  const storageKey = `grep-overflow-forks-${rootId}`;
+  const storageKey = `grep-overflow-forks-${locationKey}`;
   const [overflowIds, setOverflowIds] = useState<Set<string>>(() => {
     try {
       const stored = localStorage.getItem(storageKey);
       const fromStorage = stored ? new Set<string>(JSON.parse(stored)) : new Set<string>();
       // Also include sessions flagged as tabHidden from backend
-      for (const s of forkSiblings) {
+      for (const s of locationSiblings) {
         if ((s as any).tabHidden) fromStorage.add(s.id);
       }
       return fromStorage;
@@ -137,7 +155,7 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
   const [dragOverId, setDragOverId] = useState<string | null>(null);
 
   // Persist tab order in localStorage
-  const orderKey = `grep-tab-order-${rootId}`;
+  const orderKey = `grep-tab-order-${locationKey}`;
   useEffect(() => {
     try {
       const stored = localStorage.getItem(orderKey);
@@ -152,7 +170,7 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
 
   // Build visible forks with custom ordering
   const visibleForks = useMemo(() => {
-    const visible = forkSiblings.filter(f => !overflowIds.has(f.id));
+    const visible = locationSiblings.filter(f => !overflowIds.has(f.id));
     if (tabOrder.length === 0) return visible;
     // Sort by saved order; any new tabs not in the order go to the end
     const orderMap = new Map(tabOrder.map((id, i) => [id, i]));
@@ -161,13 +179,11 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
       const bi = orderMap.get(b.id) ?? Infinity;
       return ai - bi;
     });
-  }, [forkSiblings, overflowIds, tabOrder]);
+  }, [locationSiblings, overflowIds, tabOrder]);
 
-  // Overflow: closed forks + project sessions not already in the fork group
-  const forkGroupIds = new Set(forkSiblings.map(f => f.id));
-  const closedForks = forkSiblings.filter(f => overflowIds.has(f.id));
-  const projectOnlySessions = projectSessions.filter(s => !forkGroupIds.has(s.id));
-  const hasOverflowItems = closedForks.length > 0 || projectOnlySessions.length > 0;
+  // Overflow: closed tabs (hidden from the tab bar)
+  const closedTabs = locationSiblings.filter(f => overflowIds.has(f.id));
+  const hasOverflowItems = closedTabs.length > 0;
 
   const handleClose = useCallback((e: React.MouseEvent, forkId: string) => {
     e.stopPropagation();
@@ -176,12 +192,12 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
     window.electronAPI.sessions.update(forkId, { tabHidden: true } as any).catch(() => {});
 
     if (forkId === activeSessionId) {
-      const remaining = forkSiblings.filter(f => f.id !== forkId && !overflowIds.has(f.id));
+      const remaining = locationSiblings.filter(f => f.id !== forkId && !overflowIds.has(f.id));
       if (remaining.length > 0) {
         setActiveSession(remaining[0].id);
       }
     }
-  }, [activeSessionId, forkSiblings, overflowIds, setActiveSession]);
+  }, [activeSessionId, locationSiblings, overflowIds, setActiveSession]);
 
   const handleRestore = useCallback((forkId: string) => {
     setOverflowIds(prev => {
@@ -240,9 +256,8 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
 
   // Always show for SSH sessions (so the + button is accessible).
   // For local sessions, only show when there are forks or project siblings.
-  const currentSession = sessions.find(s => s.id === sessionId);
   const isSSH = !!(currentSession as any)?.sshConfig;
-  if (!isSSH && forkSiblings.length <= 1 && projectOnlySessions.length === 0) return null;
+  if (!isSSH && locationSiblings.length <= 1) return null;
 
   return (
     <div className="border-b border-claude-border bg-claude-bg/50 text-xs font-mono">
@@ -317,44 +332,19 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
             (same fork group, clean transcript). NOT a fork — Option+Enter forks with transcript. */}
         <button
           onClick={async () => {
-            const currentSession = sessions.find(s => s.id === sessionId);
-            const rootSession = sessions.find(s => s.id === rootId);
-            const session = rootSession?.sshConfig ? rootSession : currentSession;
+            const session = currentSession;
             if (session?.sshConfig) {
               try {
-                // Strip worktreeScript so it doesn't re-run setup — we're
-                // connecting to the SAME directory, not creating a new worktree.
                 const { worktreeScript: _, ...cleanConfig } = session.sshConfig as any;
-                // Pre-update root's childSessionIds so the new session is in the
-                // fork group BEFORE it gets broadcast via SESSION_LIST_UPDATED.
-                const root = forkSiblings.find(f => f.id === rootId);
-
                 const newSession = await window.electronAPI.ssh.createSession({
-                  name: `${session.name} (new)`,
+                  name: session.name,
                   sshConfig: { ...cleanConfig, syncSettings: false },
-                  parentSessionId: rootId,
                 });
                 if (newSession) {
-                  // Optimistic update — add to store immediately
                   useSessionStore.setState((state) => ({
-                    sessions: [
-                      ...state.sessions.map(s => {
-                        if (s.id === rootId) {
-                          const children = [...(s.childSessionIds || [])];
-                          if (!children.includes(newSession.id)) children.push(newSession.id);
-                          return { ...s, childSessionIds: children, isRoot: true } as typeof s;
-                        }
-                        return s;
-                      }),
-                      { ...newSession, parentSessionId: rootId } as any,
-                    ],
+                    sessions: [...state.sessions, newSession as any],
                   }));
                   setActiveSession(newSession.id);
-                  // Persist in background
-                  window.electronAPI.sessions.update(rootId, {
-                    childSessionIds: [...(root?.childSessionIds || []), newSession.id],
-                    isRoot: true,
-                  } as any).catch(() => {});
                 }
               } catch (err) {
                 console.error('[ForkTabs] Failed to create new tab:', err);
@@ -379,10 +369,10 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
               setShowOverflow(!showOverflow);
             }}
             className="flex items-center gap-1 px-2 py-1 border-l border-claude-border/30 text-claude-text-secondary hover:text-claude-text transition-colors"
-            title={`${closedForks.length + projectOnlySessions.length} more session${closedForks.length + projectOnlySessions.length > 1 ? 's' : ''}`}
+            title={`${closedTabs.length} closed tab${closedTabs.length > 1 ? 's' : ''}`}
           >
             <MoreHorizontal size={12} />
-            <span className="text-[9px]">{closedForks.length + projectOnlySessions.length}</span>
+            <span className="text-[9px]">{closedTabs.length}</span>
           </button>
         )}
 
@@ -393,12 +383,12 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
             className="fixed bg-claude-surface border border-claude-border shadow-lg z-[9999] min-w-64 max-h-80 overflow-y-auto text-xs font-mono"
             style={{ top: dropdownPos.top, right: dropdownPos.right }}
           >
-            {closedForks.length > 0 && (
+            {closedTabs.length > 0 && (
               <>
                 <div className="px-3 py-1.5 border-b border-claude-border">
                   <span className="text-[10px] font-semibold text-claude-text-secondary uppercase tracking-wide">Closed Tabs</span>
                 </div>
-                {closedForks.map(fork => (
+                {closedTabs.map(fork => (
                   <button
                     key={fork.id}
                     onClick={() => handleRestore(fork.id)}
@@ -411,70 +401,6 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
                     </span>
                   </button>
                 ))}
-              </>
-            )}
-            {projectOnlySessions.length > 0 && (
-              <>
-                <div className="px-3 py-1.5 border-b border-claude-border">
-                  <span className="text-[10px] font-semibold text-claude-text-secondary uppercase tracking-wide">Other Sessions</span>
-                </div>
-                {projectOnlySessions.map(session => {
-                  const isFork = !!session.parentSessionId;
-                  return (
-                    <button
-                      key={session.id}
-                      onClick={async () => {
-                        // Optimistically update the local store FIRST so the tab
-                        // appears immediately — don't wait for backend round-trip.
-                        useSessionStore.setState((state) => ({
-                          sessions: state.sessions.map(s => {
-                            if (s.id === session.id) {
-                              return { ...s, parentSessionId: rootId, isRoot: false, tabHidden: false } as typeof s;
-                            }
-                            if (s.id === rootId) {
-                              const children = [...(s.childSessionIds || [])];
-                              if (!children.includes(session.id)) children.push(session.id);
-                              return { ...s, childSessionIds: children, isRoot: true } as typeof s;
-                            }
-                            return s;
-                          }),
-                        }));
-                        // Remove from overflow
-                        setOverflowIds(prev => {
-                          const next = new Set(prev);
-                          next.delete(session.id);
-                          return next;
-                        });
-                        setShowOverflow(false);
-                        setActiveSession(session.id);
-                        // Persist to backend in background
-                        window.electronAPI.sessions.update(session.id, {
-                          parentSessionId: rootId, isRoot: false, tabHidden: false,
-                        } as any).catch(() => {});
-                        const root = forkSiblings.find(f => f.id === rootId);
-                        if (root) {
-                          const children = [...(root.childSessionIds || [])];
-                          if (!children.includes(session.id)) {
-                            children.push(session.id);
-                            window.electronAPI.sessions.update(rootId, {
-                              childSessionIds: children, isRoot: true,
-                            } as any).catch(() => {});
-                          }
-                        }
-                      }}
-                      className="w-full text-left px-3 py-1.5 hover:bg-claude-bg transition-colors flex items-center gap-2"
-                    >
-                      {isFork
-                        ? <GitFork size={10} className="text-purple-400 flex-shrink-0" />
-                        : <MessageSquare size={10} className="text-claude-text-secondary flex-shrink-0" />
-                      }
-                      <span className="text-xs truncate flex-1">{session.aiGeneratedName || session.forkName || session.name}</span>
-                      <span className="text-[9px] text-claude-text-secondary flex-shrink-0">
-                        {formatRelativeDate(session.updatedAt)}
-                      </span>
-                    </button>
-                  );
-                })}
               </>
             )}
           </div>,

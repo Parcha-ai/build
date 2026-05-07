@@ -968,12 +968,12 @@ Only return the title, nothing else.`
     parentSession: Session,
     userMessage: string
   ): Promise<void> {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const settingsStore = new Store({ name: 'claudette-settings' }) as any;
-    const apiKey = settingsStore.get('anthropicApiKey') as string | undefined;
+    const { CachedStore } = require('../cached-store');
+    const settingsStore = new CachedStore({ name: 'claudette-settings' });
+    const apiKey = (settingsStore.get('anthropicApiKey') as string | undefined)?.trim() || undefined;
 
     if (!apiKey) {
-      console.log('[Session] No API key, using fallback fork name');
+      console.log('[Session] No API key for fork naming, using fallback');
       // Use fallback name based on fork count
       const forkCount = (parentSession.childSessionIds?.length || 0);
       const fallbackName = `Fork ${forkCount}`;
