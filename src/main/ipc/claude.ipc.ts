@@ -95,14 +95,24 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
       const mainWindow = getMainWindow();
       if (!mainWindow) return;
 
-      // Send stream events to the SENDER window only (not all windows).
-      // This prevents the second window from getting re-render storms
-      // from streams it didn't initiate.
+      // Send stream events to the SENDER window. If the sender is destroyed
+      // (window closed/reloaded mid-stream), fall back to any live window.
       const senderContents = event.sender;
       const sendToSender = (channel: string, ...args: unknown[]) => {
         if (!senderContents.isDestroyed()) {
           senderContents.send(channel, ...args);
+          return;
         }
+        // Sender destroyed mid-stream — fall back to any live window
+        console.warn(`[Claude IPC] Sender destroyed, falling back for ${channel}`);
+        const { BrowserWindow } = require('electron');
+        for (const w of BrowserWindow.getAllWindows()) {
+          if (!w.isDestroyed()) {
+            w.webContents.send(channel, ...args);
+            return;
+          }
+        }
+        console.error(`[Claude IPC] No live windows to send ${channel} — event dropped!`);
       };
 
       // Ensure claudeService has the mainWindow reference for browser updates
