@@ -172,9 +172,21 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
     try { localStorage.setItem(orderKey, JSON.stringify(order)); } catch { /* quota */ }
   }, [orderKey]);
 
-  // Build visible forks with custom ordering — active session is ALWAYS visible
+  // When a session becomes active, permanently remove it from overflow
+  useEffect(() => {
+    if (activeSessionId && overflowIds.has(activeSessionId)) {
+      setOverflowIds(prev => {
+        const next = new Set(prev);
+        next.delete(activeSessionId);
+        return next;
+      });
+      window.electronAPI.sessions.update(activeSessionId, { tabHidden: false } as any).catch(() => {});
+    }
+  }, [activeSessionId, overflowIds]);
+
+  // Build visible forks with custom ordering
   const visibleForks = useMemo(() => {
-    const visible = forkSiblings.filter(f => !overflowIds.has(f.id) || f.id === activeSessionId);
+    const visible = forkSiblings.filter(f => !overflowIds.has(f.id));
     if (tabOrder.length === 0) return visible;
     // Sort by saved order; any new tabs not in the order go to the end
     const orderMap = new Map(tabOrder.map((id, i) => [id, i]));
