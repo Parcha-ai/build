@@ -2203,13 +2203,23 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }
       addMessage(sessionId, errorMessage);
 
-      // Clear the queue — errored sessions shouldn't continue processing queued messages
-      const queueLength = (currentState.messageQueue[sessionId] || []).length;
-      if (queueLength > 0) {
-        console.warn(`[SessionStore] Stream error — clearing ${queueLength} queued messages`);
+      // On error, try to send the next queued message instead of clearing.
+      // The error was for the PREVIOUS query — queued messages are fresh user
+      // input that should still be sent. Only clear if the error is fatal.
+      const queue = currentState.messageQueue[sessionId] || [];
+      if (queue.length > 0) {
+        console.log(`[SessionStore] Stream error — retrying next queued message (${queue.length} in queue)`);
+        const nextMsg = queue[0];
         set((state) => ({
-          messageQueue: { ...state.messageQueue, [sessionId]: [] },
+          messageQueue: {
+            ...state.messageQueue,
+            [sessionId]: state.messageQueue[sessionId].slice(1),
+          },
         }));
+        setTimeout(() => {
+          const { sendMessage } = get();
+          sendMessage(sessionId, nextMsg.message, nextMsg.attachments, { existingMessageId: nextMsg.id });
+        }, 500);
       }
     });
 
