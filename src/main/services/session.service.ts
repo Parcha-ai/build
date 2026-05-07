@@ -65,6 +65,8 @@ export class SessionService extends EventEmitter {
     this.gitService = new GitService();
     this.sessionsPath = path.join(app.getPath('userData'), 'sessions');
 
+    // Prune stale sessions before loading to prevent bloat crashes
+    this.pruneStaleSessionsOnStartup();
     // Load persisted discovered sessions into cache immediately
     this.loadPersistedDiscoveredSessions();
   }
@@ -383,6 +385,30 @@ Only return the title, nothing else.`
     // Only do blocking discovery if cache is completely empty
     await this.discoverAndCacheSessions();
     return this.getMergedSessions();
+  }
+
+  /**
+   * Prune stale sessions on startup — removes sessions older than 14 days
+   * (except starred) to prevent session bloat from crashing the renderer.
+   */
+  private pruneStaleSessionsOnStartup(): void {
+    const sessions = this.store.get('sessions') as Record<string, Session> | undefined;
+    if (!sessions) return;
+    const cutoff = Date.now() - 14 * 24 * 60 * 60 * 1000;
+    let pruned = 0;
+    for (const [sid, s] of Object.entries(sessions)) {
+      if (!s || typeof s !== 'object') continue;
+      if ((s as any).isStarred) continue;
+      const updated = (s as any).updatedAt;
+      const ts = updated ? new Date(updated).getTime() : 0;
+      if (ts < cutoff) {
+        this.store.delete(`sessions.${sid}`);
+        pruned++;
+      }
+    }
+    if (pruned > 0) {
+      console.log(`[Session] Pruned ${pruned} stale sessions (>14 days, not starred)`);
+    }
   }
 
   /**
