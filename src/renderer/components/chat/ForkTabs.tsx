@@ -87,7 +87,20 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
   const [dropdownPos, setDropdownPos] = useState({ top: 0, right: 0 });
 
   useEffect(() => {
-    localStorage.setItem(storageKey, JSON.stringify([...overflowIds]));
+    try {
+      localStorage.setItem(storageKey, JSON.stringify([...overflowIds]));
+    } catch {
+      // localStorage full — purge old grep-* keys to make space
+      const toRemove: string[] = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && (key.startsWith('grep-overflow-') || key.startsWith('grep-tab-order-'))) {
+          toRemove.push(key);
+        }
+      }
+      toRemove.forEach(k => localStorage.removeItem(k));
+      try { localStorage.setItem(storageKey, JSON.stringify([...overflowIds])); } catch { /* give up */ }
+    }
   }, [overflowIds, storageKey]);
 
   useEffect(() => {
@@ -152,7 +165,7 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
 
   const saveTabOrder = useCallback((order: string[]) => {
     setTabOrder(order);
-    localStorage.setItem(orderKey, JSON.stringify(order));
+    try { localStorage.setItem(orderKey, JSON.stringify(order)); } catch { /* quota */ }
   }, [orderKey]);
 
   // Build visible forks with custom ordering
