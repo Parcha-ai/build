@@ -29,18 +29,23 @@ function formatRelativeDate(date: Date | string | undefined): string {
  * allowing any session to be promoted to a tab.
  */
 export default function ForkTabs({ sessionId }: ForkTabsProps) {
-  const getForkSiblings = useSessionStore(s => s.getForkSiblings);
-  const getProjectSessions = useSessionStore(s => s.getProjectSessions);
   const setActiveSession = useSessionStore(s => s.setActiveSession);
   const activeSessionId = useSessionStore(s => s.activeSessionId);
   const createForkFromCurrent = useSessionStore(s => s.createForkFromCurrent);
-
-  const sessions = useSessionStore(s => s.sessions);
   const loadSessions = useSessionStore(s => s.loadSessions);
 
-  const forkSiblings = getForkSiblings(sessionId);
-  const projectSessions = getProjectSessions(sessionId);
-  const rootId = forkSiblings.find(f => !f.parentSessionId)?.id || sessionId;
+  // PERF: only re-render when session count changes, not on every session property update
+  const sessionCount = useSessionStore(s => s.sessions.length);
+
+  // Compute fork siblings and project sessions only when session count changes
+  const { forkSiblings, projectSessions, rootId, sessions } = useMemo(() => {
+    const allSessions = useSessionStore.getState().sessions;
+    const fs = useSessionStore.getState().getForkSiblings(sessionId);
+    const ps = useSessionStore.getState().getProjectSessions(sessionId);
+    const rid = fs.find(f => !f.parentSessionId)?.id || sessionId;
+    return { forkSiblings: fs, projectSessions: ps, rootId: rid, sessions: allSessions };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId, sessionCount]);
 
   // Auto-scan remote transcripts on mount for SSH sessions.
   // Creates session records for any orphaned transcripts in the same directory
