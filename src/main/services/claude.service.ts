@@ -4494,6 +4494,18 @@ Begin by creating the task structure now.
               return;
             }
 
+            // Stale session ID — remote conversation was lost (OOM/crash/cleanup)
+            if (resultMsg.is_error && resultMsg.result?.includes('No conversation found with session ID')) {
+              console.error('[Claude SDK] Stale session ID — clearing for fresh start:', resultMsg.result);
+              this.sessionStore.delete(`sessions.${sessionId}.sdkSessionId`);
+              this.sessionStore.delete(`sdkSessionMappings.${sessionId}`);
+              yield {
+                type: 'error',
+                error: '⚠️ Remote session was lost (likely killed by the OS). Starting fresh — send your message again.',
+              };
+              return;
+            }
+
             // Check for other API errors
             if (resultMsg.is_error && resultMsg.result) {
               yield { type: 'error', error: resultMsg.result };
@@ -4666,11 +4678,16 @@ Begin by creating the task structure now.
             error: '⚠️ Session had corrupted thinking data. Starting fresh session - please try your message again.'
           };
         }
+      } else if (errorMessage.includes('No conversation found with session ID')) {
+        console.error('[Claude SDK] Stale session ID — remote conversation was lost (OOM/crash):', errorMessage);
+        this.sessionStore.delete(`sessions.${sessionId}.sdkSessionId`);
+        this.sessionStore.delete(`sdkSessionMappings.${sessionId}`);
+        yield {
+          type: 'error',
+          error: '⚠️ Remote session was lost (likely killed by the OS). Starting fresh — send your message again.',
+        };
       } else if (errorMessage.match(/process exited with code|process terminated by signal/) && session?.sshConfig) {
         console.error('[Claude SDK] SSH process exit caught:', errorMessage);
-        // Don't guess at the cause — "network drop" was misleading because
-        // the process can also exit from a crash, OOM, or being killed.
-        // Surface the raw exit reason so the user can tell the difference.
         yield {
           type: 'error',
           error: `Remote Claude process exited unexpectedly (${errorMessage}). Messages already streamed are saved on the remote. Send another message to reconnect and continue.`,
