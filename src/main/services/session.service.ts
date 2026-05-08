@@ -479,6 +479,8 @@ Only return the title, nothing else.`
       if (existing) {
         sessionMap.set(id, this.attachSessionIds({
           ...s,
+          name: existing.name || s.name,
+          aiGeneratedName: existing.aiGeneratedName || s.aiGeneratedName,
           model: existing.model,
           lastBrowserUrl: existing.lastBrowserUrl,
           isStarred: existing.isStarred,
@@ -536,7 +538,7 @@ Only return the title, nothing else.`
       .filter(s => s.name && s.repoPath)
       .map(s => {
         const customName = this.store.get(`sessionNames.${s.id}`) as string | undefined;
-        return customName ? { ...s, name: customName } : s;
+        return customName ? { ...s, name: customName, aiGeneratedName: customName } : s;
       });
   }
 

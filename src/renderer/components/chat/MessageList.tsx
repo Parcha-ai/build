@@ -173,8 +173,10 @@ export default function MessageList({
         />
       ))}
 
-      {/* Streaming events in chronological order (excluding thinking - shown separately) */}
-      {isStreaming && streamEvents.length > 0 && (
+      {/* Streaming events in chronological order (excluding thinking - shown separately).
+          Render whenever events exist, not just when isStreaming — prevents content from
+          vanishing when the watchdog or a stale event briefly clears isStreaming. */}
+      {streamEvents.length > 0 && (
         <div className="space-y-2">
           {streamEvents.map((event, idx) => {
             // Skip thinking events - they're shown in the dedicated thinking section
