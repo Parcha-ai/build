@@ -1168,15 +1168,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       activeStreamModel: isStreaming
         ? state.activeStreamModel
         : { ...state.activeStreamModel, [sessionId]: undefined },
-      streamEvents: isStreaming
-        ? { ...state.streamEvents, [sessionId]: [] }
-        : state.streamEvents,
-      currentStreamContent: isStreaming
-        ? { ...state.currentStreamContent, [sessionId]: '' }
-        : state.currentStreamContent,
-      currentThinkingContent: isStreaming
-        ? { ...state.currentThinkingContent, [sessionId]: '' }
-        : state.currentThinkingContent,
+      // Clear stream state on BOTH transitions: starting (fresh slate) and
+      // ending (content has been finalized into a message by onStreamEnd).
+      // Without clearing on end, stale streamEvents linger and flash away
+      // when the next stream starts.
+      streamEvents: { ...state.streamEvents, [sessionId]: [] },
+      currentStreamContent: { ...state.currentStreamContent, [sessionId]: '' },
+      currentThinkingContent: { ...state.currentThinkingContent, [sessionId]: '' },
       currentToolCalls: isStreaming
         ? { ...state.currentToolCalls, [sessionId]: [] }
         : state.currentToolCalls,
@@ -1736,6 +1734,16 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       const tc = toolCall as ToolCall;
       console.log('[SessionStore] onToolCall received:', tc?.name, 'input:', JSON.stringify(tc?.input || {}));
       addToolCall(sessionId, tc);
+
+      // Sub-agent tool activity: inject progress into chat stream so the user
+      // sees what's happening. The SDK doesn't stream sub-agent text over SSH.
+      if (tc.agentId && get().isStreaming[sessionId]) {
+        const desc = (tc.input as Record<string, unknown>)?.description as string
+          || (tc.input as Record<string, unknown>)?.command as string
+          || tc.name;
+        const label = typeof desc === 'string' ? desc.slice(0, 120) : tc.name;
+        updateStreamContent(sessionId, `\n> **Running:** ${label}\n`, tc.agentId);
+      }
 
       // Track real backgrounded shells via Claude Code's native tool suite:
       // - `Bash` with `run_in_background: true` starts a shell, result includes shell_id

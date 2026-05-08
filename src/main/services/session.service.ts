@@ -477,14 +477,16 @@ Only return the title, nothing else.`
     this.discoveredSessionsCache.forEach((s, id) => {
       const existing = sessionMap.get(id);
       if (existing) {
+        // Merge: discovered session has latest transient state (branch, updatedAt),
+        // stored session has all persistent metadata (names, fork relationships,
+        // stars, hidden flags, model). Spread stored OVER discovered so nothing is lost.
         sessionMap.set(id, this.attachSessionIds({
           ...s,
-          name: existing.name || s.name,
-          aiGeneratedName: existing.aiGeneratedName || s.aiGeneratedName,
-          model: existing.model,
-          lastBrowserUrl: existing.lastBrowserUrl,
-          isStarred: existing.isStarred,
-          starredAt: existing.starredAt,
+          ...existing,
+          // Discovered session has the latest transient fields
+          branch: s.branch || existing.branch,
+          updatedAt: s.updatedAt || existing.updatedAt,
+          createdAt: existing.createdAt || s.createdAt,
           sdkSessionId: existing.sdkSessionId || s.sdkSessionId || sdkSessionMappings[id],
           relatedSessionIds: existing.relatedSessionIds || s.relatedSessionIds,
         }, sdkSessionMappings));
