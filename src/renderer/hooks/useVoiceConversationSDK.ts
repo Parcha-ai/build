@@ -210,13 +210,16 @@ export const useVoiceConversationSDK = ({
           console.log('[VoiceConversationSDK] Unhandled tool call:', toolCall);
           if (onToolCallRef.current) {
             try {
-              const result = await onToolCallRef.current({
+              const resultPromise = onToolCallRef.current({
                 toolCallId: toolCall.tool_call_id,
                 toolName: toolCall.tool_name,
                 parameters: toolCall.parameters as Record<string, unknown>,
               });
+              const timeoutPromise = new Promise<string>((_, reject) =>
+                setTimeout(() => reject(new Error('Tool call timed out after 8s')), 8000)
+              );
+              const result = await Promise.race([resultPromise, timeoutPromise]);
               console.log('[VoiceConversationSDK] Tool result:', result);
-              // Return the result to the SDK so the agent receives it
               return result;
             } catch (error) {
               console.error('[VoiceConversationSDK] Tool call error:', error);

@@ -110,10 +110,12 @@ export const MicrophoneButton = forwardRef<VoiceModeHandle, MicrophoneButtonProp
       : messages.slice(-5);
 
     const messageSummary = contextMessages
-      .map(m => {
+      .map((m, i) => {
         const content = typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
-        // For initial context, show more of each message
-        const maxLength = isInitial ? 300 : 150;
+        // Last assistant message gets much more context so voice agent
+        // knows what just happened. Other messages get shorter summaries.
+        const isLastAssistant = isInitial && m.role === 'assistant' && i === contextMessages.length - 1;
+        const maxLength = isLastAssistant ? 2000 : (isInitial ? 300 : 150);
         return `${m.role}: ${content.slice(0, maxLength)}${content.length > maxLength ? '...' : ''}`;
       })
       .join('\n');
@@ -201,16 +203,11 @@ ${messageSummary || 'No messages yet'}`;
         if (instruction) {
           console.log('[MicrophoneButton] Executing Build command:', instruction.slice(0, 100));
 
-          // Send directly via session store — don't rely on onTranscriptionComplete
-          // callback which requires isVoiceModeActive to be in sync (fails after
-          // session switches). Direct sendMessage always works.
-          const { sendMessage: directSend, interruptAndSend } = useSessionStore.getState();
-          const currentlyStreaming = useSessionStore.getState().isStreaming[sessionId];
-          if (currentlyStreaming) {
-            await interruptAndSend(sessionId, instruction);
-          } else {
-            await directSend(sessionId, instruction);
-          }
+          // Send via session store. Use sendMessage which queues if streaming
+          // (same as the input box). Don't interrupt — let the current stream
+          // finish and process the voice command next.
+          const { sendMessage: directSend } = useSessionStore.getState();
+          await directSend(sessionId, instruction);
 
           return `TASK SUBMITTED. Build is now working on: "${instruction.slice(0, 50)}...". Call get_task_status every 5-10 seconds to check progress and announce what Build is doing.`;
         }

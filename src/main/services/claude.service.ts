@@ -3957,7 +3957,7 @@ Begin by creating the task structure now.
               session_id?: string;
               tools?: string[];
               model?: string;
-              status?: 'compacting' | null;
+              status?: string | null;
               compact_metadata?: {
                 trigger: 'manual' | 'auto';
                 pre_tokens: number;
@@ -3966,6 +3966,11 @@ Begin by creating the task structure now.
 
             // Handle compaction status changes (subtype: 'status')
             if (systemMsg.subtype === 'status') {
+              // "requesting" = waiting for API slot (rate limited or queued)
+              if (systemMsg.status === 'requesting') {
+                console.log('[Claude SDK] Status: requesting (waiting for API)');
+                break;
+              }
               const isCompacting = systemMsg.status === 'compacting';
               console.log('[Claude SDK] Compaction status:', isCompacting ? 'COMPACTING' : 'idle');
 
@@ -4393,6 +4398,19 @@ Begin by creating the task structure now.
                   }
                 }
               }
+            }
+            break;
+          }
+
+          case 'rate_limit_event': {
+            const rlMsg = msg as SDKMessage & { rate_limit_info?: { status?: string; resetsAt?: number; rateLimitType?: string } };
+            const info = rlMsg.rate_limit_info;
+            if (info?.status === 'rejected') {
+              const resetTime = info.resetsAt ? new Date(info.resetsAt * 1000) : null;
+              const waitMin = resetTime ? Math.ceil((resetTime.getTime() - Date.now()) / 60000) : null;
+              const timeStr = waitMin && waitMin > 0 ? ` (~${waitMin}min)` : '';
+              console.warn(`[Claude SDK] Rate limited (${info.rateLimitType})${timeStr}`);
+              yield { type: 'text_delta', content: `\n⏳ **Rate limited** (${info.rateLimitType || 'API'}) — waiting for reset${timeStr}...\n` };
             }
             break;
           }
