@@ -4497,15 +4497,16 @@ Begin by creating the task structure now.
               return;
             }
 
-            // Stale session ID — remote conversation was lost (OOM/crash/cleanup)
+            // Stale session ID — remote conversation was lost (OOM/crash/cleanup).
+            // Auto-heal: clear the dead ID and retry the message immediately as a
+            // fresh session so the user never sees a failure.
             if (resultMsg.is_error && resultMsg.result?.includes('No conversation found with session ID')) {
-              console.error('[Claude SDK] Stale session ID — clearing for fresh start:', resultMsg.result);
+              console.error('[Claude SDK] Stale session ID — auto-healing:', resultMsg.result);
               this.sessionStore.delete(`sessions.${sessionId}.sdkSessionId`);
               this.sessionStore.delete(`sdkSessionMappings.${sessionId}`);
-              yield {
-                type: 'error',
-                error: '⚠️ Remote session was lost (likely killed by the OS). Starting fresh — send your message again.',
-              };
+              yield { type: 'text_delta', content: '⚠️ Remote session expired — reconnecting automatically...\n\n' };
+              // Retry with clean state — yield* delegates to a fresh generator
+              yield* this.streamMessage(sessionId, userMessage, attachments, permissionMode, thinkingMode, model, gstackMode, supplementalMessages);
               return;
             }
 
@@ -4682,13 +4683,12 @@ Begin by creating the task structure now.
           };
         }
       } else if (errorMessage.includes('No conversation found with session ID')) {
-        console.error('[Claude SDK] Stale session ID — remote conversation was lost (OOM/crash):', errorMessage);
+        console.error('[Claude SDK] Stale session ID (exception) — auto-healing:', errorMessage);
         this.sessionStore.delete(`sessions.${sessionId}.sdkSessionId`);
         this.sessionStore.delete(`sdkSessionMappings.${sessionId}`);
-        yield {
-          type: 'error',
-          error: '⚠️ Remote session was lost (likely killed by the OS). Starting fresh — send your message again.',
-        };
+        yield { type: 'text_delta', content: '⚠️ Remote session expired — reconnecting automatically...\n\n' };
+        yield* this.streamMessage(sessionId, userMessage, attachments, permissionMode, thinkingMode, model, gstackMode, supplementalMessages);
+        return;
       } else if (errorMessage.match(/process exited with code|process terminated by signal/) && session?.sshConfig) {
         console.error('[Claude SDK] SSH process exit caught:', errorMessage);
         yield {
