@@ -342,7 +342,7 @@ function ElectronApp() {
       // Dismissal lasts until 6 AM — not just until midnight. This prevents
       // the modal from re-appearing at 00:01 because the date changed.
       const hour = now.getHours();
-      const MORNING_CUTOFF = 6;
+      const MORNING_CUTOFF = 5;
       const isPastBedtime = (hour === bedHour && now.getMinutes() >= bedMinute) || hour > bedHour;
       const isBeforeMorning = hour < MORNING_CUTOFF;
       const inBedtimeWindow = isPastBedtime || isBeforeMorning;
@@ -386,8 +386,8 @@ function ElectronApp() {
       const now = new Date();
       const hour = now.getHours();
 
-      // Show if: after 6 AM, before 6 PM, not yet reviewed today
-      const isAfterMorning = hour >= 6;
+      // Show if: after 5 AM, before 6 PM, not yet reviewed today
+      const isAfterMorning = hour >= 5;
       const isBeforeEvening = hour < 18;
       const reviewedToday = localStorage.getItem('daily-review-date') === now.toDateString();
 

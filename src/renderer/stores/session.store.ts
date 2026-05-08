@@ -1897,23 +1897,33 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         }
 
         // Teammate (Agent/Task) result — append the teammate's final message
-        // and mark inactive. This captures when Scaramanga/Q/etc finish.
+        // and mark inactive. Also inject into the main chat stream so the user
+        // sees output. The SDK doesn't stream sub-agent text_delta events over
+        // SSH JSONL, so without this the chat stays blank while agents work.
         if ((tc.name === 'Agent' || tc.name === 'Task') && tc.id) {
-          set((state) => {
-            const existing = state.monitorInstances[sessionId] || [];
-            const idx = existing.findIndex((m) => m.id === tc.id);
-            if (idx < 0) return state;
-            const isDone = tc.status === 'completed' || tc.status === 'error';
-            const updated = [...existing];
-            updated[idx] = {
-              ...updated[idx],
-              events: resultText.trim()
-                ? [...updated[idx].events, { id: `${tc.id}-done`, text: resultText, timestamp: Date.now() }]
-                : updated[idx].events,
-              active: !isDone,
-            };
-            return { monitorInstances: { ...state.monitorInstances, [sessionId]: updated } };
-          });
+          const monitorExists = (get().monitorInstances[sessionId] || []).some((m) => m.id === tc.id);
+          if (monitorExists) {
+            set((state) => {
+              const existing = state.monitorInstances[sessionId] || [];
+              const idx = existing.findIndex((m) => m.id === tc.id);
+              if (idx < 0) return state;
+              const isDone = tc.status === 'completed' || tc.status === 'error';
+              const updated = [...existing];
+              updated[idx] = {
+                ...updated[idx],
+                events: resultText.trim()
+                  ? [...updated[idx].events, { id: `${tc.id}-done`, text: resultText, timestamp: Date.now() }]
+                  : updated[idx].events,
+                active: !isDone,
+              };
+              return { monitorInstances: { ...state.monitorInstances, [sessionId]: updated } };
+            });
+          }
+
+          // Inject agent result into chat stream so text appears in main chat
+          if (resultText.trim() && get().isStreaming[sessionId]) {
+            updateStreamContent(sessionId, resultText, tc.id);
+          }
         }
 
         // SendMessage to a teammate — add as a progress event on the relevant

@@ -65,7 +65,7 @@ export default function BedtimeLockModal({ onDismiss, onSnooze }: BedtimeLockMod
             Go to bed. Your code will be here tomorrow.
           </p>
           <p className="text-xs text-claude-text-secondary/50 mt-8">
-            Build is locked until 6 AM. Close the app.
+            Build is locked until 5 AM. Close the app.
           </p>
         </div>
       </div>
