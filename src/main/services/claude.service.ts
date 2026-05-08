@@ -96,6 +96,7 @@ export class ClaudeService {
   private sessionPlanFiles: Map<string, { content: string; filePath: string }> = new Map(); // Cache plan content per session
   private lastPlanFeedback: Map<string, string> = new Map(); // Stores feedback from last plan rejection per session
   private mainWindow: BrowserWindow | null = null;
+  private onSessionNameChanged: (() => void) | null = null;
   private browserMcpServers: Map<string, any> = new Map();
 
   // Proactive compaction: track context usage per session and compact idle sessions in background
@@ -118,6 +119,10 @@ export class ClaudeService {
 
   setMainWindow(window: BrowserWindow | null): void {
     this.mainWindow = window;
+  }
+
+  setOnSessionNameChanged(callback: () => void): void {
+    this.onSessionNameChanged = callback;
   }
 
   /**
@@ -1372,6 +1377,7 @@ Read or source that file if you need the actual values. Do not print secret valu
 
           // Store the custom name
           this.sessionStore.set(`sessionNames.${sessionId}`, name);
+          this.onSessionNameChanged?.();
 
           return {
             content: [{
@@ -4096,6 +4102,7 @@ Begin by creating the task structure now.
                   const settingsStore = new (require('../cached-store').CachedStore)({ name: 'claudette-settings' });
                   settingsStore.set(`sessionNames.${sessionId}`, info.summary);
                   console.log(`[Claude SDK] Session name from SDK: "${info.summary}"`);
+                  this.onSessionNameChanged?.();
                 }
               } catch { /* non-fatal */ }
 

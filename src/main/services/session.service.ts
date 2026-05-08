@@ -460,6 +460,10 @@ Only return the title, nothing else.`
     })();
   }
 
+  public refreshSessionList(): void {
+    this.emit('sessionsUpdated', this.getMergedSessions());
+  }
+
   /**
    * Get merged sessions from cache and store
    */

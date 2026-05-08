@@ -95,7 +95,8 @@ interface SessionState {
   isStreaming: Record<string, boolean>;
   sessionActivity: Record<string, 'active' | 'waiting' | 'idle'>; // Activity state per session
   isProcessingQueue: Record<string, boolean>; // True during queue drain window to prevent race
-  streamGeneration: Record<string, number>; // Incremented on interrupt to detect stale STREAM_END events
+  streamGeneration: Record<string, number>; // Incremented on interrupt/send to detect stale STREAM_END events
+  streamStartTime: Record<string, number>; // Timestamp when current stream started — guards against stale events
   streamEvents: Record<string, StreamEvent[]>; // Chronological events
   currentStreamContent: Record<string, string>;
   currentThinkingContent: Record<string, string>;
@@ -582,6 +583,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   sessionActivity: {},
   isProcessingQueue: {},
   streamGeneration: {},
+  streamStartTime: {},
   streamEvents: {}, // Chronological event stream
   currentStreamContent: {},
   currentThinkingContent: {},
@@ -1137,7 +1139,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   setStreaming: (sessionId, isStreaming) => {
     console.log(`[SessionStore] setStreaming called for ${sessionId}: ${isStreaming}`);
 
-    // Watchdog: auto-clear stuck streaming state after 5 minutes of no events
+    // Watchdog: auto-clear stuck streaming state after 60 seconds of no events.
+    // Each stream event resets this timer (via resetStreamWatchdog), so it only
+    // fires when truly stuck — not during long tool executions.
     if (isStreaming) {
       const watchdogKey = `_streamWatchdog_${sessionId}`;
       const existing = (window as any)[watchdogKey];
@@ -1145,10 +1149,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       (window as any)[watchdogKey] = setTimeout(() => {
         const state = get();
         if (state.isStreaming[sessionId]) {
-          console.warn(`[SessionStore] Watchdog: clearing stuck isStreaming for ${sessionId} after 5min`);
+          console.warn(`[SessionStore] Watchdog: clearing stuck isStreaming for ${sessionId} after 60s of no events`);
           set((s) => ({ isStreaming: { ...s.isStreaming, [sessionId]: false } }));
         }
-      }, 5 * 60 * 1000);
+      }, 60_000);
     } else {
       const watchdogKey = `_streamWatchdog_${sessionId}`;
       const existing = (window as any)[watchdogKey];
@@ -1565,9 +1569,18 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       persistSupplementalMessage(sessionId, userMessage);
     }
 
-    // Start streaming
+    // Start streaming — bump generation and record start time to detect stale
+    // STREAM_END/STREAM_ERROR from previously cancelled queries.
     setStreaming(sessionId, true);
     set((state) => ({
+      streamGeneration: {
+        ...state.streamGeneration,
+        [sessionId]: (state.streamGeneration[sessionId] || 0) + 1,
+      },
+      streamStartTime: {
+        ...state.streamStartTime,
+        [sessionId]: Date.now(),
+      },
       activeStreamModel: {
         ...state.activeStreamModel,
         [sessionId]: model,
@@ -1693,15 +1706,33 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     if (!hasElectronAPI) return () => {};
     const { addMessage, updateStreamContent, updateThinkingContent, addToolCall, updateToolCall, setStreaming, setSystemInfo } = get();
 
+    const resetStreamWatchdog = (sessionId: string) => {
+      const watchdogKey = `_streamWatchdog_${sessionId}`;
+      const existing = (window as any)[watchdogKey];
+      if (existing) {
+        clearTimeout(existing);
+        (window as any)[watchdogKey] = setTimeout(() => {
+          const state = get();
+          if (state.isStreaming[sessionId]) {
+            console.warn(`[SessionStore] Watchdog: clearing stuck isStreaming for ${sessionId} after 60s of no events`);
+            set((s) => ({ isStreaming: { ...s.isStreaming, [sessionId]: false } }));
+          }
+        }, 60_000);
+      }
+    };
+
     const unsubChunk = window.electronAPI.claude.onStreamChunk(({ sessionId, content, agentId }) => {
+      resetStreamWatchdog(sessionId);
       updateStreamContent(sessionId, content, agentId);
     });
 
     const unsubThinking = window.electronAPI.claude.onThinkingChunk(({ sessionId, content }) => {
+      resetStreamWatchdog(sessionId);
       updateThinkingContent(sessionId, content);
     });
 
     const unsubToolCall = window.electronAPI.claude.onToolCall(({ sessionId, toolCall }) => {
+      resetStreamWatchdog(sessionId);
       const tc = toolCall as ToolCall;
       console.log('[SessionStore] onToolCall received:', tc?.name, 'input:', JSON.stringify(tc?.input || {}));
       addToolCall(sessionId, tc);
@@ -1771,6 +1802,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     });
 
     const unsubToolResult = window.electronAPI.claude.onToolResult(async ({ sessionId, toolCall }) => {
+      resetStreamWatchdog(sessionId);
       if (!toolCall) return;
       const tc = toolCall as ToolCall;
       console.log('[SessionStore] onToolResult received:', tc.name, 'input:', JSON.stringify(tc.input || {}));
@@ -2055,6 +2087,17 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const unsubEnd = window.electronAPI.claude.onStreamEnd(({ sessionId, message }) => {
       const currentState = get();
 
+      // Guard against stale STREAM_END from a cancelled stream racing in after a
+      // new stream has started. If isStreaming is true but the stream started very
+      // recently (< 1s ago), and this event has no content (safety-net cleanup),
+      // it's almost certainly from the OLD cancelled stream — skip it.
+      const streamAge = Date.now() - (currentState.streamStartTime[sessionId] || 0);
+      const hasContent = !!(message.content?.trim() || currentState.currentStreamContent[sessionId]?.trim());
+      if (currentState.isStreaming[sessionId] && streamAge < 1000 && !hasContent) {
+        console.log(`[SessionStore] onStreamEnd SKIPPED for ${sessionId} — stale event (stream only ${streamAge}ms old, no content)`);
+        return;
+      }
+
       // Always process STREAM_END — even if isStreaming is already false.
       // Skipping caused silent failures where the assistant response was dropped.
       if (!currentState.isStreaming[sessionId]) {
@@ -2083,7 +2126,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         persistSupplementalMessage(sessionId, finalMessage);
       }
 
-      addMessage(sessionId, finalMessage);
+      if (messageContent.trim()) {
+        addMessage(sessionId, finalMessage);
+      }
 
       // Clear stream content after adding to messages
       set((state) => ({
@@ -2150,6 +2195,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     const unsubError = window.electronAPI.claude.onStreamError(({ sessionId, error }) => {
       const currentState = get();
+
+      // Guard against stale errors from a cancelled stream racing in after a
+      // new stream has started. If the stream started very recently (< 1s),
+      // this error is from the OLD cancelled query — don't kill the new stream.
+      const streamAge = Date.now() - (currentState.streamStartTime[sessionId] || 0);
+      if (currentState.isStreaming[sessionId] && streamAge < 1000) {
+        console.log(`[SessionStore] onStreamError SKIPPED for ${sessionId} — stale error from previous stream (stream only ${streamAge}ms old): ${error}`);
+        return;
+      }
 
       // Ignore stale errors from a cancelled stream that race in after we've
       // already cleared the streaming flag (e.g. during interruptAndSend,
@@ -2583,9 +2637,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       console.log(`[cancelStream] Saved interrupted message with ${partialContent.length} chars of content`);
     }
 
-    // Clear current streaming state
+    // Clear current streaming state and bump generation to invalidate stale events
     set((state) => ({
       isStreaming: { ...state.isStreaming, [sessionId]: false },
+      streamGeneration: {
+        ...state.streamGeneration,
+        [sessionId]: (state.streamGeneration[sessionId] || 0) + 1,
+      },
       streamEvents: { ...state.streamEvents, [sessionId]: [] },
       currentStreamContent: { ...state.currentStreamContent, [sessionId]: '' },
       currentThinkingContent: { ...state.currentThinkingContent, [sessionId]: '' },
