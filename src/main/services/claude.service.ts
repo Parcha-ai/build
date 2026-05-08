@@ -4099,8 +4099,7 @@ Begin by creating the task structure now.
                 const { getSessionInfo } = require('@anthropic-ai/claude-agent-sdk') as { getSessionInfo: (id: string, opts?: { dir?: string }) => Promise<{ summary?: string } | undefined> };
                 const info = await getSessionInfo(systemMsg.session_id, { dir: projectPath });
                 if (info?.summary) {
-                  const settingsStore = new (require('../cached-store').CachedStore)({ name: 'claudette-settings' });
-                  settingsStore.set(`sessionNames.${sessionId}`, info.summary);
+                  this.sessionStore.set(`sessionNames.${sessionId}`, info.summary);
                   console.log(`[Claude SDK] Session name from SDK: "${info.summary}"`);
                   this.onSessionNameChanged?.();
                 }
