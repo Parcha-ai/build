@@ -280,6 +280,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
   ), [sessionId]));
   const contextUsage = useSessionStore(useCallback((s) => s.contextUsage[sessionId] || null, [sessionId]));
   const currentThinkingMode = useSessionStore(useCallback((s) => s.thinkingMode[sessionId] || 'thinking', [sessionId]));
+  const currentHtmlMode = useSessionStore(useCallback((s) => s.htmlRenderMode[sessionId] || 'md', [sessionId]));
   const activeGStackMode = useSessionStore(useCallback((s) => s.gstackMode[sessionId] || null, [sessionId]));
   const queuedMessages = useSessionStore(useCallback((s) => s.messageQueue[sessionId] || EMPTY_QUEUE, [sessionId]));
   const currentModel = useSessionStore(useCallback((s) => s.selectedModel[sessionId] || 'claude-opus-4-7', [sessionId]));
@@ -297,6 +298,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
   const setGStackMode = useSessionStore((s) => s.setGStackMode);
   const cycleThinkingMode = useSessionStore((s) => s.cycleThinkingMode);
   const setThinkingMode = useSessionStore((s) => s.setThinkingMode);
+  const cycleHtmlRenderMode = useSessionStore((s) => s.cycleHtmlRenderMode);
   const setSelectedModel = useSessionStore((s) => s.setSelectedModel);
   const dismissCompactionSwitch = useSessionStore((s) => s.dismissCompactionSwitch);
   const restoreCompactionModel = useSessionStore((s) => s.restoreCompactionModel);
@@ -1815,6 +1817,21 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
             disabled={disabled}
           />
           </VoiceModeErrorBoundary>
+
+        {/* HTML render mode toggle */}
+        <div className="relative -order-3">
+          <button
+            onClick={() => cycleHtmlRenderMode(sessionId)}
+            disabled={disabled}
+            className={`flex items-center gap-0.5 hover:opacity-80 transition-opacity disabled:opacity-40 text-[10px] font-bold font-mono ${
+              currentHtmlMode === 'html' ? 'text-purple-400' : 'text-claude-text-secondary'
+            }`}
+            title={currentHtmlMode === 'html' ? 'HTML mode: Claude responds in styled HTML (click to switch to Markdown)' : 'Markdown mode (click to switch to HTML)'}
+            style={{ letterSpacing: '0.05em' }}
+          >
+            {currentHtmlMode === 'html' ? 'HTML' : 'MD'}
+          </button>
+        </div>
 
         {/* Effort level selector */}
         <div className="relative -order-2" ref={effortDropdownRef}>

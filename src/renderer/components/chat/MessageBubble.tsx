@@ -3,10 +3,12 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { GitBranch } from 'lucide-react';
 import ToolCallCard from './ToolCallCard';
+import HtmlContentBlock from './HtmlContentBlock';
 import { SpeakerButton } from './SpeakerButton';
 import { useEditorStore } from '../../stores/editor.store';
 import { useUIStore } from '../../stores/ui.store';
 import { useSessionStore } from '../../stores/session.store';
+import { isHtmlResponse } from '../../utils/htmlDetector';
 import type { ChatMessage, ToolCall, ContentBlock, Session } from '../../../shared/types';
 import { AGENT_COLORS } from '../../../shared/types';
 
@@ -42,6 +44,10 @@ function TextContentBlock({
   toggleBrowserPanel,
   isBrowserPanelOpen,
 }: TextContentBlockProps) {
+  if (isHtmlResponse(content)) {
+    return <HtmlContentBlock html={content} messageId={messageId} />;
+  }
+
   return (
     <div className="relative group">
       {/* Speaker button - top right, brutalist style - only show on first text block */}
@@ -380,6 +386,9 @@ function MessageBubble({ message, isStreaming, streamingToolCalls, isLatestMessa
 
                 {/* Final content streams last (summary/response) */}
                 {message.content && (
+              isHtmlResponse(message.content) ? (
+                <HtmlContentBlock html={message.content} messageId={message.id} />
+              ) : (
               <div className="relative group">
                 {/* Speaker button - top right, brutalist style */}
                 <div className="absolute top-0 right-0 opacity-0 group-hover:opacity-100 transition-opacity duration-200 z-10">
@@ -574,6 +583,7 @@ function MessageBubble({ message, isStreaming, streamingToolCalls, isLatestMessa
                 </ReactMarkdown>
                 </div>
               </div>
+              )
             )}
               </>
             )}

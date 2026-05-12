@@ -77,6 +77,7 @@ export interface Session {
   forkCreatedAt?: Date; // When this conversation fork was created
   gstackMode?: string; // Active GStack skill name (dynamic, from disk)
   tabHidden?: boolean; // True if user closed this tab (persists across restarts)
+  htmlRenderMode?: 'md' | 'html'; // Per-session HTML rendering mode
 }
 
 // GStack mode is now a dynamic string (skill ID from disk), not a fixed union

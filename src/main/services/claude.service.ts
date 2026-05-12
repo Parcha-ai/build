@@ -583,6 +583,34 @@ ${supplementalConversationContext}
 `;
     }
 
+    if (session.htmlRenderMode === 'html') {
+      append += `
+
+## HTML Response Mode
+
+For substantive responses (more than ~500 characters of content), respond with a complete, self-contained HTML document instead of Markdown. Use this format:
+
+\`\`\`
+<!DOCTYPE html>
+<html>
+<head><style>/* your styles */</style></head>
+<body>/* your content */</body>
+</html>
+\`\`\`
+
+### HTML Response Guidelines
+- Use a dark theme: background #1a1a2e, text #e0e0e0, accent #7c3aed
+- Use SVG for diagrams and visualizations (inline, no external deps)
+- Use HTML tables for data (styled, not plain)
+- Use collapsible \`<details>\` sections for lengthy content
+- Use syntax-highlighted \`<pre><code>\` blocks for code
+- NO external dependencies (no CDN links, no external CSS/JS)
+- Make it visually rich: use color, spacing, borders, shadows
+- For short responses (quick answers, confirmations), respond in plain text — no HTML wrapper needed
+- Always include \`<meta charset="utf-8">\` in the head
+`;
+    }
+
     return append;
   }
 

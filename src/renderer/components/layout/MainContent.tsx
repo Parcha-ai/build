@@ -12,6 +12,7 @@ import ExtensionsExplorer from '../extensions/ExtensionsExplorer';
 import PlanPanel from '../plan/PlanPanel';
 import SetupProgress from '../session/SetupProgress';
 import CommandCenterGrid from '../command-center/CommandCenterGrid';
+import AgentView from '../agent-view/AgentView';
 import EmptyState from './EmptyState';
 import { X, GripVertical, GripHorizontal, Smartphone, Monitor } from 'lucide-react';
 
@@ -44,6 +45,8 @@ export default function MainContent() {
     isCommandCenterActive,
     commandCenterFocusedSessionId,
     setCommandCenterFocusedSession,
+    // Agent View
+    isAgentViewActive,
   } = useUIStore();
   const { isEditorOpen, closeEditor } = useEditorStore();
   const [isTerminalResizing, setIsTerminalResizing] = useState(false);
@@ -323,7 +326,9 @@ export default function MainContent() {
             flexGrow: 1,
           }}
         >
-          {isCommandCenterActive ? (
+          {isAgentViewActive ? (
+            <AgentView />
+          ) : isCommandCenterActive ? (
             <CommandCenterGrid />
           ) : isSessionSetup ? (
             <SetupProgress session={activeSession} progress={activeSetupProgress} />

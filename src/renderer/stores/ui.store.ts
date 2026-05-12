@@ -54,6 +54,14 @@ interface UIState {
   isCommandCenterActive: boolean;
   commandCenterFocusedSessionId: string | null;
 
+  // Agent View — triage dashboard
+  isAgentViewActive: boolean;
+  agentViewSelectedSessionId: string | null;
+  agentViewTimeFilterHours: number;
+  toggleAgentView: () => void;
+  setAgentViewSelectedSession: (id: string | null) => void;
+  setAgentViewTimeFilterHours: (hours: number) => void;
+
   // Multi-session browser support: track which sessions have browsers enabled
   sessionBrowsersEnabled: Record<string, boolean>;
   // Per-session inspector state
@@ -139,6 +147,24 @@ export const useUIStore = create<UIState>((set, get) => ({
     try {
       return localStorage.getItem('grep-command-center-focused') || null;
     } catch (e) { return null; }
+  })(),
+
+  // Agent View state — persisted via localStorage
+  isAgentViewActive: (() => {
+    try {
+      return localStorage.getItem('grep-agent-view-active') === 'true';
+    } catch (e) { return false; }
+  })(),
+  agentViewSelectedSessionId: (() => {
+    try {
+      return localStorage.getItem('grep-agent-view-selected') || null;
+    } catch (e) { return null; }
+  })(),
+  agentViewTimeFilterHours: (() => {
+    try {
+      const stored = localStorage.getItem('grep-agent-view-filter-hours');
+      return stored ? parseInt(stored, 10) : 24;
+    } catch (e) { return 24; }
   })(),
 
   // Multi-session browser state
@@ -282,7 +308,12 @@ export const useUIStore = create<UIState>((set, get) => ({
       if (newFocused) localStorage.setItem('grep-command-center-focused', newFocused);
       else localStorage.removeItem('grep-command-center-focused');
     } catch (e) { /* ignore */ }
-    return { isCommandCenterActive: newActive, commandCenterFocusedSessionId: newFocused };
+    return {
+      isCommandCenterActive: newActive,
+      commandCenterFocusedSessionId: newFocused,
+      // Mutually exclusive with Agent View
+      ...(newActive ? { isAgentViewActive: false } : {}),
+    };
   }),
 
   setCommandCenterFocusedSession: (id: string | null) => {
@@ -291,6 +322,34 @@ export const useUIStore = create<UIState>((set, get) => ({
       else localStorage.removeItem('grep-command-center-focused');
     } catch (e) { /* ignore */ }
     set({ commandCenterFocusedSessionId: id });
+  },
+
+  // Agent View methods
+  toggleAgentView: () => set((state) => {
+    const newActive = !state.isAgentViewActive;
+    try {
+      localStorage.setItem('grep-agent-view-active', String(newActive));
+    } catch (e) { /* ignore */ }
+    return {
+      isAgentViewActive: newActive,
+      // Mutually exclusive with Command Center
+      ...(newActive ? { isCommandCenterActive: false } : {}),
+    };
+  }),
+
+  setAgentViewSelectedSession: (id: string | null) => {
+    try {
+      if (id) localStorage.setItem('grep-agent-view-selected', id);
+      else localStorage.removeItem('grep-agent-view-selected');
+    } catch (e) { /* ignore */ }
+    set({ agentViewSelectedSessionId: id });
+  },
+
+  setAgentViewTimeFilterHours: (hours: number) => {
+    try {
+      localStorage.setItem('grep-agent-view-filter-hours', String(hours));
+    } catch (e) { /* ignore */ }
+    set({ agentViewTimeFilterHours: hours });
   },
 
   // Multi-session browser methods

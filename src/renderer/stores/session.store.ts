@@ -114,6 +114,7 @@ interface SessionState {
   activeStreamModel: Record<string, string | undefined>;
   permissionMode: Record<string, PermissionMode>;
   thinkingMode: Record<string, ThinkingMode>;
+  htmlRenderMode: Record<string, 'md' | 'html'>;
   selectedModel: Record<string, string>;
   availableModels: ModelInfo[];
   pendingPermission: Record<string, PermissionRequest | null>;
@@ -187,6 +188,8 @@ interface SessionState {
   cyclePermissionMode: (sessionId: string) => void;
   setThinkingMode: (sessionId: string, mode: ThinkingMode) => void;
   cycleThinkingMode: (sessionId: string) => void;
+  setHtmlRenderMode: (sessionId: string, mode: 'md' | 'html') => void;
+  cycleHtmlRenderMode: (sessionId: string) => void;
   setSelectedModel: (sessionId: string, model: string) => void;
   loadAvailableModels: () => Promise<void>;
   sendMessage: (sessionId: string, message: string, attachments?: unknown[], opts?: { existingMessageId?: string }) => Promise<void>;
@@ -593,6 +596,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   activeStreamModel: {},
   permissionMode: {},
   thinkingMode: {},
+  htmlRenderMode: {},
   selectedModel: {},
   availableModels: [],
   pendingPermission: {},
@@ -888,6 +892,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         currentSystemInfo: clean(state.currentSystemInfo),
         permissionMode: clean(state.permissionMode),
         thinkingMode: clean(state.thinkingMode),
+        htmlRenderMode: clean(state.htmlRenderMode),
         selectedModel: clean(state.selectedModel),
         pendingPermission: clean(state.pendingPermission),
         pendingQuestion: clean(state.pendingQuestion),
@@ -1397,6 +1402,29 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         },
       };
     });
+  },
+
+  setHtmlRenderMode: (sessionId, mode) => {
+    set((state) => ({
+      htmlRenderMode: {
+        ...state.htmlRenderMode,
+        [sessionId]: mode,
+      },
+    }));
+    // Persist to session object so main process can read it
+    get().updateSession(sessionId, { htmlRenderMode: mode });
+  },
+
+  cycleHtmlRenderMode: (sessionId) => {
+    const current = get().htmlRenderMode[sessionId] || 'md';
+    const next = current === 'md' ? 'html' : 'md';
+    set((state) => ({
+      htmlRenderMode: {
+        ...state.htmlRenderMode,
+        [sessionId]: next,
+      },
+    }));
+    get().updateSession(sessionId, { htmlRenderMode: next });
   },
 
   setSelectedModel: (sessionId, model) => {

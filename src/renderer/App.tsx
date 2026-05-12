@@ -481,6 +481,13 @@ function ElectronApp() {
         return;
       }
 
+      // Cmd+Shift+A: Toggle Agent View
+      if (primaryModifierPressed && e.shiftKey && (e.key === 'a' || e.key === 'A')) {
+        e.preventDefault();
+        useUIStore.getState().toggleAgentView();
+        return;
+      }
+
       // Cmd+Shift+F: File Content Search
       if (primaryModifierPressed && e.shiftKey && e.key === 'f') {
         e.preventDefault();
@@ -507,6 +514,9 @@ function ElectronApp() {
       switch (action) {
         case 'toggle-command-center':
           useUIStore.getState().toggleCommandCenter();
+          return;
+        case 'toggle-agent-view':
+          useUIStore.getState().toggleAgentView();
           return;
         case 'toggle-file-search':
           useEditorStore.getState().toggleFileSearch();
