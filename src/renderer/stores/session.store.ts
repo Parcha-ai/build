@@ -2846,7 +2846,19 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // Routes to MonitorBlock by matching task_id to an existing monitor entry,
     // and fires a desktop notification so the user knows a background task finished.
     const unsubTaskNotif = window.electronAPI.claude.onTaskNotification?.((data) => {
-      resetStreamWatchdog(data.sessionId);
+      // Reset the streaming watchdog — task notifications prove the session is alive
+      const wdKey = `_streamWatchdog_${data.sessionId}`;
+      const wdExisting = (window as any)[wdKey];
+      if (wdExisting) {
+        clearTimeout(wdExisting);
+        (window as any)[wdKey] = setTimeout(() => {
+          if (get().isStreaming[data.sessionId]) {
+            const monitors = (get().monitorInstances[data.sessionId] || []).filter(m => m.active);
+            console.warn(`[SessionStore] Watchdog: clearing stuck isStreaming for ${data.sessionId} (active monitors: ${monitors.length})`);
+            set((s) => ({ isStreaming: { ...s.isStreaming, [data.sessionId]: false } }));
+          }
+        }, 60_000);
+      }
       console.log('[SessionStore] Task notification:', data.taskId, data.status, data.summary?.slice(0, 60));
 
       // Update MonitorBlock — mark matching task as inactive + append summary,
@@ -2899,7 +2911,19 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // Subscribe to SDK task_progress / tool_progress events.
     // Appends progress descriptions to the MonitorBlock entry for live feedback.
     const unsubTaskProg = window.electronAPI.claude.onTaskProgress?.((data) => {
-      resetStreamWatchdog(data.sessionId);
+      // Reset the streaming watchdog — task progress proves the session is alive
+      const wdKey2 = `_streamWatchdog_${data.sessionId}`;
+      const wdExisting2 = (window as any)[wdKey2];
+      if (wdExisting2) {
+        clearTimeout(wdExisting2);
+        (window as any)[wdKey2] = setTimeout(() => {
+          if (get().isStreaming[data.sessionId]) {
+            const monitors = (get().monitorInstances[data.sessionId] || []).filter(m => m.active);
+            console.warn(`[SessionStore] Watchdog: clearing stuck isStreaming for ${data.sessionId} (active monitors: ${monitors.length})`);
+            set((s) => ({ isStreaming: { ...s.isStreaming, [data.sessionId]: false } }));
+          }
+        }, 60_000);
+      }
       if (!data.taskId && !data.toolUseId) return;
       const monitorId = data.taskId || data.toolUseId!;
       const text = data.description || data.summary || (data.toolName ? `${data.toolName}...` : 'working...');

@@ -127,7 +127,7 @@ class MCPService {
    */
   getRawConfig(serverId: string): Record<string, unknown> | null {
     const configs = (mcpStore as any).store as Record<string, MCPServerConfig>;
-    return (configs[serverId] as Record<string, unknown>) || null;
+    return (configs[serverId] as unknown as Record<string, unknown>) || null;
   }
 
   /**

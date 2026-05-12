@@ -1303,7 +1303,7 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
                   {isCommand ? `/${selectedItem.name}` : isAgent ? `@agent-${selectedItem.name}` : (selectedItem as Skill).name}
                 </h3>
                 <p className="text-xs text-claude-text-secondary mt-1">
-                  {selectedItem.scope === 'user' ? 'User Global' : 'Project'}
+                  {(selectedItem as any).scope === 'user' ? 'User Global' : 'Project'}
                   {(isCommand || !isAgent) && ` • ${(selectedItem as Command | Skill).path}`}
                 </p>
               </div>
@@ -1327,10 +1327,10 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
           </div>
 
           {/* Description */}
-          {selectedItem.description && (
+          {(selectedItem as any).description && (
             <div className="mb-4">
               <h4 className="text-xs font-mono text-claude-text-secondary uppercase mb-2">Description</h4>
-              <p className="text-sm text-claude-text">{selectedItem.description}</p>
+              <p className="text-sm text-claude-text">{(selectedItem as any).description}</p>
             </div>
           )}
 
