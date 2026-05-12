@@ -3191,18 +3191,17 @@ Read or source that file if you need the actual values. Do not print secret valu
           }
         }
 
-        // Convert mcp-remote stdio wrappers to native url configs.
-        // mcp-remote wraps remote MCP servers (Sentry, Linear, etc.) behind
-        // npx + OAuth, but the Agent SDK handles url-type servers natively
-        // with built-in OAuth. The wrapper breaks on SSH remotes because
-        // npx spawns on the remote machine where there's no browser for OAuth.
+        // Convert mcp-remote stdio wrappers to native SDK configs.
+        // The SDK supports type:'http' and type:'sse' with built-in OAuth.
+        // mcp-remote wrappers crash on SSH remotes (no browser for OAuth).
         for (const [name, config] of Object.entries(userMcpServers)) {
           const cfg = config as { type?: string; command?: string; args?: string[] };
           if (cfg.type === 'stdio' && cfg.command === 'npx' && cfg.args?.includes('mcp-remote')) {
             const urlArg = cfg.args.find((a: string) => /^https?:\/\//.test(a));
             if (urlArg) {
-              console.log(`[Claude Service] Converting ${name} from mcp-remote wrapper to native url: ${urlArg}`);
-              userMcpServers[name] = { type: 'url', url: urlArg } as any;
+              const mcpType = urlArg.endsWith('/sse') ? 'sse' : 'http';
+              console.log(`[Claude Service] Converting ${name} from mcp-remote to native ${mcpType}: ${urlArg}`);
+              userMcpServers[name] = { type: mcpType, url: urlArg } as any;
             }
           }
         }
