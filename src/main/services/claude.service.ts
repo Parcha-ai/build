@@ -3191,17 +3191,22 @@ Read or source that file if you need the actual values. Do not print secret valu
           }
         }
 
-        // Convert mcp-remote stdio wrappers to native SDK configs.
-        // The SDK supports type:'http' and type:'sse' with built-in OAuth.
-        // mcp-remote wrappers crash on SSH remotes (no browser for OAuth).
-        for (const [name, config] of Object.entries(userMcpServers)) {
-          const cfg = config as { type?: string; command?: string; args?: string[] };
+        // Handle mcp-remote stdio wrappers (Sentry, Linear, etc.).
+        // For SSH: strip them entirely — remote can't reach these endpoints or do OAuth.
+        // For local: convert to native SDK types (http/sse) with built-in OAuth.
+        for (const name of Object.keys(userMcpServers)) {
+          const cfg = userMcpServers[name] as { type?: string; command?: string; args?: string[] };
           if (cfg.type === 'stdio' && cfg.command === 'npx' && cfg.args?.includes('mcp-remote')) {
-            const urlArg = cfg.args.find((a: string) => /^https?:\/\//.test(a));
-            if (urlArg) {
-              const mcpType = urlArg.endsWith('/sse') ? 'sse' : 'http';
-              console.log(`[Claude Service] Converting ${name} from mcp-remote to native ${mcpType}: ${urlArg}`);
-              userMcpServers[name] = { type: mcpType, url: urlArg } as any;
+            if (session.sshConfig) {
+              console.log(`[Claude Service] Stripping ${name} for SSH (mcp-remote can't authenticate remotely)`);
+              delete userMcpServers[name];
+            } else {
+              const urlArg = cfg.args.find((a: string) => /^https?:\/\//.test(a));
+              if (urlArg) {
+                const mcpType = urlArg.endsWith('/sse') ? 'sse' : 'http';
+                console.log(`[Claude Service] Converting ${name} from mcp-remote to native ${mcpType}: ${urlArg}`);
+                userMcpServers[name] = { type: mcpType, url: urlArg } as any;
+              }
             }
           }
         }
