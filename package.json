@@ -8,7 +8,7 @@
     "start": "electron-forge start",
     "package": "electron-forge package",
     "clean:build": "node -e \"const fs=require('fs'); for (const target of ['.webpack', 'out/v' + process.env.npm_package_version]) { fs.rmSync(target, { recursive: true, force: true }); }\"",
-    "make": "npm run clean:build && npm run setup-qmd && electron-forge make",
+    "make": "npm run clean:build && electron-forge make",
     "publish": "electron-forge publish",
     "lint": "eslint --ext .ts,.tsx .",
     "setup-qmd": "npx ts-node scripts/setup-qmd.ts",
