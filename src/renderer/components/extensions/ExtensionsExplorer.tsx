@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Terminal, Sparkles, Bot, ChevronDown, ChevronRight, Copy, User, FolderGit, Edit3, Plus, X, Loader2, Check, AlertCircle, FileText, Github, Server, Store, Wrench, Power, PowerOff, Trash2, Package, MoreHorizontal, Download } from 'lucide-react';
+import { Terminal, Sparkles, Bot, ChevronDown, ChevronRight, Copy, User, FolderGit, Edit3, Plus, X, Loader2, Check, AlertCircle, FileText, Github, Server, Store, Wrench, Power, PowerOff, Trash2, Package, MoreHorizontal, Download, Eye, EyeOff, Save } from 'lucide-react';
 import type { Command, Skill, AgentDefinition, MCPServerInfo, InstalledPlugin } from '../../../shared/types';
 import UnifiedMarketplace from './UnifiedMarketplace';
 
@@ -69,6 +69,21 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
   const installInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // MCP editor state
+  const [mcpEditMode, setMcpEditMode] = useState(false);
+  const [mcpEditName, setMcpEditName] = useState('');
+  const [mcpEditType, setMcpEditType] = useState<'stdio' | 'url'>('stdio');
+  const [mcpEditCommand, setMcpEditCommand] = useState('');
+  const [mcpEditArgs, setMcpEditArgs] = useState('');
+  const [mcpEditUrl, setMcpEditUrl] = useState('');
+  const [mcpEditEnv, setMcpEditEnv] = useState<Array<{ key: string; value: string }>>([]);
+  const [mcpEnvVisible, setMcpEnvVisible] = useState<Record<number, boolean>>({});
+  const [mcpSaving, setMcpSaving] = useState(false);
+  const [mcpSaveResult, setMcpSaveResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [showMcpAddDialog, setShowMcpAddDialog] = useState(false);
+  const [mcpDeleting, setMcpDeleting] = useState(false);
+  const [mcpIsNew, setMcpIsNew] = useState(false);
+
   // Create skill state
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [newSkillName, setNewSkillName] = useState('');
@@ -113,6 +128,151 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
       setMcpServers(servers);
     } catch (err) {
       console.error('[Extensions Explorer] Error refreshing MCP servers:', err);
+    }
+  };
+
+  // Load raw MCP config when selecting a server for editing
+  const loadMcpRawConfig = async (serverId: string) => {
+    try {
+      const config = await window.electronAPI.mcp.getRawConfig(serverId);
+      if (config) {
+        setMcpEditType((config.type as string) === 'url' || (config.type as string) === 'http' ? 'url' : 'stdio');
+        setMcpEditCommand((config.command as string) || '');
+        setMcpEditArgs(((config.args as string[]) || []).join('\n'));
+        setMcpEditUrl((config.url as string) || '');
+        const envEntries = Object.entries((config.env as Record<string, string>) || {}).map(
+          ([key, value]) => ({ key, value: value as string })
+        );
+        setMcpEditEnv(envEntries);
+        setMcpEnvVisible({});
+        setMcpEditName(serverId);
+      } else {
+        // No raw config found (built-in server), populate from MCPServerInfo
+        setMcpEditName(serverId);
+        setMcpEditType('stdio');
+        setMcpEditCommand('');
+        setMcpEditArgs('');
+        setMcpEditUrl('');
+        setMcpEditEnv([]);
+        setMcpEnvVisible({});
+      }
+    } catch (err) {
+      console.error('[Extensions] Failed to load MCP config:', err);
+    }
+  };
+
+  // Enter MCP edit mode for existing server
+  const handleMcpEdit = async (serverId: string) => {
+    await loadMcpRawConfig(serverId);
+    setMcpEditMode(true);
+    setMcpIsNew(false);
+    setMcpSaveResult(null);
+  };
+
+  // Enter MCP add mode for new server
+  const handleMcpAdd = () => {
+    setMcpEditMode(true);
+    setMcpIsNew(true);
+    setMcpEditName('');
+    setMcpEditType('stdio');
+    setMcpEditCommand('npx');
+    setMcpEditArgs('');
+    setMcpEditUrl('');
+    setMcpEditEnv([]);
+    setMcpEnvVisible({});
+    setMcpSaveResult(null);
+    setShowMcpAddDialog(true);
+    setSelectedItem(null);
+    setViewingContent(true);
+    setExpandedType('mcpServers');
+  };
+
+  // Save MCP server config
+  const handleMcpSave = async () => {
+    if (!mcpEditName.trim()) {
+      setMcpSaveResult({ success: false, message: 'Server name is required' });
+      return;
+    }
+
+    setMcpSaving(true);
+    setMcpSaveResult(null);
+
+    try {
+      const config: Record<string, unknown> = { type: mcpEditType === 'url' ? 'http' : 'stdio' };
+
+      if (mcpEditType === 'stdio') {
+        config.command = mcpEditCommand;
+        config.args = mcpEditArgs.split('\n').map((a: string) => a.trim()).filter(Boolean);
+      } else {
+        config.url = mcpEditUrl;
+      }
+
+      const envObj: Record<string, string> = {};
+      for (const { key, value } of mcpEditEnv) {
+        if (key.trim()) envObj[key.trim()] = value;
+      }
+      if (Object.keys(envObj).length > 0) config.env = envObj;
+
+      const result = await window.electronAPI.mcp.installRaw(mcpEditName.trim(), config);
+
+      if (result.success) {
+        setMcpSaveResult({ success: true, message: 'Configuration saved' });
+        await refreshMcpServers();
+        // After saving a new server, select it in the list
+        if (mcpIsNew) {
+          setShowMcpAddDialog(false);
+          setMcpIsNew(false);
+          // Find the newly created server and select it
+          const servers = await window.electronAPI.mcp.getServers(sessionId, projectPath);
+          setMcpServers(servers);
+          const newServer = servers.find((s: MCPServerInfo) => s.id === mcpEditName.trim());
+          if (newServer) {
+            setSelectedItem(newServer);
+          }
+        }
+        setTimeout(() => setMcpSaveResult(null), 2000);
+      } else {
+        setMcpSaveResult({ success: false, message: result.error || 'Failed to save' });
+      }
+    } catch (err) {
+      setMcpSaveResult({ success: false, message: err instanceof Error ? err.message : 'Error saving config' });
+    } finally {
+      setMcpSaving(false);
+    }
+  };
+
+  // Delete MCP server
+  const handleMcpDelete = async (serverId: string) => {
+    if (!confirm(`Remove MCP server "${serverId}"? This cannot be undone.`)) {
+      return;
+    }
+
+    setMcpDeleting(true);
+    try {
+      const result = await window.electronAPI.mcp.uninstall(serverId);
+      if (result.success) {
+        await refreshMcpServers();
+        setSelectedItem(null);
+        setViewingContent(false);
+        setMcpEditMode(false);
+        setShowMcpAddDialog(false);
+      } else {
+        alert(`Failed to remove server: ${result.error}`);
+      }
+    } catch (err) {
+      alert(`Error removing server: ${err instanceof Error ? err.message : 'Unknown error'}`);
+    } finally {
+      setMcpDeleting(false);
+    }
+  };
+
+  // Cancel MCP editing
+  const handleMcpEditCancel = () => {
+    setMcpEditMode(false);
+    setMcpSaveResult(null);
+    if (showMcpAddDialog) {
+      setShowMcpAddDialog(false);
+      setViewingContent(false);
     }
   };
 
@@ -168,12 +328,20 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
     setExpandedType(expandedType === type ? null : type);
     setSelectedItem(null);
     setViewingContent(false);
+    // Reset MCP editor state
+    setMcpEditMode(false);
+    setShowMcpAddDialog(false);
+    setMcpSaveResult(null);
   };
 
   const handleItemClick = (item: Command | Skill | AgentDefinition | MCPServerInfo | InstalledPlugin) => {
     setOpenAgentMenu(null);
     setSelectedItem(item);
     setViewingContent(true);
+    // Reset MCP editor state when switching items
+    setMcpEditMode(false);
+    setShowMcpAddDialog(false);
+    setMcpSaveResult(null);
   };
 
   const copyToClipboard = (text: string) => {
@@ -648,14 +816,15 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
   };
 
   const renderItemDetails = () => {
-    if (!selectedItem || !viewingContent) return null;
+    if (!selectedItem && !showMcpAddDialog) return null;
+    if (!viewingContent) return null;
 
     // Check what type of item we have
-    const isPlugin = 'marketplace' in selectedItem && 'enabled' in selectedItem;
-    const isMcpServer = !isPlugin && 'tools' in selectedItem && 'status' in selectedItem;
-    const isAgent = !isPlugin && !isMcpServer && 'systemPrompt' in selectedItem;
+    const isPlugin = selectedItem ? ('marketplace' in selectedItem && 'enabled' in selectedItem) : false;
+    const isMcpServer = selectedItem ? (!isPlugin && 'tools' in selectedItem && 'status' in selectedItem) : false;
+    const isAgent = selectedItem ? (!isPlugin && !isMcpServer && 'systemPrompt' in selectedItem) : false;
     // Commands have .md path, Skills have directory path (content in both now)
-    const isCommand = !isPlugin && !isMcpServer && !isAgent && 'content' in selectedItem && (selectedItem as Command).path.endsWith('.md');
+    const isCommand = selectedItem ? (!isPlugin && !isMcpServer && !isAgent && 'content' in selectedItem && (selectedItem as Command).path.endsWith('.md')) : false;
     const isSkill = !isPlugin && !isMcpServer && !isAgent && !isCommand;
 
     // Plugin details
@@ -753,80 +922,372 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
     }
 
     // MCP Server details
-    if (isMcpServer) {
-      const server = selectedItem as MCPServerInfo;
-      return (
-        <div className="flex-1 overflow-y-auto border-l border-claude-border">
-          <div className="p-4">
-            {/* Header */}
-            <div className="flex items-start justify-between mb-4">
-              <div className="flex items-center gap-2">
-                <Server size={16} className="text-green-400" />
-                <div>
-                  <h3 className="text-sm font-mono text-claude-text">{server.name}</h3>
-                  <div className="flex items-center gap-2 mt-1">
-                    <span
-                      className={`text-xs px-1.5 py-0.5 ${
-                        server.status === 'active'
-                          ? 'bg-green-500/20 text-green-400'
-                          : server.status === 'error'
-                          ? 'bg-red-500/20 text-red-400'
-                          : 'bg-gray-500/20 text-gray-400'
-                      }`}
-                    >
-                      {server.status}
-                    </span>
-                    <span className="text-xs text-claude-text-secondary">{server.type}</span>
-                    <span className="text-xs text-claude-text-secondary">v{server.version}</span>
-                  </div>
-                </div>
-              </div>
-            </div>
+    if (isMcpServer || showMcpAddDialog) {
+      const server = isMcpServer ? (selectedItem as MCPServerInfo) : null;
+      const isBuiltIn = server?.type === 'sdk';
 
-            {/* Description */}
-            <div className="mb-4">
-              <h4 className="text-xs font-mono text-claude-text-secondary uppercase mb-2">Description</h4>
-              <p className="text-sm text-claude-text">{server.description}</p>
-            </div>
-
-            {/* Error Message */}
-            {server.errorMessage && (
-              <div className="mb-4 p-3 bg-red-500/10 border border-red-500/30">
-                <h4 className="text-xs font-mono text-red-400 uppercase mb-1">Error</h4>
-                <p className="text-xs text-red-400">{server.errorMessage}</p>
-              </div>
+      // Render the MCP config editor form
+      const renderMcpConfigEditor = () => (
+        <div className="space-y-4">
+          {/* Server Name */}
+          <div>
+            <label className="block text-[10px] font-bold font-mono text-claude-text-secondary uppercase mb-1.5" style={{ letterSpacing: '0.1em' }}>
+              Server Name
+            </label>
+            {mcpIsNew ? (
+              <input
+                type="text"
+                value={mcpEditName}
+                onChange={(e) => setMcpEditName(e.target.value)}
+                placeholder="my-mcp-server"
+                className="w-full px-3 py-2 bg-claude-surface border border-claude-border text-sm font-mono text-claude-text placeholder:text-claude-text-secondary focus:outline-none focus:border-green-500"
+                style={{ borderRadius: 0 }}
+                disabled={mcpSaving}
+              />
+            ) : (
+              <p className="text-sm font-mono text-claude-text px-3 py-2 bg-claude-surface border border-claude-border" style={{ borderRadius: 0 }}>
+                {mcpEditName}
+              </p>
             )}
+          </div>
 
-            {/* Tools */}
-            {server.tools.length > 0 && (
+          {/* Type Selector */}
+          <div>
+            <label className="block text-[10px] font-bold font-mono text-claude-text-secondary uppercase mb-1.5" style={{ letterSpacing: '0.1em' }}>
+              Transport Type
+            </label>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setMcpEditType('stdio')}
+                disabled={mcpSaving}
+                className={`flex-1 px-3 py-2 text-xs font-mono border transition-colors ${
+                  mcpEditType === 'stdio'
+                    ? 'bg-green-500/20 border-green-500 text-green-400'
+                    : 'bg-claude-surface border-claude-border text-claude-text-secondary hover:text-claude-text'
+                } disabled:opacity-50`}
+                style={{ borderRadius: 0 }}
+              >
+                stdio
+              </button>
+              <button
+                onClick={() => setMcpEditType('url')}
+                disabled={mcpSaving}
+                className={`flex-1 px-3 py-2 text-xs font-mono border transition-colors ${
+                  mcpEditType === 'url'
+                    ? 'bg-green-500/20 border-green-500 text-green-400'
+                    : 'bg-claude-surface border-claude-border text-claude-text-secondary hover:text-claude-text'
+                } disabled:opacity-50`}
+                style={{ borderRadius: 0 }}
+              >
+                url / http
+              </button>
+            </div>
+          </div>
+
+          {/* stdio fields */}
+          {mcpEditType === 'stdio' && (
+            <>
               <div>
-                <h4 className="text-xs font-mono text-claude-text-secondary uppercase mb-2">
-                  Available Tools ({server.tools.length})
-                </h4>
-                <div className="space-y-2">
-                  {server.tools.map((tool) => (
-                    <div
-                      key={tool.name}
-                      className="p-2 bg-claude-surface border border-claude-border"
-                    >
-                      <div className="flex items-center gap-2">
-                        <Wrench size={12} className="text-claude-accent" />
-                        <span className="text-xs font-mono text-claude-text">{tool.name}</span>
-                      </div>
-                      {tool.description && (
-                        <p className="text-xs text-claude-text-secondary mt-1 ml-5">
-                          {tool.description}
-                        </p>
-                      )}
-                    </div>
-                  ))}
-                </div>
+                <label className="block text-[10px] font-bold font-mono text-claude-text-secondary uppercase mb-1.5" style={{ letterSpacing: '0.1em' }}>
+                  Command
+                </label>
+                <input
+                  type="text"
+                  value={mcpEditCommand}
+                  onChange={(e) => setMcpEditCommand(e.target.value)}
+                  placeholder="npx"
+                  className="w-full px-3 py-2 bg-claude-surface border border-claude-border text-sm font-mono text-claude-text placeholder:text-claude-text-secondary focus:outline-none focus:border-green-500"
+                  style={{ borderRadius: 0 }}
+                  disabled={mcpSaving}
+                />
               </div>
+              <div>
+                <label className="block text-[10px] font-bold font-mono text-claude-text-secondary uppercase mb-1.5" style={{ letterSpacing: '0.1em' }}>
+                  Arguments (one per line)
+                </label>
+                <textarea
+                  value={mcpEditArgs}
+                  onChange={(e) => setMcpEditArgs(e.target.value)}
+                  placeholder={"-y\n@modelcontextprotocol/server-name"}
+                  className="w-full h-20 px-3 py-2 bg-claude-surface border border-claude-border text-sm font-mono text-claude-text placeholder:text-claude-text-secondary focus:outline-none focus:border-green-500 resize-none"
+                  style={{ borderRadius: 0 }}
+                  disabled={mcpSaving}
+                  spellCheck={false}
+                />
+              </div>
+            </>
+          )}
+
+          {/* url fields */}
+          {mcpEditType === 'url' && (
+            <div>
+              <label className="block text-[10px] font-bold font-mono text-claude-text-secondary uppercase mb-1.5" style={{ letterSpacing: '0.1em' }}>
+                Server URL
+              </label>
+              <input
+                type="text"
+                value={mcpEditUrl}
+                onChange={(e) => setMcpEditUrl(e.target.value)}
+                placeholder="https://mcp.example.com/sse"
+                className="w-full px-3 py-2 bg-claude-surface border border-claude-border text-sm font-mono text-claude-text placeholder:text-claude-text-secondary focus:outline-none focus:border-green-500"
+                style={{ borderRadius: 0 }}
+                disabled={mcpSaving}
+              />
+            </div>
+          )}
+
+          {/* Environment Variables / API Keys */}
+          <div>
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="text-[10px] font-bold font-mono text-claude-text-secondary uppercase" style={{ letterSpacing: '0.1em' }}>
+                Environment Variables
+              </label>
+              <button
+                onClick={() => setMcpEditEnv([...mcpEditEnv, { key: '', value: '' }])}
+                disabled={mcpSaving}
+                className="flex items-center gap-1 px-2 py-0.5 text-[10px] font-mono text-green-400 hover:bg-green-500/10 border border-green-500/30 transition-colors disabled:opacity-50"
+                style={{ borderRadius: 0 }}
+              >
+                <Plus size={10} /> Add
+              </button>
+            </div>
+            {mcpEditEnv.length === 0 && (
+              <p className="text-xs text-claude-text-secondary font-mono px-3 py-2 bg-claude-surface border border-claude-border" style={{ borderRadius: 0 }}>
+                No environment variables configured. Add API keys here.
+              </p>
             )}
+            <div className="space-y-2">
+              {mcpEditEnv.map((env, i) => (
+                <div key={i} className="flex gap-2 items-start">
+                  <input
+                    type="text"
+                    value={env.key}
+                    onChange={(e) => {
+                      const updated = [...mcpEditEnv];
+                      updated[i] = { ...updated[i], key: e.target.value };
+                      setMcpEditEnv(updated);
+                    }}
+                    placeholder="KEY_NAME"
+                    className="flex-1 px-2 py-1.5 bg-claude-surface border border-claude-border text-xs font-mono text-claude-text placeholder:text-claude-text-secondary focus:outline-none focus:border-green-500"
+                    style={{ borderRadius: 0 }}
+                    disabled={mcpSaving}
+                  />
+                  <div className="flex-1 flex items-center gap-0">
+                    <input
+                      type={mcpEnvVisible[i] ? 'text' : 'password'}
+                      value={env.value}
+                      onChange={(e) => {
+                        const updated = [...mcpEditEnv];
+                        updated[i] = { ...updated[i], value: e.target.value };
+                        setMcpEditEnv(updated);
+                      }}
+                      placeholder="value"
+                      className="flex-1 min-w-0 px-2 py-1.5 bg-claude-surface border border-claude-border border-r-0 text-xs font-mono text-claude-text placeholder:text-claude-text-secondary focus:outline-none focus:border-green-500"
+                      style={{ borderRadius: 0 }}
+                      disabled={mcpSaving}
+                    />
+                    <button
+                      onClick={() => setMcpEnvVisible({ ...mcpEnvVisible, [i]: !mcpEnvVisible[i] })}
+                      className="px-1.5 py-1.5 bg-claude-surface border border-claude-border text-claude-text-secondary hover:text-claude-text transition-colors"
+                      style={{ borderRadius: 0 }}
+                      title={mcpEnvVisible[i] ? 'Hide value' : 'Show value'}
+                    >
+                      {mcpEnvVisible[i] ? <EyeOff size={12} /> : <Eye size={12} />}
+                    </button>
+                  </div>
+                  <button
+                    onClick={() => {
+                      const updated = mcpEditEnv.filter((_, idx) => idx !== i);
+                      setMcpEditEnv(updated);
+                      // Clean up visibility state
+                      const vis = { ...mcpEnvVisible };
+                      delete vis[i];
+                      setMcpEnvVisible(vis);
+                    }}
+                    className="px-1.5 py-1.5 text-red-400 hover:bg-red-500/10 transition-colors"
+                    style={{ borderRadius: 0 }}
+                    disabled={mcpSaving}
+                    title="Remove variable"
+                  >
+                    <X size={12} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Save Result */}
+          {mcpSaveResult && (
+            <div className={`flex items-start gap-2 p-3 ${mcpSaveResult.success ? 'bg-green-500/10 border border-green-500/30' : 'bg-red-500/10 border border-red-500/30'}`} style={{ borderRadius: 0 }}>
+              {mcpSaveResult.success ? (
+                <Check size={14} className="text-green-500 flex-shrink-0 mt-0.5" />
+              ) : (
+                <AlertCircle size={14} className="text-red-500 flex-shrink-0 mt-0.5" />
+              )}
+              <p className={`text-xs font-mono ${mcpSaveResult.success ? 'text-green-500' : 'text-red-500'}`}>
+                {mcpSaveResult.message}
+              </p>
+            </div>
+          )}
+
+          {/* Action Buttons */}
+          <div className="flex items-center justify-between pt-2 border-t border-claude-border">
+            <button
+              onClick={handleMcpEditCancel}
+              className="px-3 py-1.5 text-xs font-mono text-claude-text-secondary hover:text-claude-text transition-colors"
+              style={{ borderRadius: 0 }}
+              disabled={mcpSaving}
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleMcpSave}
+              disabled={mcpSaving || !mcpEditName.trim()}
+              className="px-4 py-1.5 text-xs font-mono bg-green-600 text-white hover:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+              style={{ borderRadius: 0 }}
+            >
+              {mcpSaving ? (
+                <>
+                  <Loader2 size={12} className="animate-spin" />
+                  Saving...
+                </>
+              ) : (
+                <>
+                  <Save size={12} />
+                  {mcpIsNew ? 'Add Server' : 'Save Config'}
+                </>
+              )}
+            </button>
           </div>
         </div>
       );
+
+      // When showing the add dialog (no server selected)
+      if (showMcpAddDialog && !server) {
+        return (
+          <div className="flex-1 overflow-y-auto border-l border-claude-border">
+            <div className="p-4">
+              <div className="flex items-center gap-2 mb-4">
+                <Server size={16} className="text-green-400" />
+                <h3 className="text-sm font-mono text-claude-text">Add MCP Server</h3>
+              </div>
+              {renderMcpConfigEditor()}
+            </div>
+          </div>
+        );
+      }
+
+      // Existing server view
+      if (server) {
+        return (
+          <div className="flex-1 overflow-y-auto border-l border-claude-border">
+            <div className="p-4">
+              {/* Header */}
+              <div className="flex items-start justify-between mb-4">
+                <div className="flex items-center gap-2">
+                  <Server size={16} className="text-green-400" />
+                  <div>
+                    <h3 className="text-sm font-mono text-claude-text">{server.name}</h3>
+                    <div className="flex items-center gap-2 mt-1">
+                      <span
+                        className={`text-xs px-1.5 py-0.5 ${
+                          server.status === 'active'
+                            ? 'bg-green-500/20 text-green-400'
+                            : server.status === 'error'
+                            ? 'bg-red-500/20 text-red-400'
+                            : 'bg-gray-500/20 text-gray-400'
+                        }`}
+                        style={{ borderRadius: 0 }}
+                      >
+                        {server.status}
+                      </span>
+                      <span className="text-xs text-claude-text-secondary">{server.type}</span>
+                      <span className="text-xs text-claude-text-secondary">v{server.version}</span>
+                    </div>
+                  </div>
+                </div>
+                {/* Edit / Delete buttons (not for built-in servers) */}
+                {!isBuiltIn && (
+                  <div className="flex items-center gap-1">
+                    {!mcpEditMode && (
+                      <button
+                        onClick={() => handleMcpEdit(server.id)}
+                        className="p-1.5 hover:bg-claude-surface text-claude-text-secondary hover:text-green-400 transition-colors"
+                        title="Edit configuration"
+                        style={{ borderRadius: 0 }}
+                      >
+                        <Edit3 size={14} />
+                      </button>
+                    )}
+                    <button
+                      onClick={() => handleMcpDelete(server.id)}
+                      className="p-1.5 hover:bg-claude-surface text-claude-text-secondary hover:text-red-400 transition-colors"
+                      title="Remove server"
+                      style={{ borderRadius: 0 }}
+                      disabled={mcpDeleting}
+                    >
+                      {mcpDeleting ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* Edit Mode: show config editor */}
+              {mcpEditMode && !isBuiltIn ? (
+                renderMcpConfigEditor()
+              ) : (
+                <>
+                  {/* Description */}
+                  <div className="mb-4">
+                    <h4 className="text-[10px] font-bold font-mono text-claude-text-secondary uppercase mb-2" style={{ letterSpacing: '0.1em' }}>Description</h4>
+                    <p className="text-sm text-claude-text">{server.description}</p>
+                  </div>
+
+                  {/* Error Message */}
+                  {server.errorMessage && (
+                    <div className="mb-4 p-3 bg-red-500/10 border border-red-500/30" style={{ borderRadius: 0 }}>
+                      <h4 className="text-[10px] font-bold font-mono text-red-400 uppercase mb-1" style={{ letterSpacing: '0.1em' }}>Error</h4>
+                      <p className="text-xs text-red-400">{server.errorMessage}</p>
+                    </div>
+                  )}
+
+                  {/* Tools */}
+                  {server.tools.length > 0 && (
+                    <div>
+                      <h4 className="text-[10px] font-bold font-mono text-claude-text-secondary uppercase mb-2" style={{ letterSpacing: '0.1em' }}>
+                        Available Tools ({server.tools.length})
+                      </h4>
+                      <div className="space-y-2">
+                        {server.tools.map((tool) => (
+                          <div
+                            key={tool.name}
+                            className="p-2 bg-claude-surface border border-claude-border"
+                            style={{ borderRadius: 0 }}
+                          >
+                            <div className="flex items-center gap-2">
+                              <Wrench size={12} className="text-claude-accent" />
+                              <span className="text-xs font-mono text-claude-text">{tool.name}</span>
+                            </div>
+                            {tool.description && (
+                              <p className="text-xs text-claude-text-secondary mt-1 ml-5">
+                                {tool.description}
+                              </p>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+        );
+      }
     }
+
+    // Guard: if we got here without a selected item, nothing to show
+    if (!selectedItem) return null;
 
     return (
       <div className="flex-1 overflow-y-auto border-l border-claude-border">
@@ -984,7 +1445,7 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
                   <span className="text-xs text-claude-text-secondary">({mcpServers.length})</span>
                 </button>
                 <button
-                  onClick={() => setActiveTab('marketplace')}
+                  onClick={handleMcpAdd}
                   className="px-2 py-2 hover:bg-claude-surface text-claude-text-secondary hover:text-green-400 transition-colors"
                   title="Add MCP server"
                 >

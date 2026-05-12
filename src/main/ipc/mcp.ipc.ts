@@ -25,6 +25,20 @@ export function registerMcpHandlers(ipcMain: IpcMain): void {
     }
   );
 
+  // Get raw electron-store config for a single MCP server
+  ipcMain.handle(
+    IPC_CHANNELS.MCP_GET_RAW_CONFIG,
+    async (_event, serverId: string): Promise<Record<string, unknown> | null> => {
+      try {
+        console.log('[MCP IPC] Getting raw config for server:', serverId);
+        return mcpService.getRawConfig(serverId);
+      } catch (error) {
+        console.error('[MCP IPC] Error getting raw config:', error);
+        return null;
+      }
+    }
+  );
+
   // Get marketplace MCP servers from official registry
   ipcMain.handle(
     IPC_CHANNELS.MCP_GET_MARKETPLACE,

@@ -243,6 +243,7 @@ export const IPC_CHANNELS = {
 
   // MCP channels (MCP server management)
   MCP_GET_SERVERS: 'mcp:get-servers',
+  MCP_GET_RAW_CONFIG: 'mcp:get-raw-config',
   MCP_GET_MARKETPLACE: 'mcp:get-marketplace',
   MCP_INSTALL_SERVER: 'mcp:install-server',
   MCP_INSTALL_SERVER_RAW: 'mcp:install-server-raw',

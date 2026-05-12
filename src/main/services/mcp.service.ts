@@ -123,6 +123,14 @@ class MCPService {
   }
 
   /**
+   * Get the raw electron-store config for a single MCP server
+   */
+  getRawConfig(serverId: string): Record<string, unknown> | null {
+    const configs = (mcpStore as any).store as Record<string, MCPServerConfig>;
+    return (configs[serverId] as Record<string, unknown>) || null;
+  }
+
+  /**
    * Get all MCP servers for Agent SDK (installed + built-ins)
    */
   getUserMcpServersConfig(): Record<string, MCPServerConfig> {

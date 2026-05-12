@@ -963,6 +963,9 @@ const electronAPI = {
     getServers: (sessionId: string, projectPath?: string): Promise<MCPServerInfo[]> =>
       ipcRenderer.invoke(IPC_CHANNELS.MCP_GET_SERVERS, sessionId, projectPath),
 
+    getRawConfig: (serverId: string): Promise<Record<string, unknown> | null> =>
+      ipcRenderer.invoke(IPC_CHANNELS.MCP_GET_RAW_CONFIG, serverId),
+
     getMarketplace: (): Promise<MarketplaceMCPServer[]> =>
       ipcRenderer.invoke(IPC_CHANNELS.MCP_GET_MARKETPLACE),
 
