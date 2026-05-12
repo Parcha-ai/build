@@ -1144,30 +1144,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   setStreaming: (sessionId, isStreaming) => {
     console.log(`[SessionStore] setStreaming called for ${sessionId}: ${isStreaming}`);
 
-    // Watchdog: auto-clear stuck streaming state after 60 seconds of no events.
-    // Each stream event resets this timer (via resetStreamWatchdog), so it only
-    // fires when truly stuck — not during long tool executions.
-    if (isStreaming) {
-      const watchdogKey = `_streamWatchdog_${sessionId}`;
-      const existing = (window as any)[watchdogKey];
-      if (existing) clearTimeout(existing);
-      (window as any)[watchdogKey] = setTimeout(() => {
-        const state = get();
-        if (state.isStreaming[sessionId]) {
-          const activeMonitors = (state.monitorInstances[sessionId] || []).filter(m => m.active);
-          console.warn(`[SessionStore] Watchdog: clearing stuck isStreaming for ${sessionId} after 60s of no events (active monitors: ${activeMonitors.length})`);
-          if (activeMonitors.length > 0) {
-            console.warn(`[SessionStore] Watchdog fired with active monitors — this may be a false positive:`, activeMonitors.map(m => m.description));
-          }
-          set((s) => ({ isStreaming: { ...s.isStreaming, [sessionId]: false } }));
-        }
-      }, 60_000);
-    } else {
-      const watchdogKey = `_streamWatchdog_${sessionId}`;
-      const existing = (window as any)[watchdogKey];
-      if (existing) { clearTimeout(existing); delete (window as any)[watchdogKey]; }
-    }
-
     set((state) => ({
       isStreaming: { ...state.isStreaming, [sessionId]: isStreaming },
       sessionActivity: {
@@ -1736,33 +1712,17 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     if (!hasElectronAPI) return () => {};
     const { addMessage, updateStreamContent, updateThinkingContent, addToolCall, updateToolCall, setStreaming, setSystemInfo } = get();
 
-    const resetStreamWatchdog = (sessionId: string) => {
-      const watchdogKey = `_streamWatchdog_${sessionId}`;
-      const existing = (window as any)[watchdogKey];
-      if (existing) {
-        clearTimeout(existing);
-        (window as any)[watchdogKey] = setTimeout(() => {
-          const state = get();
-          if (state.isStreaming[sessionId]) {
-            console.warn(`[SessionStore] Watchdog: clearing stuck isStreaming for ${sessionId} after 60s of no events`);
-            set((s) => ({ isStreaming: { ...s.isStreaming, [sessionId]: false } }));
-          }
-        }, 60_000);
-      }
-    };
-
     const unsubChunk = window.electronAPI.claude.onStreamChunk(({ sessionId, content, agentId }) => {
-      resetStreamWatchdog(sessionId);
       updateStreamContent(sessionId, content, agentId);
     });
 
     const unsubThinking = window.electronAPI.claude.onThinkingChunk(({ sessionId, content }) => {
-      resetStreamWatchdog(sessionId);
+
       updateThinkingContent(sessionId, content);
     });
 
     const unsubToolCall = window.electronAPI.claude.onToolCall(({ sessionId, toolCall }) => {
-      resetStreamWatchdog(sessionId);
+
       const tc = toolCall as ToolCall;
       console.log('[SessionStore] onToolCall received:', tc?.name, 'input:', JSON.stringify(tc?.input || {}));
       addToolCall(sessionId, tc);
@@ -1842,7 +1802,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     });
 
     const unsubToolResult = window.electronAPI.claude.onToolResult(async ({ sessionId, toolCall }) => {
-      resetStreamWatchdog(sessionId);
+
       if (!toolCall) return;
       const tc = toolCall as ToolCall;
       console.log('[SessionStore] onToolResult received:', tc.name, 'input:', JSON.stringify(tc.input || {}));
@@ -2874,19 +2834,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // Routes to MonitorBlock by matching task_id to an existing monitor entry,
     // and fires a desktop notification so the user knows a background task finished.
     const unsubTaskNotif = window.electronAPI.claude.onTaskNotification?.((data) => {
-      // Reset the streaming watchdog — task notifications prove the session is alive
-      const wdKey = `_streamWatchdog_${data.sessionId}`;
-      const wdExisting = (window as any)[wdKey];
-      if (wdExisting) {
-        clearTimeout(wdExisting);
-        (window as any)[wdKey] = setTimeout(() => {
-          if (get().isStreaming[data.sessionId]) {
-            const monitors = (get().monitorInstances[data.sessionId] || []).filter(m => m.active);
-            console.warn(`[SessionStore] Watchdog: clearing stuck isStreaming for ${data.sessionId} (active monitors: ${monitors.length})`);
-            set((s) => ({ isStreaming: { ...s.isStreaming, [data.sessionId]: false } }));
-          }
-        }, 60_000);
-      }
       console.log('[SessionStore] Task notification:', data.taskId, data.status, data.summary?.slice(0, 60));
 
       // Update MonitorBlock — mark matching task as inactive + append summary,
@@ -2939,19 +2886,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // Subscribe to SDK task_progress / tool_progress events.
     // Appends progress descriptions to the MonitorBlock entry for live feedback.
     const unsubTaskProg = window.electronAPI.claude.onTaskProgress?.((data) => {
-      // Reset the streaming watchdog — task progress proves the session is alive
-      const wdKey2 = `_streamWatchdog_${data.sessionId}`;
-      const wdExisting2 = (window as any)[wdKey2];
-      if (wdExisting2) {
-        clearTimeout(wdExisting2);
-        (window as any)[wdKey2] = setTimeout(() => {
-          if (get().isStreaming[data.sessionId]) {
-            const monitors = (get().monitorInstances[data.sessionId] || []).filter(m => m.active);
-            console.warn(`[SessionStore] Watchdog: clearing stuck isStreaming for ${data.sessionId} (active monitors: ${monitors.length})`);
-            set((s) => ({ isStreaming: { ...s.isStreaming, [data.sessionId]: false } }));
-          }
-        }, 60_000);
-      }
       if (!data.taskId && !data.toolUseId) return;
       const monitorId = data.taskId || data.toolUseId!;
       const text = data.description || data.summary || (data.toolName ? `${data.toolName}...` : 'working...');
