@@ -1009,7 +1009,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       const isDuplicateAssistantMessage =
         message.role === 'assistant' &&
         lastMessage?.role === 'assistant' &&
-        (lastMessage.id === message.id || lastMessage.content === message.content);
+        lastMessage.id === message.id;
 
       if (isDuplicateAssistantMessage) {
         console.warn(`[SessionStore] Ignoring duplicate assistant message for ${sessionId}`);
@@ -1149,7 +1149,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       (window as any)[watchdogKey] = setTimeout(() => {
         const state = get();
         if (state.isStreaming[sessionId]) {
-          console.warn(`[SessionStore] Watchdog: clearing stuck isStreaming for ${sessionId} after 60s of no events`);
+          const activeMonitors = (state.monitorInstances[sessionId] || []).filter(m => m.active);
+          console.warn(`[SessionStore] Watchdog: clearing stuck isStreaming for ${sessionId} after 60s of no events (active monitors: ${activeMonitors.length})`);
+          if (activeMonitors.length > 0) {
+            console.warn(`[SessionStore] Watchdog fired with active monitors — this may be a false positive:`, activeMonitors.map(m => m.description));
+          }
           set((s) => ({ isStreaming: { ...s.isStreaming, [sessionId]: false } }));
         }
       }, 60_000);
@@ -2842,6 +2846,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // Routes to MonitorBlock by matching task_id to an existing monitor entry,
     // and fires a desktop notification so the user knows a background task finished.
     const unsubTaskNotif = window.electronAPI.claude.onTaskNotification?.((data) => {
+      resetStreamWatchdog(data.sessionId);
       console.log('[SessionStore] Task notification:', data.taskId, data.status, data.summary?.slice(0, 60));
 
       // Update MonitorBlock — mark matching task as inactive + append summary,
@@ -2894,6 +2899,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // Subscribe to SDK task_progress / tool_progress events.
     // Appends progress descriptions to the MonitorBlock entry for live feedback.
     const unsubTaskProg = window.electronAPI.claude.onTaskProgress?.((data) => {
+      resetStreamWatchdog(data.sessionId);
       if (!data.taskId && !data.toolUseId) return;
       const monitorId = data.taskId || data.toolUseId!;
       const text = data.description || data.summary || (data.toolName ? `${data.toolName}...` : 'working...');
