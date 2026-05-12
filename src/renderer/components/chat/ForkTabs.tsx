@@ -67,18 +67,21 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
     });
   }, [sessionId, rootId, sessions, loadSessions]);
 
-  // Persist overflow (closed) tabs — merge localStorage + backend tabHidden flag
+  // Persist overflow (closed) tabs — driven by tabHidden flag on session objects
   const storageKey = `grep-overflow-forks-${rootId}`;
   const [overflowIds, setOverflowIds] = useState<Set<string>>(() => {
+    const hidden = new Set<string>();
+    for (const s of forkSiblings) {
+      if ((s as any).tabHidden) hidden.add(s.id);
+    }
+    // Also merge localStorage cache for immediate render before backend loads
     try {
       const stored = localStorage.getItem(storageKey);
-      const fromStorage = stored ? new Set<string>(JSON.parse(stored)) : new Set<string>();
-      // Also include sessions flagged as tabHidden from backend
-      for (const s of forkSiblings) {
-        if ((s as any).tabHidden) fromStorage.add(s.id);
+      if (stored) {
+        for (const id of JSON.parse(stored)) hidden.add(id);
       }
-      return fromStorage;
-    } catch { return new Set(); }
+    } catch { /* ignore */ }
+    return hidden;
   });
 
   const [showOverflow, setShowOverflow] = useState(false);
@@ -158,7 +161,7 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
   const [dragId, setDragId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
 
-  // Persist tab order in localStorage
+  // Persist tab order to localStorage + electron-store (via claudette-settings)
   const orderKey = `grep-tab-order-${rootId}`;
   useEffect(() => {
     try {
