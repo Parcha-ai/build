@@ -219,17 +219,45 @@ export default function SessionList() {
     return sorted;
   }, [sessions.map(s => s.id).join(',')]); // Only re-sort when session IDs change (add/remove)
 
-  // Starred sessions — ordered by when they were starred (stable order)
+  // Starred sessions — grouped by SSH remote folder, local sessions shown individually
   const starredSessions = useMemo(() => {
     return sessions
-      .filter(s => s.isStarred && !s.parentSessionId) // Exclude conversation forks
+      .filter(s => s.isStarred && !s.parentSessionId)
       .sort((a, b) => {
-        // Sort by starredAt ascending (order they were starred in)
         const aTime = a.starredAt ? new Date(a.starredAt).getTime() : 0;
         const bTime = b.starredAt ? new Date(b.starredAt).getTime() : 0;
         return aTime - bTime;
       });
   }, [sessions]);
+
+  // Group starred SSH sessions by worktreePath (remote folder)
+  const starredGroups = useMemo(() => {
+    const groups: Array<{ key: string; label: string; sessions: Session[] }> = [];
+    const sshGroups = new Map<string, Session[]>();
+
+    for (const s of starredSessions) {
+      if (s.sshConfig) {
+        const folder = s.worktreePath || s.repoPath || s.sshConfig.remoteWorkdir;
+        const groupKey = `${s.sshConfig.host}:${folder}`;
+        const existing = sshGroups.get(groupKey) || [];
+        existing.push(s);
+        sshGroups.set(groupKey, existing);
+      } else {
+        groups.push({ key: s.id, label: '', sessions: [s] });
+      }
+    }
+
+    for (const [key, groupSessions] of sshGroups) {
+      const first = groupSessions[0];
+      const folder = (first.worktreePath || first.repoPath || first.sshConfig!.remoteWorkdir).split('/').pop() || 'remote';
+      const host = first.sshConfig!.host;
+      groups.push({ key, label: `${folder} (${host})`, sessions: groupSessions });
+    }
+
+    return groups;
+  }, [starredSessions]);
+
+  const [expandedStarredGroups, setExpandedStarredGroups] = useState<Set<string>>(new Set());
 
   // Recent sessions (running + recently used, excluding starred)
   // Limited to 10 most recent for the "Recent" section
@@ -334,7 +362,7 @@ export default function SessionList() {
 
       {/* Rest of sessions — dimmed in Focus Mode */}
       <div className={focusModeEnabled ? 'opacity-20 pointer-events-none' : ''}>
-      {/* Starred Sessions section */}
+      {/* Starred Sessions section — SSH sessions grouped by remote folder */}
       {starredSessions.length > 0 && (
         <div className="mb-3">
           <div className="px-3 py-1.5 flex items-center gap-2">
@@ -344,76 +372,86 @@ export default function SessionList() {
             </span>
           </div>
           <div>
-            {starredSessions.map((session) => (
-              <div
-                key={session.id}
-                draggable
-                onDragStart={(e) => {
-                  setDraggedId(session.id);
-                  e.dataTransfer.effectAllowed = 'move';
-                  // Make the drag image semi-transparent
-                  if (e.currentTarget instanceof HTMLElement) {
-                    e.currentTarget.style.opacity = '0.5';
-                  }
-                }}
-                onDragEnd={(e) => {
-                  setDraggedId(null);
-                  setDragOverId(null);
-                  if (e.currentTarget instanceof HTMLElement) {
-                    e.currentTarget.style.opacity = '1';
-                  }
-                }}
-                onDragOver={(e) => {
-                  e.preventDefault();
-                  e.dataTransfer.dropEffect = 'move';
-                  if (draggedId && draggedId !== session.id) {
-                    setDragOverId(session.id);
-                  }
-                }}
-                onDragLeave={() => {
-                  if (dragOverId === session.id) setDragOverId(null);
-                }}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  if (!draggedId || draggedId === session.id) return;
+            {starredGroups.map((group) => {
+              if (group.sessions.length === 1 && !group.label) {
+                // Single local session — render directly
+                const session = group.sessions[0];
+                return (
+                  <div
+                    key={session.id}
+                    draggable
+                    onDragStart={(e) => { setDraggedId(session.id); e.dataTransfer.effectAllowed = 'move'; if (e.currentTarget instanceof HTMLElement) e.currentTarget.style.opacity = '0.5'; }}
+                    onDragEnd={(e) => { setDraggedId(null); setDragOverId(null); if (e.currentTarget instanceof HTMLElement) e.currentTarget.style.opacity = '1'; }}
+                    onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; if (draggedId && draggedId !== session.id) setDragOverId(session.id); }}
+                    onDragLeave={() => { if (dragOverId === session.id) setDragOverId(null); }}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      if (!draggedId || draggedId === session.id) return;
+                      const fromIdx = starredSessions.findIndex(s => s.id === draggedId);
+                      const toIdx = starredSessions.findIndex(s => s.id === session.id);
+                      if (fromIdx < 0 || toIdx < 0) return;
+                      const reordered = [...starredSessions];
+                      const [moved] = reordered.splice(fromIdx, 1);
+                      reordered.splice(toIdx, 0, moved);
+                      const base = new Date('2020-01-01T00:00:00Z').getTime();
+                      reordered.forEach((s, i) => {
+                        window.electronAPI?.sessions?.update(s.id, { starredAt: new Date(base + i * 1000).toISOString() } as any).catch(() => {});
+                      });
+                      loadSessions();
+                      setDraggedId(null);
+                      setDragOverId(null);
+                    }}
+                    className={dragOverId === session.id ? 'border-t-2 border-claude-accent' : ''}
+                  >
+                    <SessionCard
+                      session={session}
+                      isActive={session.id === activeSessionId}
+                      onClick={() => setActiveSession(session.id)}
+                      isFork={session.isWorktree}
+                      onTeleportRequest={setTeleportSession}
+                      onDownload={setDownloadSession}
+                    />
+                  </div>
+                );
+              }
 
-                  // Reorder: compute new starredAt between neighbours
-                  const fromIdx = starredSessions.findIndex(s => s.id === draggedId);
-                  const toIdx = starredSessions.findIndex(s => s.id === session.id);
-                  if (fromIdx < 0 || toIdx < 0) return;
-
-                  // Build new order
-                  const reordered = [...starredSessions];
-                  const [moved] = reordered.splice(fromIdx, 1);
-                  reordered.splice(toIdx, 0, moved);
-
-                  // Assign new starredAt timestamps to maintain order
-                  // Use epoch base + index * 1000ms so they're monotonically increasing
-                  const base = new Date('2020-01-01T00:00:00Z').getTime();
-                  reordered.forEach((s, i) => {
-                    const newStarredAt = new Date(base + i * 1000).toISOString();
-                    window.electronAPI?.sessions?.update(s.id, {
-                      starredAt: newStarredAt,
-                    } as any).catch(() => {});
-                  });
-
-                  // Reload to reflect new order
-                  loadSessions();
-                  setDraggedId(null);
-                  setDragOverId(null);
-                }}
-                className={dragOverId === session.id ? 'border-t-2 border-claude-accent' : ''}
-              >
-                <SessionCard
-                  session={session}
-                  isActive={session.id === activeSessionId}
-                  onClick={() => setActiveSession(session.id)}
-                  isFork={session.isWorktree}
-                  onTeleportRequest={setTeleportSession}
-                  onDownload={setDownloadSession}
-                />
-              </div>
-            ))}
+              // SSH group — collapsible folder
+              const isExpanded = expandedStarredGroups.has(group.key);
+              const hasActive = group.sessions.some(s => s.id === activeSessionId);
+              const runningCount = group.sessions.filter(s => s.status === 'running').length;
+              return (
+                <div key={group.key}>
+                  <button
+                    onClick={() => setExpandedStarredGroups(prev => {
+                      const next = new Set(prev);
+                      if (next.has(group.key)) next.delete(group.key);
+                      else next.add(group.key);
+                      return next;
+                    })}
+                    className={`w-full px-3 py-1.5 flex items-center gap-2 hover:bg-claude-surface/50 transition-colors text-left ${hasActive ? 'bg-claude-surface/30' : ''}`}
+                  >
+                    {isExpanded ? <ChevronDown size={12} className="text-claude-text-secondary" /> : <ChevronRight size={12} className="text-claude-text-secondary" />}
+                    <Server size={12} className="text-green-500" />
+                    <span className="text-xs font-mono text-claude-text truncate flex-1">{group.label}</span>
+                    <Star size={10} className="text-amber-400 flex-shrink-0" fill="currentColor" />
+                    <span className="text-[10px] text-claude-text-secondary">{group.sessions.length}</span>
+                    {runningCount > 0 && <span className="w-1.5 h-1.5 bg-green-500 flex-shrink-0" style={{ borderRadius: 0 }} />}
+                  </button>
+                  {isExpanded && group.sessions.map(session => (
+                    <div key={session.id} className="pl-4">
+                      <SessionCard
+                        session={session}
+                        isActive={session.id === activeSessionId}
+                        onClick={() => setActiveSession(session.id)}
+                        isFork={session.isWorktree}
+                        onTeleportRequest={setTeleportSession}
+                        onDownload={setDownloadSession}
+                      />
+                    </div>
+                  ))}
+                </div>
+              );
+            })}
           </div>
         </div>
       )}
