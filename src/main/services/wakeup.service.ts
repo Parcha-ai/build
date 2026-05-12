@@ -48,8 +48,8 @@ export class WakeupScheduler extends EventEmitter {
       this.emit('wakeup', { sessionId, prompt, reason });
     }, clamped * 1000);
 
-    // Don't keep the process alive just for wakeups
-    timer.unref();
+    // In Electron, the main process stays alive anyway (window keeps it).
+    // Do NOT unref — unref'd timers can be GC'd in some Node versions.
 
     this.wakeups.set(sessionId, {
       sessionId,
