@@ -219,16 +219,40 @@ export default function SessionList() {
     return sorted;
   }, [sessions.map(s => s.id).join(',')]); // Only re-sort when session IDs change (add/remove)
 
-  // Starred sessions — ordered by when they were starred (stable order)
+  // Starred sessions — deduplicated by path for SSH sessions.
+  // Multiple SSH sessions sharing the same remote path collapse to one entry
+  // (the most recently updated), keyed by session name.
   const starredSessions = useMemo(() => {
-    return sessions
-      .filter(s => s.isStarred && !s.parentSessionId) // Exclude conversation forks
+    const allStarred = sessions
+      .filter(s => s.isStarred && !s.parentSessionId)
       .sort((a, b) => {
-        // Sort by starredAt ascending (order they were starred in)
         const aTime = a.starredAt ? new Date(a.starredAt).getTime() : 0;
         const bTime = b.starredAt ? new Date(b.starredAt).getTime() : 0;
         return aTime - bTime;
       });
+
+    // Deduplicate SSH sessions: one entry per unique remote path
+    const sshPathMap = new Map<string, Session>();
+    const result: Session[] = [];
+    for (const s of allStarred) {
+      if (s.sshConfig) {
+        const pathKey = s.worktreePath || s.repoPath || s.sshConfig.remoteWorkdir;
+        const existing = sshPathMap.get(pathKey);
+        if (!existing || new Date(s.updatedAt).getTime() > new Date(existing.updatedAt).getTime()) {
+          sshPathMap.set(pathKey, s);
+        }
+      } else {
+        result.push(s);
+      }
+    }
+    // Add deduplicated SSH sessions, sorted by starredAt
+    const sshSessions = Array.from(sshPathMap.values()).sort((a, b) => {
+      const aTime = a.starredAt ? new Date(a.starredAt).getTime() : 0;
+      const bTime = b.starredAt ? new Date(b.starredAt).getTime() : 0;
+      return aTime - bTime;
+    });
+    result.push(...sshSessions);
+    return result;
   }, [sessions]);
 
   // Recent sessions (running + recently used, excluding starred)

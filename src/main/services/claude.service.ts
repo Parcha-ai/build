@@ -25,6 +25,7 @@ import { mcpService } from './mcp.service';
 import { codexService } from './codex.service';
 import { formatConversationContext, mergeConversationMessages } from './codex-context';
 import { secureKeysService } from './secure-keys.service';
+import { analyticsService, estimateCost } from './analytics.service';
 
 const STREAM_DEBUG = process.env.GREP_DEBUG_STREAMING === '1';
 
@@ -465,14 +466,10 @@ export class ClaudeService {
    * Build the system prompt append section based on session type
    * Includes SSH context for remote sessions and agent memories
    */
-  private buildSystemPromptAppend(
-    session: Session,
-    memoriesPrompt?: string,
-    gstackMode?: string,
-    secureEnvContext?: string,
-    supplementalConversationContext?: string,
-  ): string {
-    let append = `
+  // Static portion of system prompt — cached as a constant to maximize prompt cache hits.
+  // The Anthropic API caches from the start of the prompt, so keeping this prefix
+  // byte-identical across messages avoids cache misses.
+  private static readonly STATIC_SYSTEM_PROMPT = `
 ## Build Agent
 
 You are the Build agent, an AI development assistant running inside the Build desktop application. You have access to a browser preview panel via MCP tools (claudette-browser) that allows you to test changes you make to web applications in real-time.
@@ -497,6 +494,16 @@ If the user agrees:
 
 You are intelligent enough to determine what URLs to test based on the project structure, development server configuration, and the specific files being modified.
 `;
+
+  private buildSystemPromptAppend(
+    session: Session,
+    memoriesPrompt?: string,
+    gstackMode?: string,
+    secureEnvContext?: string,
+    supplementalConversationContext?: string,
+  ): string {
+    // Start with static content (cached by the API) then append dynamic context
+    let append = ClaudeService.STATIC_SYSTEM_PROMPT;
 
     if (secureEnvContext) {
       append += `\n\n${secureEnvContext}`;
@@ -3148,11 +3155,16 @@ Read or source that file if you need the actual values. Do not print secret valu
         }
       }
 
-      // Browser tools - available for all sessions
-      // For SSH, the MCP server runs in local Build process but tools are sent to remote
-      // (investigating why they worked before but now show "No such tool available")
-      mcpServersConfig['claudette-browser'] = this.getBrowserMcpServer(sessionId);
-      console.log('[Claude Service] Browser MCP tools enabled', session.sshConfig ? '(SSH session)' : '(local session)');
+      // Browser tools - conditionally loaded to save tokens on tool descriptions
+      // For SSH sessions, only load if the session has used browser before (has a lastBrowserUrl)
+      // For local sessions, always load as browser preview is a core feature
+      const sessionHasBrowserHistory = session.sshConfig ? !!(session as any).lastBrowserUrl : true;
+      if (sessionHasBrowserHistory) {
+        mcpServersConfig['claudette-browser'] = this.getBrowserMcpServer(sessionId);
+        console.log('[Claude Service] Browser MCP tools enabled', session.sshConfig ? '(SSH session)' : '(local session)');
+      } else {
+        console.log('[Claude Service] Browser MCP tools skipped — SSH session with no browser history');
+      }
 
       // Load user-installed MCP servers from Claudette's electron-store
       // This runs on EVERY message, so new MCP servers are picked up automatically
@@ -3972,6 +3984,7 @@ Begin by creating the task structure now.
 
       let queryComplete = false;
       let lastTerminalReason: string | undefined; // From SDK result message (v0.2.91+)
+      let lastToolName: string | undefined; // Track last tool for analytics attribution
       for await (const msg of messages) {
         if (abortController.signal.aborted) {
           yield { type: 'error', error: 'Query cancelled' };
@@ -4221,6 +4234,7 @@ Begin by creating the task structure now.
                       agentId: currentAgentId,
                     };
                     toolCalls.push(toolCall);
+                    lastToolName = toolCall.name;
                     // Add tool_use content block to track order
                     contentBlocks.push({ type: 'tool_use', toolCallId: toolCall.id, agentId: currentAgentId });
                     yield { type: 'tool_use', toolCall, agentId: currentAgentId };
@@ -4593,11 +4607,12 @@ Begin by creating the task structure now.
 
             // Track token usage and send to renderer
             // Total input = input_tokens + cache_creation_input_tokens + cache_read_input_tokens
-            const successResult = resultMsg as SDKMessage & { usage?: { input_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number }; model?: string };
+            const successResult = resultMsg as SDKMessage & { usage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number }; model?: string };
             if (successResult.usage) {
               const inputTokens = (successResult.usage.input_tokens || 0)
                 + (successResult.usage.cache_creation_input_tokens || 0)
                 + (successResult.usage.cache_read_input_tokens || 0);
+              const outputTokens = successResult.usage.output_tokens || 0;
               const currentModel = successResult.model || selectedModel || 'claude-opus-4-6';
               const hasLargeContext = currentModel.includes('opus-4-6') || currentModel.includes('sonnet-4-6') || currentModel.includes('sonnet-4-5');
               const contextWindowSize = hasLargeContext ? 1000000 : 200000;
@@ -4633,14 +4648,37 @@ Begin by creating the task structure now.
                 }
               }
 
+              // Record analytics event for cost tracking
+              const cacheReadTokens = successResult.usage.cache_read_input_tokens || 0;
+              const cacheWriteTokens = successResult.usage.cache_creation_input_tokens || 0;
+              const cost = estimateCost(currentModel, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens);
+              const tokenEvent = {
+                sessionId,
+                sessionName: session?.name || sessionId,
+                timestamp: Date.now(),
+                model: currentModel,
+                inputTokens,
+                outputTokens,
+                cacheReadTokens,
+                cacheWriteTokens,
+                toolName: lastToolName,
+                estimatedCostUsd: cost,
+              };
+              analyticsService.recordTokenEvent(tokenEvent);
+              if (this.mainWindow) {
+                this.mainWindow.webContents.send(IPC_CHANNELS.ANALYTICS_TOKEN_EVENT, tokenEvent);
+              }
+
               // Send context usage to renderer for display (enhanced with rich breakdown when available)
               yield {
                 type: 'context_usage',
                 inputTokens,
+                outputTokens,
                 contextWindowSize,
                 percentage,
+                estimatedCostUsd: cost,
                 ...(contextUsageBreakdown ? { contextUsageBreakdown } : {}),
-              } as StreamEvent & { inputTokens: number; contextWindowSize: number; percentage: number; contextUsageBreakdown?: Record<string, unknown> };
+              } as StreamEvent & { inputTokens: number; outputTokens?: number; contextWindowSize: number; percentage: number; estimatedCostUsd?: number; contextUsageBreakdown?: Record<string, unknown> };
             }
 
             // Store terminal_reason for inclusion in the message_complete event

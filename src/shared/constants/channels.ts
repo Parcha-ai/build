@@ -289,6 +289,13 @@ export const IPC_CHANNELS = {
   QMD_SHOULD_PROMPT: 'qmd:should-prompt',
   QMD_PROMPT_RESPONSE: 'qmd:prompt-response', // Event sent to renderer to show QMD prompt
   QMD_AUTO_INSTALL: 'qmd:auto-install', // Auto-install QMD (downloads Bun + QMD)
+
+  // Analytics channels (token usage + cost tracking)
+  ANALYTICS_GET_SUMMARY: 'analytics:get-summary',
+  ANALYTICS_GET_SESSION_COST: 'analytics:get-session-cost',
+  ANALYTICS_GET_TIER_CONFIG: 'analytics:get-tier-config',
+  ANALYTICS_SET_TIER_CONFIG: 'analytics:set-tier-config',
+  ANALYTICS_TOKEN_EVENT: 'analytics:token-event', // Real-time event pushed to renderer
 } as const;
 
 export type IPCChannel = typeof IPC_CHANNELS[keyof typeof IPC_CHANNELS];

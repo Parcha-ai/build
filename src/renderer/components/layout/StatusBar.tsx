@@ -2,6 +2,7 @@ import React, { useEffect, useState, useRef, useMemo, useCallback } from 'react'
 import { useSessionStore } from '../../stores/session.store';
 import { useAuthStore } from '../../stores/auth.store';
 import { ChevronDown, Check } from 'lucide-react';
+import CostBadge from '../analytics/CostBadge';
 import type { Branch } from '../../../shared/types';
 
 // Dev instance name from environment variable (set by scripts/dev.sh, passed via preload)
@@ -271,6 +272,13 @@ export default function StatusBar() {
 
       {/* Right section */}
       <div className="flex items-center gap-3">
+        {activeSession && (
+          <>
+            <CostBadge />
+            <div className="w-px h-3 bg-claude-border" />
+          </>
+        )}
+
         {activeSession?.status === 'running' && (
           <>
             <div className="flex items-center gap-1.5">

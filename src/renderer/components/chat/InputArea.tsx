@@ -1984,7 +1984,10 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
                   <div className="px-3 py-1 text-[8px] font-bold text-claude-text-secondary uppercase tracking-wider bg-claude-bg/50 sticky top-0">
                     {groupLabels[activeHarness]} Models
                   </div>
-                  {activeModels.map(model => (
+                  {activeModels.map(model => {
+                    const costTier = model.id.includes('opus') ? '$$$' : model.id.includes('haiku') ? '$' : '$$';
+                    const costColor = model.id.includes('opus') ? 'text-red-400' : model.id.includes('haiku') ? 'text-green-400' : 'text-amber-400';
+                    return (
                     <button
                       key={model.id}
                       onClick={() => selectModel(model.id)}
@@ -1992,9 +1995,13 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
                         model.id === currentModel ? 'bg-claude-bg text-claude-accent' : 'text-claude-text'
                       }`}
                     >
-                      <div className="font-mono text-xs">{model.name.replace(/ \(Cursor\)| \(Codex\)/, '')}</div>
+                      <div className="font-mono text-xs flex items-center justify-between">
+                        <span>{model.name.replace(/ \(Cursor\)| \(Codex\)/, '')}</span>
+                        <span className={`text-[9px] ml-2 ${costColor}`}>{costTier}</span>
+                      </div>
                     </button>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             );

@@ -16,6 +16,7 @@ import RemoteControlPanel from './RemoteControlPanel';
 // CompactionBar removed - compaction status now shown in ThinkingBlock
 import { SoundVisualization } from './SoundVisualization';
 import HistoryPanel from './HistoryPanel';
+import TokenDashboard from '../analytics/TokenDashboard';
 import { ArrowDown, History, GitBranch, Circle, ExternalLink } from 'lucide-react';
 import type { Session, ToolCall } from '../../../shared/types';
 import { GSTACK_MODE_META } from '../../../shared/types';
@@ -152,7 +153,7 @@ export default function ChatContainer({ session }: ChatContainerProps) {
   // clearRemoteControl removed — stopRemoteControl handles both IPC kill + state clear
 
   const { audioModeActive, ttsStates } = useAudioStore();
-  const { toggleTerminalPanel, isTerminalPanelOpen, isHistoryPanelOpen, toggleHistoryPanel } = useUIStore();
+  const { toggleTerminalPanel, isTerminalPanelOpen, isHistoryPanelOpen, toggleHistoryPanel, isAnalyticsPanelOpen, toggleAnalyticsPanel } = useUIStore();
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const [isAtBottom, setIsAtBottom] = useState(true);
@@ -872,6 +873,13 @@ export default function ChatContainer({ session }: ChatContainerProps) {
     {isHistoryPanelOpen && (
       <div className="w-80 shrink-0 border-l border-claude-border">
         <HistoryPanel sessionId={session.id} />
+      </div>
+    )}
+
+    {/* Analytics Panel - slides in from the right */}
+    {isAnalyticsPanelOpen && (
+      <div className="w-96 shrink-0 border-l border-claude-border">
+        <TokenDashboard onClose={toggleAnalyticsPanel} />
       </div>
     )}
     </div>
