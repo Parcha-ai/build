@@ -84,6 +84,25 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
     return hidden;
   });
 
+  // Sync overflowIds when forkSiblings load/change — picks up tabHidden flags
+  // that weren't available at initial render (sessions load asynchronously)
+  useEffect(() => {
+    const newHidden = new Set<string>();
+    for (const s of forkSiblings) {
+      if ((s as any).tabHidden) newHidden.add(s.id);
+    }
+    if (newHidden.size > 0) {
+      setOverflowIds(prev => {
+        const merged = new Set(prev);
+        let changed = false;
+        for (const id of newHidden) {
+          if (!merged.has(id)) { merged.add(id); changed = true; }
+        }
+        return changed ? merged : prev;
+      });
+    }
+  }, [forkSiblings]);
+
   const [showOverflow, setShowOverflow] = useState(false);
   const overflowRef = useRef<HTMLDivElement>(null);
   const overflowBtnRef = useRef<HTMLButtonElement>(null);
