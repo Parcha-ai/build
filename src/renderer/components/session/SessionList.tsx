@@ -358,7 +358,7 @@ export default function SessionList() {
 
       {/* Rest of sessions — dimmed in Focus Mode */}
       <div className={focusModeEnabled ? 'opacity-20 pointer-events-none' : ''}>
-      {/* Starred Sessions section */}
+      {/* Starred Sessions section — SSH sessions grouped by remote folder */}
       {starredSessions.length > 0 && (
         <div className="mb-3">
           <div className="px-3 py-1.5 flex items-center gap-2">
@@ -375,7 +375,6 @@ export default function SessionList() {
                 onDragStart={(e) => {
                   setDraggedId(session.id);
                   e.dataTransfer.effectAllowed = 'move';
-                  // Make the drag image semi-transparent
                   if (e.currentTarget instanceof HTMLElement) {
                     e.currentTarget.style.opacity = '0.5';
                   }
@@ -400,19 +399,12 @@ export default function SessionList() {
                 onDrop={(e) => {
                   e.preventDefault();
                   if (!draggedId || draggedId === session.id) return;
-
-                  // Reorder: compute new starredAt between neighbours
                   const fromIdx = starredSessions.findIndex(s => s.id === draggedId);
                   const toIdx = starredSessions.findIndex(s => s.id === session.id);
                   if (fromIdx < 0 || toIdx < 0) return;
-
-                  // Build new order
                   const reordered = [...starredSessions];
                   const [moved] = reordered.splice(fromIdx, 1);
                   reordered.splice(toIdx, 0, moved);
-
-                  // Assign new starredAt timestamps to maintain order
-                  // Use epoch base + index * 1000ms so they're monotonically increasing
                   const base = new Date('2020-01-01T00:00:00Z').getTime();
                   reordered.forEach((s, i) => {
                     const newStarredAt = new Date(base + i * 1000).toISOString();
@@ -420,8 +412,6 @@ export default function SessionList() {
                       starredAt: newStarredAt,
                     } as any).catch(() => {});
                   });
-
-                  // Reload to reflect new order
                   loadSessions();
                   setDraggedId(null);
                   setDragOverId(null);

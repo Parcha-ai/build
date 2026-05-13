@@ -70,9 +70,8 @@ const config: ForgeConfig = {
           { name: 'node-pty', source: path.join(__dirname, 'node_modules', 'node-pty') },
           { name: '@anthropic-ai/claude-agent-sdk', source: path.join(__dirname, 'node_modules', '@anthropic-ai', 'claude-agent-sdk'), dest: path.join(nodeModulesPath, '@anthropic-ai', 'claude-agent-sdk') },
           { name: '@anthropic-ai/sdk', source: path.join(__dirname, 'node_modules', '@anthropic-ai', 'sdk'), dest: path.join(nodeModulesPath, '@anthropic-ai', 'sdk') },
-          { name: '@openai/codex-sdk', source: path.join(__dirname, 'node_modules', '@openai', 'codex-sdk'), dest: path.join(nodeModulesPath, '@openai', 'codex-sdk') },
-          { name: '@openai/codex', source: path.join(__dirname, 'node_modules', '@openai', 'codex'), dest: path.join(nodeModulesPath, '@openai', 'codex') },
-          { name: '@openai/codex-darwin-arm64', source: path.join(__dirname, 'node_modules', '@openai', 'codex-darwin-arm64'), dest: path.join(nodeModulesPath, '@openai', 'codex-darwin-arm64') },
+          // Codex binaries removed from bundle — triggers macOS XProtect malware block.
+          // Codex is spawned at runtime from the system-installed binary instead.
           // Monaco editor assets for code editing
           { name: 'monaco-editor', source: path.join(__dirname, 'node_modules', 'monaco-editor') },
         ];
@@ -103,7 +102,7 @@ const config: ForgeConfig = {
           const appPath = path.join(outputPath, 'Build.app');
           console.log(`[Packaging] Signing app with adhoc signature: ${appPath}`);
           try {
-            execSync(`codesign --force --deep --sign - "${appPath}"`, { stdio: 'inherit' });
+            execSync(`codesign --force --sign - "${appPath}"`, { stdio: 'inherit' });
             console.log('[Packaging] App signed successfully');
           } catch (err) {
             console.error('[Packaging] Warning: Failed to sign app:', err);

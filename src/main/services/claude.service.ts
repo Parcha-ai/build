@@ -3203,18 +3203,22 @@ Read or source that file if you need the actual values. Do not print secret valu
           }
         }
 
-        // Convert mcp-remote stdio wrappers to native url configs.
-        // mcp-remote wraps remote MCP servers (Sentry, Linear, etc.) behind
-        // npx + OAuth, but the Agent SDK handles url-type servers natively
-        // with built-in OAuth. The wrapper breaks on SSH remotes because
-        // npx spawns on the remote machine where there's no browser for OAuth.
-        for (const [name, config] of Object.entries(userMcpServers)) {
-          const cfg = config as { type?: string; command?: string; args?: string[] };
+        // Handle mcp-remote stdio wrappers (Sentry, Linear, etc.).
+        // For SSH: strip them entirely — remote can't reach these endpoints or do OAuth.
+        // For local: convert to native SDK types (http/sse) with built-in OAuth.
+        for (const name of Object.keys(userMcpServers)) {
+          const cfg = userMcpServers[name] as { type?: string; command?: string; args?: string[] };
           if (cfg.type === 'stdio' && cfg.command === 'npx' && cfg.args?.includes('mcp-remote')) {
-            const urlArg = cfg.args.find((a: string) => /^https?:\/\//.test(a));
-            if (urlArg) {
-              console.log(`[Claude Service] Converting ${name} from mcp-remote wrapper to native url: ${urlArg}`);
-              userMcpServers[name] = { type: 'url', url: urlArg } as any;
+            if (session.sshConfig) {
+              console.log(`[Claude Service] Stripping ${name} for SSH (mcp-remote can't authenticate remotely)`);
+              delete userMcpServers[name];
+            } else {
+              const urlArg = cfg.args.find((a: string) => /^https?:\/\//.test(a));
+              if (urlArg) {
+                const mcpType = urlArg.endsWith('/sse') ? 'sse' : 'http';
+                console.log(`[Claude Service] Converting ${name} from mcp-remote to native ${mcpType}: ${urlArg}`);
+                userMcpServers[name] = { type: mcpType, url: urlArg } as any;
+              }
             }
           }
         }
@@ -3847,86 +3851,10 @@ Begin by creating the task structure now.
               }
             }
 
-            // Handle ScheduleWakeup — intercept and schedule via Build's timer
-            if (toolName === 'ScheduleWakeup') {
-              try {
-                const { wakeupScheduler } = require('./wakeup.service');
-                const delay = (input.delaySeconds as number) || 120;
-                const reason = (input.reason as string) || 'scheduled wakeup';
-                const prompt = (input.prompt as string) || '';
-                const result = wakeupScheduler.scheduleWakeup(sessionId, delay, prompt, reason);
-                const timeStr = new Date(result.scheduledFor).toTimeString().slice(0, 8);
-                const inSecs = Math.max(0, Math.round((result.scheduledFor - Date.now()) / 1000));
-                const clampNote = result.wasClamped ? ` (clamped to ${result.clampedDelaySeconds}s from your requested value)` : '';
-                return {
-                  behavior: 'deny' as const,
-                  message: `Next wakeup scheduled for ${timeStr} (in ${inSecs}s)${clampNote}.`,
-                };
-              } catch (e) {
-                console.error('[Claude Service] ScheduleWakeup error:', e);
-                return { behavior: 'deny' as const, message: `Wakeup scheduling failed: ${e}` };
-              }
-            }
-
-            // Handle CronCreate — recurring schedule via Build's timer
-            if (toolName === 'CronCreate') {
-              try {
-                const { wakeupScheduler } = require('./wakeup.service');
-                const schedule = (input.schedule as string) || 'every 5m';
-                const prompt = (input.prompt as string) || '';
-                const result = wakeupScheduler.createCron(sessionId, schedule, prompt);
-                return {
-                  behavior: 'deny' as const,
-                  message: `Cron job created (ID: ${result.cronId}). Schedule: ${schedule}. Next run: ${new Date(result.nextRun).toTimeString().slice(0, 8)}.`,
-                };
-              } catch (e) {
-                return { behavior: 'deny' as const, message: `Cron creation failed: ${e}` };
-              }
-            }
-
-            // Handle CronDelete
-            if (toolName === 'CronDelete') {
-              try {
-                const { wakeupScheduler } = require('./wakeup.service');
-                const cronId = input.id as string || input.cronId as string || '';
-                const deleted = wakeupScheduler.deleteCron(cronId);
-                return {
-                  behavior: 'deny' as const,
-                  message: deleted ? `Cron job ${cronId} deleted.` : `Cron job ${cronId} not found.`,
-                };
-              } catch (e) {
-                return { behavior: 'deny' as const, message: `Cron deletion failed: ${e}` };
-              }
-            }
-
-            // Handle CronList
-            if (toolName === 'CronList') {
-              try {
-                const { wakeupScheduler } = require('./wakeup.service');
-                const crons = wakeupScheduler.listCrons(sessionId);
-                const msg = crons.length > 0
-                  ? crons.map((c: any) => `${c.cronId}: ${c.schedule}`).join('\n')
-                  : 'No scheduled jobs.';
-                return { behavior: 'deny' as const, message: msg };
-              } catch (e) {
-                return { behavior: 'deny' as const, message: `Cron list failed: ${e}` };
-              }
-            }
-
-            // Handle PushNotification
-            if (toolName === 'PushNotification') {
-              try {
-                const title = (input.title as string) || 'Build';
-                const body = (input.body as string) || '';
-                const { Notification } = require('electron');
-                if (Notification.isSupported()) {
-                  new Notification({ title, body }).show();
-                }
-                return { behavior: 'deny' as const, message: `Notification sent: "${title}"` };
-              } catch (e) {
-                return { behavior: 'deny' as const, message: `Notification failed: ${e}` };
-              }
-            }
+            // ScheduleWakeup, CronCreate/Delete/List, RemoteTrigger, PushNotification:
+            // Let the SDK handle these natively. The CLI manages its own timers,
+            // cron jobs, and loop state. Intercepting them with 'deny' prevented
+            // the SDK's internal loop from functioning (wakeups never fired).
 
             // For other tools or bypassPermissions mode, allow them
             // Must include updatedInput when allowing - SDK requires it

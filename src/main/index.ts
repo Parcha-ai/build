@@ -1,9 +1,28 @@
 import { app, BrowserWindow, ipcMain, protocol, session, net, Menu, systemPreferences } from 'electron';
 import * as path from 'path';
+import * as fs from 'fs';
 import { pathToFileURL } from 'url';
 
 // Dev instance name from environment variable (set by scripts/dev.sh)
 export const DEV_INSTANCE_NAME = process.env.DEV_INSTANCE_NAME || null;
+
+// File logging for production builds — writes to G-Build/main.log
+if (!DEV_INSTANCE_NAME) {
+  try {
+    const logDir = path.join(app.getPath('userData'));
+    const logPath = path.join(logDir, 'main.log');
+    const logStream = fs.createWriteStream(logPath, { flags: 'a' });
+    const origLog = console.log;
+    const origWarn = console.warn;
+    const origError = console.error;
+    const ts = () => new Date().toISOString();
+    console.log = (...args: unknown[]) => { const msg = `${ts()} [LOG] ${args.join(' ')}\n`; logStream.write(msg); origLog(...args); };
+    console.warn = (...args: unknown[]) => { const msg = `${ts()} [WARN] ${args.join(' ')}\n`; logStream.write(msg); origWarn(...args); };
+    console.error = (...args: unknown[]) => { const msg = `${ts()} [ERROR] ${args.join(' ')}\n`; logStream.write(msg); origError(...args); };
+  } catch {
+    // Non-fatal — logging is best-effort
+  }
+}
 
 // Use separate user data directory for dev to avoid clobbering production data
 if (process.env.GREP_DEV_USER_DATA) {

@@ -138,6 +138,7 @@ export function registerSessionHandlers(ipcMain: IpcMain): void {
           parentSessionId: sessionId,
           childSessionIds: [],
           isRoot: false,
+          tabHidden: true, // Hide by default — user opens via overflow menu
           createdAt: new Date(t.mtime * 1000),
           updatedAt: new Date(t.mtime * 1000),
           forkCreatedAt: new Date(t.mtime * 1000),

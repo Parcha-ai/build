@@ -8,7 +8,7 @@
     "start": "electron-forge start",
     "package": "electron-forge package",
     "clean:build": "node -e \"const fs=require('fs'); for (const target of ['.webpack', 'out/v' + process.env.npm_package_version]) { fs.rmSync(target, { recursive: true, force: true }); }\"",
-    "make": "npm run clean:build && npm run setup-qmd && electron-forge make",
+    "make": "npm run clean:build && electron-forge make",
     "publish": "electron-forge publish",
     "lint": "eslint --ext .ts,.tsx .",
     "setup-qmd": "npx ts-node scripts/setup-qmd.ts",
@@ -63,7 +63,7 @@
     "typescript": "~4.5.4"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.112",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.140",
     "@anthropic-ai/sdk": "^0.71.1",
     "@browserbasehq/stagehand": "^3.0.7",
     "@elevenlabs/client": "^0.14.0-beta.0",
