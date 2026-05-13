@@ -69,6 +69,7 @@ const config: ForgeConfig = {
         const deps = [
           { name: 'node-pty', source: path.join(__dirname, 'node_modules', 'node-pty') },
           { name: '@anthropic-ai/claude-agent-sdk', source: path.join(__dirname, 'node_modules', '@anthropic-ai', 'claude-agent-sdk'), dest: path.join(nodeModulesPath, '@anthropic-ai', 'claude-agent-sdk') },
+          { name: '@anthropic-ai/claude-agent-sdk-darwin-arm64', source: path.join(__dirname, 'node_modules', '@anthropic-ai', 'claude-agent-sdk-darwin-arm64'), dest: path.join(nodeModulesPath, '@anthropic-ai', 'claude-agent-sdk-darwin-arm64') },
           { name: '@anthropic-ai/sdk', source: path.join(__dirname, 'node_modules', '@anthropic-ai', 'sdk'), dest: path.join(nodeModulesPath, '@anthropic-ai', 'sdk') },
           // Codex binaries removed from bundle — triggers macOS XProtect malware block.
           // Codex is spawned at runtime from the system-installed binary instead.
