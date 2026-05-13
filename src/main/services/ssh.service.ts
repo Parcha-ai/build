@@ -484,14 +484,30 @@ export class SSHService {
     for (const [sessionId, conn] of this.connections.entries()) {
       try {
         const bridgeDir = this.getDetachedBridgeSessionDir(sessionId);
+        // Only clean up COMPLETED or STALE bridge jobs — never kill active ones.
+        // A job is safe to clean if:
+        //   - Its stdout.log contains a "result" line (query completed), OR
+        //   - Its directory is older than 6 hours (abandoned)
+        // Active processes (no result, recent) are left alone so reconnection works.
         await this.execCommand(conn.client,
-          // Kill orphaned tail watchers (the main source of leaks)
-          'pkill -f "tail -c \\+1 -F /tmp/claudette" 2>/dev/null || true; ' +
-          // Kill orphaned bridge scripts older than 6 hours
-          'pkill -f "claudette-remote-bridge.*spawn" 2>/dev/null || true; ' +
-          // Clean up stale bridge metadata dirs
           `if test -d ${this.quoteForShell(bridgeDir)}; then ` +
-          `find ${this.quoteForShell(bridgeDir)} -mindepth 1 -maxdepth 1 -type d -mmin +360 -exec rm -rf {} + 2>/dev/null || true; ` +
+          `for jobdir in ${this.quoteForShell(bridgeDir)}/*/; do ` +
+          'test -d "$jobdir" || continue; ' +
+          'completed=0; stale=0; ' +
+          // Check if job completed (has result in stdout.log)
+          'test -f "$jobdir/stdout.log" && grep -q \'"type":"result"\' "$jobdir/stdout.log" 2>/dev/null && completed=1; ' +
+          // Check if job has an exit.json (process already exited)
+          'test -f "$jobdir/exit.json" && completed=1; ' +
+          // Check if directory is older than 6 hours (abandoned)
+          'find "$jobdir" -maxdepth 0 -mmin +360 2>/dev/null | grep -q . && stale=1; ' +
+          // Only kill + clean if completed or stale
+          'if [ "$completed" = "1" ] || [ "$stale" = "1" ]; then ' +
+          'pid="$(cat "$jobdir/pid" 2>/dev/null || true)"; ' +
+          'test -n "$pid" && kill "$pid" 2>/dev/null || true; ' +
+          'test -n "$pid" && pkill -P "$pid" 2>/dev/null || true; ' +
+          'rm -rf "$jobdir"; ' +
+          'fi; ' +
+          'done; ' +
           'fi; ' +
           'true'
         );
