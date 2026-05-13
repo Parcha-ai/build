@@ -1063,6 +1063,23 @@ const electronAPI = {
     upgrade: (): Promise<{ success: boolean; error?: string }> =>
       ipcRenderer.invoke(IPC_CHANNELS.GSTACK_UPGRADE),
   },
+
+  // Analytics (token usage + cost tracking)
+  analytics: {
+    getSummary: (): Promise<any> =>
+      ipcRenderer.invoke(IPC_CHANNELS.ANALYTICS_GET_SUMMARY),
+    getSessionCost: (sessionId: string): Promise<any> =>
+      ipcRenderer.invoke(IPC_CHANNELS.ANALYTICS_GET_SESSION_COST, sessionId),
+    getTierConfig: (): Promise<any> =>
+      ipcRenderer.invoke(IPC_CHANNELS.ANALYTICS_GET_TIER_CONFIG),
+    setTierConfig: (config: { monthlyIncludedUsd: number; planName: string }): Promise<any> =>
+      ipcRenderer.invoke(IPC_CHANNELS.ANALYTICS_SET_TIER_CONFIG, config),
+    onTokenEvent: (callback: (data: any) => void) => {
+      const handler = (_: IpcRendererEvent, data: any) => callback(data);
+      ipcRenderer.on(IPC_CHANNELS.ANALYTICS_TOKEN_EVENT, handler);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.ANALYTICS_TOKEN_EVENT, handler);
+    },
+  },
 };
 
 // Expose the API to the renderer process

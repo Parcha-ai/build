@@ -4,11 +4,11 @@ import { useUIStore } from '../../stores/ui.store';
 import SessionList from '../session/SessionList';
 import TaskList from '../tasks/TaskList';
 import NewSessionDialog from '../session/NewSessionDialog';
-import { Plus, LogOut, GripVertical, LayoutGrid, Users } from 'lucide-react';
+import { Plus, LogOut, GripVertical, LayoutGrid, Users, BarChart3 } from 'lucide-react';
 
 export default function Sidebar() {
   const { logout } = useAuthStore();
-  const { sidebarWidth, setSidebarWidth, isCommandCenterActive, toggleCommandCenter, isAgentViewActive, toggleAgentView, isNewSessionDialogOpen, setNewSessionDialogOpen } = useUIStore();
+  const { sidebarWidth, setSidebarWidth, isCommandCenterActive, toggleCommandCenter, isAgentViewActive, toggleAgentView, isAnalyticsPanelOpen, toggleAnalyticsPanel, isNewSessionDialogOpen, setNewSessionDialogOpen } = useUIStore();
   const [isResizing, setIsResizing] = useState(false);
 
   const handleResizeMouseDown = useCallback((e: React.MouseEvent) => {
@@ -75,6 +75,18 @@ export default function Sidebar() {
             title="Agent View (Cmd+Shift+A)"
           >
             <Users size={14} />
+          </button>
+          <button
+            onClick={toggleAnalyticsPanel}
+            className={`p-1 transition-colors ${
+              isAnalyticsPanelOpen
+                ? 'bg-claude-accent/20 text-claude-accent'
+                : 'hover:bg-claude-bg text-claude-text-secondary'
+            }`}
+            style={{ borderRadius: 0 }}
+            title="Token Analytics"
+          >
+            <BarChart3 size={14} />
           </button>
           <button
             onClick={() => setNewSessionDialogOpen(true)}

@@ -2248,12 +2248,16 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // On error, clear streaming flag WITHOUT processing queue.
       // Errors mean the query is dead — don't send queued messages into a broken state.
       // Set streaming to false directly without triggering queue drain.
+      // Also clear stale pending permissions/questions — the process that requested
+      // them is dead, so clicking Approve would be a no-op.
       set((state) => ({
         isStreaming: { ...state.isStreaming, [sessionId]: false },
         activeStreamModel: { ...state.activeStreamModel, [sessionId]: undefined },
         currentStreamContent: { ...state.currentStreamContent, [sessionId]: '' },
         currentThinkingContent: { ...state.currentThinkingContent, [sessionId]: '' },
         streamEvents: { ...state.streamEvents, [sessionId]: [] },
+        pendingPermission: { ...state.pendingPermission, [sessionId]: null },
+        pendingQuestion: { ...state.pendingQuestion, [sessionId]: null },
       }));
 
       const errorMessage: ChatMessage = {
@@ -2411,7 +2415,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const request = pendingPermission[sessionId];
 
     if (!request) {
-      console.warn('[Session Store] No pending permission to approve');
+      console.warn('[Session Store] No pending permission to approve for session:', sessionId);
       return;
     }
 
@@ -2423,7 +2427,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     };
 
     console.log('[Session Store] Approving permission:', request.requestId, alwaysApprove ? '(always approve)' : '');
-    await window.electronAPI.claude.respondToPermission(response);
+    try {
+      await window.electronAPI.claude.respondToPermission(response);
+    } catch (err) {
+      console.warn('[Session Store] Permission response failed (process may have exited):', err);
+    }
     setPendingPermission(sessionId, null);
   },
 
@@ -2468,7 +2476,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     };
 
     console.log('[Session Store] Denying permission:', request.requestId);
-    await window.electronAPI.claude.respondToPermission(response);
+    try {
+      await window.electronAPI.claude.respondToPermission(response);
+    } catch (err) {
+      console.warn('[Session Store] Permission deny failed (process may have exited):', err);
+    }
     setPendingPermission(sessionId, null);
   },
 

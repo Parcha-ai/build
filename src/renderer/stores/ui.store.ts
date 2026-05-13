@@ -35,6 +35,7 @@ interface UIState {
   isExtensionsPanelOpen: boolean;
   isPlanPanelOpen: boolean;
   isHistoryPanelOpen: boolean;
+  isAnalyticsPanelOpen: boolean;
   isInspectorActive: boolean;
   isSettingsOpen: boolean;
   isOnboardingOpen: boolean;
@@ -83,6 +84,7 @@ interface UIState {
   togglePlanPanel: () => void;
   showPlanPanel: () => void;
   toggleHistoryPanel: () => void;
+  toggleAnalyticsPanel: () => void;
   setInspectorActive: (active: boolean) => void;
   setSelectedElement: (element: unknown | null) => void;
   cycleSplitRatio: () => void;
@@ -122,6 +124,7 @@ export const useUIStore = create<UIState>((set, get) => ({
   isExtensionsPanelOpen: false,
   isPlanPanelOpen: false,
   isHistoryPanelOpen: false,
+  isAnalyticsPanelOpen: false,
   isInspectorActive: false,
   isSettingsOpen: false,
   isOnboardingOpen: false,
@@ -240,10 +243,22 @@ export const useUIStore = create<UIState>((set, get) => ({
     set({
       isHistoryPanelOpen: !state.isHistoryPanelOpen,
       // Close competing panels when opening history
-      ...(!state.isHistoryPanelOpen ? { isBrowserPanelOpen: false, isExtensionsPanelOpen: false, isPlanPanelOpen: false } : {}),
+      ...(!state.isHistoryPanelOpen ? { isBrowserPanelOpen: false, isExtensionsPanelOpen: false, isPlanPanelOpen: false, isAnalyticsPanelOpen: false } : {}),
     });
     // Also close editor when opening history
     if (!state.isHistoryPanelOpen) {
+      import('./editor.store').then(({ useEditorStore }) => {
+        useEditorStore.getState().closeEditor();
+      });
+    }
+  },
+  toggleAnalyticsPanel: () => {
+    const state = useUIStore.getState();
+    set({
+      isAnalyticsPanelOpen: !state.isAnalyticsPanelOpen,
+      ...((!state.isAnalyticsPanelOpen) ? { isBrowserPanelOpen: false, isExtensionsPanelOpen: false, isPlanPanelOpen: false, isHistoryPanelOpen: false } : {}),
+    });
+    if (!state.isAnalyticsPanelOpen) {
       import('./editor.store').then(({ useEditorStore }) => {
         useEditorStore.getState().closeEditor();
       });
