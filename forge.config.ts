@@ -65,25 +65,49 @@ const config: ForgeConfig = {
         const nodeModulesPath = path.join(resourcesPath, 'node_modules');
         await fs.ensureDir(nodeModulesPath);
 
-        // Copy externalized dependencies
-        const deps = [
-          { name: 'node-pty', source: path.join(__dirname, 'node_modules', 'node-pty') },
-          { name: '@anthropic-ai/claude-agent-sdk', source: path.join(__dirname, 'node_modules', '@anthropic-ai', 'claude-agent-sdk'), dest: path.join(nodeModulesPath, '@anthropic-ai', 'claude-agent-sdk') },
-          { name: '@anthropic-ai/claude-agent-sdk-darwin-arm64', source: path.join(__dirname, 'node_modules', '@anthropic-ai', 'claude-agent-sdk-darwin-arm64'), dest: path.join(nodeModulesPath, '@anthropic-ai', 'claude-agent-sdk-darwin-arm64') },
-          { name: '@anthropic-ai/sdk', source: path.join(__dirname, 'node_modules', '@anthropic-ai', 'sdk'), dest: path.join(nodeModulesPath, '@anthropic-ai', 'sdk') },
-          // Codex binaries removed from bundle — triggers macOS XProtect malware block.
-          // Codex is spawned at runtime from the system-installed binary instead.
-          // @anthropic-ai/sdk runtime dependencies
-          { name: 'standardwebhooks', source: path.join(__dirname, 'node_modules', 'standardwebhooks') },
-          // Monaco editor assets for code editing
-          { name: 'monaco-editor', source: path.join(__dirname, 'node_modules', 'monaco-editor') },
+        // Recursively resolve and copy a package and all its production dependencies
+        const copied = new Set<string>();
+        async function copyWithDeps(pkgName: string) {
+          if (copied.has(pkgName)) return;
+          copied.add(pkgName);
+
+          const sourcePath = pkgName.startsWith('@')
+            ? path.join(__dirname, 'node_modules', ...pkgName.split('/'))
+            : path.join(__dirname, 'node_modules', pkgName);
+          const destPath = pkgName.startsWith('@')
+            ? path.join(nodeModulesPath, ...pkgName.split('/'))
+            : path.join(nodeModulesPath, pkgName);
+
+          if (!fs.existsSync(sourcePath)) {
+            console.log(`[Packaging] Warning: ${pkgName} not found, skipping`);
+            return;
+          }
+
+          await fs.ensureDir(path.dirname(destPath));
+          await fs.copy(sourcePath, destPath);
+          console.log(`[Packaging] Copied ${pkgName}`);
+
+          // Recurse into production dependencies
+          const pkgJsonPath = path.join(sourcePath, 'package.json');
+          if (fs.existsSync(pkgJsonPath)) {
+            const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, 'utf8'));
+            for (const dep of Object.keys(pkgJson.dependencies || {})) {
+              await copyWithDeps(dep);
+            }
+          }
+        }
+
+        // Externalized packages (must match webpack.main.config.ts externals)
+        const externalPackages = [
+          'node-pty',
+          '@anthropic-ai/claude-agent-sdk',
+          '@anthropic-ai/claude-agent-sdk-darwin-arm64',
+          '@anthropic-ai/sdk',
+          'monaco-editor',
         ];
 
-        for (const dep of deps) {
-          const dest = dep.dest || path.join(nodeModulesPath, dep.name);
-          await fs.ensureDir(path.dirname(dest));
-          await fs.copy(dep.source, dest);
-          console.log(`[Packaging] Copied ${dep.name} to ${dest}`);
+        for (const pkg of externalPackages) {
+          await copyWithDeps(pkg);
         }
 
         // Copy bundled QMD (semantic codebase search)
