@@ -1527,15 +1527,19 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const activeGStackMode = gstackMode[sessionId] || undefined; // Pass GStack mode directly
     console.log('[SessionStore] sendMessage - sessionId:', sessionId, 'permissionMode:', mode, 'gstackMode:', activeGStackMode, 'raw:', permissionMode[sessionId]);
 
-    // Update session's updatedAt timestamp for recent activity and mark as idle (user sent a message)
+    // Update session's updatedAt timestamp for recent activity and mark as idle (user sent a message).
+    // Persist to backend immediately (not after streaming completes) so the
+    // timestamp survives app restarts during long-running queries.
+    const now = new Date();
     set((state) => ({
       sessions: state.sessions.map(session =>
         session.id === sessionId
-          ? { ...session, updatedAt: new Date() }
+          ? { ...session, updatedAt: now }
           : session
       ),
       sessionActivity: { ...state.sessionActivity, [sessionId]: 'idle' },
     }));
+    window.electronAPI.sessions.update(sessionId, { updatedAt: now });
 
     // Intercept and secure any API keys/tokens in the message
     const { modifiedText, keysDetected } = await window.electronAPI.secureKeys.interceptAndReplace(sessionId, message);
@@ -1608,9 +1612,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         supplementalMessagesForContext
       );
       console.log('[SessionStore] sendMessage returned:', result);
-
-      // Update timestamp in backend as well
-      window.electronAPI.sessions.update(sessionId, { updatedAt: new Date() });
     } catch (error) {
       setStreaming(sessionId, false);
       console.error('[SessionStore] Failed to send message:', error);
@@ -2364,6 +2365,17 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       const currentState = get();
       const wasStreaming = currentState.isStreaming[sessionId];
 
+      // Always clear pending permission/question dialogs — the SSH transport is
+      // dead so clicking Approve would be a no-op. Dismiss immediately so the UI
+      // isn't frozen while TCP keepalive takes minutes to detect the drop.
+      if (currentState.pendingPermission[sessionId] || currentState.pendingQuestion[sessionId]) {
+        console.warn(`[SessionStore] Clearing stale permission/question dialogs for disconnected SSH session ${sessionId}`);
+        set((state) => ({
+          pendingPermission: { ...state.pendingPermission, [sessionId]: null },
+          pendingQuestion: { ...state.pendingQuestion, [sessionId]: null },
+        }));
+      }
+
       if (wasStreaming) {
         console.warn(`[SessionStore] Preserving active SSH stream for ${sessionId} while transport reconnects`);
         set((state) => ({
@@ -2936,10 +2948,74 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       });
     });
 
+    // Subscribe to SDK task_updated events (real-time status delta patches).
+    // This is the primary mechanism for tracking task lifecycle — task_notification
+    // only fires on terminal states but task_updated fires on every transition.
+    const unsubTaskUpdated = window.electronAPI.claude.onTaskUpdated?.((data) => {
+      const { taskId, patch, sessionId: sid } = data;
+      const terminalStatuses = ['completed', 'failed', 'killed'];
+      const isTerminal = patch.status && terminalStatuses.includes(patch.status);
+
+      if (isTerminal) {
+        console.log('[SessionStore] Task updated (terminal):', taskId, patch.status);
+      }
+
+      set((state) => {
+        const existing = state.monitorInstances[sid] || [];
+        let idx = existing.findIndex((m) => m.id === taskId);
+
+        // Auto-create monitor entry if we get an update for an unknown task
+        if (idx < 0) {
+          if (isTerminal) return state; // Don't create entries for already-done tasks
+          const newEntry = {
+            id: taskId,
+            description: patch.description || taskId,
+            events: [],
+            active: true,
+            startedAt: Date.now(),
+          };
+          const withNew = [...existing, newEntry];
+          return { monitorInstances: { ...state.monitorInstances, [sid]: withNew } };
+        }
+
+        const updated = [...existing];
+        updated[idx] = {
+          ...updated[idx],
+          ...(isTerminal ? { active: false } : {}),
+          ...(patch.description ? {
+            events: [...updated[idx].events, {
+              id: `upd-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+              text: patch.description,
+              timestamp: Date.now(),
+            }],
+          } : {}),
+          ...(patch.error ? {
+            events: [...(updated[idx].events || []), {
+              id: `err-${Date.now()}`,
+              text: `Error: ${patch.error}`,
+              timestamp: Date.now(),
+            }],
+          } : {}),
+        };
+        return { monitorInstances: { ...state.monitorInstances, [sid]: updated } };
+      });
+
+      // Auto-remove terminal tasks after 10s (same as task_notification)
+      if (isTerminal) {
+        setTimeout(() => {
+          set((state) => {
+            const existing = state.monitorInstances[sid] || [];
+            return { monitorInstances: { ...state.monitorInstances, [sid]: existing.filter((m) => m.id !== taskId) } };
+          });
+        }, 10000);
+      }
+    });
+
     return () => {
       unsubscribeOutput?.();
       unsubTaskNotif?.();
       unsubTaskProg?.();
+      unsubTaskUpdated?.();
     };
   },
 

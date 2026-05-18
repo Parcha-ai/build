@@ -769,10 +769,10 @@ export default function ChatContainer({ session }: ChatContainerProps) {
       </div>
 
       {/* Monitor section - above tasks (streaming background watches) */}
-      {sessionMonitors.length > 0 && (
+      {sessionMonitors.filter(m => m.active || m.persistent).length > 0 && (
         <div className="border-t border-claude-border bg-claude-surface/30 px-4 py-2">
           <MonitorBlock
-            monitors={sessionMonitors}
+            monitors={sessionMonitors.filter(m => m.active || m.persistent)}
           />
         </div>
       )}

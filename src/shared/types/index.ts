@@ -1,5 +1,11 @@
 // Core Types for Build
 
+// OpenClaw Gateway configuration
+export interface OpenClawConfig {
+  gatewayUrl: string;       // e.g. "http://myserver:18789"
+  gatewayPassword: string;  // Bearer token for auth
+}
+
 // SSH configuration for remote execution
 export interface SSHConfig {
   host: string;
@@ -40,6 +46,7 @@ export interface Session {
   branch: string;
   containerId?: string;
   sshConfig?: SSHConfig;  // Present if this is an SSH remote session
+  openclawConfig?: OpenClawConfig; // Present if this is an OpenClaw Gateway session
   status: SessionStatus;
   ports: PortAllocation;
   createdAt: Date;

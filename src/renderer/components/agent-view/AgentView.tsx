@@ -242,6 +242,11 @@ export default function AgentView() {
                   {selectedSession.branch}
                 </span>
               )}
+              {selectedSession.status === 'error' && selectedSession.errorMessage && (
+                <span className="text-[9px] text-red-400 ml-auto truncate max-w-[50%]" title={selectedSession.errorMessage}>
+                  {selectedSession.errorMessage}
+                </span>
+              )}
             </div>
 
             {/* Messages */}
@@ -286,10 +291,10 @@ export default function AgentView() {
               </div>
             )}
 
-            {/* Input */}
+            {/* Input — never disabled in agent mode so you can always send a message */}
             <InputArea
               sessionId={selectedId!}
-              disabled={selectedSession.status !== 'running'}
+              disabled={false}
               isStreaming={isSessionStreaming}
             />
           </>

@@ -8,7 +8,7 @@ import { SpeakerButton } from './SpeakerButton';
 import { useEditorStore } from '../../stores/editor.store';
 import { useUIStore } from '../../stores/ui.store';
 import { useSessionStore } from '../../stores/session.store';
-import { isHtmlResponse } from '../../utils/htmlDetector';
+import { isHtmlResponse, extractHtml } from '../../utils/htmlDetector';
 import type { ChatMessage, ToolCall, ContentBlock, Session } from '../../../shared/types';
 import { AGENT_COLORS } from '../../../shared/types';
 
@@ -45,7 +45,7 @@ function TextContentBlock({
   isBrowserPanelOpen,
 }: TextContentBlockProps) {
   if (isHtmlResponse(content)) {
-    return <HtmlContentBlock html={content} messageId={messageId} />;
+    return <HtmlContentBlock html={extractHtml(content)} messageId={messageId} />;
   }
 
   return (
@@ -387,7 +387,7 @@ function MessageBubble({ message, isStreaming, streamingToolCalls, isLatestMessa
                 {/* Final content streams last (summary/response) */}
                 {message.content && (
               isHtmlResponse(message.content) ? (
-                <HtmlContentBlock html={message.content} messageId={message.id} />
+                <HtmlContentBlock html={extractHtml(message.content)} messageId={message.id} />
               ) : (
               <div className="relative group">
                 {/* Speaker button - top right, brutalist style */}

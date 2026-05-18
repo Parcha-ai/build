@@ -12,8 +12,13 @@ interface TaskItemProps {
   onAddSubtask: (taskId: string, title: string) => void;
   onToggleSubtask: (taskId: string, subtaskId: string) => void;
   onDeleteSubtask: (taskId: string, subtaskId: string) => void;
+  isDragging: boolean;
+  isDragOver: boolean;
   onDragStart: (e: React.DragEvent, id: string) => void;
+  onDragEnd: () => void;
   onDragOver: (e: React.DragEvent) => void;
+  onDragEnter: (id: string) => void;
+  onDragLeave: () => void;
   onDrop: (e: React.DragEvent, id: string) => void;
 }
 
@@ -26,8 +31,13 @@ export default function TaskItem({
   onAddSubtask,
   onToggleSubtask,
   onDeleteSubtask,
+  isDragging,
+  isDragOver,
   onDragStart,
+  onDragEnd,
   onDragOver,
+  onDragEnter,
+  onDragLeave,
   onDrop,
 }: TaskItemProps) {
   const [isEditing, setIsEditing] = useState(false);
@@ -90,9 +100,14 @@ export default function TaskItem({
     <div
       draggable
       onDragStart={(e) => onDragStart(e, task.id)}
+      onDragEnd={onDragEnd}
       onDragOver={onDragOver}
+      onDragEnter={() => onDragEnter(task.id)}
+      onDragLeave={onDragLeave}
       onDrop={(e) => onDrop(e, task.id)}
-      className={`group flex items-center gap-1.5 px-2 py-1 hover:bg-claude-surface-hover transition-colors ${
+      className={`group flex items-center gap-1.5 px-2 py-1 transition-colors ${
+        isDragging ? 'opacity-30' : 'hover:bg-claude-surface-hover'
+      } ${isDragOver ? 'border-t-2 border-emerald-400' : ''} ${
         isActive ? 'border-l-2 border-green-500 bg-green-500/5' : 'border-l-2 border-transparent'
       }`}
     >
