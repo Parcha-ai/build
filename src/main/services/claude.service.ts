@@ -436,6 +436,24 @@ export class ClaudeService {
       }
     }
 
+    // Cursor models (local sessions only, requires API key)
+    const cursorKey = (settings.cursorApiKey as string) || '';
+    if (cursorKey) {
+      models.push(
+        { id: 'cursor:default', name: 'Cursor Agent', description: 'Cursor coding agent — local sessions only' },
+      );
+    }
+
+    // DeepSeek models via OpenCode (requires API key)
+    const deepseekKey = (settings.deepseekApiKey as string) || '';
+    if (deepseekKey) {
+      models.push(
+        { id: 'opencode:deepseek-v4-pro', name: 'DeepSeek V4 Pro', description: 'DeepSeek via OpenCode agent' },
+        { id: 'opencode:deepseek-v4-flash', name: 'DeepSeek V4 Flash', description: 'Fast DeepSeek via OpenCode' },
+        { id: 'opencode:deepseek-reasoner', name: 'DeepSeek Reasoner (R1)', description: 'Reasoning model via OpenCode' },
+      );
+    }
+
     return models;
   }
 
@@ -2925,6 +2943,24 @@ Read or source that file if you need the actual values. Do not print secret valu
         for await (const event of codexService.streamAsChat(sessionId, codexPrompt, projectPath, session.sshConfig, codexContext, codexModel, attachments, sdkPermissionMode)) {
           yield event as StreamEvent;
         }
+        return;
+      }
+
+      // Route to Cursor SDK for cursor:* models
+      if (selectedModel?.startsWith('cursor:')) {
+        const { getCursorService } = require('./cursor.service');
+        const cursorService = getCursorService();
+        const workDir = session.repoPath || process.cwd();
+        for await (const event of cursorService.streamMessage(sessionId, userMessage, workDir, selectedModel)) {
+          yield event as any;
+        }
+        return;
+      }
+
+      // Route to OpenCode for opencode:* models
+      if (selectedModel?.startsWith('opencode:')) {
+        // TODO: Phase 2 — OpenCodeService integration
+        yield { type: 'error', error: 'OpenCode/DeepSeek agent support coming soon. Switching back to Claude.' };
         return;
       }
 

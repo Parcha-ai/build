@@ -293,6 +293,10 @@ export interface AppSettings {
   foundryDefaultHaikuModel?: string;
   foundryDefaultOpusModel?: string;
   onboardingSkipped?: boolean;
+  // Cursor SDK (local sessions only)
+  cursorApiKey?: string;
+  // DeepSeek via OpenCode agent
+  deepseekApiKey?: string;
   // Custom models via API proxy (e.g. Kimi K2.6 via Anthropic-compatible endpoint)
   customModels?: CustomModelConfig[];
   focusTasks?: FocusTask[];

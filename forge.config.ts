@@ -103,6 +103,8 @@ const config: ForgeConfig = {
           '@anthropic-ai/claude-agent-sdk',
           '@anthropic-ai/claude-agent-sdk-darwin-arm64',
           '@anthropic-ai/sdk',
+          '@cursor/sdk',
+          '@cursor/sdk-darwin-arm64',
           'monaco-editor',
         ];
 

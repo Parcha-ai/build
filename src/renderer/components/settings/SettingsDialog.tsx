@@ -87,6 +87,10 @@ export default function SettingsDialog() {
   const [elevenLabsApiKey, setElevenLabsApiKey] = useState('');
   const [showElevenLabsApiKey, setShowElevenLabsApiKey] = useState(false);
   const [elevenLabsAgentId, setElevenLabsAgentId] = useState('');
+  const [cursorApiKey, setCursorApiKey] = useState('');
+  const [showCursorApiKey, setShowCursorApiKey] = useState(false);
+  const [deepseekApiKey, setDeepseekApiKey] = useState('');
+  const [showDeepseekApiKey, setShowDeepseekApiKey] = useState(false);
 
   // Audio settings
   const [voiceModeEnabled, setVoiceModeEnabled] = useState(false);
@@ -140,16 +144,16 @@ export default function SettingsDialog() {
   }, []);
 
   // Auto-save app settings (toggles and time picker)
-  const autoSaveAppSettings = useCallback(async (updates: { qmdEnabled?: boolean; ultraPlanMode?: boolean; showClearContextOnPlanAccept?: boolean; lunchReminderEnabled?: boolean; lunchReminderTime?: string; bedtimeReminderEnabled?: boolean; bedtimeReminderTime?: string; dailyReviewEnabled?: boolean; dailyReviewTime?: string; bedtimeTaskReviewEnabled?: boolean; foundryEnabled?: boolean; foundryBaseUrl?: string; foundryApiKey?: string; foundryDefaultSonnetModel?: string; foundryDefaultHaikuModel?: string; foundryDefaultOpusModel?: string; customModels?: typeof customModels }) => {
+  const autoSaveAppSettings = useCallback(async (updates: { qmdEnabled?: boolean; ultraPlanMode?: boolean; showClearContextOnPlanAccept?: boolean; lunchReminderEnabled?: boolean; lunchReminderTime?: string; bedtimeReminderEnabled?: boolean; bedtimeReminderTime?: string; dailyReviewEnabled?: boolean; dailyReviewTime?: string; bedtimeTaskReviewEnabled?: boolean; foundryEnabled?: boolean; foundryBaseUrl?: string; foundryApiKey?: string; foundryDefaultSonnetModel?: string; foundryDefaultHaikuModel?: string; foundryDefaultOpusModel?: string; customModels?: typeof customModels; cursorApiKey?: string; deepseekApiKey?: string }) => {
     showSaveIndicator();
     try {
       await window.electronAPI.settings.set(updates);
       console.log('[SettingsDialog] Auto-saved app settings:', updates);
 
-      // Reload available models if Foundry settings changed
-      const isModelUpdate = 'foundryEnabled' in updates || 'foundryDefaultSonnetModel' in updates || 'foundryDefaultHaikuModel' in updates || 'foundryDefaultOpusModel' in updates || 'customModels' in updates;
+      // Reload available models if model-affecting settings changed
+      const isModelUpdate = 'foundryEnabled' in updates || 'foundryDefaultSonnetModel' in updates || 'foundryDefaultHaikuModel' in updates || 'foundryDefaultOpusModel' in updates || 'customModels' in updates || 'cursorApiKey' in updates || 'deepseekApiKey' in updates;
       if (isModelUpdate) {
-        console.log('[SettingsDialog] Foundry settings changed, reloading available models');
+        console.log('[SettingsDialog] Model-affecting settings changed, reloading available models');
         await loadAvailableModels();
       }
     } catch (error) {
@@ -238,6 +242,8 @@ export default function SettingsDialog() {
           setFoundryDefaultHaikuModel(appSettings.foundryDefaultHaikuModel || '');
           setFoundryDefaultOpusModel(appSettings.foundryDefaultOpusModel || '');
           setCustomModels((appSettings as any).customModels || []);
+          setCursorApiKey((appSettings as any).cursorApiKey || '');
+          setDeepseekApiKey((appSettings as any).deepseekApiKey || '');
           setQmdStatus(qmdStatusResult);
           setIsLoading(false);
         })
@@ -927,6 +933,66 @@ export default function SettingsDialog() {
         </div>
         <p className="text-[10px] font-mono text-claude-text-secondary">
           Your Conversational AI agent ID for voice mode
+        </p>
+      </div>
+
+      {/* Cursor API Key */}
+      <div className="space-y-2 pt-4 border-t border-claude-border">
+        <label className="block text-xs font-mono text-claude-text-secondary uppercase tracking-wider">
+          Cursor API Key
+        </label>
+        <ApiKeyInput
+          value={cursorApiKey}
+          onChange={setCursorApiKey}
+          show={showCursorApiKey}
+          onToggleShow={() => setShowCursorApiKey(!showCursorApiKey)}
+          placeholder="cur-..."
+          onSave={(value) => autoSaveAppSettings({ cursorApiKey: value })}
+          isLoading={isLoading}
+          handleDebouncedChange={handleDebouncedChange}
+        />
+        <p className="text-[10px] font-mono text-claude-text-secondary">
+          For Cursor coding agent (local sessions only).{' '}
+          <a
+            href="#"
+            onClick={(e) => {
+              e.preventDefault();
+              window.electronAPI.app?.openExternal?.('https://cursor.com/settings');
+            }}
+            className="text-claude-accent hover:underline"
+          >
+            Get your key at cursor.com
+          </a>
+        </p>
+      </div>
+
+      {/* DeepSeek API Key */}
+      <div className="space-y-2 pt-4 border-t border-claude-border">
+        <label className="block text-xs font-mono text-claude-text-secondary uppercase tracking-wider">
+          DeepSeek API Key
+        </label>
+        <ApiKeyInput
+          value={deepseekApiKey}
+          onChange={setDeepseekApiKey}
+          show={showDeepseekApiKey}
+          onToggleShow={() => setShowDeepseekApiKey(!showDeepseekApiKey)}
+          placeholder="sk-..."
+          onSave={(value) => autoSaveAppSettings({ deepseekApiKey: value })}
+          isLoading={isLoading}
+          handleDebouncedChange={handleDebouncedChange}
+        />
+        <p className="text-[10px] font-mono text-claude-text-secondary">
+          For DeepSeek models via OpenCode agent.{' '}
+          <a
+            href="#"
+            onClick={(e) => {
+              e.preventDefault();
+              window.electronAPI.app?.openExternal?.('https://platform.deepseek.com');
+            }}
+            className="text-claude-accent hover:underline"
+          >
+            Get your key at platform.deepseek.com
+          </a>
         </p>
       </div>
 
