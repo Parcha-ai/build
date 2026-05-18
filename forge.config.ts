@@ -73,6 +73,8 @@ const config: ForgeConfig = {
           { name: '@anthropic-ai/sdk', source: path.join(__dirname, 'node_modules', '@anthropic-ai', 'sdk'), dest: path.join(nodeModulesPath, '@anthropic-ai', 'sdk') },
           // Codex binaries removed from bundle — triggers macOS XProtect malware block.
           // Codex is spawned at runtime from the system-installed binary instead.
+          // @anthropic-ai/sdk runtime dependencies
+          { name: 'standardwebhooks', source: path.join(__dirname, 'node_modules', 'standardwebhooks') },
           // Monaco editor assets for code editing
           { name: 'monaco-editor', source: path.join(__dirname, 'node_modules', 'monaco-editor') },
         ];
@@ -107,6 +109,17 @@ const config: ForgeConfig = {
             console.log('[Packaging] App signed successfully');
           } catch (err) {
             console.error('[Packaging] Warning: Failed to sign app:', err);
+          }
+
+          // Copy to /Applications
+          const applicationsPath = '/Applications/Build.app';
+          console.log(`[Packaging] Copying to ${applicationsPath}...`);
+          try {
+            await fs.remove(applicationsPath);
+            await fs.copy(appPath, applicationsPath);
+            console.log('[Packaging] Installed to /Applications/Build.app');
+          } catch (err) {
+            console.error('[Packaging] Warning: Failed to copy to /Applications:', err);
           }
         }
       }
