@@ -24,7 +24,7 @@ import { qmdService } from './qmd.service';
 import { mcpService } from './mcp.service';
 import { codexService } from './codex.service';
 import { openclawService } from './openclaw.service';
-import { formatConversationContext, mergeConversationMessages } from './codex-context';
+import { formatConversationContext, mergeConversationMessages, buildCrossHarnessContext } from './codex-context';
 import { secureKeysService } from './secure-keys.service';
 import { analyticsService, estimateCost } from './analytics.service';
 
@@ -440,7 +440,9 @@ export class ClaudeService {
     const cursorKey = (settings.cursorApiKey as string) || '';
     if (cursorKey) {
       models.push(
-        { id: 'cursor:default', name: 'Cursor Agent', description: 'Cursor coding agent — local sessions only' },
+        { id: 'cursor:composer-2.5', name: 'Composer 2.5', description: 'Cursor latest — Composer 2.5' },
+        { id: 'cursor:claude-3.5-sonnet', name: 'Cursor (Sonnet 3.5)', description: 'Cursor with Claude Sonnet 3.5' },
+        { id: 'cursor:gpt-4o', name: 'Cursor (GPT-4o)', description: 'Cursor with GPT-4o' },
       );
     }
 
@@ -2916,19 +2918,14 @@ Read or source that file if you need the actual values. Do not print secret valu
           }
         }
 
-        // Load conversation history to give Codex context from prior Claude turns
+        // Load conversation history for cross-harness continuity
         let conversationContext = '';
         try {
           const transcriptMessages = await this.getMessages(sessionId);
           const mergedMessages = mergeConversationMessages(transcriptMessages, normalizedSupplementalMessages);
           if (mergedMessages.length > 0) {
-            const CODEX_MAX_CHARS = 50000;
-            const promptBudget = userMessage.length + 2000;
-            const contextBudget = Math.min(30000, CODEX_MAX_CHARS - promptBudget);
-            if (contextBudget > 1000) {
-              conversationContext = formatConversationContext(mergedMessages, contextBudget);
-              console.log(`[Claude Service] Codex context: ${conversationContext.length} chars from ${mergedMessages.length} merged messages`);
-            }
+            conversationContext = buildCrossHarnessContext(mergedMessages);
+            console.log(`[Claude Service] Codex cross-harness context: ${conversationContext.length} chars from ${mergedMessages.length} messages`);
           }
         } catch (e) {
           console.warn('[Claude Service] Could not load messages for Codex context:', e);
@@ -2951,7 +2948,22 @@ Read or source that file if you need the actual values. Do not print secret valu
         const { getCursorService } = require('./cursor.service');
         const cursorService = getCursorService();
         const workDir = session.repoPath || process.cwd();
-        for await (const event of cursorService.streamMessage(sessionId, userMessage, workDir, selectedModel)) {
+
+        // Build cross-harness transcript context
+        let cursorContext = '';
+        try {
+          const transcriptMessages = await this.getMessages(sessionId);
+          const merged = mergeConversationMessages(transcriptMessages, normalizedSupplementalMessages);
+          cursorContext = buildCrossHarnessContext(merged);
+          if (cursorContext) {
+            console.log(`[Claude Service] Cursor cross-harness context: ${cursorContext.length} chars from ${merged.length} messages`);
+          }
+        } catch (e) {
+          console.warn('[Claude Service] Could not load messages for Cursor context:', e);
+        }
+
+        const fullMessage = cursorContext ? `${cursorContext}\n\n${userMessage}` : userMessage;
+        for await (const event of cursorService.streamMessage(sessionId, fullMessage, workDir, selectedModel)) {
           yield event as any;
         }
         return;
@@ -2964,21 +2976,19 @@ Read or source that file if you need the actual values. Do not print secret valu
         return;
       }
 
+      // Build cross-harness context so Claude sees messages from Cursor/Codex turns
       let supplementalConversationContext = '';
-      if (normalizedSupplementalMessages.length > 0) {
-        try {
-          const transcriptMessages = await this.getMessages(sessionId);
-          supplementalConversationContext = this.buildSupplementalClaudeContext(
-            transcriptMessages,
-            normalizedSupplementalMessages,
-            userMessage
-          );
+      try {
+        const transcriptMessages = await this.getMessages(sessionId);
+        const merged = mergeConversationMessages(transcriptMessages, normalizedSupplementalMessages);
+        if (merged.length > 0) {
+          supplementalConversationContext = buildCrossHarnessContext(merged);
           if (supplementalConversationContext) {
-            console.log(`[Claude Service] Claude supplemental context: ${supplementalConversationContext.length} chars from ${normalizedSupplementalMessages.length} supplemental messages`);
+            console.log(`[Claude Service] Claude cross-harness context: ${supplementalConversationContext.length} chars from ${merged.length} messages`);
           }
-        } catch (error) {
-          console.warn('[Claude Service] Could not load transcript messages for Claude supplemental context:', error);
         }
+      } catch (error) {
+        console.warn('[Claude Service] Could not load transcript messages for cross-harness context:', error);
       }
 
       const isOpus = selectedModel.includes('opus');

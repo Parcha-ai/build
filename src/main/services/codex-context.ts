@@ -3,6 +3,11 @@ import type { ChatMessage } from '../../shared/types';
 const MAX_ASSISTANT_CHARS = 2000;
 const MAX_TOOL_INPUT_CHARS = 100;
 
+// Cross-harness context: generous limits for 100K token budget (~400K chars)
+const CROSS_HARNESS_ASSISTANT_CHARS = 20000;
+const CROSS_HARNESS_TOOL_INPUT_CHARS = 1000;
+const CROSS_HARNESS_MAX_CHARS = 400000;
+
 function normalizeChatMessageTimestamp(message: ChatMessage): ChatMessage {
   const timestamp = message.timestamp instanceof Date ? message.timestamp : new Date(message.timestamp);
   return {
@@ -136,4 +141,79 @@ ${formatted.join('\n')}
 </conversation_history>
 
 `;
+}
+
+/**
+ * Compress tool calls into a concise summary line.
+ * Instead of full input/output, just show what was done:
+ *   "Ran 5 tools: Bash(npm install), Read(package.json), Edit(src/index.ts), Bash(npm test), Write(config.json)"
+ */
+function compressToolCalls(toolCalls: ChatMessage['toolCalls']): string {
+  if (!toolCalls || toolCalls.length === 0) return '';
+
+  const summaries = toolCalls.map(tc => {
+    let shortArg = '';
+    if (tc.input) {
+      if (tc.input.command) {
+        shortArg = String(tc.input.command).split('\n')[0].substring(0, 60);
+      } else if (tc.input.file_path) {
+        shortArg = String(tc.input.file_path).split('/').slice(-2).join('/');
+      } else if (tc.input.query) {
+        shortArg = String(tc.input.query).substring(0, 40);
+      }
+    }
+    const failed = tc.status === 'error' ? ' FAILED' : '';
+    return shortArg ? `${tc.name}(${shortArg})${failed}` : `${tc.name}${failed}`;
+  });
+
+  if (summaries.length <= 6) {
+    return `[Tools: ${summaries.join(', ')}]`;
+  }
+  return `[Tools (${summaries.length}): ${summaries.slice(0, 4).join(', ')}, ... ${summaries.slice(-2).join(', ')}]`;
+}
+
+/**
+ * Build rich transcript context for cross-harness continuity.
+ * When switching between Claude, Cursor, Codex, etc., this provides
+ * the new harness with full conversation history up to ~100K tokens.
+ * Tool calls are compressed to one-line summaries — the assistant's
+ * text already explains what happened.
+ */
+export function buildCrossHarnessContext(messages: ChatMessage[], supplemental: ChatMessage[] = []): string {
+  const merged = mergeConversationMessages(messages, supplemental);
+  if (merged.length === 0) return '';
+
+  const formatted: string[] = [];
+  let totalChars = 0;
+
+  for (let i = merged.length - 1; i >= 0; i--) {
+    const msg = merged[i];
+    const role = msg.role.toUpperCase();
+
+    let content = msg.content || '';
+    if (msg.role === 'assistant' && content.length > CROSS_HARNESS_ASSISTANT_CHARS) {
+      content = content.substring(0, CROSS_HARNESS_ASSISTANT_CHARS) + '\n[...truncated]';
+    }
+
+    const toolLine = compressToolCalls(msg.toolCalls);
+    const block = toolLine
+      ? `### ${role}\n${content}\n${toolLine}\n`
+      : `### ${role}\n${content}\n`;
+
+    if (totalChars + block.length > CROSS_HARNESS_MAX_CHARS) break;
+
+    formatted.push(block);
+    totalChars += block.length;
+  }
+
+  if (formatted.length === 0) return '';
+  formatted.reverse();
+
+  return `<conversation_history>
+You are continuing an existing coding session. The conversation below was produced
+by one or more AI coding agents (Claude, Cursor, Codex, or others). Treat it as
+your own prior context — continue seamlessly from where it left off.
+
+${formatted.join('\n')}
+</conversation_history>`;
 }
