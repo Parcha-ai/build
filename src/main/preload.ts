@@ -20,7 +20,8 @@ import type {
   PopularMarketplace,
   PluginMarketplace,
   InstalledPlugin,
-  MarketplacePlugin
+  MarketplacePlugin,
+  OpenClawConfig
 } from '../shared/types';
 
 // Dev instance name from environment variable (set by scripts/dev.sh)
@@ -223,6 +224,12 @@ const electronAPI = {
       const handler = (_: IpcRendererEvent, data: any) => callback(data);
       ipcRenderer.on(IPC_CHANNELS.CLAUDE_TASK_PROGRESS, handler);
       return () => ipcRenderer.removeListener(IPC_CHANNELS.CLAUDE_TASK_PROGRESS, handler);
+    },
+    // Task updated (real-time status delta patches — status, description, error, etc.)
+    onTaskUpdated: (callback: (data: { sessionId: string; taskId: string; patch: { status?: string; description?: string; end_time?: number; error?: string; is_backgrounded?: boolean } }) => void) => {
+      const handler = (_: IpcRendererEvent, data: any) => callback(data);
+      ipcRenderer.on(IPC_CHANNELS.CLAUDE_TASK_UPDATED, handler);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.CLAUDE_TASK_UPDATED, handler);
     },
     // Compaction status listener (Smart Compact feature)
     onCompactionStatus: (callback: (status: { sessionId: string; isCompacting: boolean; smartCompact?: { enabled: boolean; originalModel: string; compactingModel: string; reason: string }; preTokens?: number; trigger?: string }) => void) => {
@@ -1050,6 +1057,12 @@ const electronAPI = {
       ipcRenderer.on(IPC_CHANNELS.CODEX_ERROR, handler);
       return () => ipcRenderer.removeListener(IPC_CHANNELS.CODEX_ERROR, handler);
     },
+  },
+
+  // OpenClaw Gateway
+  openclaw: {
+    createSession: (data: { name: string; openclawConfig: OpenClawConfig }): Promise<Session> =>
+      ipcRenderer.invoke(IPC_CHANNELS.OPENCLAW_CREATE_SESSION, data),
   },
 
   // GStack workflow skills

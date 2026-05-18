@@ -83,6 +83,13 @@ export default function AgentViewSessionRow({
           </span>
         </div>
       )}
+      {priority === 'error' && session.errorMessage && (
+        <div className="mt-1">
+          <span className="text-[9px] text-amber-400 truncate block">
+            {session.errorMessage}
+          </span>
+        </div>
+      )}
     </button>
   );
 }

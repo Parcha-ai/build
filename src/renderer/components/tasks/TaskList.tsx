@@ -68,14 +68,24 @@ export default function TaskList() {
   const handleDragStart = useCallback((e: React.DragEvent, id: string) => {
     setDraggedId(id);
     e.dataTransfer.effectAllowed = 'move';
-    if (e.currentTarget instanceof HTMLElement) {
-      e.currentTarget.style.opacity = '0.5';
-    }
+  }, []);
+
+  const handleDragEnd = useCallback(() => {
+    setDraggedId(null);
+    setDragOverId(null);
   }, []);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
+  }, []);
+
+  const handleDragEnter = useCallback((id: string) => {
+    setDragOverId(id);
+  }, []);
+
+  const handleDragLeave = useCallback(() => {
+    setDragOverId(null);
   }, []);
 
   const handleDrop = useCallback((e: React.DragEvent, targetId: string) => {
@@ -99,16 +109,6 @@ export default function TaskList() {
     setDraggedId(null);
     setDragOverId(null);
   }, [draggedId, tasks, reorderTasks]);
-
-  // Restore opacity on drag end (at document level to catch all cases)
-  useEffect(() => {
-    const handleDragEnd = () => {
-      setDraggedId(null);
-      setDragOverId(null);
-    };
-    document.addEventListener('dragend', handleDragEnd);
-    return () => document.removeEventListener('dragend', handleDragEnd);
-  }, []);
 
   const pendingCount = tasks.filter(t => t.status !== 'done').length;
 
@@ -177,6 +177,8 @@ export default function TaskList() {
               <TaskItem
                 task={task}
                 isActive={isCurrent}
+                isDragging={draggedId === task.id}
+                isDragOver={dragOverId === task.id && draggedId !== task.id}
                 onUpdate={updateTask}
                 onDelete={deleteTask}
                 onToggleDone={handleToggleDone}
@@ -184,7 +186,10 @@ export default function TaskList() {
                 onToggleSubtask={toggleSubtask}
                 onDeleteSubtask={deleteSubtask}
                 onDragStart={handleDragStart}
+                onDragEnd={handleDragEnd}
                 onDragOver={handleDragOver}
+                onDragEnter={handleDragEnter}
+                onDragLeave={handleDragLeave}
                 onDrop={handleDrop}
               />
             </div>

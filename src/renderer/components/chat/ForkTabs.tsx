@@ -34,10 +34,13 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
   const createForkFromCurrent = useSessionStore(s => s.createForkFromCurrent);
   const loadSessions = useSessionStore(s => s.loadSessions);
 
-  // PERF: only re-render when session count changes, not on every session property update
+  // Re-render when session count or any session name/relationship changes
   const sessionCount = useSessionStore(s => s.sessions.length);
+  const sessionNamesKey = useSessionStore(s =>
+    s.sessions.map(s => `${s.id.slice(0, 6)}:${s.aiGeneratedName || s.name || ''}:${s.parentSessionId || ''}`).join('\n')
+  );
 
-  // Compute fork siblings and project sessions only when session count changes
+  // Compute fork siblings and project sessions when structure or names change
   const { forkSiblings, projectSessions, rootId, sessions } = useMemo(() => {
     const allSessions = useSessionStore.getState().sessions;
     const fs = useSessionStore.getState().getForkSiblings(sessionId);
@@ -45,7 +48,7 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
     const rid = fs.find(f => !f.parentSessionId)?.id || sessionId;
     return { forkSiblings: fs, projectSessions: ps, rootId: rid, sessions: allSessions };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, sessionCount]);
+  }, [sessionId, sessionCount, sessionNamesKey]);
 
   // Auto-scan remote transcripts on mount for SSH sessions.
   // Creates session records for any orphaned transcripts in the same directory
@@ -160,20 +163,29 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
       setRenamingId(null);
       return;
     }
+    const trimmed = renameValue.trim();
     try {
-      // Save to both places so it survives session discovery
+      // Optimistic update — apply immediately to the store so tabs reflect the
+      // new name without waiting for the IPC round-trip.
+      useSessionStore.setState((state) => ({
+        sessions: state.sessions.map(s =>
+          s.id === renamingId
+            ? { ...s, aiGeneratedName: trimmed, name: trimmed }
+            : s
+        ),
+      }));
+      // Persist to backend
       await window.electronAPI.sessions.update(renamingId, {
-        aiGeneratedName: renameValue.trim(),
-        name: renameValue.trim(),
+        aiGeneratedName: trimmed,
+        name: trimmed,
       } as any);
       // Also save to sessionNames in settings (authoritative source)
-      await window.electronAPI.settings.set({ [`sessionNames.${renamingId}`]: renameValue.trim() });
-      loadSessions();
+      await window.electronAPI.settings.set({ [`sessionNames.${renamingId}`]: trimmed });
     } catch (e) {
       console.warn('[ForkTabs] Rename failed:', e);
     }
     setRenamingId(null);
-  }, [renamingId, renameValue, loadSessions]);
+  }, [renamingId, renameValue]);
 
   // Drag-and-drop reorder state
   const [tabOrder, setTabOrder] = useState<string[]>([]);

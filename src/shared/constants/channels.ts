@@ -81,6 +81,7 @@ export const IPC_CHANNELS = {
   CLAUDE_BACKGROUND_TASK_OUTPUT: 'claude:background-task-output', // Output updates from backgrounded Bash commands
   CLAUDE_TASK_NOTIFICATION: 'claude:task-notification', // Background task completed/failed/stopped
   CLAUDE_TASK_PROGRESS: 'claude:task-progress', // Background task intermediate progress
+  CLAUDE_TASK_UPDATED: 'claude:task-updated', // Background task status delta patch
   CLAUDE_BTW_ASK: 'claude:btw-ask', // Ephemeral side question (bypasses conversation history)
   CLAUDE_BTW_RESPONSE: 'claude:btw-response', // Streaming response chunks for /btw
   CLAUDE_RC_START: 'claude:rc-start', // Start remote control session
@@ -267,6 +268,9 @@ export const IPC_CHANNELS = {
   GSTACK_IS_INSTALLED: 'gstack:is-installed',
   GSTACK_INSTALL: 'gstack:install',
   GSTACK_UPGRADE: 'gstack:upgrade',
+
+  // OpenClaw channels
+  OPENCLAW_CREATE_SESSION: 'openclaw:create-session',
 
   // Codex channels (second opinion / direct invocation)
   CODEX_RUN: 'codex:run',

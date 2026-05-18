@@ -79,6 +79,7 @@ import { registerQmdHandlers } from './ipc/qmd.ipc';
 import { registerMcpHandlers } from './ipc/mcp.ipc';
 import { registerPluginHandlers } from './ipc/plugin.ipc';
 import { registerCodexHandlers } from './ipc/codex.ipc';
+import { registerOpenClawHandlers } from './ipc/openclaw.ipc';
 import { registerAnalyticsHandlers } from './ipc/analytics.ipc';
 import { getGStackModes, isGStackInstalled, installGStack, upgradeGStack } from './services/gstack.service';
 import { IPC_CHANNELS } from '../shared/constants/channels';
@@ -601,6 +602,7 @@ function registerIPCHandlers(): void {
   registerMcpHandlers(ipcMain);
   registerPluginHandlers(ipcMain);
   registerCodexHandlers(ipcMain);
+  registerOpenClawHandlers(ipcMain);
   registerAnalyticsHandlers(ipcMain);
 
   // Wakeup scheduler — fires timers for ScheduleWakeup/CronCreate and sends

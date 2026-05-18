@@ -17,7 +17,7 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
   const { repos } = useAuthStore();
   const { createSession, setActiveSession, addSession } = useSessionStore();
 
-  const [step, setStep] = useState<'source' | 'repo' | 'folder' | 'config' | 'teleport' | 'ssh-config'>('source');
+  const [step, setStep] = useState<'source' | 'repo' | 'folder' | 'config' | 'teleport' | 'ssh-config' | 'openclaw-config'>('source');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedRepo, setSelectedRepo] = useState<typeof repos[0] | null>(null);
   const [selectedFolder, setSelectedFolder] = useState<string>('');
@@ -45,6 +45,9 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
   const [isBranchDropdownOpen, setIsBranchDropdownOpen] = useState(false);
   const [branchFilter, setBranchFilter] = useState('');
   const [manualRepoUrl, setManualRepoUrl] = useState('');
+  const [openclawGatewayUrl, setOpenclawGatewayUrl] = useState('');
+  const [openclawGatewayPassword, setOpenclawGatewayPassword] = useState('');
+  const [openclawError, setOpenclawError] = useState<string | null>(null);
 
   // Subscribe to setup progress (both SSH and dev) while creating.
   // Live updates like "Connecting...", "Embedding documents...", etc.
@@ -170,13 +173,15 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
     );
   }, [availableBranches, branchFilter]);
 
-  const handleSelectSource = (source: 'github' | 'local' | 'teleport' | 'ssh') => {
+  const handleSelectSource = (source: 'github' | 'local' | 'teleport' | 'ssh' | 'openclaw') => {
     if (source === 'github') {
       setStep('repo');
     } else if (source === 'teleport') {
       setStep('teleport');
     } else if (source === 'ssh') {
       setStep('ssh-config');
+    } else if (source === 'openclaw') {
+      setStep('openclaw-config');
     } else {
       // Open folder dialog
       handleSelectFolder();
@@ -357,6 +362,35 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
     }
   };
 
+  const handleOpenClawConnect = async () => {
+    if (!openclawGatewayUrl.trim()) return;
+
+    setIsCreating(true);
+    setOpenclawError(null);
+
+    try {
+      const session = await window.electronAPI.openclaw.createSession({
+        name: sessionName || 'OpenClaw',
+        openclawConfig: {
+          gatewayUrl: openclawGatewayUrl.trim(),
+          gatewayPassword: openclawGatewayPassword,
+        },
+      });
+
+      if (session) {
+        addSession(session);
+        setActiveSession(session.id);
+        handleClose();
+      }
+    } catch (error) {
+      console.error('Failed to create OpenClaw session:', error);
+      const errorMessage = error instanceof Error ? error.message : 'Failed to create OpenClaw session';
+      setOpenclawError(errorMessage);
+    } finally {
+      setIsCreating(false);
+    }
+  };
+
   const handleCreate = async () => {
     if (!selectedRepo && !selectedFolder) return;
 
@@ -460,6 +494,9 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
     setWorktreeSetupType('none');
     setWorktreeScriptPath('');
     setWorktreeInstructions('');
+    setOpenclawGatewayUrl('');
+    setOpenclawGatewayPassword('');
+    setOpenclawError(null);
     onClose();
   };
 
@@ -483,6 +520,7 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
               {step === 'config' && 'CONFIGURE SESSION'}
               {step === 'teleport' && 'TELEPORT SESSION'}
               {step === 'ssh-config' && 'SSH REMOTE SESSION'}
+              {step === 'openclaw-config' && 'OPENCLAW GATEWAY'}
             </Dialog.Title>
             <Dialog.Close asChild>
               <button
@@ -588,6 +626,27 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
                     </div>
                   </button>
 
+                  {/* OpenClaw Gateway option */}
+                  <button
+                    onClick={() => handleSelectSource('openclaw')}
+                    className="w-full p-4 text-left hover:bg-claude-bg transition-colors border border-claude-border group"
+                    style={{ borderRadius: 0 }}
+                  >
+                    <div className="flex items-start gap-3">
+                      <div className="p-2 bg-claude-bg group-hover:bg-claude-surface transition-colors">
+                        <Globe size={20} className="text-emerald-400" />
+                      </div>
+                      <div className="flex-1">
+                        <h4 className="text-sm font-bold text-claude-text mb-1">
+                          OpenClaw Gateway
+                        </h4>
+                        <p className="text-xs text-claude-text-secondary">
+                          Connect to an OpenClaw AI agent gateway
+                        </p>
+                      </div>
+                    </div>
+                  </button>
+
                   {/* Teleport option */}
                   <button
                     onClick={() => handleSelectSource('teleport')}
@@ -639,6 +698,88 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
                 onBack={() => setStep('source')}
                 onConnect={handleSSHConnect}
               />
+            ) : step === 'openclaw-config' ? (
+              <>
+                {/* OpenClaw Gateway Config */}
+                <div className="space-y-4">
+                  <p className="text-xs text-claude-text-secondary" style={{ letterSpacing: '0.05em' }}>
+                    Connect to an OpenClaw AI agent gateway endpoint.
+                  </p>
+
+                  <div>
+                    <label
+                      className="block text-[10px] font-bold mb-1.5 text-claude-text-secondary"
+                      style={{ letterSpacing: '0.1em' }}
+                    >
+                      SESSION NAME (OPTIONAL)
+                    </label>
+                    <input
+                      type="text"
+                      value={sessionName}
+                      onChange={(e) => setSessionName(e.target.value)}
+                      placeholder="OpenClaw"
+                      className="w-full px-3 py-2 text-sm focus:outline-none focus:border-claude-accent bg-claude-bg border border-claude-border text-claude-text"
+                      style={{ borderRadius: 0 }}
+                    />
+                  </div>
+
+                  <div>
+                    <label
+                      className="block text-[10px] font-bold mb-1.5 text-claude-text-secondary"
+                      style={{ letterSpacing: '0.1em' }}
+                    >
+                      GATEWAY URL
+                    </label>
+                    <input
+                      type="text"
+                      value={openclawGatewayUrl}
+                      onChange={(e) => setOpenclawGatewayUrl(e.target.value)}
+                      placeholder="http://myserver:18789"
+                      className="w-full px-3 py-2 text-sm font-mono focus:outline-none focus:border-claude-accent bg-claude-bg border border-claude-border text-claude-text"
+                      style={{ borderRadius: 0 }}
+                      autoFocus
+                    />
+                    <p className="text-[9px] text-claude-text-secondary mt-1">
+                      The base URL of your OpenClaw gateway (e.g. http://localhost:18789)
+                    </p>
+                  </div>
+
+                  <div>
+                    <label
+                      className="block text-[10px] font-bold mb-1.5 text-claude-text-secondary"
+                      style={{ letterSpacing: '0.1em' }}
+                    >
+                      GATEWAY PASSWORD
+                    </label>
+                    <input
+                      type="password"
+                      value={openclawGatewayPassword}
+                      onChange={(e) => setOpenclawGatewayPassword(e.target.value)}
+                      placeholder="Bearer token for authentication"
+                      className="w-full px-3 py-2 text-sm font-mono focus:outline-none focus:border-claude-accent bg-claude-bg border border-claude-border text-claude-text"
+                      style={{ borderRadius: 0 }}
+                    />
+                    <p className="text-[9px] text-claude-text-secondary mt-1">
+                      The gateway password used for Bearer token authentication
+                    </p>
+                  </div>
+
+                  {openclawError && (
+                    <div className="p-3 bg-red-500/20 border border-red-500/50">
+                      <p className="text-[10px] text-red-400 font-mono whitespace-pre-wrap">
+                        {openclawError}
+                      </p>
+                    </div>
+                  )}
+
+                  <div className="p-3 bg-emerald-400/10 border border-emerald-400/30">
+                    <p className="text-[10px] text-claude-text-secondary leading-relaxed">
+                      <Globe size={12} className="inline mr-1 text-emerald-400" />
+                      Messages will be streamed via the OpenAI-compatible /v1/chat/completions endpoint
+                    </p>
+                  </div>
+                </div>
+              </>
             ) : step === 'teleport' ? (
               <>
                 {/* Teleport Session UI */}
@@ -1278,6 +1419,15 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
                 BACK
               </button>
             )}
+            {step === 'openclaw-config' && (
+              <button
+                onClick={() => setStep('source')}
+                className="px-3 py-1.5 text-[10px] font-bold hover:bg-claude-bg transition-colors text-claude-text-secondary"
+                style={{ letterSpacing: '0.05em', borderRadius: 0 }}
+              >
+                BACK
+              </button>
+            )}
             {step === 'teleport' && (
               <button
                 onClick={() => setStep('source')}
@@ -1305,6 +1455,17 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
                 >
                   {isCreating && <Loader2 size={12} className="animate-spin" />}
                   {isCreating ? 'CREATING...' : 'CREATE SESSION'}
+                </button>
+              )}
+              {step === 'openclaw-config' && (
+                <button
+                  onClick={handleOpenClawConnect}
+                  disabled={isCreating || !openclawGatewayUrl.trim()}
+                  className="px-4 py-1.5 text-[10px] font-bold text-white flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed bg-emerald-500 hover:bg-emerald-600"
+                  style={{ letterSpacing: '0.05em', borderRadius: 0 }}
+                >
+                  {isCreating && <Loader2 size={12} className="animate-spin" />}
+                  {isCreating ? 'CONNECTING...' : 'CONNECT'}
                 </button>
               )}
               {step === 'teleport' && (

@@ -50,12 +50,22 @@ export function prioritizeSessions(
     .filter(s => {
       // Always show sessions that need attention right now
       if (isStreaming[s.id] || pendingPermission[s.id] || pendingQuestion[s.id]) return true;
-      if (s.status === 'error') return true;
-      // Only show sessions with actual message activity in the filter window
+
+      // Show sessions updated within the filter window
+      if (new Date(s.updatedAt).getTime() > cutoff) return true;
+
+      // Check last message timestamp
       const sessionMessages = messages[s.id];
-      if (!sessionMessages || sessionMessages.length === 0) return false;
-      const lastMessage = sessionMessages[sessionMessages.length - 1];
-      return new Date(lastMessage.timestamp).getTime() > cutoff;
+      if (sessionMessages && sessionMessages.length > 0) {
+        const lastMessage = sessionMessages[sessionMessages.length - 1];
+        if (new Date(lastMessage.timestamp).getTime() > cutoff) return true;
+      }
+
+      // Show running SSH sessions whose messages haven't loaded yet —
+      // they'll get filtered on the next render once messages arrive
+      if (s.status === 'running' && (s as any).sshConfig && !sessionMessages) return true;
+
+      return false;
     })
     .map(session => {
       const priority = getSessionPriority(session.id, pendingPermission, pendingQuestion, isStreaming, session.status);

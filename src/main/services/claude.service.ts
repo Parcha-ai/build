@@ -23,6 +23,7 @@ import { memoryService, MemoryCategory } from './memory.service';
 import { qmdService } from './qmd.service';
 import { mcpService } from './mcp.service';
 import { codexService } from './codex.service';
+import { openclawService } from './openclaw.service';
 import { formatConversationContext, mergeConversationMessages } from './codex-context';
 import { secureKeysService } from './secure-keys.service';
 import { analyticsService, estimateCost } from './analytics.service';
@@ -103,6 +104,7 @@ export class ClaudeService {
   // Proactive compaction: track context usage per session and compact idle sessions in background
   private sessionContextPercentage: Map<string, number> = new Map();
   private sessionLastMessageTime: Map<string, number> = new Map();
+  private sessionsBeingCompacted: Set<string> = new Set();
 
   // Performance optimization: Cache parsed messages and transcript paths
   private messageCache = new Map<string, {
@@ -282,16 +284,19 @@ export class ClaudeService {
     const now = Date.now();
 
     for (const [sessionId, percentage] of this.sessionContextPercentage.entries()) {
-      if (sessionId === activeSessionId) continue; // skip the session user is actively using
+      if (sessionId === activeSessionId) continue;
       if (percentage < COMPACT_THRESHOLD) continue;
-      if (!this.activeQueryObjects.has(sessionId)) continue; // no active query to compact
+      if (this.sessionsBeingCompacted.has(sessionId)) continue;
+      if (!this.activeQueryObjects.has(sessionId)) continue;
 
       const lastMessage = this.sessionLastMessageTime.get(sessionId) || 0;
       if (now - lastMessage < IDLE_THRESHOLD) continue; // user was recently active here
 
       console.log(`[Claude Service] Proactive compaction: session ${sessionId.substring(0, 8)} at ${percentage}%, idle for ${Math.round((now - lastMessage) / 1000)}s`);
+      this.sessionsBeingCompacted.add(sessionId);
       this.triggerManualCompaction(sessionId).catch(err => {
         console.warn(`[Claude Service] Proactive compaction failed for ${sessionId.substring(0, 8)}:`, err.message);
+        this.sessionsBeingCompacted.delete(sessionId);
       });
 
       // Only compact one session at a time to avoid overloading
@@ -595,15 +600,13 @@ ${supplementalConversationContext}
 
 ## HTML Response Mode
 
-For substantive responses (more than ~500 characters of content), respond with a complete, self-contained HTML document instead of Markdown. Use this format:
+For substantive responses (more than ~500 characters of content), respond with a complete, self-contained HTML document instead of Markdown. Output the HTML directly — do NOT wrap it in code fences or markdown blocks. Just output the raw HTML starting with <!DOCTYPE html>:
 
-\`\`\`
 <!DOCTYPE html>
 <html>
 <head><style>/* your styles */</style></head>
 <body>/* your content */</body>
 </html>
-\`\`\`
 
 ### HTML Response Guidelines
 - Use a dark theme: background #1a1a2e, text #e0e0e0, accent #7c3aed
@@ -2604,24 +2607,14 @@ Read or source that file if you need the actual values. Do not print secret valu
     // Preferred path: the session has a live SDK Query — use the native
     // `askSideQuestion` control so the side answer runs against the running
     // claude's in-memory context. No duplicate API call, no history rebuild,
-    // no role-sanitising. The response arrives as a single string (not
-    // streamed), which we emit as one chunk + done.
+    // no role-sanitising.
     const liveQuery = this.activeQueryObjects.get(sessionId);
-    // askSideQuestion is a Query control method exposed in the SDK runtime
-    // (sdk.mjs) but not yet declared on the public Query type; cast through
-    // an any-shaped surface to reach it.
-    const liveQueryAny = liveQuery as unknown as { askSideQuestion?: (q: string) => Promise<string> } | undefined;
+    const liveQueryAny = liveQuery as unknown as { askSideQuestion?: (q: string) => Promise<{ response: string; synthetic: boolean } | null> } | undefined;
     if (liveQueryAny?.askSideQuestion) {
       try {
         console.log('[Claude Service] /btw via SDK askSideQuestion (live query)');
         const answer = await liveQueryAny.askSideQuestion(question);
-        // SDK may return string or object — extract text content
-        let answerText = '';
-        if (typeof answer === 'string') {
-          answerText = answer;
-        } else if (answer && typeof answer === 'object') {
-          answerText = (answer as any).content || (answer as any).text || (answer as any).result || JSON.stringify(answer);
-        }
+        const answerText = answer?.response || '';
         if (answerText) {
           this.mainWindow?.webContents.send(IPC_CHANNELS.CLAUDE_BTW_RESPONSE, {
             sessionId,
@@ -2636,104 +2629,69 @@ Read or source that file if you need the actual values. Do not print secret valu
         });
         return;
       } catch (err) {
-        console.warn('[Claude Service] askSideQuestion failed, falling back to direct API:', err);
-        // Fall through to the direct-API path below.
+        console.warn('[Claude Service] askSideQuestion failed, falling back to CLI:', err);
       }
     }
 
-    // Fallback: no active query (session is idle between turns). Make a direct
-    // Anthropic API call with reconstructed context.
-    const Anthropic = (await import('@anthropic-ai/sdk')).default;
+    // Fallback: no active query (session is idle between turns). Use `claude -p`
+    // which authenticates through Claude Code's own credentials (OAuth/keychain) —
+    // no separate API key required from Build's settings.
+    const session = (this.sessionStore.get(`sessions.${sessionId}`) as Session | undefined)
+      || (this.sessionStore.get(`discoveredSessions.${sessionId}`) as Session | undefined);
 
-    // Retrieve API configuration — mirror the same paths as streamMessage
-    const settings = this.store.get('settings', {}) as Record<string, unknown>;
-    const foundryEnabled = settings.foundryEnabled as boolean | undefined;
+    try {
+      const { spawn } = require('child_process') as typeof import('child_process');
+      const cliArgs = ['-p', question, '--bare', '--no-session-persistence'];
+      let child: import('child_process').ChildProcess;
 
-    let client: InstanceType<typeof Anthropic>;
-    if (foundryEnabled && settings.foundryBaseUrl && settings.foundryApiKey) {
-      client = new Anthropic({
-        baseURL: (settings.foundryBaseUrl as string).trim(),
-        apiKey: (settings.foundryApiKey as string).trim(),
-      });
-    } else {
-      const apiKey = this.getApiKey();
-      if (!apiKey) {
+      if (session?.sshConfig) {
+        // SSH session: run claude -p on the remote server
+        const remoteCmd = `claude ${cliArgs.map(a => `'${a.replace(/'/g, "'\\''")}'`).join(' ')}`;
+        const remoteProcess = await sshService.createRemoteProcess(sessionId, session.sshConfig, {
+          command: 'bash',
+          args: ['-c', remoteCmd],
+          cwd: session.sshConfig.remoteWorkdir || '/home/' + session.sshConfig.username,
+          env: {},
+          signal: new AbortController().signal,
+        });
+        child = remoteProcess as unknown as import('child_process').ChildProcess;
+      } else {
+        const cwd = session?.repoPath || process.cwd();
+        child = spawn('claude', cliArgs, {
+          cwd,
+          shell: true,
+          env: { ...process.env, CLAUDECODE: '' },
+          stdio: ['pipe', 'pipe', 'pipe'],
+        });
+      }
+
+      let fullResponse = '';
+      child.stdout?.on('data', (data: Buffer) => {
+        const text = data.toString();
+        fullResponse += text;
         this.mainWindow?.webContents.send(IPC_CHANNELS.CLAUDE_BTW_RESPONSE, {
           sessionId,
-          content: 'No API key configured. Please set your Anthropic API key in settings.',
-          done: true,
+          content: text,
+          done: false,
         });
-        return;
-      }
-      client = new Anthropic({ apiKey });
-    }
-
-    // Determine model — use session model or sensible default
-    const session = this.sessionStore.get(`sessions.${sessionId}`) as Session | undefined;
-    let model = session?.model;
-    if (!model) {
-      if (foundryEnabled && settings.foundryDefaultSonnetModel) {
-        model = (settings.foundryDefaultSonnetModel as string).trim();
-      } else {
-        model = 'claude-sonnet-4-5-20250929'; // Fast, cheap, good enough for side questions
-      }
-    }
-
-    // Build conversation context from session messages
-    const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [];
-    try {
-      const chatMessages = await this.getMessages(sessionId);
-      for (const msg of chatMessages) {
-        if (msg.role === 'user' || msg.role === 'assistant') {
-          const content = typeof msg.content === 'string' ? msg.content : '';
-          if (content.trim()) {
-            messages.push({ role: msg.role, content });
-          }
-        }
-      }
-    } catch (e) {
-      console.warn('[Claude Service] Could not load messages for /btw context:', e);
-    }
-
-    // Append the side question as the final user message
-    messages.push({ role: 'user', content: question });
-
-    // Ensure messages alternate roles (API requirement) — collapse consecutive same-role messages
-    const sanitised: typeof messages = [];
-    for (const m of messages) {
-      if (sanitised.length > 0 && sanitised[sanitised.length - 1].role === m.role) {
-        sanitised[sanitised.length - 1].content += '\n\n' + m.content;
-      } else {
-        sanitised.push({ ...m });
-      }
-    }
-    // Ensure first message is from user
-    if (sanitised.length > 0 && sanitised[0].role !== 'user') {
-      sanitised.shift();
-    }
-
-    try {
-      const stream = client.messages.stream({
-        model,
-        max_tokens: 2048,
-        system: 'You are answering a quick side question about the current work. Be concise and direct. The user can see the full conversation — you have it as context. Do not repeat what has already been said unless clarifying.',
-        messages: sanitised,
       });
 
-      for await (const event of stream) {
-        if (event.type === 'content_block_delta') {
-          const delta = event.delta as { type: string; text?: string };
-          if (delta.type === 'text_delta' && delta.text) {
-            this.mainWindow?.webContents.send(IPC_CHANNELS.CLAUDE_BTW_RESPONSE, {
-              sessionId,
-              content: delta.text,
-              done: false,
-            });
-          }
-        }
-      }
+      child.stderr?.on('data', (data: Buffer) => {
+        console.warn('[Claude Service] /btw CLI stderr:', data.toString().trim());
+      });
 
-      // Signal completion
+      await new Promise<void>((resolve, reject) => {
+        child.on('close', (code) => {
+          if (code !== 0 && !fullResponse) {
+            reject(new Error(`claude -p exited with code ${code}`));
+          } else {
+            resolve();
+          }
+        });
+        child.on('error', reject);
+        setTimeout(() => reject(new Error('/btw timeout (60s)')), 60000);
+      });
+
       this.mainWindow?.webContents.send(IPC_CHANNELS.CLAUDE_BTW_RESPONSE, {
         sessionId,
         content: '',
@@ -2794,7 +2752,9 @@ Read or source that file if you need the actual values. Do not print secret valu
     if (existingController) {
       console.log(`[Claude Service] Aborting existing query for session ${sessionId.substring(0, 8)} before starting new one`);
       existingController.abort();
+      this.backgroundListeners.get(sessionId)?.abort();
       codexService.cancel(sessionId);
+      openclawService.cancel(sessionId);
 
       // Kill orphaned remote processes from the old query
       if (session?.sshConfig) {
@@ -2896,6 +2856,20 @@ Read or source that file if you need the actual values. Do not print secret valu
       }
 
       const normalizedSupplementalMessages = this.normalizeConversationMessages(supplementalMessages);
+
+      // Route to OpenClaw when session has openclawConfig
+      if (session.openclawConfig) {
+        console.log(`[Claude Service] Routing to OpenClaw gateway: ${session.openclawConfig.gatewayUrl}`);
+        for await (const event of openclawService.streamAsChat(
+          sessionId,
+          userMessage,
+          session.openclawConfig.gatewayUrl,
+          session.openclawConfig.gatewayPassword
+        )) {
+          yield event as StreamEvent;
+        }
+        return;
+      }
 
       // Route to Codex when a codex:* model is selected
       if (selectedModel?.startsWith('codex:')) {
@@ -3913,7 +3887,13 @@ Begin by creating the task structure now.
       let queryComplete = false;
       let lastTerminalReason: string | undefined; // From SDK result message (v0.2.91+)
       let lastToolName: string | undefined; // Track last tool for analytics attribution
-      for await (const msg of messages) {
+      // Use manual iterator instead of `for await` to avoid auto-closing the
+      // iterator on break. The background task listener needs the iterator to
+      // stay open so it can keep reading task events after the turn ends.
+      const msgIterator = messages[Symbol.asyncIterator]();
+      let iterResult = await msgIterator.next();
+      while (!iterResult.done) {
+        const msg = iterResult.value;
         if (abortController.signal.aborted) {
           yield { type: 'error', error: 'Query cancelled' };
           return;
@@ -3986,6 +3966,7 @@ Begin by creating the task structure now.
               // Without this, the map holds the pre-compaction 85%+ value and
               // every subsequent compactIdleSessions() call re-compacts.
               this.sessionContextPercentage.delete(sessionId);
+              this.sessionsBeingCompacted.delete(sessionId);
               console.log(`[Claude SDK] Cleared context percentage for ${sessionId.substring(0, 8)} after compaction`);
 
               const compactionComplete: CompactionComplete = {
@@ -4074,6 +4055,29 @@ Begin by creating the task structure now.
                   description: prog.description,
                   summary: prog.summary,
                   lastToolName: prog.last_tool_name,
+                });
+              }
+              break;
+            }
+
+            // Handle task_updated (real-time status delta patches for background tasks)
+            if (systemMsg.subtype === 'task_updated') {
+              const update = systemMsg as typeof systemMsg & {
+                task_id?: string;
+                patch?: {
+                  status?: 'pending' | 'running' | 'completed' | 'failed' | 'killed';
+                  description?: string;
+                  end_time?: number;
+                  error?: string;
+                  is_backgrounded?: boolean;
+                };
+              };
+              console.log('[Claude SDK] Task updated:', update.task_id, JSON.stringify(update.patch));
+              if (this.mainWindow && update.task_id && update.patch) {
+                this.mainWindow.webContents.send(IPC_CHANNELS.CLAUDE_TASK_UPDATED, {
+                  sessionId,
+                  taskId: update.task_id,
+                  patch: update.patch,
                 });
               }
               break;
@@ -4628,11 +4632,20 @@ Begin by creating the task structure now.
             break;
         }
 
-        // If query is complete (result message received), exit the loop
+        // If query is complete (result message received), exit the main loop
+        // but start a background listener for task events from running monitors/agents
         if (queryComplete) {
           console.log('[Claude SDK] Query complete, exiting message loop');
+
+          // Keep reading from the iterator in the background for task lifecycle events.
+          // The CC process stays alive between turns (especially SSH sessions), so
+          // background tasks (Monitor, Agent) continue producing task_updated,
+          // task_notification, and task_progress events after the assistant's turn ends.
+          // Pass the raw iterator (NOT the Query) so it stays open.
+          this.startBackgroundTaskListener(sessionId, msgIterator, abortController.signal);
           break;
         }
+        iterResult = await msgIterator.next();
       }
 
       // Detect abnormal stream termination (e.g., remote process killed externally)
@@ -4742,6 +4755,85 @@ Begin by creating the task structure now.
     }
   }
 
+  // Active background task listeners — one per session, cancelled on next query or cleanup
+  private backgroundListeners = new Map<string, AbortController>();
+
+  /**
+   * Continue reading the SDK message iterator after a query turn completes.
+   * Background tasks (Monitor, Agent) keep producing events on the same process
+   * between turns. Without this, task_updated/task_notification events are lost.
+   * Accepts the raw AsyncIterator (not the Query) so the iterator stays open —
+   * `for await` auto-closes iterators on break, which would kill the stream.
+   */
+  private startBackgroundTaskListener(sessionId: string, iterator: AsyncIterator<SDKMessage>, parentSignal: AbortSignal): void {
+    // Cancel any existing listener for this session (e.g., from a previous turn)
+    this.backgroundListeners.get(sessionId)?.abort();
+
+    const controller = new AbortController();
+    this.backgroundListeners.set(sessionId, controller);
+
+    const taskSubtypes = new Set(['task_updated', 'task_notification', 'task_progress', 'task_started']);
+
+    (async () => {
+      try {
+        let result = await iterator.next();
+        while (!result.done) {
+          if (controller.signal.aborted || parentSignal.aborted) break;
+          const msg = result.value;
+
+          // Always advance the iterator before any continue/skip logic.
+          // Without this, `continue` would re-enter the loop on the same
+          // stale result and spin forever.
+          result = await iterator.next();
+
+          if (msg.type !== 'system') continue;
+          const systemMsg = msg as typeof msg & { subtype?: string };
+          if (!systemMsg.subtype || !taskSubtypes.has(systemMsg.subtype)) continue;
+
+          console.log(`[Claude SDK] Background listener (${sessionId.slice(0, 8)}): ${systemMsg.subtype}`, JSON.stringify(msg).slice(0, 200));
+
+          if (!this.mainWindow) continue;
+
+          if (systemMsg.subtype === 'task_updated') {
+            const update = systemMsg as typeof systemMsg & { task_id?: string; patch?: Record<string, unknown> };
+            if (update.task_id && update.patch) {
+              this.mainWindow.webContents.send(IPC_CHANNELS.CLAUDE_TASK_UPDATED, {
+                sessionId,
+                taskId: update.task_id,
+                patch: update.patch,
+              });
+            }
+          } else if (systemMsg.subtype === 'task_notification') {
+            const notif = systemMsg as typeof systemMsg & { task_id?: string; status?: string; output_file?: string; summary?: string };
+            this.mainWindow.webContents.send(IPC_CHANNELS.CLAUDE_TASK_NOTIFICATION, {
+              sessionId,
+              taskId: notif.task_id,
+              status: notif.status,
+              outputFile: notif.output_file,
+              summary: notif.summary,
+            });
+          } else if (systemMsg.subtype === 'task_progress' || systemMsg.subtype === 'task_started') {
+            const prog = systemMsg as typeof systemMsg & { task_id?: string; description?: string; summary?: string; last_tool_name?: string };
+            this.mainWindow.webContents.send(IPC_CHANNELS.CLAUDE_TASK_PROGRESS, {
+              sessionId,
+              taskId: prog.task_id,
+              description: prog.description || (systemMsg.subtype === 'task_started' ? `Started: ${prog.summary || 'task'}` : undefined),
+              summary: prog.summary,
+              lastToolName: prog.last_tool_name,
+            });
+          }
+        }
+      } catch (err) {
+        if (!controller.signal.aborted && !parentSignal.aborted) {
+          console.warn(`[Claude SDK] Background listener error (${sessionId.slice(0, 8)}):`, err);
+        }
+      } finally {
+        this.backgroundListeners.delete(sessionId);
+        console.log(`[Claude SDK] Background listener ended (${sessionId.slice(0, 8)})`);
+      }
+    })();
+  }
+
   /**
    * Clean up all data associated with a deleted session.
    * Called from SESSION_DELETE handler only — never during streaming lifecycle.
@@ -4755,6 +4847,8 @@ Begin by creating the task structure now.
     }
     this.activeQueries.delete(sessionId);
     this.activeQueryObjects.delete(sessionId);
+    this.backgroundListeners.get(sessionId)?.abort();
+    this.backgroundListeners.delete(sessionId);
 
     // Kill remote processes if this is an SSH session
     const session = (this.sessionStore.get(`sessions.${sessionId}`) as Session | undefined);
@@ -4762,11 +4856,15 @@ Begin by creating the task structure now.
       sshService.killRemoteProcesses(sessionId, session.sshConfig).catch(() => {});
     }
 
+    // Clear OpenClaw conversation history
+    openclawService.clearHistory(sessionId);
+
     // Session-keyed maps
     this.sessionPermissionModes.delete(sessionId);
     this.prePlanPermissionModes.delete(sessionId);
     this.sessionContextPercentage.delete(sessionId);
     this.sessionLastMessageTime.delete(sessionId);
+    this.sessionsBeingCompacted.delete(sessionId);
     this.sessionPlanFiles.delete(sessionId);
     this.browserMcpServers.delete(sessionId);
 
@@ -4789,8 +4887,18 @@ Begin by creating the task structure now.
       this.activeQueryObjects.delete(sessionId);
       powerService.sessionEnded();
     }
+    // Stop background task listener
+    this.backgroundListeners.get(sessionId)?.abort();
     // Also kill any active Codex process for this session
     codexService.cancel(sessionId);
+
+    // Reject pending permissions — the query that requested them is dead
+    for (const [reqId, pending] of this.pendingPermissions.entries()) {
+      if (pending.sessionId === sessionId) {
+        pending.reject(new Error('Query cancelled'));
+        this.pendingPermissions.delete(reqId);
+      }
+    }
   }
 
   /**
