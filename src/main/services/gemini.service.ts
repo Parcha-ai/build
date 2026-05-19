@@ -227,6 +227,7 @@ class GeminiService {
       env,
       cwd: workDir,
       signal: abortController.signal,
+      shell: true,
     });
 
     this.activeProcesses.set(sessionId, { process: child, abortController });
