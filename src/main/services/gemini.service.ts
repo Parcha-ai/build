@@ -214,9 +214,10 @@ class GeminiService {
     workDir: string,
     model: string,
   ): AsyncGenerator<GeminiStreamEvent> {
-    const apiKey = this.getApiKey();
+    // Check settings first, then fall back to system environment variables
+    const apiKey = this.getApiKey() || process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
     if (!apiKey) {
-      yield { type: 'error', error: 'Gemini API key not configured. Add it in Settings > API Keys.' };
+      yield { type: 'error', error: 'Gemini API key not configured. Add it in Settings > API Keys, or set GEMINI_API_KEY env var.' };
       return;
     }
 
