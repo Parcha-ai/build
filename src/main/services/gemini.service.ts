@@ -125,7 +125,8 @@ class GeminiService {
    */
   getApiKey(): string | undefined {
     const settings = settingsStore.get('settings', {}) as Record<string, unknown>;
-    return (settings.geminiApiKey as string) || undefined;
+    // Key stored at top-level 'googleApiKey' by settings.service, fall back to nested path
+    return (settings.geminiApiKey as string) || (settingsStore.get('googleApiKey') as string) || undefined;
   }
 
   private getBinary(): string {

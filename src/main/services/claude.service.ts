@@ -473,7 +473,8 @@ export class ClaudeService {
     }
 
     // Gemini models via CLI (requires API key)
-    const geminiKey = (settings.geminiApiKey as string) || '';
+    // Key is stored at top-level 'googleApiKey' by settings.service, NOT nested under settings.geminiApiKey
+    const geminiKey = (settings.geminiApiKey as string) || (this.store.get('googleApiKey') as string) || '';
     if (geminiKey) {
       models.push(
         { id: 'gemini:gemini-3.5-flash', name: 'Gemini 3.5 Flash', description: 'Latest Gemini — 4x faster, frontier-level coding & agents' },
