@@ -54,44 +54,70 @@ interface GeminiJsonEvent {
 const settingsStore = new Store({ name: 'claudette-settings' }) as any;
 
 /**
- * Find the `gemini` CLI binary in PATH or common install locations.
+ * Find the system `node` binary (NOT Electron's process.execPath).
+ */
+function findNodeBinary(): string {
+  try {
+    const result = execSync('which node', { encoding: 'utf8' }).trim();
+    if (result) return result;
+  } catch { /* not in PATH */ }
+
+  const candidates = [
+    '/opt/homebrew/bin/node',
+    '/usr/local/bin/node',
+    `${os.homedir()}/.nvm/versions/node/current/bin/node`,
+  ];
+  for (const c of candidates) {
+    if (fs.existsSync(c)) return c;
+  }
+  throw new Error('Unable to locate node binary');
+}
+
+/**
+ * Find the `gemini` CLI script and resolve it to the real JS file.
+ * Returns the resolved path so we can run it via `node <script>` directly,
+ * avoiding shell: true (which corrupts arguments containing shell metacharacters).
  */
 function findGeminiBinary(): string {
-  // Check PATH first
+  let binPath: string | null = null;
+
   try {
     const result = execSync('which gemini', { encoding: 'utf8' }).trim();
-    if (result) {
-      console.log(`[Gemini Service] Found binary in PATH: ${result}`);
-      return result;
-    }
-  } catch {
-    // not in PATH
-  }
+    if (result) binPath = result;
+  } catch { /* not in PATH */ }
 
-  // Check common install locations
-  const homeDir = os.homedir();
-  const candidates = [
-    '/usr/local/bin/gemini',
-    `${homeDir}/.local/bin/gemini`,
-    `${homeDir}/.npm-global/bin/gemini`,
-    '/opt/homebrew/bin/gemini',
-  ];
-
-  for (const candidate of candidates) {
-    if (fs.existsSync(candidate)) {
-      console.log(`[Gemini Service] Found binary at: ${candidate}`);
-      return candidate;
+  if (!binPath) {
+    const homeDir = os.homedir();
+    const candidates = [
+      '/usr/local/bin/gemini',
+      `${homeDir}/.local/bin/gemini`,
+      `${homeDir}/.npm-global/bin/gemini`,
+      '/opt/homebrew/bin/gemini',
+    ];
+    for (const candidate of candidates) {
+      if (fs.existsSync(candidate)) {
+        binPath = candidate;
+        break;
+      }
     }
   }
 
-  throw new Error(
-    'Unable to locate Gemini CLI binary. Install it with: npm install -g @google/gemini-cli',
-  );
+  if (!binPath) {
+    throw new Error(
+      'Unable to locate Gemini CLI binary. Install it with: npm install -g @google/gemini-cli',
+    );
+  }
+
+  // Resolve symlinks to get the real JS file path
+  const realPath = fs.realpathSync(binPath);
+  console.log(`[Gemini Service] Found binary: ${binPath} → ${realPath}`);
+  return realPath;
 }
 
 class GeminiService {
   private activeProcesses: Map<string, { process: ChildProcess; abortController: AbortController }> = new Map();
   private geminiBinaryPath: string | null = null;
+  private nodeBinaryPath: string | null = null;
 
   /**
    * Read the Gemini API key from the nested settings path
@@ -107,6 +133,13 @@ class GeminiService {
       this.geminiBinaryPath = findGeminiBinary();
     }
     return this.geminiBinaryPath;
+  }
+
+  private getNode(): string {
+    if (!this.nodeBinaryPath) {
+      this.nodeBinaryPath = findNodeBinary();
+    }
+    return this.nodeBinaryPath;
   }
 
   /**
@@ -186,9 +219,11 @@ class GeminiService {
       return;
     }
 
-    let binary: string;
+    let geminiScript: string;
+    let nodeBin: string;
     try {
-      binary = this.getBinary();
+      geminiScript = this.getBinary();
+      nodeBin = this.getNode();
     } catch (err) {
       yield { type: 'error', error: `Failed to find Gemini CLI: ${err instanceof Error ? err.message : String(err)}` };
       return;
@@ -205,7 +240,10 @@ class GeminiService {
       },
     };
 
+    // Run via `node <gemini-script>` directly — avoids shell: true which
+    // corrupts arguments containing shell metacharacters ($, backticks, quotes).
     const args = [
+      geminiScript,
       '-p', message,
       '--output-format', 'stream-json',
       '--sandbox',
@@ -222,12 +260,13 @@ class GeminiService {
     env.GOOGLE_API_KEY = apiKey;
     env.GEMINI_CLI_TRUST_WORKSPACE = 'true';
 
+    console.log(`[Gemini Service] Spawning: ${nodeBin} ${geminiScript} -p <${message.length} chars> --model ${geminiModel}`);
+
     const abortController = new AbortController();
-    const child = spawn(binary, args, {
+    const child = spawn(nodeBin, args, {
       env,
       cwd: workDir,
       signal: abortController.signal,
-      shell: true,
     });
 
     this.activeProcesses.set(sessionId, { process: child, abortController });
