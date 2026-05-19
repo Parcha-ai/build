@@ -436,8 +436,10 @@ export class ClaudeService {
       }
     }
 
-    // Cursor models — fetch dynamically from Cursor API, fall back to hardcoded
+    // Cursor models — CLI-based, no API key required for model listing.
+    // Try dynamic fetch with API key; otherwise show hardcoded defaults.
     const cursorKey = (settings.cursorApiKey as string) || '';
+    let cursorModelsFetched = false;
     if (cursorKey) {
       try {
         const { Cursor } = require('@cursor/sdk');
@@ -450,16 +452,21 @@ export class ClaudeService {
               description: m.description || 'Cursor model',
             });
           }
+          cursorModelsFetched = true;
           console.log(`[Claude Service] Loaded ${cursorModels.length} Cursor models dynamically`);
         }
       } catch (err) {
-        console.warn('[Claude Service] Failed to fetch Cursor models, using defaults:', err);
-        models.push(
-          { id: 'cursor:composer-2.5', name: 'Composer 2.5', description: 'Cursor latest — Composer 2.5' },
-          { id: 'cursor:claude-3.5-sonnet', name: 'Cursor (Sonnet 3.5)', description: 'Cursor with Claude Sonnet 3.5' },
-          { id: 'cursor:gpt-4o', name: 'Cursor (GPT-4o)', description: 'Cursor with GPT-4o' },
-        );
+        console.warn('[Claude Service] Failed to fetch Cursor models dynamically:', err);
       }
+    }
+    if (!cursorModelsFetched) {
+      models.push(
+        { id: 'cursor:composer-2.5', name: 'Composer 2.5', description: 'Cursor latest — Composer 2.5' },
+        { id: 'cursor:claude-3.5-sonnet', name: 'Cursor (Sonnet 3.5)', description: 'Cursor with Claude Sonnet 3.5' },
+        { id: 'cursor:gpt-4o', name: 'Cursor (GPT-4o)', description: 'Cursor with GPT-4o' },
+        { id: 'cursor:gemini-3.5-flash', name: 'Gemini 3.5 Flash (Cursor)', description: 'Cursor model' },
+        { id: 'cursor:o3', name: 'o3 (Cursor)', description: 'Cursor model' },
+      );
     }
 
     // DeepSeek models via OpenCode (requires API key)
@@ -472,16 +479,12 @@ export class ClaudeService {
       );
     }
 
-    // Gemini models via CLI (requires API key)
-    // Key is stored at top-level 'googleApiKey' by settings.service, NOT nested under settings.geminiApiKey
-    const geminiKey = (settings.geminiApiKey as string) || (this.store.get('googleApiKey') as string) || '';
-    if (geminiKey) {
-      models.push(
-        { id: 'gemini:gemini-3.5-flash', name: 'Gemini 3.5 Flash', description: 'Latest Gemini — 4x faster, frontier-level coding & agents' },
-        { id: 'gemini:gemini-2.5-pro', name: 'Gemini 2.5 Pro', description: 'Google Gemini 2.5 Pro via CLI' },
-        { id: 'gemini:gemini-2.5-flash', name: 'Gemini 2.5 Flash', description: 'Google Gemini 2.5 Flash via CLI' },
-      );
-    }
+    // Gemini models via CLI — always show, CLI uses GEMINI_API_KEY env var or settings
+    models.push(
+      { id: 'gemini:gemini-3.5-flash', name: 'Gemini 3.5 Flash', description: 'Latest Gemini — 4x faster, frontier-level coding & agents' },
+      { id: 'gemini:gemini-2.5-pro', name: 'Gemini 2.5 Pro', description: 'Google Gemini 2.5 Pro via CLI' },
+      { id: 'gemini:gemini-2.5-flash', name: 'Gemini 2.5 Flash', description: 'Google Gemini 2.5 Flash via CLI' },
+    );
 
     return models;
   }
@@ -2990,27 +2993,37 @@ Read or source that file if you need the actual values. Do not print secret valu
           console.warn('[Claude Service] Could not load messages for Cursor context:', e);
         }
 
-        // SSH sessions: use Cursor CLI (agent binary) on the remote for native execution
+        const fullMessage = cursorContext ? `${cursorContext}\n\n${userMessage}` : userMessage;
+
+        // SSH sessions: always use Cursor CLI on the remote
         if (session.sshConfig) {
           const { getCursorCliService } = require('./cursor-cli.service');
           const cursorCliService = getCursorCliService();
           const remoteDir = session.worktreePath || session.sshConfig.remoteWorkdir || '~';
-          const fullMessage = cursorContext ? `${cursorContext}\n\n${userMessage}` : userMessage;
-
-          console.log(`[Claude Service] Cursor SSH session → using CLI on remote ${session.sshConfig.host}:${remoteDir}`);
+          console.log(`[Claude Service] Cursor SSH → CLI on remote ${session.sshConfig.host}:${remoteDir}`);
           for await (const event of cursorCliService.streamMessage(sessionId, fullMessage, remoteDir, selectedModel, session.sshConfig)) {
             yield event as StreamEvent;
           }
           return;
         }
 
-        // Local sessions: use Cursor SDK (in-process, supports multi-turn)
-        const { getCursorService } = require('./cursor.service');
-        const cursorService = getCursorService();
-        const workDir = session.repoPath || process.cwd();
-        const fullMessage = cursorContext ? `${cursorContext}\n\n${userMessage}` : userMessage;
-        for await (const event of cursorService.streamMessage(sessionId, fullMessage, workDir, selectedModel)) {
-          yield event as StreamEvent;
+        // Local sessions: prefer SDK if API key exists (multi-turn), fall back to CLI
+        const cursorApiKey = ((this.store.get('settings', {}) as Record<string, unknown>).cursorApiKey as string) || '';
+        if (cursorApiKey) {
+          const { getCursorService } = require('./cursor.service');
+          const cursorService = getCursorService();
+          const workDir = session.repoPath || process.cwd();
+          for await (const event of cursorService.streamMessage(sessionId, fullMessage, workDir, selectedModel)) {
+            yield event as StreamEvent;
+          }
+        } else {
+          const { getCursorCliService } = require('./cursor-cli.service');
+          const cursorCliService = getCursorCliService();
+          const workDir = session.repoPath || process.cwd();
+          console.log('[Claude Service] Cursor local → CLI (no API key, using agent binary)');
+          for await (const event of cursorCliService.streamMessage(sessionId, fullMessage, workDir, selectedModel)) {
+            yield event as StreamEvent;
+          }
         }
         return;
       }

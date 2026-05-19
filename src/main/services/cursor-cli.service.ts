@@ -177,11 +177,8 @@ class CursorCliService {
     model: string,
     sshConfig?: SshConfig,
   ): AsyncGenerator<CursorStreamEvent> {
+    // API key is optional — the CLI has its own auth flow
     const apiKey = this.getApiKey();
-    if (!apiKey) {
-      yield { type: 'error', error: 'Cursor API key not configured. Add it in Settings > API Keys.' };
-      return;
-    }
 
     const cursorModel = model.replace('cursor:', '');
 
@@ -200,7 +197,8 @@ class CursorCliService {
       const remoteDir = workDir || sshConfig.remoteWorkdir || '~';
       // Escape the message for safe SSH transmission: base64-encode it
       const b64Message = Buffer.from(message).toString('base64');
-      const remoteCmd = `cd ${remoteDir} && CURSOR_API_KEY='${apiKey}' agent -p "$(echo '${b64Message}' | base64 -d)" --output-format stream-json --stream-partial-output --force${cursorModel ? ` --model "${cursorModel}"` : ''}`;
+      const apiEnv = apiKey ? `CURSOR_API_KEY='${apiKey}' ` : '';
+      const remoteCmd = `cd ${remoteDir} && ${apiEnv}agent -p "$(echo '${b64Message}' | base64 -d)" --output-format stream-json --stream-partial-output --force${cursorModel ? ` --model "${cursorModel}"` : ''}`;
 
       console.log(`[Cursor CLI] SSH exec on ${sshConfig.host}: agent -p <${message.length} chars> --model ${cursorModel}`);
 
@@ -228,7 +226,7 @@ class CursorCliService {
       }
 
       const env: Record<string, string> = { ...(process.env as Record<string, string>) };
-      env.CURSOR_API_KEY = apiKey;
+      if (apiKey) env.CURSOR_API_KEY = apiKey;
 
       console.log(`[Cursor CLI] Local spawn: agent -p <${message.length} chars> --model ${cursorModel}`);
 
