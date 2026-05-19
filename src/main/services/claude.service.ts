@@ -2975,12 +2975,8 @@ Read or source that file if you need the actual values. Do not print secret valu
         return;
       }
 
-      // Route to Cursor SDK for cursor:* models
+      // Route to Cursor for cursor:* models
       if (selectedModel?.startsWith('cursor:')) {
-        const { getCursorService } = require('./cursor.service');
-        const cursorService = getCursorService();
-        const workDir = session.repoPath || process.cwd();
-
         // Build cross-harness transcript context
         let cursorContext = '';
         try {
@@ -2994,34 +2990,27 @@ Read or source that file if you need the actual values. Do not print secret valu
           console.warn('[Claude Service] Could not load messages for Cursor context:', e);
         }
 
-        // SSH context: Cursor SDK runs locally, so inject instructions to wrap commands with SSH
-        let sshContext = '';
+        // SSH sessions: use Cursor CLI (agent binary) on the remote for native execution
         if (session.sshConfig) {
-          const remoteDir = session.worktreePath || session.sshConfig.remoteWorkdir;
-          sshContext = `<remote_execution_context>
-You are working on a REMOTE server via SSH. The code lives on the remote machine, not locally.
+          const { getCursorCliService } = require('./cursor-cli.service');
+          const cursorCliService = getCursorCliService();
+          const remoteDir = session.worktreePath || session.sshConfig.remoteWorkdir || '~';
+          const fullMessage = cursorContext ? `${cursorContext}\n\n${userMessage}` : userMessage;
 
-- **Host**: ${session.sshConfig.host} (SSH alias: ${session.sshConfig.host})
-- **Username**: ${session.sshConfig.username}
-- **Remote working directory**: ${remoteDir}
-${session.branch ? `- **Git branch**: ${session.branch}` : ''}
-
-CRITICAL: You MUST wrap ALL shell commands with ssh. Use:
-  ssh ${session.sshConfig.host} "cd ${remoteDir} && <your command>"
-
-For multi-line or complex commands:
-  ssh ${session.sshConfig.host} "cd ${remoteDir} && bash -c '<command>'"
-
-Do NOT run commands locally — they will fail or operate on the wrong machine.
-All file reads, writes, greps, and edits must target the remote path.
-</remote_execution_context>`;
-          console.log(`[Claude Service] Cursor SSH context injected for ${session.sshConfig.host}:${remoteDir}`);
+          console.log(`[Claude Service] Cursor SSH session → using CLI on remote ${session.sshConfig.host}:${remoteDir}`);
+          for await (const event of cursorCliService.streamMessage(sessionId, fullMessage, remoteDir, selectedModel, session.sshConfig)) {
+            yield event as StreamEvent;
+          }
+          return;
         }
 
-        const parts = [cursorContext, sshContext, userMessage].filter(Boolean);
-        const fullMessage = parts.join('\n\n');
+        // Local sessions: use Cursor SDK (in-process, supports multi-turn)
+        const { getCursorService } = require('./cursor.service');
+        const cursorService = getCursorService();
+        const workDir = session.repoPath || process.cwd();
+        const fullMessage = cursorContext ? `${cursorContext}\n\n${userMessage}` : userMessage;
         for await (const event of cursorService.streamMessage(sessionId, fullMessage, workDir, selectedModel)) {
-          yield event as any;
+          yield event as StreamEvent;
         }
         return;
       }
