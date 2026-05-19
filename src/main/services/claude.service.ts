@@ -2994,8 +2994,9 @@ Read or source that file if you need the actual values. Do not print secret valu
         }
 
         const fullMessage = cursorContext ? `${cursorContext}\n\n${userMessage}` : userMessage;
+        const cursorApiKey = ((this.store.get('settings', {}) as Record<string, unknown>).cursorApiKey as string) || '';
 
-        // SSH sessions: always use Cursor CLI on the remote
+        // SSH sessions: use Cursor CLI on the remote (agent runs natively, tools work on remote fs)
         if (session.sshConfig) {
           const { getCursorCliService } = require('./cursor-cli.service');
           const cursorCliService = getCursorCliService();
@@ -3007,8 +3008,7 @@ Read or source that file if you need the actual values. Do not print secret valu
           return;
         }
 
-        // Local sessions: prefer SDK if API key exists (multi-turn), fall back to CLI
-        const cursorApiKey = ((this.store.get('settings', {}) as Record<string, unknown>).cursorApiKey as string) || '';
+        // Local sessions: use SDK if API key exists (multi-turn), CLI otherwise
         if (cursorApiKey) {
           const { getCursorService } = require('./cursor.service');
           const cursorService = getCursorService();
@@ -3020,7 +3020,7 @@ Read or source that file if you need the actual values. Do not print secret valu
           const { getCursorCliService } = require('./cursor-cli.service');
           const cursorCliService = getCursorCliService();
           const workDir = session.repoPath || process.cwd();
-          console.log('[Claude Service] Cursor local → CLI (no API key, using agent binary)');
+          console.log('[Claude Service] Cursor local → CLI (no API key)');
           for await (const event of cursorCliService.streamMessage(sessionId, fullMessage, workDir, selectedModel)) {
             yield event as StreamEvent;
           }
@@ -5042,6 +5042,7 @@ Begin by creating the task structure now.
     // Also kill any active Codex, Cursor, or Gemini process for this session
     codexService.cancel(sessionId);
     try { const { getCursorService } = require('./cursor.service'); getCursorService().cancel(sessionId); } catch { /* not loaded */ }
+    try { const { getCursorCliService } = require('./cursor-cli.service'); getCursorCliService().cancel(sessionId); } catch { /* not loaded */ }
     try { const { getGeminiService } = require('./gemini.service'); getGeminiService().cancel(sessionId); } catch { /* not loaded */ }
 
     // Reject pending permissions — the query that requested them is dead
