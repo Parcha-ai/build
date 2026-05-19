@@ -209,6 +209,8 @@ class GeminiService {
       '-p', message,
       '--output-format', 'stream-json',
       '--sandbox',
+      '--yolo',
+      '--skip-trust',
     ];
 
     if (geminiModel) {
@@ -217,6 +219,8 @@ class GeminiService {
 
     const env: Record<string, string> = { ...(process.env as Record<string, string>) };
     env.GEMINI_API_KEY = apiKey;
+    env.GOOGLE_API_KEY = apiKey;
+    env.GEMINI_CLI_TRUST_WORKSPACE = 'true';
 
     const abortController = new AbortController();
     const child = spawn(binary, args, {

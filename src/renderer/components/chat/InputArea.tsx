@@ -1890,11 +1890,12 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
             // Two-level menu: Harness → Models
 
             const groups: Record<string, typeof availableModels> = {};
-            const groupOrder = ['claude', 'cursor', 'codex', 'opencode', 'custom'];
+            const groupOrder = ['claude', 'cursor', 'codex', 'gemini', 'opencode', 'custom'];
             const groupLabels: Record<string, string> = {
               claude: 'Claude',
               cursor: 'Cursor',
               codex: 'Codex',
+              gemini: 'Gemini CLI',
               opencode: 'DeepSeek',
               custom: 'Custom',
             };
@@ -1903,6 +1904,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
               let group = 'claude';
               if (model.id.startsWith('codex:')) group = 'codex';
               else if (model.id.startsWith('cursor:')) group = 'cursor';
+              else if (model.id.startsWith('gemini:')) group = 'gemini';
               else if (model.id.startsWith('opencode:')) group = 'opencode';
               else if (model.id.startsWith('custom:')) group = 'custom';
               if (!groups[group]) groups[group] = [];
@@ -1925,6 +1927,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
             let currentHarness = 'claude';
             if (currentModel.startsWith('codex:')) currentHarness = 'codex';
             else if (currentModel.startsWith('cursor:')) currentHarness = 'cursor';
+            else if (currentModel.startsWith('gemini:')) currentHarness = 'gemini';
             else if (currentModel.startsWith('opencode:')) currentHarness = 'opencode';
             else if (currentModel.startsWith('custom:')) currentHarness = 'custom';
 

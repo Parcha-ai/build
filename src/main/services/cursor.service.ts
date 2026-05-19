@@ -2,10 +2,6 @@ import { Agent } from '@cursor/sdk';
 import type { InteractionUpdate, Run, SDKAgent } from '@cursor/sdk';
 import Store from 'electron-store';
 
-/**
- * Stream events emitted by CursorService, aligned with the app's StreamEvent shape
- * so claude.service.ts can forward them with minimal translation.
- */
 export interface CursorStreamEvent {
   type: 'text_delta' | 'thinking_delta' | 'tool_use' | 'tool_result' | 'message_complete' | 'error' | 'system';
   content?: string;
@@ -23,10 +19,6 @@ export interface CursorStreamEvent {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const settingsStore = new Store({ name: 'claudette-settings' }) as any;
 
-/**
- * Translate a Cursor SDK tool-call type string (e.g. "shell", "edit", "write")
- * into a human-friendly name matching the conventions used by the renderer.
- */
 function toolTypeName(type: string): string {
   const map: Record<string, string> = {
     shell: 'Bash',
@@ -47,21 +39,19 @@ function toolTypeName(type: string): string {
   return map[type] || type;
 }
 
+interface AgentState {
+  agent: SDKAgent;
+  turnCount: number;
+}
+
 class CursorService {
-  private activeAgents: Map<string, SDKAgent> = new Map();
+  private activeAgents: Map<string, AgentState> = new Map();
 
   private getApiKey(): string | undefined {
     const settings = settingsStore.get('settings', {}) as Record<string, unknown>;
     return (settings.cursorApiKey as string) || undefined;
   }
 
-  /**
-   * Stream a single message through a Cursor agent.
-   *
-   * Uses `agent.send()` with an `onDelta` callback to capture real-time
-   * InteractionUpdate events and translates them into CursorStreamEvents
-   * that mirror the app's StreamEvent contract.
-   */
   async *streamMessage(
     sessionId: string,
     message: string,
@@ -76,7 +66,6 @@ class CursorService {
 
     const modelId = model.replace('cursor:', '');
 
-    // Emit a system event so the renderer knows which tools/model are active
     yield {
       type: 'system',
       systemInfo: {
@@ -85,13 +74,10 @@ class CursorService {
       },
     };
 
-    // Queue for events produced by the onDelta callback.
-    // The callback pushes events; the generator loop shifts them out.
     const eventQueue: CursorStreamEvent[] = [];
     let finished = false;
     let runError: Error | null = null;
 
-    // Resolve when a new event lands in the queue or the run finishes
     let wakeup: (() => void) | null = null;
     const notifyWakeup = (): void => {
       if (wakeup) {
@@ -107,19 +93,29 @@ class CursorService {
     };
 
     try {
-      // Re-use or create the agent for this session
-      let agent = this.activeAgents.get(sessionId);
-      if (!agent) {
-        agent = await Agent.create({
+      let state = this.activeAgents.get(sessionId);
+
+      if (!state) {
+        console.log(`[Cursor Service] Creating agent for session ${sessionId.substring(0, 8)}`);
+        const agent = await Agent.create({
           model: { id: modelId },
           apiKey,
           local: { cwd: workDir },
         });
-        this.activeAgents.set(sessionId, agent);
+        state = { agent, turnCount: 0 };
+        this.activeAgents.set(sessionId, state);
       }
 
-      // Fire the message — the onDelta callback feeds our event queue
-      const run: Run = await agent.send(message, {
+      state.turnCount++;
+      const isFollowUp = state.turnCount > 1;
+      if (isFollowUp) {
+        console.log(`[Cursor Service] Follow-up turn ${state.turnCount}, using local.force to expire previous run`);
+      }
+
+      // On follow-up turns, force-expire the previous persisted run.
+      // Without this, agent.send() hangs because the SDK considers
+      // the prior run still active internally.
+      const run: Run = await state.agent.send(message, {
         onDelta: ({ update }: { update: InteractionUpdate }) => {
           try {
             this.translateDelta(update, pushEvent);
@@ -127,9 +123,9 @@ class CursorService {
             console.error('[Cursor Service] Error translating delta:', err);
           }
         },
+        ...(isFollowUp ? { local: { force: true } } : {}),
       });
 
-      // Wait for the run to complete (or error out)
       run.wait()
         .then(() => {
           pushEvent({ type: 'message_complete' });
@@ -142,7 +138,6 @@ class CursorService {
           notifyWakeup();
         });
 
-      // Drain the event queue as it fills
       while (true) {
         while (eventQueue.length > 0) {
           // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
@@ -151,13 +146,11 @@ class CursorService {
 
         if (finished) break;
 
-        // Park until a new event or completion
         await new Promise<void>((resolve) => {
           wakeup = resolve;
         });
       }
 
-      // Drain any stragglers
       while (eventQueue.length > 0) {
         // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
         yield eventQueue.shift()!;
@@ -173,35 +166,23 @@ class CursorService {
     }
   }
 
-  /**
-   * Translate a single Cursor SDK InteractionUpdate into one or more CursorStreamEvents.
-   *
-   * The SDK uses hyphenated type discriminators:
-   *   text-delta, thinking-delta, tool-call-started, tool-call-completed, turn-ended
-   */
   private translateDelta(
     update: InteractionUpdate,
     push: (evt: CursorStreamEvent) => void,
   ): void {
-    // The update is a discriminated union keyed on `type`.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const u = update as any;
 
     switch (u.type) {
       case 'text-delta':
-        if (u.text) {
-          push({ type: 'text_delta', content: u.text });
-        }
+        if (u.text) push({ type: 'text_delta', content: u.text });
         break;
 
       case 'thinking-delta':
-        if (u.text) {
-          push({ type: 'thinking_delta', content: u.text });
-        }
+        if (u.text) push({ type: 'thinking_delta', content: u.text });
         break;
 
       case 'thinking-completed':
-        // Nothing to push — the thinking block is complete
         break;
 
       case 'tool-call-started': {
@@ -239,13 +220,7 @@ class CursorService {
       }
 
       case 'turn-ended':
-        // The run.wait() promise handles final completion
-        break;
-
       case 'partial-tool-call':
-        // Incremental updates to tool args — we skip these for now
-        break;
-
       case 'token-delta':
       case 'summary':
       case 'summary-started':
@@ -254,7 +229,6 @@ class CursorService {
       case 'user-message-appended':
       case 'step-started':
       case 'step-completed':
-        // Informational events — not surfaced to the UI
         break;
 
       default:
@@ -262,25 +236,19 @@ class CursorService {
     }
   }
 
-  /**
-   * Cancel an active Cursor session.
-   */
   cancel(sessionId: string): void {
-    const agent = this.activeAgents.get(sessionId);
-    if (agent) {
+    const state = this.activeAgents.get(sessionId);
+    if (state) {
       console.log(`[Cursor Service] Closing agent for session ${sessionId}`);
-      agent.close();
+      state.agent.close();
       this.activeAgents.delete(sessionId);
     }
   }
 
-  /**
-   * Clean up all agents (called on app quit).
-   */
   disposeAll(): void {
-    for (const [id, agent] of this.activeAgents) {
+    for (const [id, state] of this.activeAgents) {
       try {
-        agent.close();
+        state.agent.close();
       } catch {
         // best-effort
       }

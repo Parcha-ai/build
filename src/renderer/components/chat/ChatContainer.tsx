@@ -568,14 +568,20 @@ export default function ChatContainer({ session }: ChatContainerProps) {
   const scrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     if (isAtBottom) {
-      // Throttle scrollIntoView to at most once per 100ms during streaming
+      const streaming = isSessionStreaming && (streamContent || thinkingContent);
       if (!scrollTimerRef.current) {
         scrollTimerRef.current = setTimeout(() => {
           isProgrammaticScroll.current = true;
-          messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-          setTimeout(() => { isProgrammaticScroll.current = false; }, 500);
+          if (streaming) {
+            // During active streaming, use instant scroll — smooth can't keep up
+            const container = messagesContainerRef.current;
+            if (container) container.scrollTop = container.scrollHeight;
+          } else {
+            messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+          }
+          setTimeout(() => { isProgrammaticScroll.current = false; }, streaming ? 30 : 500);
           scrollTimerRef.current = null;
-        }, 100);
+        }, streaming ? 30 : 100);
       }
       setHasNewContent(false);
     } else {
@@ -585,7 +591,7 @@ export default function ChatContainer({ session }: ChatContainerProps) {
       }
     }
     lastMessageCountRef.current = sessionMessages.length;
-  }, [sessionMessages, streamContent, thinkingContent, isAtBottom]);
+  }, [sessionMessages, streamContent, thinkingContent, isAtBottom, isSessionStreaming]);
 
   // Scroll to bottom function for FAB
   const scrollToBottom = useCallback(() => {
