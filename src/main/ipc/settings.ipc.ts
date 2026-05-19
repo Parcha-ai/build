@@ -42,7 +42,13 @@ export function registerSettingsHandlers(ipcMain: IpcMain): void {
   });
 
   ipcMain.handle(IPC_CHANNELS.APP_OPEN_EXTERNAL, async (_, url: string) => {
-    await shell.openExternal(url);
+    try {
+      await shell.openExternal(url);
+    } catch (err) {
+      console.error('[Settings IPC] shell.openExternal failed, falling back to open command:', err);
+      const { exec } = require('child_process');
+      exec(`open "${url.replace(/"/g, '\\"')}"`);
+    }
   });
 
   ipcMain.handle(IPC_CHANNELS.APP_OPEN_PATH, async (_, filePath: string) => {

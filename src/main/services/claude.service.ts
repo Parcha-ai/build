@@ -436,14 +436,30 @@ export class ClaudeService {
       }
     }
 
-    // Cursor models (local sessions only, requires API key)
+    // Cursor models — fetch dynamically from Cursor API, fall back to hardcoded
     const cursorKey = (settings.cursorApiKey as string) || '';
     if (cursorKey) {
-      models.push(
-        { id: 'cursor:composer-2.5', name: 'Composer 2.5', description: 'Cursor latest — Composer 2.5' },
-        { id: 'cursor:claude-3.5-sonnet', name: 'Cursor (Sonnet 3.5)', description: 'Cursor with Claude Sonnet 3.5' },
-        { id: 'cursor:gpt-4o', name: 'Cursor (GPT-4o)', description: 'Cursor with GPT-4o' },
-      );
+      try {
+        const { Cursor } = require('@cursor/sdk');
+        const cursorModels = await Cursor.models.list({ apiKey: cursorKey });
+        if (cursorModels?.length) {
+          for (const m of cursorModels) {
+            models.push({
+              id: `cursor:${m.id}`,
+              name: `${m.displayName || m.id} (Cursor)`,
+              description: m.description || 'Cursor model',
+            });
+          }
+          console.log(`[Claude Service] Loaded ${cursorModels.length} Cursor models dynamically`);
+        }
+      } catch (err) {
+        console.warn('[Claude Service] Failed to fetch Cursor models, using defaults:', err);
+        models.push(
+          { id: 'cursor:composer-2.5', name: 'Composer 2.5', description: 'Cursor latest — Composer 2.5' },
+          { id: 'cursor:claude-3.5-sonnet', name: 'Cursor (Sonnet 3.5)', description: 'Cursor with Claude Sonnet 3.5' },
+          { id: 'cursor:gpt-4o', name: 'Cursor (GPT-4o)', description: 'Cursor with GPT-4o' },
+        );
+      }
     }
 
     // DeepSeek models via OpenCode (requires API key)
@@ -2785,6 +2801,7 @@ Read or source that file if you need the actual values. Do not print secret valu
       this.backgroundListeners.get(sessionId)?.abort();
       codexService.cancel(sessionId);
       openclawService.cancel(sessionId);
+      try { const { getCursorService } = require('./cursor.service'); getCursorService().cancel(sessionId); } catch { /* not loaded */ }
       try { const { getGeminiService } = require('./gemini.service'); getGeminiService().cancel(sessionId); } catch { /* not loaded */ }
 
       // Kill orphaned remote processes from the old query
@@ -4994,8 +5011,9 @@ Begin by creating the task structure now.
     }
     // Stop background task listener
     this.backgroundListeners.get(sessionId)?.abort();
-    // Also kill any active Codex or Gemini process for this session
+    // Also kill any active Codex, Cursor, or Gemini process for this session
     codexService.cancel(sessionId);
+    try { const { getCursorService } = require('./cursor.service'); getCursorService().cancel(sessionId); } catch { /* not loaded */ }
     try { const { getGeminiService } = require('./gemini.service'); getGeminiService().cancel(sessionId); } catch { /* not loaded */ }
 
     // Reject pending permissions — the query that requested them is dead
