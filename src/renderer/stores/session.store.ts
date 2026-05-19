@@ -269,6 +269,11 @@ export function isCodexModel(model?: string | null): boolean {
   return model?.startsWith('codex:') ?? false;
 }
 
+export function isNonClaudeHarness(model?: string | null): boolean {
+  if (!model) return false;
+  return model.startsWith('codex:') || model.startsWith('cursor:') || model.startsWith('gemini:') || model.startsWith('opencode:');
+}
+
 export function getSupportedPermissionModes(model?: string | null): PermissionMode[] {
   return isCodexModel(model) ? CODEX_PERMISSION_MODES : ALL_PERMISSION_MODES;
 }
@@ -1617,7 +1622,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     if (!alreadyInChat) {
       addMessage(sessionId, userMessage);
     }
-    if (isCodexModel(model)) {
+    if (isNonClaudeHarness(model)) {
       persistSupplementalMessage(sessionId, userMessage);
     }
 
@@ -2028,8 +2033,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       const queue = currentState.messageQueue[sessionId] || [];
       if (queue.length > 0) {
         const activeStreamModel = currentState.activeStreamModel[sessionId];
-        if (isCodexModel(activeStreamModel)) {
-          console.log('[SessionStore] Tool completed during Codex run - queued message will wait for stream end');
+        if (isNonClaudeHarness(activeStreamModel)) {
+          console.log('[SessionStore] Tool completed during non-Claude run - queued message will wait for stream end');
           return;
         }
 
@@ -2175,7 +2180,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         content: messageContent,
       };
 
-      if (isCodexModel(streamModel)) {
+      if (isNonClaudeHarness(streamModel)) {
         persistSupplementalMessage(sessionId, finalMessage);
       }
 
@@ -2282,7 +2287,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           timestamp: new Date(),
           interrupted: true,
         };
-        if (isCodexModel(streamModel)) {
+        if (isNonClaudeHarness(streamModel)) {
           persistSupplementalMessage(sessionId, partialMessage);
         }
         addMessage(sessionId, partialMessage);
@@ -2309,7 +2314,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         content: `Error: ${error}`,
         timestamp: new Date(),
       };
-      if (isCodexModel(streamModel)) {
+      if (isNonClaudeHarness(streamModel)) {
         persistSupplementalMessage(sessionId, errorMessage);
       }
       addMessage(sessionId, errorMessage);
