@@ -5,9 +5,21 @@ import * as fs from 'fs';
 import * as os from 'os';
 import type { CursorStreamEvent } from './cursor.service';
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+interface ToolCallData {
+  shellToolCall?: { args?: { command?: string; description?: string }; result?: { success?: { stdout?: string; exitCode?: number } }; description?: string };
+  readToolCall?: { args?: { path?: string }; result?: { success?: { totalLines?: number; content?: string } }; description?: string };
+  writeToolCall?: { args?: { path?: string }; result?: { success?: { linesCreated?: number } }; description?: string };
+  editToolCall?: { args?: { path?: string; oldText?: string; newText?: string }; result?: { success?: boolean }; description?: string };
+  globToolCall?: { args?: { pattern?: string }; result?: { success?: { files?: string[] } }; description?: string };
+  grepToolCall?: { args?: { pattern?: string; path?: string }; result?: { success?: { matches?: unknown[] } }; description?: string };
+  lsToolCall?: { args?: { path?: string }; result?: { success?: { entries?: unknown[] } }; description?: string };
+}
+
 interface CursorCliJsonEvent {
   type: string;
   subtype?: string;
+  text?: string;
   model?: string;
   timestamp_ms?: number;
   model_call_id?: string;
@@ -15,14 +27,7 @@ interface CursorCliJsonEvent {
   message?: {
     content?: Array<{ text?: string; type?: string }>;
   };
-  // tool_call fields
-  readToolCall?: { args?: { path?: string }; result?: { success?: { totalLines?: number } } };
-  writeToolCall?: { args?: { path?: string }; result?: { success?: { linesCreated?: number } } };
-  editToolCall?: { args?: { path?: string }; result?: { success?: boolean } };
-  shellToolCall?: { args?: { command?: string }; result?: { output?: string; exitCode?: number } };
-  args?: Record<string, unknown>;
-  result?: Record<string, unknown>;
-  name?: string;
+  tool_call?: ToolCallData;
   call_id?: string;
 }
 
@@ -132,6 +137,12 @@ class CursorCliService {
         }
         return null;
 
+      case 'thinking':
+        if (event.subtype === 'delta' && event.text) {
+          return { type: 'thinking_delta', content: event.text };
+        }
+        return null;
+
       case 'result':
         return { type: 'message_complete' };
 
@@ -144,29 +155,41 @@ class CursorCliService {
   }
 
   private extractToolName(event: CursorCliJsonEvent): string {
-    if (event.shellToolCall) return 'Bash';
-    if (event.readToolCall) return 'Read';
-    if (event.writeToolCall) return 'Write';
-    if (event.editToolCall) return 'Edit';
-    if (event.name) return event.name;
+    const tc = event.tool_call;
+    if (!tc) return 'unknown';
+    if (tc.shellToolCall) return 'Bash';
+    if (tc.readToolCall) return 'Read';
+    if (tc.writeToolCall) return 'Write';
+    if (tc.editToolCall) return 'Edit';
+    if (tc.globToolCall) return 'Glob';
+    if (tc.grepToolCall) return 'Grep';
+    if (tc.lsToolCall) return 'Ls';
     return 'unknown';
   }
 
   private extractToolInput(event: CursorCliJsonEvent): Record<string, unknown> {
-    if (event.shellToolCall?.args) return event.shellToolCall.args as Record<string, unknown>;
-    if (event.readToolCall?.args) return event.readToolCall.args as Record<string, unknown>;
-    if (event.writeToolCall?.args) return event.writeToolCall.args as Record<string, unknown>;
-    if (event.editToolCall?.args) return event.editToolCall.args as Record<string, unknown>;
-    if (event.args) return event.args;
+    const tc = event.tool_call;
+    if (!tc) return {};
+    if (tc.shellToolCall?.args) return tc.shellToolCall.args as Record<string, unknown>;
+    if (tc.readToolCall?.args) return tc.readToolCall.args as Record<string, unknown>;
+    if (tc.writeToolCall?.args) return tc.writeToolCall.args as Record<string, unknown>;
+    if (tc.editToolCall?.args) return tc.editToolCall.args as Record<string, unknown>;
+    if (tc.globToolCall?.args) return tc.globToolCall.args as Record<string, unknown>;
+    if (tc.grepToolCall?.args) return tc.grepToolCall.args as Record<string, unknown>;
+    if (tc.lsToolCall?.args) return tc.lsToolCall.args as Record<string, unknown>;
     return {};
   }
 
   private extractToolResult(event: CursorCliJsonEvent): string | undefined {
-    if (event.shellToolCall?.result) return JSON.stringify(event.shellToolCall.result);
-    if (event.readToolCall?.result) return JSON.stringify(event.readToolCall.result);
-    if (event.writeToolCall?.result) return JSON.stringify(event.writeToolCall.result);
-    if (event.editToolCall?.result) return JSON.stringify(event.editToolCall.result);
-    if (event.result) return JSON.stringify(event.result);
+    const tc = event.tool_call;
+    if (!tc) return undefined;
+    if (tc.shellToolCall?.result) return JSON.stringify(tc.shellToolCall.result);
+    if (tc.readToolCall?.result) return JSON.stringify(tc.readToolCall.result);
+    if (tc.writeToolCall?.result) return JSON.stringify(tc.writeToolCall.result);
+    if (tc.editToolCall?.result) return JSON.stringify(tc.editToolCall.result);
+    if (tc.globToolCall?.result) return JSON.stringify(tc.globToolCall.result);
+    if (tc.grepToolCall?.result) return JSON.stringify(tc.grepToolCall.result);
+    if (tc.lsToolCall?.result) return JSON.stringify(tc.lsToolCall.result);
     return undefined;
   }
 
