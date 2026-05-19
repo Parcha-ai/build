@@ -2996,46 +2996,29 @@ Read or source that file if you need the actual values. Do not print secret valu
         const fullMessage = cursorContext ? `${cursorContext}\n\n${userMessage}` : userMessage;
         const cursorApiKey = ((this.store.get('settings', {}) as Record<string, unknown>).cursorApiKey as string) || '';
 
-        // Always use Cursor SDK when API key is available — it works for both local and SSH
-        // (SSH sessions get SSH context injection so the model wraps commands with ssh)
-        if (cursorApiKey) {
-          const { getCursorService } = require('./cursor.service');
-          const cursorService = getCursorService();
-          const workDir = session.repoPath || process.cwd();
-
-          let sshMessage = fullMessage;
-          if (session.sshConfig) {
-            const remoteDir = session.worktreePath || session.sshConfig.remoteWorkdir;
-            const sshContext = `<remote_execution_context>
-You are working on a REMOTE server via SSH. The code lives on the remote machine, not locally.
-- **Host**: ${session.sshConfig.host}
-- **Username**: ${session.sshConfig.username}
-- **Remote working directory**: ${remoteDir}
-${session.branch ? `- **Git branch**: ${session.branch}` : ''}
-CRITICAL: You MUST wrap ALL shell commands with ssh. Use:
-  ssh ${session.sshConfig.host} "cd ${remoteDir} && <your command>"
-Do NOT run commands locally — they will fail or operate on the wrong machine.
-</remote_execution_context>`;
-            sshMessage = `${sshContext}\n\n${fullMessage}`;
-            console.log(`[Claude Service] Cursor SDK + SSH context for ${session.sshConfig.host}`);
-          }
-
-          for await (const event of cursorService.streamMessage(sessionId, sshMessage, workDir, selectedModel)) {
+        // SSH sessions: use Cursor CLI on the remote (agent runs natively, tools work on remote fs)
+        if (session.sshConfig) {
+          const { getCursorCliService } = require('./cursor-cli.service');
+          const cursorCliService = getCursorCliService();
+          const remoteDir = session.worktreePath || session.sshConfig.remoteWorkdir || '~';
+          console.log(`[Claude Service] Cursor SSH → CLI on remote ${session.sshConfig.host}:${remoteDir}`);
+          for await (const event of cursorCliService.streamMessage(sessionId, fullMessage, remoteDir, selectedModel, session.sshConfig)) {
             yield event as StreamEvent;
           }
           return;
         }
 
-        // No API key: try CLI (local or SSH)
-        const { getCursorCliService } = require('./cursor-cli.service');
-        const cursorCliService = getCursorCliService();
-        if (session.sshConfig) {
-          const remoteDir = session.worktreePath || session.sshConfig.remoteWorkdir || '~';
-          console.log(`[Claude Service] Cursor SSH → CLI on remote ${session.sshConfig.host}`);
-          for await (const event of cursorCliService.streamMessage(sessionId, fullMessage, remoteDir, selectedModel, session.sshConfig)) {
+        // Local sessions: use SDK if API key exists (multi-turn), CLI otherwise
+        if (cursorApiKey) {
+          const { getCursorService } = require('./cursor.service');
+          const cursorService = getCursorService();
+          const workDir = session.repoPath || process.cwd();
+          for await (const event of cursorService.streamMessage(sessionId, fullMessage, workDir, selectedModel)) {
             yield event as StreamEvent;
           }
         } else {
+          const { getCursorCliService } = require('./cursor-cli.service');
+          const cursorCliService = getCursorCliService();
           const workDir = session.repoPath || process.cwd();
           console.log('[Claude Service] Cursor local → CLI (no API key)');
           for await (const event of cursorCliService.streamMessage(sessionId, fullMessage, workDir, selectedModel)) {
