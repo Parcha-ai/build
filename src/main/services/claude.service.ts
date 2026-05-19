@@ -456,6 +456,16 @@ export class ClaudeService {
       );
     }
 
+    // Gemini models via CLI (requires API key)
+    const geminiKey = (settings.geminiApiKey as string) || '';
+    if (geminiKey) {
+      models.push(
+        { id: 'gemini:gemini-3.5-flash', name: 'Gemini 3.5 Flash', description: 'Latest Gemini — 4x faster, frontier-level coding & agents' },
+        { id: 'gemini:gemini-2.5-pro', name: 'Gemini 2.5 Pro', description: 'Google Gemini 2.5 Pro via CLI' },
+        { id: 'gemini:gemini-2.5-flash', name: 'Gemini 2.5 Flash', description: 'Google Gemini 2.5 Flash via CLI' },
+      );
+    }
+
     return models;
   }
 
@@ -2775,6 +2785,7 @@ Read or source that file if you need the actual values. Do not print secret valu
       this.backgroundListeners.get(sessionId)?.abort();
       codexService.cancel(sessionId);
       openclawService.cancel(sessionId);
+      try { const { getGeminiService } = require('./gemini.service'); getGeminiService().cancel(sessionId); } catch { /* not loaded */ }
 
       // Kill orphaned remote processes from the old query
       if (session?.sshConfig) {
@@ -2968,6 +2979,32 @@ Read or source that file if you need the actual values. Do not print secret valu
         const fullMessage = cursorContext ? `${cursorContext}\n\n${userMessage}` : userMessage;
         for await (const event of cursorService.streamMessage(sessionId, fullMessage, workDir, selectedModel)) {
           yield event as any;
+        }
+        return;
+      }
+
+      // Route to Gemini CLI for gemini:* models
+      if (selectedModel?.startsWith('gemini:')) {
+        const { getGeminiService } = require('./gemini.service');
+        const geminiService = getGeminiService();
+        const workDir = session.worktreePath || session.repoPath || process.cwd();
+
+        // Build cross-harness transcript context
+        let geminiContext = '';
+        try {
+          const transcriptMessages = await this.getMessages(sessionId);
+          const merged = mergeConversationMessages(transcriptMessages, normalizedSupplementalMessages);
+          geminiContext = buildCrossHarnessContext(merged);
+          if (geminiContext) {
+            console.log(`[Claude Service] Gemini cross-harness context: ${geminiContext.length} chars from ${merged.length} messages`);
+          }
+        } catch (e) {
+          console.warn('[Claude Service] Could not load messages for Gemini context:', e);
+        }
+
+        const fullMessage = geminiContext ? `${geminiContext}\n\n${userMessage}` : userMessage;
+        for await (const event of geminiService.streamMessage(sessionId, fullMessage, workDir, selectedModel)) {
+          yield event as StreamEvent;
         }
         return;
       }
@@ -4957,8 +4994,9 @@ Begin by creating the task structure now.
     }
     // Stop background task listener
     this.backgroundListeners.get(sessionId)?.abort();
-    // Also kill any active Codex process for this session
+    // Also kill any active Codex or Gemini process for this session
     codexService.cancel(sessionId);
+    try { const { getGeminiService } = require('./gemini.service'); getGeminiService().cancel(sessionId); } catch { /* not loaded */ }
 
     // Reject pending permissions — the query that requested them is dead
     for (const [reqId, pending] of this.pendingPermissions.entries()) {

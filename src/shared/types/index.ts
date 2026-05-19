@@ -297,6 +297,8 @@ export interface AppSettings {
   cursorApiKey?: string;
   // DeepSeek via OpenCode agent
   deepseekApiKey?: string;
+  // Google Gemini CLI
+  geminiApiKey?: string;
   // Custom models via API proxy (e.g. Kimi K2.6 via Anthropic-compatible endpoint)
   customModels?: CustomModelConfig[];
   focusTasks?: FocusTask[];

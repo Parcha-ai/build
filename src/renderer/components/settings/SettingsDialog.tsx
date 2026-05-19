@@ -91,6 +91,8 @@ export default function SettingsDialog() {
   const [showCursorApiKey, setShowCursorApiKey] = useState(false);
   const [deepseekApiKey, setDeepseekApiKey] = useState('');
   const [showDeepseekApiKey, setShowDeepseekApiKey] = useState(false);
+  const [geminiApiKey, setGeminiApiKey] = useState('');
+  const [showGeminiApiKey, setShowGeminiApiKey] = useState(false);
 
   // Audio settings
   const [voiceModeEnabled, setVoiceModeEnabled] = useState(false);
@@ -144,14 +146,14 @@ export default function SettingsDialog() {
   }, []);
 
   // Auto-save app settings (toggles and time picker)
-  const autoSaveAppSettings = useCallback(async (updates: { qmdEnabled?: boolean; ultraPlanMode?: boolean; showClearContextOnPlanAccept?: boolean; lunchReminderEnabled?: boolean; lunchReminderTime?: string; bedtimeReminderEnabled?: boolean; bedtimeReminderTime?: string; dailyReviewEnabled?: boolean; dailyReviewTime?: string; bedtimeTaskReviewEnabled?: boolean; foundryEnabled?: boolean; foundryBaseUrl?: string; foundryApiKey?: string; foundryDefaultSonnetModel?: string; foundryDefaultHaikuModel?: string; foundryDefaultOpusModel?: string; customModels?: typeof customModels; cursorApiKey?: string; deepseekApiKey?: string }) => {
+  const autoSaveAppSettings = useCallback(async (updates: { qmdEnabled?: boolean; ultraPlanMode?: boolean; showClearContextOnPlanAccept?: boolean; lunchReminderEnabled?: boolean; lunchReminderTime?: string; bedtimeReminderEnabled?: boolean; bedtimeReminderTime?: string; dailyReviewEnabled?: boolean; dailyReviewTime?: string; bedtimeTaskReviewEnabled?: boolean; foundryEnabled?: boolean; foundryBaseUrl?: string; foundryApiKey?: string; foundryDefaultSonnetModel?: string; foundryDefaultHaikuModel?: string; foundryDefaultOpusModel?: string; customModels?: typeof customModels; cursorApiKey?: string; deepseekApiKey?: string; geminiApiKey?: string }) => {
     showSaveIndicator();
     try {
       await window.electronAPI.settings.set(updates);
       console.log('[SettingsDialog] Auto-saved app settings:', updates);
 
       // Reload available models if model-affecting settings changed
-      const isModelUpdate = 'foundryEnabled' in updates || 'foundryDefaultSonnetModel' in updates || 'foundryDefaultHaikuModel' in updates || 'foundryDefaultOpusModel' in updates || 'customModels' in updates || 'cursorApiKey' in updates || 'deepseekApiKey' in updates;
+      const isModelUpdate = 'foundryEnabled' in updates || 'foundryDefaultSonnetModel' in updates || 'foundryDefaultHaikuModel' in updates || 'foundryDefaultOpusModel' in updates || 'customModels' in updates || 'cursorApiKey' in updates || 'deepseekApiKey' in updates || 'geminiApiKey' in updates;
       if (isModelUpdate) {
         console.log('[SettingsDialog] Model-affecting settings changed, reloading available models');
         await loadAvailableModels();
@@ -244,6 +246,7 @@ export default function SettingsDialog() {
           setCustomModels((appSettings as any).customModels || []);
           setCursorApiKey((appSettings as any).cursorApiKey || '');
           setDeepseekApiKey((appSettings as any).deepseekApiKey || '');
+          setGeminiApiKey((appSettings as any).geminiApiKey || '');
           setIsLoading(false);
         })
         .catch((error) => {
@@ -1000,7 +1003,37 @@ export default function SettingsDialog() {
         </p>
       </div>
 
-      {/* Google/Gemini API Key */}
+      {/* Gemini CLI API Key */}
+      <div className="space-y-2 pt-4 border-t border-claude-border">
+        <label className="block text-xs font-mono text-claude-text-secondary uppercase tracking-wider">
+          Gemini API Key
+        </label>
+        <ApiKeyInput
+          value={geminiApiKey}
+          onChange={setGeminiApiKey}
+          show={showGeminiApiKey}
+          onToggleShow={() => setShowGeminiApiKey(!showGeminiApiKey)}
+          placeholder="Enter your Google Gemini API key"
+          onSave={(value) => autoSaveAppSettings({ geminiApiKey: value })}
+          isLoading={isLoading}
+          handleDebouncedChange={handleDebouncedChange}
+        />
+        <p className="text-[10px] font-mono text-claude-text-secondary">
+          For Gemini coding agent via CLI (gemini-2.5-pro, gemini-2.5-flash).{' '}
+          <a
+            href="#"
+            onClick={(e) => {
+              e.preventDefault();
+              window.electronAPI.app?.openExternal?.('https://aistudio.google.com/apikey');
+            }}
+            className="text-claude-accent hover:underline"
+          >
+            Get your key at aistudio.google.com
+          </a>
+        </p>
+      </div>
+
+      {/* Google/Gemini API Key (Browser AI) */}
       <div className="space-y-2 pt-4 border-t border-claude-border">
         <label className="block text-xs font-mono text-claude-text-secondary uppercase tracking-wider">
           Google/Gemini API Key (Browser AI)
