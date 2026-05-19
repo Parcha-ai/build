@@ -2994,7 +2994,32 @@ Read or source that file if you need the actual values. Do not print secret valu
           console.warn('[Claude Service] Could not load messages for Cursor context:', e);
         }
 
-        const fullMessage = cursorContext ? `${cursorContext}\n\n${userMessage}` : userMessage;
+        // SSH context: Cursor SDK runs locally, so inject instructions to wrap commands with SSH
+        let sshContext = '';
+        if (session.sshConfig) {
+          const remoteDir = session.worktreePath || session.sshConfig.remoteWorkdir;
+          sshContext = `<remote_execution_context>
+You are working on a REMOTE server via SSH. The code lives on the remote machine, not locally.
+
+- **Host**: ${session.sshConfig.host} (SSH alias: ${session.sshConfig.host})
+- **Username**: ${session.sshConfig.username}
+- **Remote working directory**: ${remoteDir}
+${session.branch ? `- **Git branch**: ${session.branch}` : ''}
+
+CRITICAL: You MUST wrap ALL shell commands with ssh. Use:
+  ssh ${session.sshConfig.host} "cd ${remoteDir} && <your command>"
+
+For multi-line or complex commands:
+  ssh ${session.sshConfig.host} "cd ${remoteDir} && bash -c '<command>'"
+
+Do NOT run commands locally — they will fail or operate on the wrong machine.
+All file reads, writes, greps, and edits must target the remote path.
+</remote_execution_context>`;
+          console.log(`[Claude Service] Cursor SSH context injected for ${session.sshConfig.host}:${remoteDir}`);
+        }
+
+        const parts = [cursorContext, sshContext, userMessage].filter(Boolean);
+        const fullMessage = parts.join('\n\n');
         for await (const event of cursorService.streamMessage(sessionId, fullMessage, workDir, selectedModel)) {
           yield event as any;
         }
