@@ -205,20 +205,21 @@ export default function SettingsDialog() {
     }, 500);
   }, []);
 
-  // Load all settings on open
+  // Load all settings on open — fast store reads first, slow QMD check independently
   useEffect(() => {
     if (isSettingsOpen) {
       setIsLoading(true);
+
+      // These are all instant electron-store reads — never hang
       Promise.all([
         window.electronAPI.settings.getApiKey(),
         window.electronAPI.audio.getOpenAiKey(),
         window.electronAPI.settings.getGoogleApiKey(),
         window.electronAPI.settings.get(),
-        window.electronAPI.qmd.getStatus(),
         loadSettings(),
         window.electronAPI.audio.getElevenLabsKey(),
       ])
-        .then(([anthropicKey, openAiKey, googleKey, appSettings, qmdStatusResult, , elevenLabsKey]) => {
+        .then(([anthropicKey, openAiKey, googleKey, appSettings, , elevenLabsKey]) => {
           console.log('[SettingsDialog] Loaded settings:', appSettings);
           setApiKey(anthropicKey || '');
           setOpenaiApiKey(openAiKey || '');
@@ -234,7 +235,6 @@ export default function SettingsDialog() {
           setDailyReviewEnabled((appSettings as any).dailyReviewEnabled ?? true);
           setDailyReviewTime((appSettings as any).dailyReviewTime || '09:00');
           setBedtimeTaskReviewEnabled((appSettings as any).bedtimeTaskReviewEnabled ?? true);
-          // Foundry settings
           setFoundryEnabled(appSettings.foundryEnabled || false);
           setFoundryBaseUrl(appSettings.foundryBaseUrl || '');
           setFoundryApiKey(appSettings.foundryApiKey || '');
@@ -244,13 +244,17 @@ export default function SettingsDialog() {
           setCustomModels((appSettings as any).customModels || []);
           setCursorApiKey((appSettings as any).cursorApiKey || '');
           setDeepseekApiKey((appSettings as any).deepseekApiKey || '');
-          setQmdStatus(qmdStatusResult);
           setIsLoading(false);
         })
         .catch((error) => {
           console.error('Failed to load settings:', error);
           setIsLoading(false);
         });
+
+      // QMD spawns shell processes — load independently so it never blocks API keys
+      window.electronAPI.qmd.getStatus()
+        .then((s) => setQmdStatus(s))
+        .catch((err) => console.warn('[SettingsDialog] QMD status check failed:', err));
     }
   }, [isSettingsOpen, loadSettings]);
 

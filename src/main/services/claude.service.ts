@@ -2782,6 +2782,9 @@ Read or source that file if you need the actual values. Do not print secret valu
       }
     }
 
+    // Rate limit auto-retry flag — set in rate_limit_event, checked in result handler
+    let pendingRateLimitRetry = false;
+
     // Create abort controller for cancellation
     const abortController = new AbortController();
     this.activeQueries.set(sessionId, abortController);
@@ -4442,11 +4445,9 @@ Begin by creating the task structure now.
             const rlMsg = msg as SDKMessage & { rate_limit_info?: { status?: string; resetsAt?: number; rateLimitType?: string } };
             const info = rlMsg.rate_limit_info;
             if (info?.status === 'rejected') {
-              const resetTime = info.resetsAt ? new Date(info.resetsAt * 1000) : null;
-              const waitMin = resetTime ? Math.ceil((resetTime.getTime() - Date.now()) / 60000) : null;
-              const timeStr = waitMin && waitMin > 0 ? ` (~${waitMin}min)` : '';
-              console.warn(`[Claude SDK] Rate limited (${info.rateLimitType})${timeStr}`);
-              yield { type: 'text_delta', content: `\n⏳ **Rate limited** (${info.rateLimitType || 'API'}) — waiting for reset${timeStr}...\n` };
+              console.warn(`[Claude SDK] Rate limited (${info?.rateLimitType}) — will auto-retry in 10s`);
+              pendingRateLimitRetry = true;
+              yield { type: 'text_delta', content: `\n⏳ Rate limited — retrying in 10s...\n` };
             }
             break;
           }
@@ -4560,6 +4561,19 @@ Begin by creating the task structure now.
               this.sessionStore.delete(`sdkSessionMappings.${sessionId}`);
               yield { type: 'text_delta', content: '⚠️ Remote session expired — reconnecting automatically...\n\n' };
               // Retry with clean state — yield* delegates to a fresh generator
+              yield* this.streamMessage(sessionId, userMessage, attachments, permissionMode, thinkingMode, model, gstackMode, supplementalMessages);
+              return;
+            }
+
+            // Rate limit auto-retry: wait 10s then resend
+            if (resultMsg.is_error && (pendingRateLimitRetry || resultMsg.result?.match(/rate.?limit|429|too many requests|overloaded/i))) {
+              console.log('[Claude SDK] Rate limit auto-retry: waiting 10s');
+              if (!pendingRateLimitRetry) {
+                yield { type: 'text_delta', content: `\n⏳ Rate limited — retrying in 10s...\n` };
+              }
+              await new Promise(r => setTimeout(r, 10000));
+              if (abortController.signal.aborted) return;
+              yield { type: 'text_delta', content: '🔄 Retrying...\n\n' };
               yield* this.streamMessage(sessionId, userMessage, attachments, permissionMode, thinkingMode, model, gstackMode, supplementalMessages);
               return;
             }
@@ -4788,6 +4802,14 @@ Begin by creating the task structure now.
           type: 'error',
           error: 'Authentication failed. Either set your Anthropic API key in Settings → API Keys, or run `claude login` in your terminal to authenticate via OAuth.'
         };
+      } else if (errorMessage.match(/rate.?limit|429|too many requests|overloaded/i)) {
+        console.log('[Claude SDK] Rate limit exception — auto-retry in 10s');
+        yield { type: 'text_delta', content: `\n⏳ Rate limited — retrying in 10s...\n` };
+        await new Promise(r => setTimeout(r, 10000));
+        if (abortController.signal.aborted) return;
+        yield { type: 'text_delta', content: '🔄 Retrying...\n\n' };
+        yield* this.streamMessage(sessionId, userMessage, attachments, permissionMode, thinkingMode, model, gstackMode, supplementalMessages);
+        return;
       } else {
         yield { type: 'error', error: errorMessage };
       }

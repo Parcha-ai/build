@@ -544,16 +544,54 @@ function loadSupplementalMessages(sessionId: string): ChatMessage[] {
   }
 }
 
+const SUPPLEMENTAL_MAX_MESSAGES = 50;
+const SUPPLEMENTAL_MAX_BYTES = 1 * 1024 * 1024;
+
 function saveSupplementalMessages(sessionId: string, messages: ChatMessage[]): void {
   if (typeof window === 'undefined') return;
 
   try {
-    const serialized = messages
+    let capped = messages.slice(-SUPPLEMENTAL_MAX_MESSAGES);
+    let serialized = capped
       .map(serializeChatMessage)
       .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
-    window.localStorage.setItem(getSupplementalStorageKey(sessionId), JSON.stringify(serialized));
+    let json = JSON.stringify(serialized);
+
+    while (json.length > SUPPLEMENTAL_MAX_BYTES && serialized.length > 1) {
+      serialized = serialized.slice(1);
+      json = JSON.stringify(serialized);
+    }
+
+    window.localStorage.setItem(getSupplementalStorageKey(sessionId), json);
   } catch (error) {
     console.warn('[SessionStore] Failed to save supplemental messages:', error);
+  }
+}
+
+function pruneSessionLocalStorage(validSessionIds: Set<string>): void {
+  if (typeof window === 'undefined') return;
+
+  const prefixes = ['grep-supplemental-messages-', 'grep-history-'];
+  let freedBytes = 0;
+
+  for (let i = window.localStorage.length - 1; i >= 0; i--) {
+    const key = window.localStorage.key(i);
+    if (!key) continue;
+
+    for (const prefix of prefixes) {
+      if (key.startsWith(prefix)) {
+        const sid = key.slice(prefix.length);
+        if (!validSessionIds.has(sid)) {
+          const val = window.localStorage.getItem(key);
+          freedBytes += val?.length || 0;
+          window.localStorage.removeItem(key);
+        }
+      }
+    }
+  }
+
+  if (freedBytes > 0) {
+    console.log(`[SessionStore] Pruned ${(freedBytes / 1024).toFixed(0)}KB of orphaned localStorage entries`);
   }
 }
 
@@ -830,6 +868,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       if (autoSelected && validActiveSessionId) {
         window.electronAPI.dev.setActiveSession(validActiveSessionId);
       }
+
+      // Prune orphaned localStorage entries for deleted sessions
+      const validIds = new Set(sessions.map(s => s.id));
+      pruneSessionLocalStorage(validIds);
 
       // Load messages for the active session
       if (validActiveSessionId) {
