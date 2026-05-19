@@ -198,7 +198,7 @@ class CursorCliService {
       // Escape the message for safe SSH transmission: base64-encode it
       const b64Message = Buffer.from(message).toString('base64');
       const apiEnv = apiKey ? `CURSOR_API_KEY='${apiKey}' ` : '';
-      const remoteCmd = `cd ${remoteDir} && ${apiEnv}agent -p "$(echo '${b64Message}' | base64 -d)" --output-format stream-json --stream-partial-output --force${cursorModel ? ` --model "${cursorModel}"` : ''}`;
+      const remoteCmd = `cd ${remoteDir} && export PATH="$HOME/.local/bin:$HOME/.cursor/bin:$PATH" && ${apiEnv}agent -p "$(echo '${b64Message}' | base64 -d)" --output-format stream-json --stream-partial-output --force${cursorModel ? ` --model "${cursorModel}"` : ''}`;
 
       console.log(`[Cursor CLI] SSH exec on ${sshConfig.host}: agent -p <${message.length} chars> --model ${cursorModel}`);
 
