@@ -5042,6 +5042,7 @@ Begin by creating the task structure now.
     // Also kill any active Codex, Cursor, or Gemini process for this session
     codexService.cancel(sessionId);
     try { const { getCursorService } = require('./cursor.service'); getCursorService().cancel(sessionId); } catch { /* not loaded */ }
+    try { const { getCursorCliService } = require('./cursor-cli.service'); getCursorCliService().cancel(sessionId); } catch { /* not loaded */ }
     try { const { getGeminiService } = require('./gemini.service'); getGeminiService().cancel(sessionId); } catch { /* not loaded */ }
 
     // Reject pending permissions — the query that requested them is dead
