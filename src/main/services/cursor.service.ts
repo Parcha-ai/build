@@ -51,7 +51,8 @@ class CursorService {
   private activeAgents: Map<string, SDKAgent> = new Map();
 
   private getApiKey(): string | undefined {
-    return settingsStore.get('cursorApiKey') as string | undefined;
+    const settings = settingsStore.get('settings', {}) as Record<string, unknown>;
+    return (settings.cursorApiKey as string) || undefined;
   }
 
   /**
