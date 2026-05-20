@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { Session, ChatMessage, ToolCall, PermissionRequest, PermissionResponse, QuestionRequest, QuestionResponse, SetupProgressEvent, CompactionStatus, PlanApprovalRequest, PlanApprovalResponse, GStackMode } from '../../shared/types';
+import type { Session, ChatMessage, ToolCall, PermissionRequest, PermissionResponse, QuestionRequest, QuestionResponse, SetupProgressEvent, CompactionStatus, PlanApprovalRequest, PlanApprovalResponse, GStackMode, Harness } from '../../shared/types';
 import { AGENT_COLORS } from '../../shared/types';
 import { useAudioStore } from './audio.store';
 
@@ -272,6 +272,16 @@ export function isCodexModel(model?: string | null): boolean {
 export function isNonClaudeHarness(model?: string | null): boolean {
   if (!model) return false;
   return model.startsWith('codex:') || model.startsWith('cursor:') || model.startsWith('gemini:') || model.startsWith('opencode:');
+}
+
+export function harnessFromModel(model?: string | null): Harness {
+  if (!model) return 'claude';
+  if (model.startsWith('codex:')) return 'codex';
+  if (model.startsWith('cursor:')) return 'cursor';
+  if (model.startsWith('gemini:')) return 'gemini';
+  if (model.startsWith('opencode:')) return 'opencode';
+  if (model.startsWith('custom:')) return 'custom';
+  return 'claude';
 }
 
 export function getSupportedPermissionModes(model?: string | null): PermissionMode[] {
@@ -1547,6 +1557,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         role: 'user',
         content: message,
         timestamp: new Date(queuedMsg.timestamp),
+        harness: harnessFromModel(state.selectedModel[sessionId]),
       };
       set((state) => ({
         messages: {
@@ -1618,6 +1629,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       role: 'user',
       content: modifiedText, // Use the secured version
       timestamp: new Date(),
+      harness: harnessFromModel(model),
     };
     if (!alreadyInChat) {
       addMessage(sessionId, userMessage);
@@ -2052,6 +2064,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             role: 'user',
             content: nextMessage.message,
             timestamp: new Date(nextMessage.timestamp),
+            harness: harnessFromModel(activeStreamModel),
           };
           return {
             messages: alreadyShown
@@ -2178,6 +2191,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       const finalMessage: ChatMessage = {
         ...message,
         content: messageContent,
+        harness: harnessFromModel(streamModel),
       };
 
       if (isNonClaudeHarness(streamModel)) {
@@ -2286,6 +2300,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           content: streamedContent,
           timestamp: new Date(),
           interrupted: true,
+          harness: harnessFromModel(streamModel),
         };
         if (isNonClaudeHarness(streamModel)) {
           persistSupplementalMessage(sessionId, partialMessage);
@@ -2313,6 +2328,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         role: 'assistant',
         content: `Error: ${error}`,
         timestamp: new Date(),
+        harness: harnessFromModel(streamModel),
       };
       if (isNonClaudeHarness(streamModel)) {
         persistSupplementalMessage(sessionId, errorMessage);
@@ -2713,6 +2729,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         toolCalls: partialToolCalls.length > 0 ? partialToolCalls : undefined,
         timestamp: new Date(),
         interrupted: true,
+        harness: harnessFromModel(state.activeStreamModel[sessionId]),
       };
       state.addMessage(sessionId, interruptedMessage);
       console.log(`[cancelStream] Saved interrupted message with ${partialContent.length} chars of content`);
@@ -2759,6 +2776,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           toolCalls: partialToolCalls.length > 0 ? partialToolCalls : undefined,
           timestamp: new Date(),
           interrupted: true,
+          harness: harnessFromModel(state.activeStreamModel[sessionId]),
         };
         state.addMessage(sessionId, interruptedMessage);
         console.log(`[interruptAndSend] Saved interrupted message with ${partialContent.length} chars of content`);

@@ -1,4 +1,4 @@
-import type { ChatMessage } from '../../shared/types';
+import type { ChatMessage, Harness } from '../../shared/types';
 
 const MAX_ASSISTANT_CHARS = 2000;
 const MAX_TOOL_INPUT_CHARS = 100;
@@ -175,19 +175,26 @@ function compressToolCalls(toolCalls: ChatMessage['toolCalls']): string {
 /**
  * Build rich transcript context for cross-harness continuity.
  * When switching between Claude, Cursor, Codex, etc., this provides
- * the new harness with full conversation history up to ~100K tokens.
- * Tool calls are compressed to one-line summaries — the assistant's
- * text already explains what happened.
+ * the new harness with conversation history from OTHER harnesses.
+ * Messages from the current harness are excluded — it already has those.
+ * Tool calls are compressed to one-line summaries.
  */
-export function buildCrossHarnessContext(messages: ChatMessage[], supplemental: ChatMessage[] = []): string {
+export function buildCrossHarnessContext(messages: ChatMessage[], supplemental: ChatMessage[] = [], currentHarness?: Harness): string {
   const merged = mergeConversationMessages(messages, supplemental);
   if (merged.length === 0) return '';
+
+  // Filter out messages from the current harness — it already has its own context
+  const crossHarnessMessages = currentHarness
+    ? merged.filter(msg => !msg.harness || msg.harness !== currentHarness)
+    : merged;
+
+  if (crossHarnessMessages.length === 0) return '';
 
   const formatted: string[] = [];
   let totalChars = 0;
 
-  for (let i = merged.length - 1; i >= 0; i--) {
-    const msg = merged[i];
+  for (let i = crossHarnessMessages.length - 1; i >= 0; i--) {
+    const msg = crossHarnessMessages[i];
     const role = msg.role.toUpperCase();
 
     let content = msg.content || '';

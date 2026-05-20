@@ -2953,15 +2953,13 @@ Read or source that file if you need the actual values. Do not print secret valu
           }
         }
 
-        // Only build cross-harness context if Claude transcript has messages.
-        // Supplemental messages include Codex's own turns — skip those.
         let conversationContext = '';
         try {
           const transcriptMessages = await this.getMessages(sessionId);
-          if (transcriptMessages.length > 0) {
-            const mergedMessages = mergeConversationMessages(transcriptMessages, normalizedSupplementalMessages);
-            conversationContext = buildCrossHarnessContext(mergedMessages);
-            console.log(`[Claude Service] Codex cross-harness context: ${conversationContext.length} chars from ${mergedMessages.length} messages (${transcriptMessages.length} from Claude transcript)`);
+          const mergedMessages = mergeConversationMessages(transcriptMessages, normalizedSupplementalMessages);
+          conversationContext = buildCrossHarnessContext(mergedMessages, [], 'codex');
+          if (conversationContext) {
+            console.log(`[Claude Service] Codex cross-harness context: ${conversationContext.length} chars from ${mergedMessages.length} messages`);
           }
         } catch (e) {
           console.warn('[Claude Service] Could not load messages for Codex context:', e);
@@ -2981,18 +2979,13 @@ Read or source that file if you need the actual values. Do not print secret valu
 
       // Route to Cursor for cursor:* models
       if (selectedModel?.startsWith('cursor:')) {
-        // Only build cross-harness context if there are Claude transcript messages.
-        // Supplemental messages from the renderer include Cursor's own prior turns —
-        // feeding those back on every CLI invocation bloats the prompt and slows TTFT.
         let cursorContext = '';
         try {
           const transcriptMessages = await this.getMessages(sessionId);
-          if (transcriptMessages.length > 0) {
-            const merged = mergeConversationMessages(transcriptMessages, normalizedSupplementalMessages);
-            cursorContext = buildCrossHarnessContext(merged);
-            if (cursorContext) {
-              console.log(`[Claude Service] Cursor cross-harness context: ${cursorContext.length} chars from ${merged.length} messages (${transcriptMessages.length} from Claude transcript)`);
-            }
+          const merged = mergeConversationMessages(transcriptMessages, normalizedSupplementalMessages);
+          cursorContext = buildCrossHarnessContext(merged, [], 'cursor');
+          if (cursorContext) {
+            console.log(`[Claude Service] Cursor cross-harness context: ${cursorContext.length} chars from ${merged.length} messages`);
           }
         } catch (e) {
           console.warn('[Claude Service] Could not load messages for Cursor context:', e);
@@ -3040,16 +3033,13 @@ Read or source that file if you need the actual values. Do not print secret valu
         const workDir = session.worktreePath || session.repoPath || process.cwd();
 
         // Only build cross-harness context if Claude transcript has messages.
-        // Supplemental messages include Gemini's own turns — skip those.
         let geminiContext = '';
         try {
           const transcriptMessages = await this.getMessages(sessionId);
-          if (transcriptMessages.length > 0) {
-            const merged = mergeConversationMessages(transcriptMessages, normalizedSupplementalMessages);
-            geminiContext = buildCrossHarnessContext(merged);
-            if (geminiContext) {
-              console.log(`[Claude Service] Gemini cross-harness context: ${geminiContext.length} chars from ${merged.length} messages (${transcriptMessages.length} from Claude transcript)`);
-            }
+          const merged = mergeConversationMessages(transcriptMessages, normalizedSupplementalMessages);
+          geminiContext = buildCrossHarnessContext(merged, [], 'gemini');
+          if (geminiContext) {
+            console.log(`[Claude Service] Gemini cross-harness context: ${geminiContext.length} chars from ${merged.length} messages`);
           }
         } catch (e) {
           console.warn('[Claude Service] Could not load messages for Gemini context:', e);
@@ -3075,7 +3065,7 @@ Read or source that file if you need the actual values. Do not print secret valu
         const transcriptMessages = await this.getMessages(sessionId);
         const merged = mergeConversationMessages(transcriptMessages, normalizedSupplementalMessages);
         if (merged.length > 0) {
-          supplementalConversationContext = buildCrossHarnessContext(merged);
+          supplementalConversationContext = buildCrossHarnessContext(merged, [], 'claude');
           if (supplementalConversationContext) {
             console.log(`[Claude Service] Claude cross-harness context: ${supplementalConversationContext.length} chars from ${merged.length} messages`);
           }
@@ -4843,6 +4833,7 @@ Begin by creating the task structure now.
         contentBlocks: mergedBlocks.length > 0 ? mergedBlocks : undefined,
         toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
         timestamp: new Date(),
+        harness: 'claude',
       };
 
       yield { type: 'message_complete', message, ...(lastTerminalReason ? { terminalReason: lastTerminalReason } : {}) };
@@ -6091,6 +6082,7 @@ Begin by creating the task structure now.
           role: 'user',
           content,
           timestamp: entry.timestamp ? new Date(entry.timestamp as string) : new Date(),
+          harness: 'claude' as const,
         },
         messageId: claudeMessageId,
       };
@@ -6106,6 +6098,7 @@ Begin by creating the task structure now.
           content: content || '',
           toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
           timestamp: entry.timestamp ? new Date(entry.timestamp as string) : new Date(),
+          harness: 'claude' as const,
         },
         messageId: claudeMessageId,
       };
