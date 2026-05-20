@@ -43,6 +43,7 @@ interface SshConfig {
 class CursorCliService {
   private activeProcesses: Map<string, { process: ChildProcess; abortController: AbortController }> = new Map();
   private agentBinaryCache: string | null | false = null;
+  private lastAssistantLen = 0;
 
   private getApiKey(): string | undefined {
     const settings = settingsStore.get('settings', {}) as Record<string, unknown>;
@@ -101,12 +102,19 @@ class CursorCliService {
       case 'assistant': {
         const text = event.message?.content?.[0]?.text;
         if (text) {
-          return { type: 'text_delta', content: text };
+          // --stream-partial-output sends cumulative text, not deltas.
+          // Diff against what we've already emitted to extract the new portion.
+          const delta = text.substring(this.lastAssistantLen);
+          this.lastAssistantLen = text.length;
+          if (delta) {
+            return { type: 'text_delta', content: delta };
+          }
         }
         return null;
       }
 
       case 'tool_call':
+        this.lastAssistantLen = 0;
         if (event.subtype === 'started') {
           const name = this.extractToolName(event);
           const input = this.extractToolInput(event);
@@ -202,6 +210,7 @@ class CursorCliService {
   ): AsyncGenerator<CursorStreamEvent> {
     // API key is optional — the CLI has its own auth flow
     const apiKey = this.getApiKey();
+    this.lastAssistantLen = 0;
 
     const cursorModel = model.replace('cursor:', '');
 
