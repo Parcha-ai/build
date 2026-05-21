@@ -2953,13 +2953,12 @@ Read or source that file if you need the actual values. Do not print secret valu
           }
         }
 
-        // Load conversation history for cross-harness continuity
         let conversationContext = '';
         try {
           const transcriptMessages = await this.getMessages(sessionId);
           const mergedMessages = mergeConversationMessages(transcriptMessages, normalizedSupplementalMessages);
-          if (mergedMessages.length > 0) {
-            conversationContext = buildCrossHarnessContext(mergedMessages);
+          conversationContext = buildCrossHarnessContext(mergedMessages, [], 'codex');
+          if (conversationContext) {
             console.log(`[Claude Service] Codex cross-harness context: ${conversationContext.length} chars from ${mergedMessages.length} messages`);
           }
         } catch (e) {
@@ -2980,12 +2979,11 @@ Read or source that file if you need the actual values. Do not print secret valu
 
       // Route to Cursor for cursor:* models
       if (selectedModel?.startsWith('cursor:')) {
-        // Build cross-harness transcript context
         let cursorContext = '';
         try {
           const transcriptMessages = await this.getMessages(sessionId);
           const merged = mergeConversationMessages(transcriptMessages, normalizedSupplementalMessages);
-          cursorContext = buildCrossHarnessContext(merged);
+          cursorContext = buildCrossHarnessContext(merged, [], 'cursor');
           if (cursorContext) {
             console.log(`[Claude Service] Cursor cross-harness context: ${cursorContext.length} chars from ${merged.length} messages`);
           }
@@ -3039,12 +3037,12 @@ Read or source that file if you need the actual values. Do not print secret valu
         const geminiService = getGeminiService();
         const workDir = session.worktreePath || session.repoPath || process.cwd();
 
-        // Build cross-harness transcript context
+        // Only build cross-harness context if Claude transcript has messages.
         let geminiContext = '';
         try {
           const transcriptMessages = await this.getMessages(sessionId);
           const merged = mergeConversationMessages(transcriptMessages, normalizedSupplementalMessages);
-          geminiContext = buildCrossHarnessContext(merged);
+          geminiContext = buildCrossHarnessContext(merged, [], 'gemini');
           if (geminiContext) {
             console.log(`[Claude Service] Gemini cross-harness context: ${geminiContext.length} chars from ${merged.length} messages`);
           }
@@ -3077,7 +3075,7 @@ Read or source that file if you need the actual values. Do not print secret valu
         const transcriptMessages = await this.getMessages(sessionId);
         const merged = mergeConversationMessages(transcriptMessages, normalizedSupplementalMessages);
         if (merged.length > 0) {
-          supplementalConversationContext = buildCrossHarnessContext(merged);
+          supplementalConversationContext = buildCrossHarnessContext(merged, [], 'claude');
           if (supplementalConversationContext) {
             console.log(`[Claude Service] Claude cross-harness context: ${supplementalConversationContext.length} chars from ${merged.length} messages`);
           }
@@ -4845,6 +4843,7 @@ Begin by creating the task structure now.
         contentBlocks: mergedBlocks.length > 0 ? mergedBlocks : undefined,
         toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
         timestamp: new Date(),
+        harness: 'claude',
       };
 
       yield { type: 'message_complete', message, ...(lastTerminalReason ? { terminalReason: lastTerminalReason } : {}) };
@@ -6139,6 +6138,7 @@ Begin by creating the task structure now.
           role: 'user',
           content,
           timestamp: entry.timestamp ? new Date(entry.timestamp as string) : new Date(),
+          harness: 'claude' as const,
         },
         messageId: claudeMessageId,
       };
@@ -6154,6 +6154,7 @@ Begin by creating the task structure now.
           content: content || '',
           toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
           timestamp: entry.timestamp ? new Date(entry.timestamp as string) : new Date(),
+          harness: 'claude' as const,
         },
         messageId: claudeMessageId,
       };

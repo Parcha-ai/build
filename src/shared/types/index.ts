@@ -209,6 +209,8 @@ export interface ContentBlock {
   agentId?: string; // Which agent produced this block (null = lead agent)
 }
 
+export type Harness = 'claude' | 'codex' | 'cursor' | 'gemini' | 'opencode' | 'custom';
+
 export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant' | 'system';
@@ -218,6 +220,7 @@ export interface ChatMessage {
   attachments?: Attachment[];
   timestamp: Date;
   interrupted?: boolean; // True if message was interrupted before completion
+  harness?: Harness; // Which AI harness produced/received this message
 }
 
 export interface Attachment {
