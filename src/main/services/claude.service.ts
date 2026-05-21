@@ -2998,6 +2998,14 @@ Read or source that file if you need the actual values. Do not print secret valu
             chatId = await cursorCliService.createChat(workDir);
           }
 
+          if (chatId) {
+            // Store immediately so subsequent turns can find it
+            cursorCliService.setChatId(sessionId, chatId);
+            console.log(`[Claude Service] Cursor new chat ${chatId} for session ${sessionId.substring(0, 8)}`);
+          } else {
+            console.warn('[Claude Service] Failed to create Cursor chat — each turn will be stateless');
+          }
+
           // Build cross-harness context only for the initial turn
           try {
             const transcriptMessages = await this.getMessages(sessionId);
@@ -3010,7 +3018,7 @@ Read or source that file if you need the actual values. Do not print secret valu
             console.warn('[Claude Service] Could not load messages for Cursor context:', e);
           }
         } else {
-          console.log(`[Claude Service] Cursor resuming chat ${chatId}`);
+          console.log(`[Claude Service] Cursor resuming chat ${chatId} for session ${sessionId.substring(0, 8)}`);
         }
 
         const baseMessage = cursorContext ? `${cursorContext}\n\n${userMessage}` : userMessage;
