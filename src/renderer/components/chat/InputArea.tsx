@@ -10,6 +10,7 @@ import { MessageQueuePanel } from './MessageQueuePanel';
 import { VoiceModeErrorBoundary } from './VoiceModeErrorBoundary';
 import SecureInput from './SecureInput';
 import CompactionSwitchNotice from './CompactionSwitchNotice';
+import { AutoRouteBadge } from './AutoRouteBadge';
 import { GSTACK_MODE_META } from '../../../shared/types';
 
 // Permission mode config for UI - using terminal-style prompts
@@ -284,6 +285,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
   const activeGStackMode = useSessionStore(useCallback((s) => s.gstackMode[sessionId] || null, [sessionId]));
   const queuedMessages = useSessionStore(useCallback((s) => s.messageQueue[sessionId] || EMPTY_QUEUE, [sessionId]));
   const currentModel = useSessionStore(useCallback((s) => s.selectedModel[sessionId] || 'claude-opus-4-7', [sessionId]));
+  const autoRouteDecision = useSessionStore(useCallback((s) => s.autoRouteDecision[sessionId] || null, [sessionId]));
   const compactionSwitch = useSessionStore(useCallback((s) => s.compactionSwitch[sessionId] || null, [sessionId]));
   const availableModels = useSessionStore((s) => s.availableModels || EMPTY_MODELS);
 
@@ -1881,10 +1883,26 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
           <button
             onClick={() => setShowModelDropdown(!showModelDropdown)}
             disabled={disabled}
-            className="text-claude-text-secondary hover:text-claude-text transition-colors disabled:opacity-40"
-            title={`${currentModelInfo.description} (click to change)`}
+            className="text-claude-text-secondary hover:text-claude-text transition-colors disabled:opacity-40 flex items-center gap-1.5"
+            title={currentModel === 'auto' && autoRouteDecision
+              ? `Auto Build: ${autoRouteDecision.tier.toUpperCase()} → ${autoRouteDecision.resolvedModel} (${Math.round(autoRouteDecision.confidence * 100)}% confidence)`
+              : `${currentModelInfo.description} (click to change)`}
           >
-            {isStreamingProp && systemInfo ? (systemInfo.model || currentModelInfo.name) : currentModelInfo.name}
+            {currentModel === 'auto' ? (
+              autoRouteDecision ? (
+                <AutoRouteBadge
+                  tier={autoRouteDecision.tier}
+                  resolvedModel={autoRouteDecision.resolvedModel}
+                  confidence={autoRouteDecision.confidence}
+                />
+              ) : (
+                <span className="text-[10px] font-mono">
+                  <span className="text-purple-400 font-bold">AUTO</span>
+                </span>
+              )
+            ) : (
+              isStreamingProp && systemInfo ? (systemInfo.model || currentModelInfo.name) : currentModelInfo.name
+            )}
           </button>
           {showModelDropdown && (() => {
             // Two-level menu: Harness → Models
@@ -1900,7 +1918,10 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
               custom: 'Custom',
             };
 
+            const autoModel = availableModels.find(m => m.id === 'auto');
+
             for (const model of availableModels) {
+              if (model.id === 'auto') continue;
               let group = 'claude';
               if (model.id.startsWith('codex:')) group = 'codex';
               else if (model.id.startsWith('cursor:')) group = 'cursor';
@@ -1923,8 +1944,8 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
               localStorage.setItem('grep-recent-models', JSON.stringify(updated));
             };
 
-            // Current harness for highlight
-            let currentHarness = 'claude';
+            // Current harness for highlight (auto mode doesn't highlight a specific harness)
+            let currentHarness = currentModel === 'auto' ? '' : 'claude';
             if (currentModel.startsWith('codex:')) currentHarness = 'codex';
             else if (currentModel.startsWith('cursor:')) currentHarness = 'cursor';
             else if (currentModel.startsWith('gemini:')) currentHarness = 'gemini';
@@ -1938,6 +1959,23 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
               <div className="absolute bottom-full left-0 mb-1 flex z-50">
                 {/* Level 1: Harness list */}
                 <div className="bg-claude-surface border border-claude-border shadow-lg min-w-32">
+                  {/* Auto Build mode — intelligent routing */}
+                  {autoModel && (
+                    <>
+                      <button
+                        onClick={() => selectModel('auto')}
+                        className={`w-full text-left px-3 py-1.5 flex items-center gap-2 transition-colors ${
+                          currentModel === 'auto' ? 'bg-purple-500/10 text-purple-400' : 'text-claude-text-secondary hover:bg-purple-500/5 hover:text-purple-300'
+                        }`}
+                      >
+                        <span className="font-mono text-xs font-bold">
+                          {currentModel === 'auto' && <span className="text-purple-400 mr-1">●</span>}
+                          Auto Build
+                        </span>
+                      </button>
+                      <div className="border-b border-claude-border/30 my-0.5" />
+                    </>
+                  )}
                   {/* Recently used quick-picks */}
                   {recentModels.length > 0 && (
                     <>

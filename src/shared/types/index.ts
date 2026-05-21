@@ -111,6 +111,38 @@ export const GSTACK_MODE_META: Record<string, { color: string; shortName: string
   'sdd':              { color: '#0d9488', shortName: 'SDD' },
 };
 
+// Auto Build mode — intelligent model routing
+export type TaskTier = 'plan' | 'build' | 'verify' | 'refine';
+
+export interface RoutingDecision {
+  tier: TaskTier;
+  resolvedModel: string;
+  confidence: number;
+  reason: string;
+  method: 'heuristic' | 'llm';
+  enableGoals?: boolean;
+}
+
+export interface AutoRouterConfig {
+  enabled: boolean;
+  planModel: string;
+  buildModel: string;
+  verifyModel: string;
+  refineModel: string;
+  fallbackModel: string;
+  costAware: boolean;
+  costThresholdPercent: number;
+  useLlmClassifier: boolean;
+  llmConfidenceThreshold: number;
+}
+
+export interface SessionPhase {
+  lastTierUsed?: TaskTier;
+  hasPlanContext: boolean;
+  hasBuildContext: boolean;
+  recentTiers: TaskTier[];
+}
+
 export type SessionStatus = 'creating' | 'starting' | 'setup' | 'running' | 'stopping' | 'stopped' | 'error';
 
 // Setup progress event for worktree initialization

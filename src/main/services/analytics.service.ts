@@ -298,6 +298,11 @@ class AnalyticsService {
     return this.getEventsForMonth().reduce((sum, e) => sum + e.estimatedCostUsd, 0);
   }
 
+  getMonthSpendPercentage(): number {
+    const monthCost = this.getMonthTotalCost();
+    return (monthCost / this.tierConfig.monthlyIncludedUsd) * 100;
+  }
+
   private getDayKey(timestamp: number): string {
     const d = new Date(timestamp);
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;

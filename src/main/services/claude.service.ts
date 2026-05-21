@@ -410,6 +410,7 @@ export class ClaudeService {
     // Fallback to default Anthropic models
     console.log('[Claude Service] Using default Anthropic model list');
     const models: Array<{ id: string; name: string; description: string }> = [
+      { id: 'auto', name: 'Auto Build', description: 'Intelligent routing — picks the optimal model per task (Plan/Build/Verify/Refine)' },
       { id: 'claude-opus-4-7', name: 'Opus 4.7', description: 'Latest and most capable model - best for complex tasks' },
       { id: 'claude-opus-4-6', name: 'Opus 4.6', description: 'Highly capable model' },
       { id: 'claude-opus-4-5-20251101', name: 'Opus 4.5', description: 'Previous generation Opus' },
@@ -2901,6 +2902,48 @@ Read or source that file if you need the actual values. Do not print secret valu
         const available = await this.getAvailableModels();
         selectedModel = available[0]?.id || 'claude-opus-4-7';
         console.log('[Claude Service] Using top available model:', selectedModel);
+      }
+
+      // Auto Build mode — resolve 'auto' to a concrete model via the router
+      if (selectedModel === 'auto') {
+        try {
+          const { autoRouterService } = require('./auto-router.service');
+          const routingDecision = await autoRouterService.classifyAndRoute(sessionId, userMessage, {
+            gstackMode: gstackMode || undefined,
+            permissionMode: sdkPermissionMode,
+            isSSH: !!session.sshConfig,
+          });
+          selectedModel = routingDecision.resolvedModel;
+          console.log(`[Claude Service] Auto Build resolved: ${routingDecision.tier.toUpperCase()} → ${selectedModel}`);
+
+          // Emit routing decision to renderer for UI display
+          for (const win of BrowserWindow.getAllWindows()) {
+            win.webContents.send(IPC_CHANNELS.CLAUDE_AUTO_ROUTE_DECISION, {
+              sessionId,
+              decision: routingDecision,
+            });
+          }
+
+          // Enable Codex goals for Verify tier
+          if (routingDecision.enableGoals && selectedModel.startsWith('codex:')) {
+            try {
+              const configPath = path.join(os.homedir(), '.codex', 'config.toml');
+              const configContent = fs.existsSync(configPath) ? fs.readFileSync(configPath, 'utf-8') : '';
+              if (!configContent.includes('goals = true')) {
+                const goalsSection = configContent.includes('[features]')
+                  ? configContent.replace('[features]', '[features]\ngoals = true')
+                  : configContent + '\n\n[features]\ngoals = true\n';
+                fs.writeFileSync(configPath, goalsSection);
+                console.log('[Claude Service] Auto Build: Enabled Codex goals for Verify tier');
+              }
+            } catch (e) {
+              console.warn('[Claude Service] Auto Build: Could not enable Codex goals:', e);
+            }
+          }
+        } catch (e) {
+          console.warn('[Claude Service] Auto Build router failed, falling back to Opus:', e);
+          selectedModel = 'claude-opus-4-7';
+        }
       }
 
       let secureEnvContext: string | undefined;

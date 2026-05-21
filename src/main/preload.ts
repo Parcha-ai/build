@@ -271,6 +271,12 @@ const electronAPI = {
     // Send plan approval response
     respondToPlanApproval: (response: { requestId: string; approved: boolean }): Promise<void> =>
       ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_PLAN_APPROVAL_RESPONSE, response),
+    // Auto Build routing decision listener
+    onAutoRouteDecision: (callback: (data: { sessionId: string; decision: { tier: string; resolvedModel: string; confidence: number; reason: string; method: string; enableGoals?: boolean } }) => void) => {
+      const handler = (_: IpcRendererEvent, data: any) => callback(data);
+      ipcRenderer.on(IPC_CHANNELS.CLAUDE_AUTO_ROUTE_DECISION, handler);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.CLAUDE_AUTO_ROUTE_DECISION, handler);
+    },
     // Inject message into active query (for async queue processing)
     injectMessage: (sessionId: string, message: string, attachments?: unknown[]): Promise<boolean> =>
       ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_INJECT_MESSAGE, sessionId, message, attachments),

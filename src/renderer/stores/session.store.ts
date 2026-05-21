@@ -137,6 +137,8 @@ interface SessionState {
   agentColorMap: Record<string, Record<string, number>>; // sessionId -> { agentId -> colorIndex }
   // GStack workflow mode per session
   gstackMode: Record<string, GStackMode | null>;
+  // Auto Build routing decisions per session
+  autoRouteDecision: Record<string, { tier: string; resolvedModel: string; confidence: number; reason: string; method: string } | null>;
 
   // Codex (second opinion) state
   codexStreaming: Record<string, boolean>;
@@ -664,6 +666,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   securedKeys: {},
   agentColorMap: {},
   gstackMode: {},
+  autoRouteDecision: {},
   codexStreaming: {},
   codexContent: {},
   codexThinking: {},
@@ -2155,6 +2158,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }));
     });
 
+    const unsubAutoRoute = window.electronAPI.claude.onAutoRouteDecision(({ sessionId, decision }) => {
+      set((state) => ({
+        autoRouteDecision: { ...state.autoRouteDecision, [sessionId]: decision },
+      }));
+    });
+
     const unsubEnd = window.electronAPI.claude.onStreamEnd(({ sessionId, message }) => {
       const currentState = get();
 
@@ -2462,6 +2471,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       unsubToolResult();
       unsubSystemInfo();
       unsubContextUsage();
+      unsubAutoRoute();
       unsubEnd();
       unsubError();
       unsubPermission();

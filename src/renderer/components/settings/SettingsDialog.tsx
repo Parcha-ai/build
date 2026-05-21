@@ -5,7 +5,7 @@ import { useAudioStore } from '../../stores/audio.store';
 import { useSessionStore } from '../../stores/session.store';
 import ReleaseNotes from '../common/ReleaseNotes';
 
-type TabId = 'general' | 'apiKeys' | 'releases';
+type TabId = 'general' | 'autoBuild' | 'apiKeys' | 'releases';
 
 interface TabConfig {
   id: TabId;
@@ -60,6 +60,7 @@ const ApiKeyInput = React.memo(ApiKeyInputComponent);
 
 const TABS: TabConfig[] = [
   { id: 'general', label: 'General', icon: <Settings size={14} /> },
+  { id: 'autoBuild', label: 'Auto Build', icon: <Sparkles size={14} /> },
   { id: 'apiKeys', label: 'API Keys', icon: <Key size={14} /> },
   { id: 'releases', label: 'Releases', icon: <History size={14} /> },
 ];
@@ -124,6 +125,16 @@ export default function SettingsDialog() {
   // Custom models (Kimi, Gemini, etc via API proxy)
   const [customModels, setCustomModels] = useState<Array<{ id: string; name: string; modelId: string; baseUrl: string; apiKey: string; description?: string }>>([]);
 
+  // Auto Build model routing categories
+  const availableModels = useSessionStore((s) => s.availableModels || []);
+  const [autoBuildCategories, setAutoBuildCategories] = useState<Array<{ id: string; label: string; model: string }>>([
+    { id: 'plan', label: 'Planning', model: 'claude-opus-4-7' },
+    { id: 'build', label: 'Execution', model: 'codex:gpt-5.5' },
+    { id: 'verify', label: 'Verification', model: 'codex:gpt-5.5' },
+    { id: 'refine', label: 'Refinement', model: 'cursor:composer-2.5' },
+  ]);
+  const [autoBuildCostAware, setAutoBuildCostAware] = useState(true);
+
   // QMD status
   const [qmdStatus, setQmdStatus] = useState<{ installed: boolean; bundled: boolean } | null>(null);
   const [isInstallingQmd, setIsInstallingQmd] = useState(false);
@@ -146,7 +157,7 @@ export default function SettingsDialog() {
   }, []);
 
   // Auto-save app settings (toggles and time picker)
-  const autoSaveAppSettings = useCallback(async (updates: { qmdEnabled?: boolean; ultraPlanMode?: boolean; showClearContextOnPlanAccept?: boolean; lunchReminderEnabled?: boolean; lunchReminderTime?: string; bedtimeReminderEnabled?: boolean; bedtimeReminderTime?: string; dailyReviewEnabled?: boolean; dailyReviewTime?: string; bedtimeTaskReviewEnabled?: boolean; foundryEnabled?: boolean; foundryBaseUrl?: string; foundryApiKey?: string; foundryDefaultSonnetModel?: string; foundryDefaultHaikuModel?: string; foundryDefaultOpusModel?: string; customModels?: typeof customModels; cursorApiKey?: string; deepseekApiKey?: string; geminiApiKey?: string }) => {
+  const autoSaveAppSettings = useCallback(async (updates: { qmdEnabled?: boolean; ultraPlanMode?: boolean; showClearContextOnPlanAccept?: boolean; lunchReminderEnabled?: boolean; lunchReminderTime?: string; bedtimeReminderEnabled?: boolean; bedtimeReminderTime?: string; dailyReviewEnabled?: boolean; dailyReviewTime?: string; bedtimeTaskReviewEnabled?: boolean; foundryEnabled?: boolean; foundryBaseUrl?: string; foundryApiKey?: string; foundryDefaultSonnetModel?: string; foundryDefaultHaikuModel?: string; foundryDefaultOpusModel?: string; customModels?: typeof customModels; cursorApiKey?: string; deepseekApiKey?: string; geminiApiKey?: string; autoRouterConfig?: any }) => {
     showSaveIndicator();
     try {
       await window.electronAPI.settings.set(updates);
@@ -247,6 +258,14 @@ export default function SettingsDialog() {
           setCursorApiKey((appSettings as any).cursorApiKey || '');
           setDeepseekApiKey((appSettings as any).deepseekApiKey || '');
           setGeminiApiKey((appSettings as any).geminiApiKey || '');
+          // Auto Build config
+          const savedAutoConfig = (appSettings as any).autoRouterConfig;
+          if (savedAutoConfig?.categories) {
+            setAutoBuildCategories(savedAutoConfig.categories);
+          }
+          if (savedAutoConfig?.costAware !== undefined) {
+            setAutoBuildCostAware(savedAutoConfig.costAware);
+          }
           setIsLoading(false);
         })
         .catch((error) => {
@@ -728,6 +747,135 @@ export default function SettingsDialog() {
     </div>
   );
 
+  // Render Auto Build Tab
+  const renderAutoBuildTab = () => {
+    const getHarnessLabel = (id: string) => {
+      if (id.startsWith('codex:')) return 'Codex';
+      if (id.startsWith('cursor:')) return 'Cursor';
+      if (id.startsWith('gemini:')) return 'Gemini';
+      if (id.startsWith('opencode:')) return 'DeepSeek';
+      if (id.startsWith('custom:')) return 'Custom';
+      if (id.startsWith('claude-')) return 'Claude';
+      return '';
+    };
+
+    const allModels = [
+      { id: 'auto', name: 'Auto (router decides)', harness: '' },
+      ...availableModels.filter(m => m.id !== 'auto').map(m => ({
+        ...m,
+        harness: getHarnessLabel(m.id),
+      })),
+    ];
+
+    const updateCategory = (index: number, field: 'label' | 'model', value: string) => {
+      const updated = [...autoBuildCategories];
+      updated[index] = { ...updated[index], [field]: value };
+      setAutoBuildCategories(updated);
+      autoSaveAppSettings({ autoRouterConfig: { categories: updated, costAware: autoBuildCostAware } } as any);
+    };
+
+    const removeCategory = (index: number) => {
+      const updated = autoBuildCategories.filter((_, i) => i !== index);
+      setAutoBuildCategories(updated);
+      autoSaveAppSettings({ autoRouterConfig: { categories: updated, costAware: autoBuildCostAware } } as any);
+    };
+
+    const addCategory = () => {
+      const updated = [...autoBuildCategories, { id: `custom-${Date.now()}`, label: 'New Category', model: 'claude-opus-4-7' }];
+      setAutoBuildCategories(updated);
+      autoSaveAppSettings({ autoRouterConfig: { categories: updated, costAware: autoBuildCostAware } } as any);
+    };
+
+    return (
+      <div className="space-y-4 p-4 overflow-y-auto max-h-[460px]">
+        <div>
+          <h3 className="text-sm font-medium text-claude-text mb-1">Auto Build Mode</h3>
+          <p className="text-[10px] text-claude-text-secondary mb-4">
+            Configure which model or harness handles each type of task. When Auto Build is selected as your model, the router classifies each query and routes it to the assigned model.
+          </p>
+        </div>
+
+        {/* Category → Model mapping */}
+        <div className="space-y-2">
+          <div className="flex items-center justify-between mb-2">
+            <label className="text-[10px] font-mono text-claude-text-secondary uppercase tracking-wider">Categories</label>
+            <button
+              onClick={addCategory}
+              className="text-[10px] font-mono text-claude-accent hover:text-claude-text transition-colors"
+            >
+              + Add category
+            </button>
+          </div>
+
+          {autoBuildCategories.map((cat, index) => (
+            <div key={cat.id} className="flex items-center gap-2 group">
+              {/* Category label — editable */}
+              <input
+                type="text"
+                value={cat.label}
+                onChange={(e) => updateCategory(index, 'label', e.target.value)}
+                className="w-32 bg-claude-bg border border-claude-border px-2 py-1.5 text-xs font-mono text-claude-text focus:outline-none focus:border-claude-accent"
+              />
+
+              <span className="text-claude-text-secondary text-[10px]">→</span>
+
+              {/* Model selector */}
+              <select
+                value={cat.model}
+                onChange={(e) => updateCategory(index, 'model', e.target.value)}
+                className="flex-1 bg-claude-bg border border-claude-border px-2 py-1.5 text-xs font-mono text-claude-text focus:outline-none focus:border-claude-accent appearance-none cursor-pointer"
+              >
+                {allModels.map(m => (
+                  <option key={m.id} value={m.id}>
+                    {m.harness ? `${m.name.replace(/ \(Codex\)| \(Cursor\)/, '')} [${m.harness}]` : m.name}
+                  </option>
+                ))}
+              </select>
+
+              {/* Remove button — hidden for default categories, shown on hover for custom */}
+              <button
+                onClick={() => removeCategory(index)}
+                className={`text-claude-text-secondary hover:text-red-400 transition-colors opacity-0 group-hover:opacity-100 ${
+                  ['plan', 'build', 'verify', 'refine'].includes(cat.id) ? 'invisible' : ''
+                }`}
+                title="Remove category"
+              >
+                <X size={12} />
+              </button>
+            </div>
+          ))}
+        </div>
+
+        {/* Cost-aware routing toggle */}
+        <div className="border-t border-claude-border/30 pt-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <label className="text-xs text-claude-text">Cost-aware routing</label>
+              <p className="text-[10px] text-claude-text-secondary">Automatically downgrade models when monthly spend is high</p>
+            </div>
+            <button
+              onClick={() => {
+                const next = !autoBuildCostAware;
+                setAutoBuildCostAware(next);
+                autoSaveAppSettings({ autoRouterConfig: { categories: autoBuildCategories, costAware: next } } as any);
+              }}
+              className={`w-8 h-4 rounded-full transition-colors relative ${autoBuildCostAware ? 'bg-claude-accent' : 'bg-claude-border'}`}
+            >
+              <div className={`w-3 h-3 rounded-full bg-white absolute top-0.5 transition-transform ${autoBuildCostAware ? 'translate-x-4' : 'translate-x-0.5'}`} />
+            </button>
+          </div>
+        </div>
+
+        {/* Info section */}
+        <div className="border-t border-claude-border/30 pt-4">
+          <p className="text-[10px] text-claude-text-secondary">
+            Select <span className="text-purple-400 font-bold">Auto Build</span> from the model picker in any session to enable intelligent routing. The router uses keyword matching and an LLM fallback (Cerebras) to classify each message.
+          </p>
+        </div>
+      </div>
+    );
+  };
+
   // Render API Keys Tab
   const renderApiKeysTab = () => (
     <div className="space-y-6">
@@ -1188,6 +1336,8 @@ export default function SettingsDialog() {
     switch (activeTab) {
       case 'general':
         return renderGeneralTab();
+      case 'autoBuild':
+        return renderAutoBuildTab();
       case 'apiKeys':
         return renderApiKeysTab();
       case 'releases':
