@@ -2993,37 +2993,42 @@ Read or source that file if you need the actual values. Do not print secret valu
           console.warn('[Claude Service] Could not load messages for Cursor context:', e);
         }
 
-        const fullMessage = cursorContext ? `${cursorContext}\n\n${userMessage}` : userMessage;
+        const baseMessage = cursorContext ? `${cursorContext}\n\n${userMessage}` : userMessage;
+        const { message: fullMessage, cleanup: cursorCleanup } = await this.prepareCliAttachments(sessionId, baseMessage, attachments);
         const cursorApiKey = ((this.store.get('settings', {}) as Record<string, unknown>).cursorApiKey as string) || '';
 
-        // SSH sessions: use Cursor CLI on the remote (agent runs natively, tools work on remote fs)
-        if (session.sshConfig) {
-          const { getCursorCliService } = require('./cursor-cli.service');
-          const cursorCliService = getCursorCliService();
-          const remoteDir = session.worktreePath || session.sshConfig.remoteWorkdir || '~';
-          console.log(`[Claude Service] Cursor SSH → CLI on remote ${session.sshConfig.host}:${remoteDir}`);
-          for await (const event of cursorCliService.streamMessage(sessionId, fullMessage, remoteDir, selectedModel, session.sshConfig)) {
-            yield event as StreamEvent;
+        try {
+          // SSH sessions: use Cursor CLI on the remote (agent runs natively, tools work on remote fs)
+          if (session.sshConfig) {
+            const { getCursorCliService } = require('./cursor-cli.service');
+            const cursorCliService = getCursorCliService();
+            const remoteDir = session.worktreePath || session.sshConfig.remoteWorkdir || '~';
+            console.log(`[Claude Service] Cursor SSH → CLI on remote ${session.sshConfig.host}:${remoteDir}`);
+            for await (const event of cursorCliService.streamMessage(sessionId, fullMessage, remoteDir, selectedModel, session.sshConfig)) {
+              yield event as StreamEvent;
+            }
+            return;
           }
-          return;
-        }
 
-        // Local sessions: use SDK if API key exists (multi-turn), CLI otherwise
-        if (cursorApiKey) {
-          const { getCursorService } = require('./cursor.service');
-          const cursorService = getCursorService();
-          const workDir = session.repoPath || process.cwd();
-          for await (const event of cursorService.streamMessage(sessionId, fullMessage, workDir, selectedModel)) {
-            yield event as StreamEvent;
+          // Local sessions: use SDK if API key exists (multi-turn), CLI otherwise
+          if (cursorApiKey) {
+            const { getCursorService } = require('./cursor.service');
+            const cursorService = getCursorService();
+            const workDir = session.repoPath || process.cwd();
+            for await (const event of cursorService.streamMessage(sessionId, fullMessage, workDir, selectedModel)) {
+              yield event as StreamEvent;
+            }
+          } else {
+            const { getCursorCliService } = require('./cursor-cli.service');
+            const cursorCliService = getCursorCliService();
+            const workDir = session.repoPath || process.cwd();
+            console.log('[Claude Service] Cursor local → CLI (no API key)');
+            for await (const event of cursorCliService.streamMessage(sessionId, fullMessage, workDir, selectedModel)) {
+              yield event as StreamEvent;
+            }
           }
-        } else {
-          const { getCursorCliService } = require('./cursor-cli.service');
-          const cursorCliService = getCursorCliService();
-          const workDir = session.repoPath || process.cwd();
-          console.log('[Claude Service] Cursor local → CLI (no API key)');
-          for await (const event of cursorCliService.streamMessage(sessionId, fullMessage, workDir, selectedModel)) {
-            yield event as StreamEvent;
-          }
+        } finally {
+          await cursorCleanup();
         }
         return;
       }
@@ -3047,9 +3052,14 @@ Read or source that file if you need the actual values. Do not print secret valu
           console.warn('[Claude Service] Could not load messages for Gemini context:', e);
         }
 
-        const fullMessage = geminiContext ? `${geminiContext}\n\n${userMessage}` : userMessage;
-        for await (const event of geminiService.streamMessage(sessionId, fullMessage, workDir, selectedModel)) {
-          yield event as StreamEvent;
+        const baseGeminiMessage = geminiContext ? `${geminiContext}\n\n${userMessage}` : userMessage;
+        const { message: fullMessage, cleanup: geminiCleanup } = await this.prepareCliAttachments(sessionId, baseGeminiMessage, attachments);
+        try {
+          for await (const event of geminiService.streamMessage(sessionId, fullMessage, workDir, selectedModel)) {
+            yield event as StreamEvent;
+          }
+        } finally {
+          await geminiCleanup();
         }
         return;
       }
@@ -5161,6 +5171,52 @@ Begin by creating the task structure now.
     // SDK uses a slug that starts with dash and preserves case
     // /home/user/dev/project -> -home-user-dev-project
     return projectPath.replace(/\//g, '-');
+  }
+
+  /**
+   * Prepare attachments for CLI-based harnesses (Cursor, Gemini, etc.) that take
+   * a plain-text prompt. DOM elements are embedded as XML text blocks. Images are
+   * written to temp files and referenced by path in the prompt.
+   * Returns the augmented message text and a cleanup function for temp files.
+   */
+  private async prepareCliAttachments(
+    sessionId: string,
+    message: string,
+    attachments?: Attachment[],
+  ): Promise<{ message: string; cleanup: () => Promise<void> }> {
+    const noop = async () => {};
+    if (!attachments || attachments.length === 0) return { message, cleanup: noop };
+
+    let result = message;
+
+    const domElements = attachments.filter(a => a.type === 'dom_element');
+    if (domElements.length > 0) {
+      const domContext = domElements.map((el, i) =>
+        `<selected-element index="${i + 1}" selector="${el.name}">\n${el.content}\n</selected-element>`
+      ).join('\n\n');
+      result = `${domContext}\n\n${result}`;
+    }
+
+    const images = attachments.filter(a => a.type === 'image');
+    if (images.length > 0) {
+      const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), `build-cli-${sessionId}-`));
+      const paths: string[] = [];
+      for (const [idx, img] of images.entries()) {
+        const ext = img.name.match(/\.(jpe?g)$/i) ? '.jpg' : '.png';
+        const imgPath = path.join(tempDir, `screenshot-${idx}${ext}`);
+        await fs.promises.writeFile(imgPath, img.content, 'base64');
+        paths.push(imgPath);
+      }
+      const imageRef = paths.map((p, i) => `[Attached screenshot ${i + 1}: ${p}]`).join('\n');
+      result = `${imageRef}\n\n${result}`;
+      console.log(`[Claude Service] Wrote ${paths.length} image(s) to ${tempDir} for CLI harness`);
+      return {
+        message: result,
+        cleanup: async () => { await fs.promises.rm(tempDir, { recursive: true, force: true }).catch(() => {}); },
+      };
+    }
+
+    return { message: result, cleanup: noop };
   }
 
   /**

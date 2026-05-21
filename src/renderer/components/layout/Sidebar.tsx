@@ -2,6 +2,7 @@ import React, { useState, useCallback } from 'react';
 import { useAuthStore } from '../../stores/auth.store';
 import { useUIStore } from '../../stores/ui.store';
 import SessionList from '../session/SessionList';
+import AgentSidebarContent from '../agent-view/AgentSidebarContent';
 import TaskList from '../tasks/TaskList';
 import NewSessionDialog from '../session/NewSessionDialog';
 import { Plus, LogOut, GripVertical, LayoutGrid, Users, BarChart3 } from 'lucide-react';
@@ -43,13 +44,13 @@ export default function Sidebar() {
       {/* Task List — above everything */}
       <TaskList />
 
-      {/* Sessions Header */}
+      {/* Header — switches between SESSIONS and AGENT VIEW */}
       <div className="px-3 py-2 flex items-center justify-between border-b border-claude-border">
         <h3
           className="text-[10px] font-bold text-claude-text-secondary"
           style={{ letterSpacing: '0.1em' }}
         >
-          SESSIONS
+          {isAgentViewActive ? 'AGENT VIEW' : 'SESSIONS'}
         </h3>
         <div className="flex items-center gap-0.5">
           <button
@@ -88,21 +89,27 @@ export default function Sidebar() {
           >
             <BarChart3 size={14} />
           </button>
-          <button
-            onClick={() => setNewSessionDialogOpen(true)}
-            className="p-1 transition-colors hover:bg-claude-bg text-claude-text-secondary"
-            style={{ borderRadius: 0 }}
-            title="New Session"
-          >
-            <Plus size={14} />
-          </button>
+          {!isAgentViewActive && (
+            <button
+              onClick={() => setNewSessionDialogOpen(true)}
+              className="p-1 transition-colors hover:bg-claude-bg text-claude-text-secondary"
+              style={{ borderRadius: 0 }}
+              title="New Session"
+            >
+              <Plus size={14} />
+            </button>
+          )}
         </div>
       </div>
 
-      {/* Sessions List */}
-      <div className="flex-1 overflow-y-auto">
-        <SessionList />
-      </div>
+      {/* Content — agent priority list or session list */}
+      {isAgentViewActive ? (
+        <AgentSidebarContent />
+      ) : (
+        <div className="flex-1 overflow-y-auto">
+          <SessionList />
+        </div>
+      )}
 
       {/* Footer */}
       <div className="p-2 flex items-center justify-end border-t border-claude-border">
