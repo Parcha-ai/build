@@ -2979,37 +2979,55 @@ Read or source that file if you need the actual values. Do not print secret valu
 
       // Route to Cursor for cursor:* models
       if (selectedModel?.startsWith('cursor:')) {
+        const { getCursorCliService } = require('./cursor-cli.service');
+        const cursorCliService = getCursorCliService();
+        const cursorApiKey = ((this.store.get('settings', {}) as Record<string, unknown>).cursorApiKey as string) || '';
+
+        // Resume existing Cursor chat if we have one; otherwise create one and
+        // include cross-harness context so the first turn has continuity.
+        let chatId = cursorCliService.getChatId(sessionId);
         let cursorContext = '';
-        try {
-          const transcriptMessages = await this.getMessages(sessionId);
-          const merged = mergeConversationMessages(transcriptMessages, normalizedSupplementalMessages);
-          cursorContext = buildCrossHarnessContext(merged, [], 'cursor');
-          if (cursorContext) {
-            console.log(`[Claude Service] Cursor cross-harness context: ${cursorContext.length} chars from ${merged.length} messages`);
+
+        if (!chatId) {
+          // First Cursor turn — create a persistent chat session
+          const workDir = session.worktreePath || session.repoPath || process.cwd();
+          if (session.sshConfig) {
+            const remoteDir = session.worktreePath || session.sshConfig.remoteWorkdir || '~';
+            chatId = await cursorCliService.createSshChat(session.sshConfig, remoteDir);
+          } else {
+            chatId = await cursorCliService.createChat(workDir);
           }
-        } catch (e) {
-          console.warn('[Claude Service] Could not load messages for Cursor context:', e);
+
+          // Build cross-harness context only for the initial turn
+          try {
+            const transcriptMessages = await this.getMessages(sessionId);
+            const merged = mergeConversationMessages(transcriptMessages, normalizedSupplementalMessages);
+            cursorContext = buildCrossHarnessContext(merged, [], 'cursor');
+            if (cursorContext) {
+              console.log(`[Claude Service] Cursor cross-harness context (first turn): ${cursorContext.length} chars`);
+            }
+          } catch (e) {
+            console.warn('[Claude Service] Could not load messages for Cursor context:', e);
+          }
+        } else {
+          console.log(`[Claude Service] Cursor resuming chat ${chatId}`);
         }
 
         const baseMessage = cursorContext ? `${cursorContext}\n\n${userMessage}` : userMessage;
         const { message: fullMessage, cleanup: cursorCleanup } = await this.prepareCliAttachments(sessionId, baseMessage, attachments);
-        const cursorApiKey = ((this.store.get('settings', {}) as Record<string, unknown>).cursorApiKey as string) || '';
 
         try {
-          // SSH sessions: use Cursor CLI on the remote (agent runs natively, tools work on remote fs)
           if (session.sshConfig) {
-            const { getCursorCliService } = require('./cursor-cli.service');
-            const cursorCliService = getCursorCliService();
             const remoteDir = session.worktreePath || session.sshConfig.remoteWorkdir || '~';
             console.log(`[Claude Service] Cursor SSH → CLI on remote ${session.sshConfig.host}:${remoteDir}`);
-            for await (const event of cursorCliService.streamMessage(sessionId, fullMessage, remoteDir, selectedModel, session.sshConfig)) {
+            for await (const event of cursorCliService.streamMessage(sessionId, fullMessage, remoteDir, selectedModel, session.sshConfig, chatId || undefined)) {
               yield event as StreamEvent;
             }
             return;
           }
 
-          // Local sessions: use SDK if API key exists (multi-turn), CLI otherwise
-          if (cursorApiKey) {
+          // Local: SDK path (multi-turn) or CLI path
+          if (cursorApiKey && !chatId) {
             const { getCursorService } = require('./cursor.service');
             const cursorService = getCursorService();
             const workDir = session.repoPath || process.cwd();
@@ -3017,11 +3035,9 @@ Read or source that file if you need the actual values. Do not print secret valu
               yield event as StreamEvent;
             }
           } else {
-            const { getCursorCliService } = require('./cursor-cli.service');
-            const cursorCliService = getCursorCliService();
             const workDir = session.repoPath || process.cwd();
-            console.log('[Claude Service] Cursor local → CLI (no API key)');
-            for await (const event of cursorCliService.streamMessage(sessionId, fullMessage, workDir, selectedModel)) {
+            console.log(`[Claude Service] Cursor local → CLI${chatId ? ` (resume ${chatId})` : ' (new chat)'}`);
+            for await (const event of cursorCliService.streamMessage(sessionId, fullMessage, workDir, selectedModel, undefined, chatId || undefined)) {
               yield event as StreamEvent;
             }
           }
