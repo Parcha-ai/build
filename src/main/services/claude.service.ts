@@ -3022,7 +3022,7 @@ Read or source that file if you need the actual values. Do not print secret valu
         }
 
         const baseMessage = cursorContext ? `${cursorContext}\n\n${userMessage}` : userMessage;
-        const { message: fullMessage, cleanup: cursorCleanup } = await this.prepareCliAttachments(sessionId, baseMessage, attachments);
+        const { message: fullMessage, cleanup: cursorCleanup } = await this.prepareCliAttachments(sessionId, baseMessage, attachments, session.sshConfig);
 
         try {
           if (session.sshConfig) {
@@ -5200,12 +5200,15 @@ Begin by creating the task structure now.
    * Prepare attachments for CLI-based harnesses (Cursor, Gemini, etc.) that take
    * a plain-text prompt. DOM elements are embedded as XML text blocks. Images are
    * written to temp files and referenced by path in the prompt.
-   * Returns the augmented message text and a cleanup function for temp files.
+   *
+   * For SSH sessions, images are uploaded to the remote host via SFTP so the
+   * remote CLI can actually access them.
    */
   private async prepareCliAttachments(
     sessionId: string,
     message: string,
     attachments?: Attachment[],
+    sshConfig?: import('../../shared/types').SSHConfig,
   ): Promise<{ message: string; cleanup: () => Promise<void> }> {
     const noop = async () => {};
     if (!attachments || attachments.length === 0) return { message, cleanup: noop };
@@ -5222,24 +5225,92 @@ Begin by creating the task structure now.
 
     const images = attachments.filter(a => a.type === 'image');
     if (images.length > 0) {
-      const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), `build-cli-${sessionId}-`));
-      const paths: string[] = [];
+      const localTempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), `build-cli-${sessionId}-`));
+      const localPaths: string[] = [];
       for (const [idx, img] of images.entries()) {
         const ext = img.name.match(/\.(jpe?g)$/i) ? '.jpg' : '.png';
-        const imgPath = path.join(tempDir, `screenshot-${idx}${ext}`);
+        const imgPath = path.join(localTempDir, `screenshot-${idx}${ext}`);
         await fs.promises.writeFile(imgPath, img.content, 'base64');
-        paths.push(imgPath);
+        localPaths.push(imgPath);
       }
-      const imageRef = paths.map((p, i) => `[Attached screenshot ${i + 1}: ${p}]`).join('\n');
+
+      if (sshConfig) {
+        return this.uploadCliImagesToRemote(sessionId, result, localPaths, localTempDir, sshConfig);
+      }
+
+      const imageRef = localPaths.map((p, i) => `[Attached screenshot ${i + 1}: ${p}]`).join('\n');
       result = `${imageRef}\n\n${result}`;
-      console.log(`[Claude Service] Wrote ${paths.length} image(s) to ${tempDir} for CLI harness`);
+      console.log(`[Claude Service] Wrote ${localPaths.length} image(s) to ${localTempDir} for CLI harness`);
       return {
         message: result,
-        cleanup: async () => { await fs.promises.rm(tempDir, { recursive: true, force: true }).catch(() => {}); },
+        cleanup: async () => { await fs.promises.rm(localTempDir, { recursive: true, force: true }).catch(() => {}); },
       };
     }
 
     return { message: result, cleanup: noop };
+  }
+
+  private async uploadCliImagesToRemote(
+    sessionId: string,
+    message: string,
+    localPaths: string[],
+    localTempDir: string,
+    sshConfig: import('../../shared/types').SSHConfig,
+  ): Promise<{ message: string; cleanup: () => Promise<void> }> {
+    const remoteDir = `/tmp/build-cli-${sessionId}-${Date.now()}`;
+    const escapedRemoteDir = remoteDir.replace(/'/g, "'\\''");
+
+    try {
+      const client = await sshService['getConnection'](sessionId, sshConfig);
+      await new Promise<void>((resolve, reject) => {
+        client.exec(`mkdir -p '${escapedRemoteDir}'`, (err, ch) => {
+          if (err) return reject(err);
+          ch.on('close', () => resolve());
+          ch.resume();
+        });
+      });
+
+      const sftp = await new Promise<import('ssh2').SFTPWrapper>((resolve, reject) => {
+        client.sftp((err, s) => err ? reject(err) : resolve(s));
+      });
+
+      const remotePaths: string[] = [];
+      try {
+        for (const [idx, localPath] of localPaths.entries()) {
+          const remotePath = `${remoteDir}/screenshot-${idx}${path.extname(localPath) || '.png'}`;
+          await new Promise<void>((resolve, reject) => {
+            sftp.fastPut(localPath, remotePath, (err) => err ? reject(err) : resolve());
+          });
+          remotePaths.push(remotePath);
+        }
+      } finally {
+        try { sftp.end(); } catch { /* ignore */ }
+        await fs.promises.rm(localTempDir, { recursive: true, force: true }).catch(() => {});
+      }
+
+      const imageRef = remotePaths.map((p, i) => `[Attached screenshot ${i + 1}: ${p}]`).join('\n');
+      console.log(`[Claude Service] Uploaded ${remotePaths.length} image(s) to ${sshConfig.host}:${remoteDir}`);
+
+      return {
+        message: `${imageRef}\n\n${message}`,
+        cleanup: async () => {
+          try {
+            const c = await sshService['getConnection'](sessionId, sshConfig);
+            await new Promise<void>((resolve) => {
+              c.exec(`rm -rf '${escapedRemoteDir}'`, (err, ch) => {
+                if (err) return resolve();
+                ch.on('close', () => resolve());
+                ch.resume();
+              });
+            });
+          } catch { /* best-effort remote cleanup */ }
+        },
+      };
+    } catch (err) {
+      await fs.promises.rm(localTempDir, { recursive: true, force: true }).catch(() => {});
+      console.error(`[Claude Service] Failed to upload images to remote ${sshConfig.host}:`, err);
+      return { message, cleanup: async () => {} };
+    }
   }
 
   /**
