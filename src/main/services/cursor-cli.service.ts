@@ -1,5 +1,5 @@
 import Store from 'electron-store';
-import { spawn, ChildProcess } from 'child_process';
+import { spawn, execSync, ChildProcess } from 'child_process';
 import * as readline from 'readline';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -44,6 +44,7 @@ class CursorCliService {
   private activeProcesses: Map<string, { process: ChildProcess; abortController: AbortController }> = new Map();
   private agentBinaryCache: string | null | false = null;
   private lastAssistantLen = 0;
+  private chatIds: Map<string, string> = new Map();
 
   private getApiKey(): string | undefined {
     const settings = settingsStore.get('settings', {}) as Record<string, unknown>;
@@ -56,9 +57,13 @@ class CursorCliService {
 
     const homeDir = os.homedir();
     const candidates = [
+      `${homeDir}/.local/bin/cursor-agent`,
+      `${homeDir}/.cursor/bin/cursor-agent`,
+      '/usr/local/bin/cursor-agent',
+      '/opt/homebrew/bin/cursor-agent',
+      `${homeDir}/.local/bin/agent`,
       `${homeDir}/.cursor/bin/agent`,
       '/usr/local/bin/agent',
-      `${homeDir}/.local/bin/agent`,
       '/opt/homebrew/bin/agent',
     ];
 
@@ -71,10 +76,18 @@ class CursorCliService {
     }
 
     try {
-      const { execSync } = require('child_process');
+      const result = execSync('which cursor-agent', { encoding: 'utf8' }).trim();
+      if (result) {
+        console.log(`[Cursor CLI] Found cursor-agent via which: ${result}`);
+        this.agentBinaryCache = result;
+        return result;
+      }
+    } catch { /* not in PATH */ }
+
+    try {
       const result = execSync('which agent', { encoding: 'utf8' }).trim();
       if (result) {
-        console.log(`[Cursor CLI] Found agent binary via which: ${result}`);
+        console.log(`[Cursor CLI] Found agent via which: ${result}`);
         this.agentBinaryCache = result;
         return result;
       }
@@ -83,6 +96,54 @@ class CursorCliService {
     console.log('[Cursor CLI] agent binary not found locally');
     this.agentBinaryCache = false;
     return null;
+  }
+
+  getChatId(sessionId: string): string | undefined {
+    return this.chatIds.get(sessionId);
+  }
+
+  clearChatId(sessionId: string): void {
+    this.chatIds.delete(sessionId);
+  }
+
+  async createChat(workDir: string): Promise<string | null> {
+    const agentBin = this.findAgentBinary();
+    if (!agentBin) return null;
+
+    try {
+      const chatId = execSync(`"${agentBin}" create-chat`, {
+        encoding: 'utf8',
+        cwd: workDir,
+        timeout: 10000,
+      }).trim();
+      if (chatId && chatId.match(/^[a-f0-9-]+$/i)) {
+        console.log(`[Cursor CLI] Created chat: ${chatId}`);
+        return chatId;
+      }
+      console.warn(`[Cursor CLI] create-chat returned unexpected output: ${chatId.substring(0, 100)}`);
+      return null;
+    } catch (e) {
+      console.warn('[Cursor CLI] Failed to create chat:', e);
+      return null;
+    }
+  }
+
+  async createSshChat(sshConfig: SshConfig, remoteDir: string): Promise<string | null> {
+    try {
+      const remoteCmd = `cd ${remoteDir} && export PATH="$HOME/.local/bin:$HOME/.cursor/bin:$PATH" && cursor-agent create-chat 2>/dev/null || agent create-chat 2>/dev/null`;
+      const chatId = execSync(`ssh -o StrictHostKeyChecking=no -o BatchMode=yes ${sshConfig.host} '${remoteCmd}'`, {
+        encoding: 'utf8',
+        timeout: 15000,
+      }).trim();
+      if (chatId && chatId.match(/^[a-f0-9-]+$/i)) {
+        console.log(`[Cursor CLI] Created SSH chat on ${sshConfig.host}: ${chatId}`);
+        return chatId;
+      }
+      return null;
+    } catch (e) {
+      console.warn('[Cursor CLI] Failed to create SSH chat:', e);
+      return null;
+    }
   }
 
   private translateEvent(event: CursorCliJsonEvent): CursorStreamEvent | null {
@@ -102,8 +163,6 @@ class CursorCliService {
       case 'assistant': {
         const text = event.message?.content?.[0]?.text;
         if (text) {
-          // --stream-partial-output sends cumulative text, not deltas.
-          // Diff against what we've already emitted to extract the new portion.
           const delta = text.substring(this.lastAssistantLen);
           this.lastAssistantLen = text.length;
           if (delta) {
@@ -207,12 +266,17 @@ class CursorCliService {
     workDir: string,
     model: string,
     sshConfig?: SshConfig,
+    chatId?: string,
   ): AsyncGenerator<CursorStreamEvent> {
-    // API key is optional — the CLI has its own auth flow
     const apiKey = this.getApiKey();
     this.lastAssistantLen = 0;
 
     const cursorModel = model.replace('cursor:', '');
+
+    // Store chatId for this session if provided
+    if (chatId) {
+      this.chatIds.set(sessionId, chatId);
+    }
 
     yield {
       type: 'system',
@@ -227,12 +291,12 @@ class CursorCliService {
 
     if (sshConfig) {
       const remoteDir = workDir || sshConfig.remoteWorkdir || '~';
-      // Escape the message for safe SSH transmission: base64-encode it
       const b64Message = Buffer.from(message).toString('base64');
       const apiEnv = apiKey ? `CURSOR_API_KEY='${apiKey}' ` : '';
-      const remoteCmd = `cd ${remoteDir} && export PATH="$HOME/.local/bin:$HOME/.cursor/bin:$PATH" && ${apiEnv}agent -p "$(echo '${b64Message}' | base64 -d)" --output-format stream-json --stream-partial-output --force${cursorModel ? ` --model "${cursorModel}"` : ''}`;
+      const resumeFlag = chatId ? ` --resume ${chatId}` : '';
+      const remoteCmd = `cd ${remoteDir} && export PATH="$HOME/.local/bin:$HOME/.cursor/bin:$PATH" && ${apiEnv}cursor-agent -p "$(echo '${b64Message}' | base64 -d)" --output-format stream-json --stream-partial-output --force${resumeFlag}${cursorModel ? ` --model "${cursorModel}"` : ''}`;
 
-      console.log(`[Cursor CLI] SSH exec on ${sshConfig.host}: agent -p <${message.length} chars> --model ${cursorModel}`);
+      console.log(`[Cursor CLI] SSH exec on ${sshConfig.host}: cursor-agent -p <${message.length} chars> --model ${cursorModel}${chatId ? ` --resume ${chatId}` : ' (new chat)'}`);
 
       child = spawn('ssh', [
         '-o', 'StrictHostKeyChecking=no',
@@ -253,6 +317,9 @@ class CursorCliService {
         '--stream-partial-output',
         '--force',
       ];
+      if (chatId) {
+        args.push('--resume', chatId);
+      }
       if (cursorModel) {
         args.push('--model', cursorModel);
       }
@@ -260,7 +327,7 @@ class CursorCliService {
       const env: Record<string, string> = { ...(process.env as Record<string, string>) };
       if (apiKey) env.CURSOR_API_KEY = apiKey;
 
-      console.log(`[Cursor CLI] Local spawn: agent -p <${message.length} chars> --model ${cursorModel}`);
+      console.log(`[Cursor CLI] Local spawn: cursor-agent -p <${message.length} chars> --model ${cursorModel}${chatId ? ` --resume ${chatId}` : ' (new chat)'}`);
 
       child = spawn(agentBin, args, {
         env,
@@ -307,7 +374,7 @@ class CursorCliService {
     } finally {
       rl.close();
       this.activeProcesses.delete(sessionId);
-      console.log(`[Cursor CLI] Stream ended. Events: ${eventCount}`);
+      console.log(`[Cursor CLI] Stream ended. Events: ${eventCount}, chatId: ${chatId || 'none'}`);
     }
 
     if (eventCount === 0 && stderrOutput) {
