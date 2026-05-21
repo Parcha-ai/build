@@ -102,6 +102,11 @@ class CursorCliService {
     return this.chatIds.get(sessionId);
   }
 
+  setChatId(sessionId: string, chatId: string): void {
+    this.chatIds.set(sessionId, chatId);
+    console.log(`[Cursor CLI] Stored chatId ${chatId} for session ${sessionId.substring(0, 8)}`);
+  }
+
   clearChatId(sessionId: string): void {
     this.chatIds.delete(sessionId);
   }
@@ -272,11 +277,6 @@ class CursorCliService {
     this.lastAssistantLen = 0;
 
     const cursorModel = model.replace('cursor:', '');
-
-    // Store chatId for this session if provided
-    if (chatId) {
-      this.chatIds.set(sessionId, chatId);
-    }
 
     yield {
       type: 'system',
