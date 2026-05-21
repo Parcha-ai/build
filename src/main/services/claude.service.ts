@@ -2983,13 +2983,30 @@ Read or source that file if you need the actual values. Do not print secret valu
         const cursorCliService = getCursorCliService();
         const cursorApiKey = ((this.store.get('settings', {}) as Record<string, unknown>).cursorApiKey as string) || '';
 
-        // Resume existing Cursor chat if we have one; otherwise create one and
-        // include cross-harness context so the first turn has continuity.
+        // Resume existing Cursor chat only if the last turn was also Cursor.
+        // If another harness ran in between, start a fresh chat with cross-harness
+        // context so Cursor knows what happened while it was away.
         let chatId = cursorCliService.getChatId(sessionId);
         let cursorContext = '';
+        let needsFreshChat = !chatId;
 
-        if (!chatId) {
-          // First Cursor turn — create a persistent chat session
+        if (chatId) {
+          try {
+            const transcriptMessages = await this.getMessages(sessionId);
+            const allMessages = mergeConversationMessages(transcriptMessages, normalizedSupplementalMessages);
+            const lastAssistant = [...allMessages].reverse().find(m => m.role === 'assistant');
+            if (lastAssistant && lastAssistant.harness && lastAssistant.harness !== 'cursor') {
+              console.log(`[Claude Service] Last turn was ${lastAssistant.harness}, not Cursor — starting fresh chat with context`);
+              cursorCliService.clearChatId(sessionId);
+              chatId = null;
+              needsFreshChat = true;
+            }
+          } catch (e) {
+            console.warn('[Claude Service] Could not check last harness for Cursor:', e);
+          }
+        }
+
+        if (needsFreshChat) {
           const workDir = session.worktreePath || session.repoPath || process.cwd();
           if (session.sshConfig) {
             const remoteDir = session.worktreePath || session.sshConfig.remoteWorkdir || '~';
@@ -2999,20 +3016,18 @@ Read or source that file if you need the actual values. Do not print secret valu
           }
 
           if (chatId) {
-            // Store immediately so subsequent turns can find it
             cursorCliService.setChatId(sessionId, chatId);
             console.log(`[Claude Service] Cursor new chat ${chatId} for session ${sessionId.substring(0, 8)}`);
           } else {
             console.warn('[Claude Service] Failed to create Cursor chat — each turn will be stateless');
           }
 
-          // Build cross-harness context only for the initial turn
           try {
             const transcriptMessages = await this.getMessages(sessionId);
             const merged = mergeConversationMessages(transcriptMessages, normalizedSupplementalMessages);
             cursorContext = buildCrossHarnessContext(merged, [], 'cursor');
             if (cursorContext) {
-              console.log(`[Claude Service] Cursor cross-harness context (first turn): ${cursorContext.length} chars`);
+              console.log(`[Claude Service] Cursor cross-harness context: ${cursorContext.length} chars`);
             }
           } catch (e) {
             console.warn('[Claude Service] Could not load messages for Cursor context:', e);
