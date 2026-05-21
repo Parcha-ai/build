@@ -22,8 +22,9 @@ export const plugins = [
     languages: ['javascript', 'typescript', 'json', 'html', 'css', 'markdown', 'python', 'yaml', 'shell'],
     features: ['coreCommands', 'find'],
   }),
-  // Inject embedded API keys at build time for voice features
+  // Inject embedded API keys at build time for voice + auto-routing features
   new webpack.DefinePlugin({
     'process.env.EMBEDDED_OPENAI_API_KEY': JSON.stringify(env.EMBEDDED_OPENAI_API_KEY || ''),
+    'process.env.EMBEDDED_CEREBRAS_API_KEY': JSON.stringify(env.EMBEDDED_CEREBRAS_API_KEY || ''),
   }),
 ];

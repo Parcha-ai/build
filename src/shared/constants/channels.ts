@@ -300,6 +300,9 @@ export const IPC_CHANNELS = {
   ANALYTICS_GET_TIER_CONFIG: 'analytics:get-tier-config',
   ANALYTICS_SET_TIER_CONFIG: 'analytics:set-tier-config',
   ANALYTICS_TOKEN_EVENT: 'analytics:token-event', // Real-time event pushed to renderer
+
+  // Auto Build mode (intelligent model routing)
+  CLAUDE_AUTO_ROUTE_DECISION: 'claude:auto-route-decision',
 } as const;
 
 export type IPCChannel = typeof IPC_CHANNELS[keyof typeof IPC_CHANNELS];

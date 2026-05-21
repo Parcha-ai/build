@@ -15,11 +15,13 @@
 declare const process: {
   env: {
     EMBEDDED_OPENAI_API_KEY?: string;
+    EMBEDDED_CEREBRAS_API_KEY?: string;
   };
 };
 
 export const EMBEDDED_KEYS = {
   openAi: process.env.EMBEDDED_OPENAI_API_KEY || '',
+  cerebras: process.env.EMBEDDED_CEREBRAS_API_KEY || '',
 } as const;
 
 /**
