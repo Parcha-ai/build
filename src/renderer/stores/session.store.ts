@@ -1284,7 +1284,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
             if (!stillStreaming) {
               console.log(`[SessionStore] Sending queued message now`);
-              currentState.sendMessage(sessionId, nextMessage.message, nextMessage.attachments);
+              currentState.sendMessage(sessionId, nextMessage.message, nextMessage.attachments, { existingMessageId: nextMessage.id });
             } else {
               console.warn(`[SessionStore] Cannot send queued message - streaming started again. Re-queueing.`);
               // Re-add to front of queue
