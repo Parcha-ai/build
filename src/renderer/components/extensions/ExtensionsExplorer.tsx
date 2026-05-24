@@ -136,14 +136,22 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
     try {
       const config = await window.electronAPI.mcp.getRawConfig(serverId);
       if (config) {
-        setMcpEditType((config.type as string) === 'url' || (config.type as string) === 'http' ? 'url' : 'stdio');
+        setMcpEditType(
+          (config.type as string) === 'url' || (config.type as string) === 'http' || (config.type as string) === 'sse'
+            ? 'url'
+            : 'stdio'
+        );
         setMcpEditCommand((config.command as string) || '');
         setMcpEditArgs(((config.args as string[]) || []).join('\n'));
         setMcpEditUrl((config.url as string) || '');
-        const envEntries = Object.entries((config.env as Record<string, string>) || {}).map(
+        const keyValueEntries = Object.entries(
+          ((config.type as string) === 'url' || (config.type as string) === 'http' || (config.type as string) === 'sse'
+            ? (config.headers as Record<string, string>) || (config.env as Record<string, string>)
+            : (config.env as Record<string, string>)) || {}
+        ).map(
           ([key, value]) => ({ key, value: value as string })
         );
-        setMcpEditEnv(envEntries);
+        setMcpEditEnv(keyValueEntries);
         setMcpEnvVisible({});
         setMcpEditName(serverId);
       } else {
@@ -211,7 +219,13 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
       for (const { key, value } of mcpEditEnv) {
         if (key.trim()) envObj[key.trim()] = value;
       }
-      if (Object.keys(envObj).length > 0) config.env = envObj;
+      if (Object.keys(envObj).length > 0) {
+        if (mcpEditType === 'url') {
+          config.headers = envObj;
+        } else {
+          config.env = envObj;
+        }
+      }
 
       const result = await window.electronAPI.mcp.installRaw(mcpEditName.trim(), config);
 
@@ -1036,11 +1050,11 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
             </div>
           )}
 
-          {/* Environment Variables / API Keys */}
+          {/* Environment Variables / Headers */}
           <div>
             <div className="flex items-center justify-between mb-1.5">
               <label className="text-[10px] font-bold font-mono text-claude-text-secondary uppercase" style={{ letterSpacing: '0.1em' }}>
-                Environment Variables
+                {mcpEditType === 'url' ? 'Headers' : 'Environment Variables'}
               </label>
               <button
                 onClick={() => setMcpEditEnv([...mcpEditEnv, { key: '', value: '' }])}
@@ -1053,7 +1067,9 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
             </div>
             {mcpEditEnv.length === 0 && (
               <p className="text-xs text-claude-text-secondary font-mono px-3 py-2 bg-claude-surface border border-claude-border" style={{ borderRadius: 0 }}>
-                No environment variables configured. Add API keys here.
+                {mcpEditType === 'url'
+                  ? 'No headers configured. Add API keys here.'
+                  : 'No environment variables configured. Add API keys here.'}
               </p>
             )}
             <div className="space-y-2">

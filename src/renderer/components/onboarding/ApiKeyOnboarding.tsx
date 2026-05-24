@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Key, Eye, EyeOff, ExternalLink, Check, AlertCircle, Loader2, ChevronDown, ChevronUp } from 'lucide-react';
+import { Key, Eye, EyeOff, ExternalLink, Check, AlertCircle, Loader2, ChevronDown, ChevronUp, Terminal, Copy } from 'lucide-react';
 import { useUIStore } from '../../stores/ui.store';
 import buildLogo from '../../../../assets/build-logo.svg';
 
@@ -29,19 +29,30 @@ const SessionsIcon = ({ size = 18 }: { size?: number }) => (
 );
 
 type ProviderStatus = {
+  installed?: boolean;
   loggedIn: boolean;
   method?: 'cli' | 'apiKey' | 'chatgpt';
   detail?: string;
+  path?: string | null;
+  version?: string | null;
+  installCommand?: string;
+  docsUrl?: string;
 };
 
 type ProvidersState = {
   claude: ProviderStatus;
   codex: ProviderStatus;
+  cursor: ProviderStatus;
+  gemini: ProviderStatus;
+  opencode: ProviderStatus;
 };
 
 const SCAN_PHASES = [
   { label: 'Detecting Claude Code', duration: 600 },
   { label: 'Detecting Codex', duration: 500 },
+  { label: 'Detecting Cursor Agent', duration: 500 },
+  { label: 'Detecting Gemini CLI', duration: 500 },
+  { label: 'Detecting OpenCode', duration: 500 },
   { label: 'Scanning local sessions', duration: 700 },
 ];
 
@@ -58,6 +69,9 @@ export default function ApiKeyOnboarding() {
   const [providers, setProviders] = useState<ProvidersState>({
     claude: { loggedIn: false },
     codex: { loggedIn: false },
+    cursor: { loggedIn: false },
+    gemini: { loggedIn: false },
+    opencode: { loggedIn: false },
   });
 
   // Run scanning animation + real provider detection in parallel
@@ -138,7 +152,7 @@ export default function ApiKeyOnboarding() {
 
   if (!isOnboardingOpen) return null;
 
-  const anyLoggedIn = providers.claude.loggedIn || providers.codex.loggedIn;
+  const anyLoggedIn = providers.claude.loggedIn || providers.codex.loggedIn || providers.cursor.loggedIn || providers.gemini.loggedIn || providers.opencode.loggedIn;
   const showApiKeyOption = scanComplete && (showApiKeyInput || !anyLoggedIn);
 
   return (
@@ -180,9 +194,33 @@ export default function ApiKeyOnboarding() {
             phaseDone={scanPhase > 1 || scanComplete}
             phaseLabel={SCAN_PHASES[1].label}
           />
+          <ProviderRow
+            icon={<Terminal size={18} />}
+            label="Cursor Agent"
+            status={providers.cursor}
+            phaseActive={scanPhase === 2 && !scanComplete}
+            phaseDone={scanPhase > 2 || scanComplete}
+            phaseLabel={SCAN_PHASES[2].label}
+          />
+          <ProviderRow
+            icon={<Terminal size={18} />}
+            label="Gemini CLI"
+            status={providers.gemini}
+            phaseActive={scanPhase === 3 && !scanComplete}
+            phaseDone={scanPhase > 3 || scanComplete}
+            phaseLabel={SCAN_PHASES[3].label}
+          />
+          <ProviderRow
+            icon={<Terminal size={18} />}
+            label="OpenCode"
+            status={providers.opencode}
+            phaseActive={scanPhase === 4 && !scanComplete}
+            phaseDone={scanPhase > 4 || scanComplete}
+            phaseLabel={SCAN_PHASES[4].label}
+          />
           <SessionScanRow
             icon={<SessionsIcon />}
-            phaseActive={scanPhase === 2 && !scanComplete}
+            phaseActive={scanPhase === 5 && !scanComplete}
             phaseDone={scanComplete}
           />
         </div>
@@ -316,8 +354,8 @@ export default function ApiKeyOnboarding() {
         <div className="px-6 py-3 bg-claude-bg/50 border-t border-claude-border">
           <p className="text-[10px] font-mono text-claude-text-secondary text-center">
             {anyLoggedIn
-              ? 'Your existing CLI credentials are used securely. No API key required.'
-              : 'Your API key is stored locally and encrypted.'}
+              ? 'Build uses installed CLI credentials when available and tracks harness readiness locally.'
+              : 'Install or sign in to at least one harness, or add an Anthropic API key to continue.'}
           </p>
         </div>
       </div>
@@ -355,24 +393,78 @@ function ProviderRow({
   phaseDone: boolean;
   phaseLabel: string;
 }) {
+  const needsSetup = phaseDone && !phaseActive && !status.loggedIn;
+  const missingCli = needsSetup && status.installed === false;
+  const statusText = phaseActive
+    ? `${phaseLabel}...`
+    : !phaseDone
+      ? 'Pending'
+      : status.loggedIn
+        ? status.detail || 'Ready'
+        : missingCli
+          ? 'CLI missing'
+          : status.installed
+            ? 'Setup required'
+            : 'Not ready';
+
+  const handleCopyCommand = () => {
+    if (status.installCommand) {
+      navigator.clipboard?.writeText(status.installCommand).catch(() => undefined);
+    }
+  };
+  const docsUrl = status.docsUrl;
+
   return (
-    <div className="flex items-center justify-between px-3 py-2.5 bg-claude-bg/40 border border-claude-border" style={{ borderRadius: 0 }}>
-      <div className="flex items-center gap-2.5">
-        <div className="w-[18px] h-[18px] flex items-center justify-center">{icon}</div>
-        <span className="text-sm font-mono text-claude-text">{label}</span>
+    <div className="px-3 py-2.5 bg-claude-bg/40 border border-claude-border" style={{ borderRadius: 0 }}>
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <div className="w-[18px] h-[18px] flex items-center justify-center text-claude-text-secondary">{icon}</div>
+          <div className="min-w-0">
+            <span className="block text-sm font-mono text-claude-text truncate">{label}</span>
+            {phaseDone && status.version && (
+              <span className="block text-[10px] font-mono text-claude-text-secondary truncate">{status.version}</span>
+            )}
+          </div>
+        </div>
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="text-xs font-mono text-claude-text-secondary truncate">
+            {statusText}
+          </span>
+          <StatusBadge phaseActive={phaseActive} phaseDone={phaseDone} success={status.loggedIn} />
+        </div>
       </div>
-      <div className="flex items-center gap-2">
-        <span className="text-xs font-mono text-claude-text-secondary">
-          {phaseActive
-            ? phaseLabel + '...'
-            : !phaseDone
-              ? 'Pending'
-              : status.loggedIn
-                ? status.detail || 'Logged in'
-                : 'Not logged in'}
-        </span>
-        <StatusBadge phaseActive={phaseActive} phaseDone={phaseDone} success={status.loggedIn} />
-      </div>
+
+      {needsSetup && (status.installCommand || status.docsUrl) && (
+        <div className="mt-2 flex items-center gap-2">
+          {status.installCommand && (
+            <code className="flex-1 min-w-0 px-2 py-1 bg-claude-surface border border-claude-border text-[10px] font-mono text-claude-text-secondary truncate">
+              {status.installCommand}
+            </code>
+          )}
+          {status.installCommand && (
+            <button
+              type="button"
+              onClick={handleCopyCommand}
+              className="p-1.5 border border-claude-border text-claude-text-secondary hover:text-claude-text hover:bg-claude-surface"
+              title="Copy setup command"
+            >
+              <Copy size={12} />
+            </button>
+          )}
+          {status.docsUrl && (
+            <button
+              type="button"
+              onClick={() => {
+                if (docsUrl) window.electronAPI.app?.openExternal?.(docsUrl);
+              }}
+              className="p-1.5 border border-claude-border text-claude-text-secondary hover:text-claude-text hover:bg-claude-surface"
+              title="Open setup docs"
+            >
+              <ExternalLink size={12} />
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -383,7 +475,7 @@ function SessionScanRow({ icon, phaseActive, phaseDone }: { icon: React.ReactNod
   useEffect(() => {
     if (!phaseDone) return;
     window.electronAPI?.sessions?.list?.()
-      .then((sessions: any[]) => setCount(Array.isArray(sessions) ? sessions.length : 0))
+      .then((sessions: unknown[]) => setCount(Array.isArray(sessions) ? sessions.length : 0))
       .catch(() => setCount(0));
   }, [phaseDone]);
 

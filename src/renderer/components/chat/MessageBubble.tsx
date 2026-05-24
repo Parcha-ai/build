@@ -9,8 +9,9 @@ import { useEditorStore } from '../../stores/editor.store';
 import { useUIStore } from '../../stores/ui.store';
 import { useSessionStore } from '../../stores/session.store';
 import { isHtmlResponse, extractHtml } from '../../utils/htmlDetector';
-import type { ChatMessage, ToolCall, ContentBlock, Session } from '../../../shared/types';
+import type { ChatMessage, ToolCall, Session } from '../../../shared/types';
 import { AGENT_COLORS } from '../../../shared/types';
+import { buildMissingToolCall, getMessageRenderArtifacts } from '../../../shared/utils/message-rendering';
 
 // Regex to match file paths with optional line numbers
 // Matches: /path/to/file.ext or /path/to/file.ext:123
@@ -262,11 +263,13 @@ function MessageBubble({ message, isStreaming, streamingToolCalls, isLatestMessa
     }
   };
 
-  // Use streaming tool calls if provided, otherwise use message.toolCalls
-  const toolCalls = streamingToolCalls || (Array.isArray(message.toolCalls) ? message.toolCalls : []);
-
-  // Check if this is a tool-only message (no text content)
-  const isToolOnlyMessage = !message.content && toolCalls.length > 0;
+  const {
+    toolCalls,
+    unrenderedToolCalls,
+    unrenderedMessageContent,
+    isToolOnlyMessage,
+    toolOnlySummary,
+  } = getMessageRenderArtifacts(message, streamingToolCalls);
 
   return (
     <div className="flex gap-2 min-w-0">
@@ -339,20 +342,17 @@ function MessageBubble({ message, isStreaming, streamingToolCalls, isLatestMessa
                     : undefined;
 
                   if (block.type === 'tool_use' && block.toolCallId) {
-                    const toolCall = toolCalls.find(tc => tc.id === block.toolCallId);
-                    if (toolCall) {
-                      return (
-                        <div key={toolCall.id} style={agentStyle}>
-                          <ToolCallCard
-                            toolCall={toolCall}
-                            isLatestToolCall={isLatestMessage && blockIndex === message.contentBlocks!.length - 1 && block.type === 'tool_use'}
-                            isStreaming={isStreaming}
-                            defaultCollapsed={isOldMessage}
-                          />
-                        </div>
-                      );
-                    }
-                    return null;
+                    const toolCall = toolCalls.find(tc => tc.id === block.toolCallId) || buildMissingToolCall(block.toolCallId, block.agentId);
+                    return (
+                      <div key={toolCall.id} style={agentStyle}>
+                        <ToolCallCard
+                          toolCall={toolCall}
+                          isLatestToolCall={isLatestMessage && blockIndex === message.contentBlocks!.length - 1 && block.type === 'tool_use'}
+                          isStreaming={isStreaming}
+                          defaultCollapsed={isOldMessage}
+                        />
+                      </div>
+                    );
                   } else if (block.type === 'text' && block.text) {
                     return (
                       <div key={`text-${blockIndex}`} style={agentStyle}>
@@ -368,7 +368,25 @@ function MessageBubble({ message, isStreaming, streamingToolCalls, isLatestMessa
                     );
                   }
                   return null;
-                });
+                }).concat(unrenderedToolCalls.map((toolCall, index) => (
+                  <ToolCallCard
+                    key={`unrendered-tool-${toolCall.id}`}
+                    toolCall={toolCall}
+                    isLatestToolCall={isLatestMessage && index === unrenderedToolCalls.length - 1}
+                    isStreaming={isStreaming}
+                    defaultCollapsed={isOldMessage}
+                  />
+                ))).concat(unrenderedMessageContent ? [(
+                  <TextContentBlock
+                    key="message-content-fallback"
+                    content={unrenderedMessageContent}
+                    messageId={message.id}
+                    showSpeaker={false}
+                    openFile={openFile}
+                    toggleBrowserPanel={toggleBrowserPanel}
+                    isBrowserPanelOpen={isBrowserPanelOpen}
+                  />
+                )] : []);
               })()
             ) : (
               /* Fallback for messages without contentBlocks (backwards compat) */
@@ -586,6 +604,12 @@ function MessageBubble({ message, isStreaming, streamingToolCalls, isLatestMessa
               )
             )}
               </>
+            )}
+
+            {toolOnlySummary && (
+              <div className="text-xs font-mono text-claude-text-secondary border-l-2 border-claude-border pl-2">
+                {toolOnlySummary}
+              </div>
             )}
           </div>
         )}

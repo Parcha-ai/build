@@ -82,6 +82,7 @@ import { registerCodexHandlers } from './ipc/codex.ipc';
 import { registerOpenClawHandlers } from './ipc/openclaw.ipc';
 import { registerAnalyticsHandlers } from './ipc/analytics.ipc';
 import { getGStackModes, isGStackInstalled, installGStack, upgradeGStack } from './services/gstack.service';
+import { mcpService } from './services/mcp.service';
 import { IPC_CHANNELS } from '../shared/constants/channels';
 import { cdpProxyService } from './services/cdp-proxy.service';
 import { powerService } from './services/power.service';
@@ -685,6 +686,9 @@ app.on('ready', async () => {
   migrateFromGrepBuild();
   registerIPCHandlers();
   powerService.init();
+  mcpService.syncLocalHarnessConfigs().catch((error) => {
+    console.warn('[Main] Failed to sync local MCP harness configs on startup:', error);
+  });
   createWindow();
 
   // Start CDP proxy for Stagehand webview integration

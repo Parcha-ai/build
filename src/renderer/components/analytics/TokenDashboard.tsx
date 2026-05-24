@@ -10,7 +10,8 @@ interface AnalyticsSummary {
   monthExtraUsageCost: number;
   isOverIncludedUsage: boolean;
   percentOfIncluded: number;
-  bySession: Array<{ sessionId: string; sessionName: string; model: string; totalTokens: number; cost: number }>;
+  bySession: Array<{ sessionId: string; sessionName: string; model: string; totalTokens: number; cost: number; baselineCost: number; savings: number }>;
+  byHarness: Array<{ harness: string; cost: number; baselineCost: number; savings: number; tokenCount: number; turnCount: number }>;
   byModel: Array<{ model: string; cost: number; tokenCount: number }>;
   byTool: Array<{ tool: string; cost: number; callCount: number }>;
   hourlyTimeline: Array<{ hour: string; tokens: number; cost: number }>;
@@ -19,6 +20,19 @@ interface AnalyticsSummary {
 interface TierConfig {
   monthlyIncludedUsd: number;
   planName: string;
+}
+
+interface HarnessInsight {
+  harness: string;
+  model: string;
+  runs: number;
+  successes: number;
+  failures: number;
+  successRate: number;
+  overrideCount: number;
+  totalCost: number;
+  bestTier?: string;
+  bestDomain?: string;
 }
 
 function formatCost(cost: number): string {
@@ -51,6 +65,10 @@ function getCostTier(model: string): string {
   return '$$';
 }
 
+function getHarnessLabel(harness: string): string {
+  return harness.charAt(0).toUpperCase() + harness.slice(1);
+}
+
 interface SparklineProps {
   data: number[];
   width: number;
@@ -79,6 +97,7 @@ function Sparkline({ data, width, height, color }: SparklineProps) {
 export default function TokenDashboard({ onClose }: { onClose: () => void }) {
   const [summary, setSummary] = useState<AnalyticsSummary | null>(null);
   const [tierConfig, setTierConfig] = useState<TierConfig | null>(null);
+  const [harnessInsights, setHarnessInsights] = useState<HarnessInsight[]>([]);
   const [showTierSettings, setShowTierSettings] = useState(false);
   const [tierInput, setTierInput] = useState('');
   const [planInput, setPlanInput] = useState('');
@@ -86,12 +105,14 @@ export default function TokenDashboard({ onClose }: { onClose: () => void }) {
 
   const refresh = useCallback(async () => {
     try {
-      const [s, t] = await Promise.all([
+      const [s, t, insights] = await Promise.all([
         window.electronAPI.analytics.getSummary(),
         window.electronAPI.analytics.getTierConfig(),
+        window.electronAPI.analytics.getHarnessInsights?.().catch(() => []),
       ]);
       setSummary(s);
       setTierConfig(t);
+      setHarnessInsights(Array.isArray(insights) ? insights : []);
       setTierInput(String(t.monthlyIncludedUsd));
       setPlanInput(t.planName);
     } catch (e) {
@@ -187,7 +208,7 @@ export default function TokenDashboard({ onClose }: { onClose: () => void }) {
       {/* Content */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
         {/* Top stats row */}
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-4 gap-3">
           <div className="p-3 bg-claude-surface border border-claude-border">
             <div className="text-[9px] text-claude-text-secondary mb-1" style={{ letterSpacing: '0.05em' }}>TODAY'S SPEND</div>
             <div className="text-lg font-bold text-claude-text">{formatCost(summary.todayTotalCost)}</div>
@@ -208,6 +229,13 @@ export default function TokenDashboard({ onClose }: { onClose: () => void }) {
             <div className="text-[10px] text-claude-text-secondary">
               {tierConfig && `of ${formatCost(tierConfig.monthlyIncludedUsd)} included`}
             </div>
+          </div>
+          <div className="p-3 bg-claude-surface border border-claude-border">
+            <div className="text-[9px] text-claude-text-secondary mb-1" style={{ letterSpacing: '0.05em' }}>SAVED VS MAX</div>
+            <div className="text-lg font-bold text-green-400">
+              {formatCost(summary.byHarness.reduce((sum, h) => sum + h.savings, 0))}
+            </div>
+            <div className="text-[10px] text-claude-text-secondary">vs all turns on GPT-5.5</div>
           </div>
         </div>
 
@@ -284,6 +312,72 @@ export default function TokenDashboard({ onClose }: { onClose: () => void }) {
                     <td className="py-1 pr-2 text-claude-text-secondary">{getModelShortName(s.model)}</td>
                     <td className="py-1 pr-2 text-right text-claude-text-secondary">{formatTokens(s.totalTokens)}</td>
                     <td className="py-1 text-right text-claude-text">{formatCost(s.cost)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {/* By Harness */}
+        {summary.byHarness.length > 0 && (
+          <div className="p-3 bg-claude-surface border border-claude-border">
+            <div className="text-[9px] text-claude-text-secondary mb-2" style={{ letterSpacing: '0.05em' }}>
+              BY HARNESS (TODAY)
+            </div>
+            <table className="w-full">
+              <thead>
+                <tr className="text-[9px] text-claude-text-secondary border-b border-claude-border">
+                  <th className="text-left py-1 pr-2">Harness</th>
+                  <th className="text-right py-1 pr-2">Turns</th>
+                  <th className="text-right py-1 pr-2">Tokens</th>
+                  <th className="text-right py-1 pr-2">Cost</th>
+                  <th className="text-right py-1">Saved</th>
+                </tr>
+              </thead>
+              <tbody>
+                {summary.byHarness.map((h) => (
+                  <tr key={h.harness} className="border-b border-claude-border/30">
+                    <td className="py-1 pr-2 text-claude-text">{getHarnessLabel(h.harness)}</td>
+                    <td className="py-1 pr-2 text-right text-claude-text-secondary">{h.turnCount}</td>
+                    <td className="py-1 pr-2 text-right text-claude-text-secondary">{formatTokens(h.tokenCount)}</td>
+                    <td className="py-1 pr-2 text-right text-claude-text">{formatCost(h.cost)}</td>
+                    <td className="py-1 text-right text-green-400">{formatCost(h.savings)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {/* Learned Routing */}
+        {harnessInsights.length > 0 && (
+          <div className="p-3 bg-claude-surface border border-claude-border">
+            <div className="text-[9px] text-claude-text-secondary mb-2" style={{ letterSpacing: '0.05em' }}>
+              LEARNED ROUTING SIGNALS
+            </div>
+            <table className="w-full">
+              <thead>
+                <tr className="text-[9px] text-claude-text-secondary border-b border-claude-border">
+                  <th className="text-left py-1 pr-2">Model</th>
+                  <th className="text-left py-1 pr-2">Best for</th>
+                  <th className="text-right py-1 pr-2">Runs</th>
+                  <th className="text-right py-1 pr-2">Success</th>
+                  <th className="text-right py-1">Overrides</th>
+                </tr>
+              </thead>
+              <tbody>
+                {harnessInsights.slice(0, 6).map((insight) => (
+                  <tr key={`${insight.harness}:${insight.model}`} className="border-b border-claude-border/30">
+                    <td className="py-1 pr-2 text-claude-text truncate max-w-[170px]">{insight.model}</td>
+                    <td className="py-1 pr-2 text-claude-text-secondary">
+                      {[insight.bestDomain, insight.bestTier].filter(Boolean).join(' / ') || '-'}
+                    </td>
+                    <td className="py-1 pr-2 text-right text-claude-text-secondary">{insight.runs}</td>
+                    <td className="py-1 pr-2 text-right text-claude-text-secondary">
+                      {insight.runs > 0 ? `${Math.round(insight.successRate * 100)}%` : '-'}
+                    </td>
+                    <td className="py-1 text-right text-claude-text-secondary">{insight.overrideCount}</td>
                   </tr>
                 ))}
               </tbody>

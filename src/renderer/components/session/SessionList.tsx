@@ -299,6 +299,15 @@ export default function SessionList() {
     setExpandedProjects(newExpanded);
   };
 
+  // Focus Mode: dim entire session list when active.
+  // Keep these store hooks before early returns so the hook order stays stable
+  // between the loading/empty states and the loaded list.
+  const focusModeEnabled = useTaskStore?.((s: any) => s.focusModeEnabled) || false;
+  const focusActiveTaskId = useTaskStore?.((s: any) => s.activeTaskId) || null;
+  const focusTasks = useTaskStore?.((s: any) => s.tasks) || [];
+  const activeTask = focusModeEnabled ? focusTasks.find((t: any) => t.id === focusActiveTaskId) : null;
+  const focusSessionId = activeTask?.sessionId;
+
   // Show loading state while scanning for sessions
   if (isLoadingSessions) {
     return (
@@ -325,13 +334,6 @@ export default function SessionList() {
       </div>
     );
   }
-
-  // Focus Mode: dim entire session list when active
-  const focusModeEnabled = useTaskStore?.((s: any) => s.focusModeEnabled) || false;
-  const focusActiveTaskId = useTaskStore?.((s: any) => s.activeTaskId) || null;
-  const focusTasks = useTaskStore?.((s: any) => s.tasks) || [];
-  const activeTask = focusModeEnabled ? focusTasks.find((t: any) => t.id === focusActiveTaskId) : null;
-  const focusSessionId = activeTask?.sessionId;
 
   return (
     <div className="pb-2">
@@ -410,7 +412,7 @@ export default function SessionList() {
                     const newStarredAt = new Date(base + i * 1000).toISOString();
                     window.electronAPI?.sessions?.update(s.id, {
                       starredAt: newStarredAt,
-                    } as any).catch(() => {});
+                    } as any).catch(() => undefined);
                   });
                   loadSessions();
                   setDraggedId(null);

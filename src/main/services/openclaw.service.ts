@@ -6,6 +6,7 @@
  * conversation history in memory and yields events matching the existing chat
  * pipeline StreamEvent format so the renderer needs zero special handling.
  */
+import type { ChatMessage } from '../../shared/types';
 
 interface OpenClawMessage {
   role: 'system' | 'user' | 'assistant';
@@ -38,6 +39,8 @@ class OpenClawService {
     toolCall?: { id: string; name: string; input: Record<string, unknown>; status: string; result?: string };
     error?: string;
     systemInfo?: { tools: string[]; model: string };
+    message?: ChatMessage;
+    resolvedModel?: string;
   }> {
     // Emit system info event at the start so the UI shows the model badge
     yield {
@@ -165,14 +168,35 @@ class OpenClawService {
         history.push({ role: 'assistant', content: fullResponse });
       }
 
-      yield { type: 'message_complete' };
+      yield {
+        type: 'message_complete',
+        message: fullResponse.trim() ? {
+          id: `openclaw-result-${Date.now()}`,
+          role: 'assistant',
+          content: fullResponse,
+          timestamp: new Date(),
+          harness: 'custom',
+        } : undefined,
+        resolvedModel: 'custom:openclaw',
+      };
     } catch (err: unknown) {
       if (err instanceof Error && err.name === 'AbortError') {
         // User cancelled – still record partial response if any
         if (fullResponse) {
           history.push({ role: 'assistant', content: fullResponse });
         }
-        yield { type: 'message_complete' };
+        yield {
+          type: 'message_complete',
+          message: fullResponse.trim() ? {
+            id: `openclaw-result-${Date.now()}`,
+            role: 'assistant',
+            content: fullResponse,
+            timestamp: new Date(),
+            harness: 'custom',
+            interrupted: true,
+          } : undefined,
+          resolvedModel: 'custom:openclaw',
+        };
       } else {
         const errorMsg = err instanceof Error ? err.message : String(err);
         console.error('[OpenClaw] Stream error:', errorMsg);

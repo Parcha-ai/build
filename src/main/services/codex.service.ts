@@ -6,7 +6,10 @@ import * as os from 'os';
 import * as readline from 'readline';
 import type { Client, SFTPWrapper } from 'ssh2';
 import { sshService } from './ssh.service';
-import type { Attachment, SSHConfig } from '../../shared/types';
+import type { Attachment, ChatMessage, SSHConfig } from '../../shared/types';
+import { terminateProcessTree } from '../utils/process-tree';
+import { truncateMiddlePreservingTail } from '../../shared/utils/prompt-truncation';
+import { mcpService } from './mcp.service';
 
 // Stream event types for Codex (parallel to Claude's StreamEvent but separate)
 export interface CodexStreamEvent {
@@ -177,7 +180,7 @@ class CodexServiceImpl {
   }
 
   /**
-   * Translate a JSON event from `codex exec --experimental-json` into our CodexStreamEvent.
+   * Translate a JSON event from `codex exec --json` into our CodexStreamEvent.
    */
   private translateEvent(event: CodexJsonEvent): CodexStreamEvent | null {
     switch (event.type) {
@@ -311,16 +314,10 @@ class CodexServiceImpl {
    */
   async runForTool(sessionId: string, prompt: string, workingDir: string): Promise<CodexToolResult> {
     const apiKey = this.getOpenAiApiKey();
-    if (!apiKey) {
-      return {
-        summary: 'Error: No OpenAI API key configured. Please set your OpenAI API key in Settings.',
-        toolCalls: [],
-      };
-    }
 
     const MAX_PROMPT_CHARS = 50000;
     const safePrompt = prompt.length > MAX_PROMPT_CHARS
-      ? prompt.substring(0, MAX_PROMPT_CHARS) + '\n\n[... truncated due to length]'
+      ? truncateMiddlePreservingTail(prompt, MAX_PROMPT_CHARS)
       : prompt;
 
     let summary = '';
@@ -385,7 +382,7 @@ class CodexServiceImpl {
     sessionId: string,
     prompt: string,
     workingDir: string,
-    apiKey: string,
+    apiKey: string | undefined,
     codexModel?: string,
     imagePaths: string[] = [],
     executionMode?: CodexExecutionMode,
@@ -399,7 +396,7 @@ class CodexServiceImpl {
 
     const args = [
       'exec',
-      '--experimental-json',
+      '--json',
       '--cd', workingDir,
       '--skip-git-repo-check',
     ];
@@ -412,11 +409,24 @@ class CodexServiceImpl {
     }
 
     const env: Record<string, string> = { ...process.env as Record<string, string> };
-    env.CODEX_API_KEY = apiKey;
+    if (apiKey) {
+      env.CODEX_API_KEY = apiKey;
+      env.OPENAI_API_KEY = env.OPENAI_API_KEY || apiKey;
+    }
     env.CODEX_SDK_ORIGINATOR = 'grep-build';
 
+    this.cancel(sessionId);
     const abortController = new AbortController();
-    const child = spawn(binary, args, { env, signal: abortController.signal });
+    const child = spawn(binary, args, {
+      env,
+      signal: abortController.signal,
+      detached: process.platform !== 'win32',
+    });
+    child.once('error', (error: NodeJS.ErrnoException) => {
+      if (error.code !== 'ABORT_ERR') {
+        console.warn('[Codex Service] Process error:', error);
+      }
+    });
 
     this.activeProcesses.set(sessionId, { process: child, abortController });
 
@@ -500,7 +510,7 @@ class CodexServiceImpl {
     sessionId: string,
     prompt: string,
     workingDir: string,
-    apiKey: string,
+    apiKey: string | undefined,
     sshConfig: SSHConfig,
     codexModel?: string,
     imagePaths: string[] = [],
@@ -508,7 +518,7 @@ class CodexServiceImpl {
   ): AsyncGenerator<CodexJsonEvent> {
     console.log(`[Codex Service] Spawning Codex via SSH on ${sshConfig.host}`);
 
-    const codexArgs = ['exec', '--experimental-json', '--skip-git-repo-check'];
+    const codexArgs = ['exec', '--json', '--skip-git-repo-check'];
     this.appendExecutionModeArgs(codexArgs, executionMode);
     if (codexModel) {
       codexArgs.push('--model', codexModel);
@@ -521,7 +531,7 @@ class CodexServiceImpl {
       command: 'codex',
       args: codexArgs,
       cwd: workingDir,
-      env: { CODEX_API_KEY: apiKey },
+      env: apiKey ? { CODEX_API_KEY: apiKey, OPENAI_API_KEY: apiKey } : {},
       closeStdinOnEnd: true,
     });
 
@@ -590,9 +600,19 @@ class CodexServiceImpl {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async *streamDirect(sessionId: string, prompt: string, workingDir: string, sshConfig?: any, codexModel?: string, attachments?: Attachment[], permissionMode?: string): AsyncGenerator<CodexStreamEvent> {
     const apiKey = this.getOpenAiApiKey();
-    if (!apiKey) {
-      yield { type: 'error', error: 'No OpenAI API key configured. Please set your OpenAI API key in Settings.' };
-      return;
+
+    if (sshConfig) {
+      const syncResult = await sshService.syncMcpConfigsToRemote(sessionId, sshConfig);
+      if (!syncResult.success) {
+        yield { type: 'error', error: `Failed to sync MCP config to remote: ${syncResult.error}` };
+        return;
+      }
+    } else {
+      const syncResult = await mcpService.syncLocalHarnessConfigs();
+      if (Object.keys(syncResult.errors).length > 0) {
+        yield { type: 'error', error: `Failed to sync local MCP config: ${JSON.stringify(syncResult.errors)}` };
+        return;
+      }
     }
 
     const executionMode = this.getExecutionMode(permissionMode);
@@ -600,8 +620,8 @@ class CodexServiceImpl {
     const MAX_PROMPT_CHARS = 50000;
     let safePrompt = prompt;
     if (promptWithModeContext.length > MAX_PROMPT_CHARS) {
-      console.warn(`[Codex Service] Prompt too long (${promptWithModeContext.length} chars), truncating to ${MAX_PROMPT_CHARS}`);
-      safePrompt = promptWithModeContext.substring(0, MAX_PROMPT_CHARS) + '\n\n[... truncated due to length]';
+      console.warn(`[Codex Service] Prompt too long (${promptWithModeContext.length} chars), middle-truncating to ${MAX_PROMPT_CHARS} while preserving latest input`);
+      safePrompt = truncateMiddlePreservingTail(promptWithModeContext, MAX_PROMPT_CHARS);
     } else {
       safePrompt = promptWithModeContext;
     }
@@ -686,6 +706,7 @@ class CodexServiceImpl {
     toolCall?: { id: string; name: string; input: Record<string, unknown>; status: string; result?: string };
     error?: string;
     systemInfo?: { tools: string[]; model: string };
+    message?: ChatMessage;
   }> {
     yield {
       type: 'system',
@@ -695,6 +716,7 @@ class CodexServiceImpl {
     const promptWithAttachmentContext = this.buildPromptWithAttachmentContext(prompt, attachments);
     // Prepend conversation context from prior Claude turns if available
     const fullPrompt = conversationContext ? `${conversationContext}\n\n${promptWithAttachmentContext}` : promptWithAttachmentContext;
+    let outputContent = '';
 
     for await (const event of this.streamDirect(sessionId, fullPrompt, workingDir, sshConfig, codexModel, attachments, permissionMode)) {
       switch (event.type) {
@@ -702,6 +724,7 @@ class CodexServiceImpl {
           break;
         case 'text_delta':
           if (event.content) {
+            outputContent += event.content;
             yield { type: 'text_delta', content: event.content };
           }
           break;
@@ -722,7 +745,16 @@ class CodexServiceImpl {
           }
           break;
         case 'complete':
-          yield { type: 'message_complete' };
+          yield {
+            type: 'message_complete',
+            message: outputContent.trim() ? {
+              id: `codex-result-${Date.now()}`,
+              role: 'assistant',
+              content: outputContent,
+              timestamp: new Date(),
+              harness: 'codex',
+            } : undefined,
+          };
           break;
         case 'error':
           yield { type: 'error', error: event.error };
@@ -739,13 +771,8 @@ class CodexServiceImpl {
       const active = this.activeProcesses.get(key);
       if (active) {
         console.log(`[Codex Service] Cancelling run for ${key}`);
+        terminateProcessTree(active.process, 1000, true);
         active.abortController.abort();
-        // SIGTERM first, then SIGKILL after 1s if still alive
-        active.process.kill('SIGTERM');
-        const proc = active.process;
-        setTimeout(() => {
-          try { if (!proc.killed) proc.kill('SIGKILL'); } catch { /* already dead */ }
-        }, 1000);
         this.activeProcesses.delete(key);
       }
     }

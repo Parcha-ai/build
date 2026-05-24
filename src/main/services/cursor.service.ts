@@ -1,6 +1,9 @@
 import { Agent } from '@cursor/sdk';
-import type { InteractionUpdate, Run, SDKAgent } from '@cursor/sdk';
+import type { InteractionUpdate, McpServerConfig, Run, SDKAgent } from '@cursor/sdk';
 import Store from 'electron-store';
+import type { ChatMessage } from '../../shared/types';
+import type { MCPServerConfig } from './mcp.service';
+import { mcpService } from './mcp.service';
 
 export interface CursorStreamEvent {
   type: 'text_delta' | 'thinking_delta' | 'tool_use' | 'tool_result' | 'message_complete' | 'error' | 'system';
@@ -14,6 +17,14 @@ export interface CursorStreamEvent {
   };
   error?: string;
   systemInfo?: { tools: string[]; model: string };
+  usage?: {
+    inputTokens?: number;
+    outputTokens?: number;
+    cacheReadTokens?: number;
+    cacheWriteTokens?: number;
+    model?: string;
+  };
+  message?: ChatMessage;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -44,6 +55,32 @@ interface AgentState {
   turnCount: number;
 }
 
+export function toCursorSdkMcpServers(servers: Record<string, MCPServerConfig>): Record<string, McpServerConfig> {
+  const cursorServers: Record<string, McpServerConfig> = {};
+
+  for (const [name, config] of Object.entries(servers)) {
+    if (config.command) {
+      cursorServers[name] = {
+        type: 'stdio',
+        command: config.command,
+        ...(config.args?.length ? { args: config.args } : {}),
+        ...(config.env ? { env: config.env } : {}),
+      };
+      continue;
+    }
+
+    if (config.url) {
+      cursorServers[name] = {
+        type: config.type === 'sse' ? 'sse' : 'http',
+        url: config.url,
+        ...(config.headers ? { headers: config.headers } : {}),
+      };
+    }
+  }
+
+  return cursorServers;
+}
+
 class CursorService {
   private activeAgents: Map<string, AgentState> = new Map();
 
@@ -64,7 +101,14 @@ class CursorService {
       return;
     }
 
+    const syncResult = await mcpService.syncLocalHarnessConfigs();
+    if (Object.keys(syncResult.errors).length > 0) {
+      yield { type: 'error', error: `Failed to sync local MCP config: ${JSON.stringify(syncResult.errors)}` };
+      return;
+    }
+
     const modelId = model.replace('cursor:', '');
+    const cursorMcpServers = toCursorSdkMcpServers(mcpService.getHarnessMcpServersConfig());
 
     yield {
       type: 'system',
@@ -77,6 +121,8 @@ class CursorService {
     const eventQueue: CursorStreamEvent[] = [];
     let finished = false;
     let runError: Error | null = null;
+    let emittedAssistantText = '';
+    let sawToolActivity = false;
 
     let wakeup: (() => void) | null = null;
     const notifyWakeup = (): void => {
@@ -88,6 +134,12 @@ class CursorService {
     };
 
     const pushEvent = (evt: CursorStreamEvent): void => {
+      if (evt.type === 'text_delta' && evt.content) {
+        emittedAssistantText += evt.content;
+      }
+      if (evt.type === 'tool_use' || evt.type === 'tool_result') {
+        sawToolActivity = true;
+      }
       eventQueue.push(evt);
       notifyWakeup();
     };
@@ -101,6 +153,7 @@ class CursorService {
           model: { id: modelId },
           apiKey,
           local: { cwd: workDir },
+          mcpServers: cursorMcpServers,
         });
         state = { agent, turnCount: 0 };
         this.activeAgents.set(sessionId, state);
@@ -116,6 +169,7 @@ class CursorService {
       // Without this, agent.send() hangs because the SDK considers
       // the prior run still active internally.
       const run: Run = await state.agent.send(message, {
+        mcpServers: cursorMcpServers,
         onDelta: ({ update }: { update: InteractionUpdate }) => {
           try {
             this.translateDelta(update, pushEvent);
@@ -127,8 +181,29 @@ class CursorService {
       });
 
       run.wait()
-        .then(() => {
-          pushEvent({ type: 'message_complete' });
+        .then((result) => {
+          const finalText = typeof result.result === 'string' ? result.result : '';
+          let message: ChatMessage | undefined;
+          if (finalText.trim()) {
+            message = {
+              id: `cursor-sdk-result-${Date.now()}`,
+              role: 'assistant',
+              content: finalText,
+              timestamp: new Date(),
+              harness: 'cursor',
+            };
+          } else if (!emittedAssistantText.trim() && sawToolActivity) {
+            const completion = 'Cursor completed tool work but did not return a final text response.';
+            pushEvent({ type: 'text_delta', content: completion });
+            message = {
+              id: `cursor-sdk-tool-only-${Date.now()}`,
+              role: 'assistant',
+              content: completion,
+              timestamp: new Date(),
+              harness: 'cursor',
+            };
+          }
+          pushEvent({ type: 'message_complete', message });
           finished = true;
           notifyWakeup();
         })

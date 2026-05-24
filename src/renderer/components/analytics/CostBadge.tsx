@@ -8,6 +8,17 @@ interface SessionCost {
   extraUsageCost: number;
   isOverIncludedUsage: boolean;
   percentOfIncluded: number;
+  baselineCost: number;
+  savingsVsBaseline: number;
+  baselineModel: string;
+  byHarness: Array<{
+    harness: string;
+    cost: number;
+    baselineCost: number;
+    savings: number;
+    tokenCount: number;
+    turnCount: number;
+  }>;
 }
 
 interface TierConfig {
@@ -25,6 +36,10 @@ function formatTokens(tokens: number): string {
   if (tokens < 1000) return `${tokens}`;
   if (tokens < 1_000_000) return `${(tokens / 1000).toFixed(1)}K`;
   return `${(tokens / 1_000_000).toFixed(2)}M`;
+}
+
+function formatHarness(harness: string): string {
+  return harness.charAt(0).toUpperCase() + harness.slice(1);
 }
 
 export default function CostBadge() {
@@ -82,11 +97,16 @@ export default function CostBadge() {
       <span className="text-claude-text-secondary" style={{ letterSpacing: '0.05em' }}>
         ({formatTokens(sessionCost.totalTokens)})
       </span>
+      {sessionCost.savingsVsBaseline > 0 && (
+        <span className="text-green-400" style={{ letterSpacing: '0.05em' }}>
+          saved {formatCost(sessionCost.savingsVsBaseline)}
+        </span>
+      )}
 
       {/* Tooltip with full cost breakdown */}
       {showTooltip && (
         <div
-          className="absolute bottom-full right-0 mb-2 w-64 p-3 bg-claude-surface border border-claude-border shadow-lg text-[11px] font-mono z-50"
+          className="absolute bottom-full right-0 mb-2 w-80 p-3 bg-claude-surface border border-claude-border shadow-lg text-[11px] font-mono z-50"
           style={{ borderRadius: 0 }}
         >
           <div className="font-bold text-claude-text mb-2" style={{ letterSpacing: '0.05em' }}>
@@ -105,7 +125,33 @@ export default function CostBadge() {
               <span className="text-claude-text-secondary">Turns:</span>
               <span className="text-claude-text">{sessionCost.turnCount}</span>
             </div>
+            <div className="flex justify-between">
+              <span className="text-claude-text-secondary">Most expensive route:</span>
+              <span className="text-claude-text">{formatCost(sessionCost.baselineCost)}</span>
+            </div>
+            <div className="flex justify-between text-green-400">
+              <span>Saved:</span>
+              <span>{formatCost(sessionCost.savingsVsBaseline)}</span>
+            </div>
           </div>
+
+          {sessionCost.byHarness.length > 0 && (
+            <>
+              <div className="border-t border-claude-border my-2" />
+              <div className="font-bold text-claude-text mb-2" style={{ letterSpacing: '0.05em' }}>
+                BY HARNESS
+              </div>
+              <div className="space-y-1">
+                {sessionCost.byHarness.map((h) => (
+                  <div key={h.harness} className="grid grid-cols-[1fr_auto_auto] gap-2">
+                    <span className="text-claude-text-secondary">{formatHarness(h.harness)}</span>
+                    <span className="text-claude-text">{formatCost(h.cost)}</span>
+                    <span className="text-green-400">{h.savings > 0 ? `-${formatCost(h.savings)}` : ''}</span>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
 
           {tierConfig && (
             <>

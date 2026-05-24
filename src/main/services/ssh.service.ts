@@ -74,6 +74,13 @@ export interface SSHConnectionInfo {
   config: SSHConfig;
 }
 
+export interface RemoteCliCapabilities {
+  codex: boolean;
+  cursor: boolean;
+  gemini: boolean;
+  opencode: boolean;
+}
+
 /**
  * Service for managing SSH connections and remote process execution
  */
@@ -94,6 +101,7 @@ export class SSHService {
   }>();
   private readonly SSH_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
   private remoteBridgeReady = new Map<string, Promise<RemoteBridgeInstall>>();
+  private activeTunnels: Set<string> = new Set();
 
   private getSafeSessionId(sessionId: string): string {
     return sessionId.replace(/[^a-zA-Z0-9_-]/g, '-');
@@ -101,6 +109,15 @@ export class SSHService {
 
   private getDetachedBridgeSessionDir(sessionId: string): string {
     return `/tmp/claudette-ssh-bridge/${this.getSafeSessionId(sessionId)}`;
+  }
+
+  private clearActiveTunnels(sessionId: string): void {
+    const prefix = `${sessionId}:`;
+    for (const key of [...this.activeTunnels]) {
+      if (key.startsWith(prefix)) {
+        this.activeTunnels.delete(key);
+      }
+    }
   }
 
   /**
@@ -683,6 +700,7 @@ export class SSHService {
 
       client.on('close', () => {
         this.connections.delete(sessionId);
+        this.clearActiveTunnels(sessionId);
         console.log(`[SSH Service] Connection closed for session ${sessionId}`);
 
         // Stop health checks for this connection
@@ -747,6 +765,7 @@ export class SSHService {
         console.warn(`[SSH Service] Cached connection for ${sessionId} has a dead socket — removing stale entry`);
         this.connections.delete(sessionId);
         this.stopHealthCheck(sessionId);
+        this.clearActiveTunnels(sessionId);
         // Fall through to create a new connection
       } else if (options?.livenessProbe) {
         // Active liveness probe — only run when the caller explicitly asks
@@ -769,6 +788,7 @@ export class SSHService {
           existing.client.end();
           this.connections.delete(sessionId);
           this.stopHealthCheck(sessionId);
+          this.clearActiveTunnels(sessionId);
           // Fall through to create a new connection
         }
       } else {
@@ -820,6 +840,7 @@ export class SSHService {
         try { existing.client.end(); } catch { /* best-effort */ }
         this.connections.delete(sessionId);
         this.stopHealthCheck(sessionId);
+        this.clearActiveTunnels(sessionId);
       }
       const fresh = await this.getConnection(sessionId, config);
       return this.execCommand(fresh, command, options);
@@ -835,7 +856,55 @@ export class SSHService {
   }
 
   private getRemoteCommandPathPrefix(config: SSHConfig): string {
-    return `export PATH="/home/${config.username}/.local/bin:/home/${config.username}/bin:$HOME/.nvm/versions/node/*/bin:$HOME/.cargo/bin:/usr/local/bin:/usr/bin:$PATH"`;
+    return `export PATH="/home/${config.username}/.local/bin:/home/${config.username}/.cursor/bin:/home/${config.username}/.bun/bin:/home/${config.username}/.npm-global/bin:/home/${config.username}/bin:$HOME/.local/bin:$HOME/.cursor/bin:$HOME/.bun/bin:$HOME/.npm-global/bin:$HOME/bin:$HOME/.cargo/bin:/usr/local/bin:/usr/bin:$PATH"; for d in "$HOME"/.nvm/versions/node/*/bin; do [ -d "$d" ] && PATH="$d:$PATH"; done; export PATH`;
+  }
+
+  async detectRemoteCliCapabilities(
+    sessionId: string,
+    config: SSHConfig
+  ): Promise<RemoteCliCapabilities> {
+    const capabilities: RemoteCliCapabilities = {
+      codex: false,
+      cursor: false,
+      gemini: false,
+      opencode: false,
+    };
+
+    try {
+      const client = await this.getConnection(sessionId, config);
+      const command = `
+${this.getRemoteCommandPathPrefix(config)}
+detect_cli() {
+  key="$1"
+  shift
+  for bin in "$@"; do
+    if command -v "$bin" >/dev/null 2>&1; then
+      printf '%s=1\\n' "$key"
+      return
+    fi
+  done
+  printf '%s=0\\n' "$key"
+}
+
+detect_cli codex codex
+detect_cli cursor cursor-agent agent
+detect_cli opencode opencode
+detect_cli gemini gemini
+`;
+
+      const output = await this.execCommand(client, command);
+      for (const line of output.split('\n')) {
+        const match = /^(codex|cursor|gemini|opencode)=(0|1)$/.exec(line.trim());
+        if (!match) continue;
+        capabilities[match[1] as keyof RemoteCliCapabilities] = match[2] === '1';
+      }
+
+      console.log('[SSH Service] Remote CLI capabilities:', capabilities);
+    } catch (error) {
+      console.warn('[SSH Service] Failed to detect remote CLI capabilities:', error);
+    }
+
+    return capabilities;
   }
 
   private async ensureDetachedRemoteBridge(sessionId: string, config: SSHConfig): Promise<RemoteBridgeInstall> {
@@ -1711,6 +1780,7 @@ export class SSHService {
         console.error('[SSH Service] Error disconnecting:', error);
       }
       this.connections.delete(sessionId);
+      this.clearActiveTunnels(sessionId);
     }
   }
 
@@ -1876,12 +1946,14 @@ export class SSHService {
     const homeDir = os.homedir();
     const claudeDir = path.join(homeDir, '.claude');
 
-    // Check if local .claude directory exists
+    // Check if local .claude directory exists. MCP config/auth sync still runs
+    // even if the user has not created local Claude settings yet.
+    let hasClaudeDir = true;
     try {
       await fsPromises.access(claudeDir);
     } catch {
-      console.log('[SSH Service] No local ~/.claude directory, skipping sync');
-      return { success: true }; // Nothing to sync, but not an error
+      console.log('[SSH Service] No local ~/.claude directory, skipping Claude file sync');
+      hasClaudeDir = false;
     }
 
     let sftp: import('ssh2').SFTPWrapper | null = null;
@@ -1990,22 +2062,24 @@ export class SSHService {
       const homeResult = await this.execCommand(client, 'echo $HOME');
       const remoteHome = homeResult.trim();
 
-      // Sync each item
-      for (const item of itemsToSync) {
-        try {
-          const stat = await fsPromises.stat(item.local);
-          const remotePath = `${remoteHome}/${item.remote}`;
+      if (hasClaudeDir) {
+        // Sync each item
+        for (const item of itemsToSync) {
+          try {
+            const stat = await fsPromises.stat(item.local);
+            const remotePath = `${remoteHome}/${item.remote}`;
 
-          if (item.isDir && stat.isDirectory()) {
-            console.log(`[SSH Service] Syncing directory ${item.local} -> ${remotePath}`);
-            await uploadDir(item.local, remotePath);
-          } else if (!item.isDir && stat.isFile()) {
-            console.log(`[SSH Service] Syncing file ${item.local} -> ${remotePath}`);
-            await uploadFile(item.local, remotePath);
+            if (item.isDir && stat.isDirectory()) {
+              console.log(`[SSH Service] Syncing directory ${item.local} -> ${remotePath}`);
+              await uploadDir(item.local, remotePath);
+            } else if (!item.isDir && stat.isFile()) {
+              console.log(`[SSH Service] Syncing file ${item.local} -> ${remotePath}`);
+              await uploadFile(item.local, remotePath);
+            }
+          } catch (e) {
+            // File/dir doesn't exist locally, skip
+            console.log(`[SSH Service] Skipping ${item.local} (does not exist or error)`);
           }
-        } catch (e) {
-          // File/dir doesn't exist locally, skip
-          console.log(`[SSH Service] Skipping ${item.local} (does not exist or error)`);
         }
       }
 
@@ -2018,6 +2092,11 @@ export class SSHService {
           console.log('[SSH Service] Could not configure git credential helper (gh may not be installed on remote)');
         }
       }
+
+      await this.syncBuildMcpServersInternal(client);
+      await this.syncMcpAuthInternal(client);
+      await this.syncHarnessMcpConfigsInternal(client);
+      await this.setupMcpReverseTunnelsForSession(sessionId, config);
 
       // Clean up temp file
       if (tempGhHostsPath) {
@@ -2533,6 +2612,104 @@ export class SSHService {
   }
 
   /**
+   * Collect remote project/user instruction files for cross-harness context.
+   * This is intentionally broader than slash-command scans: it includes the
+   * instruction and rule files that local harnesses usually auto-discover.
+   */
+  async scanRemoteHarnessContextFiles(
+    sessionId: string,
+    config: SSHConfig,
+    remoteWorkdir: string
+  ): Promise<Array<{ label: string; filePath: string; content: string }>> {
+    try {
+      const client = await this.getConnection(sessionId, config);
+      const quotedWorkdir = this.quoteForShell(remoteWorkdir || config.remoteWorkdir || '~');
+      const script = `
+ROOT=${quotedWorkdir}
+case "$ROOT" in
+  "~") ROOT="$HOME" ;;
+  "~/"*) ROOT="$HOME/$(printf '%s' "$ROOT" | cut -c3-)" ;;
+esac
+if [ -d "$ROOT" ]; then
+  ROOT="$(cd "$ROOT" && pwd)"
+fi
+
+emit_context_file() {
+  label="$1"
+  file="$2"
+  [ -f "$file" ] || return
+  echo "___FILE_START___"
+  printf '%s\\n' "$label"
+  printf '%s\\n' "$file"
+  head -c 18000 "$file" 2>/dev/null
+  printf '\\n___FILE_END___\\n'
+}
+
+if [ -d "$ROOT" ]; then
+  find "$ROOT" \\
+    \\( -path "*/.git/*" -o -path "*/node_modules/*" -o -path "*/.webpack/*" -o -path "*/out/*" -o -path "*/dist/*" -o -path "*/build/*" -o -path "*/coverage/*" -o -path "*/.claudette-worktrees/*" -o -path "*/worktrees/*" \\) -prune -o \\
+    -type f \\( -name "CLAUDE.md" -o -name "AGENTS.md" -o -name "AGENT.md" -o -name "MEMORY.md" -o -name ".cursorrules" -o -name ".windsurfrules" -o -path "*/.github/copilot-instructions.md" -o -path "*/.cursor/rules/*.md" -o -path "*/.cursor/rules/*.mdc" -o -path "*/.claude/agents/*.md" -o -path "*/.claude/commands/*.md" -o -path "*/.claude/skills/*/SKILL.md" \\) \\
+    -print 2>/dev/null | head -n 64 | while IFS= read -r f; do
+      rel="\${f#$ROOT/}"
+      case "$f" in
+        */.claude/skills/*/SKILL.md) label="remote project skill: $(basename "$(dirname "$f")")" ;;
+        */.claude/agents/*.md) label="remote project agent: $(basename "$f")" ;;
+        */.claude/commands/*.md) label="remote project command: $rel" ;;
+        */.cursor/rules/*) label="remote project cursor rule: $rel" ;;
+        */MEMORY.md) label="remote project memory: $rel" ;;
+        *) label="remote project $rel" ;;
+      esac
+      emit_context_file "$label" "$f"
+    done
+fi
+
+emit_context_file "remote user CLAUDE.md" "$HOME/.claude/CLAUDE.md"
+emit_context_file "remote user MEMORY.md" "$HOME/.claude/MEMORY.md"
+
+find "$HOME/.claude/agents" -maxdepth 1 -name "*.md" -type f 2>/dev/null | head -n 12 | while IFS= read -r f; do
+  emit_context_file "remote user agent: $(basename "$f")" "$f"
+done
+
+find "$HOME/.claude/commands" -name "*.md" -type f 2>/dev/null | head -n 8 | while IFS= read -r f; do
+  emit_context_file "remote user command: $(basename "$f")" "$f"
+done
+
+find "$HOME/.claude/skills" -path "*/SKILL.md" -type f 2>/dev/null | head -n 18 | while IFS= read -r f; do
+  emit_context_file "remote user skill: $(basename "$(dirname "$f")")" "$f"
+done
+`;
+
+      const result = await this.execCommand(client, script);
+      const files = this.parseRemoteHarnessContextFiles(result);
+      console.log('[SSH Service] Found', files.length, 'remote harness context files');
+      return files;
+    } catch (error) {
+      console.error('[SSH Service] Failed to scan remote harness context files:', error);
+      return [];
+    }
+  }
+
+  private parseRemoteHarnessContextFiles(output: string): Array<{ label: string; filePath: string; content: string }> {
+    const files: Array<{ label: string; filePath: string; content: string }> = [];
+
+    for (const fileBlock of output.split('___FILE_START___').filter(f => f.trim())) {
+      const endIdx = fileBlock.indexOf('___FILE_END___');
+      if (endIdx === -1) continue;
+
+      const block = fileBlock.substring(0, endIdx).replace(/^\s*\n/, '');
+      const lines = block.split('\n');
+      const label = lines.shift()?.trim();
+      const filePath = lines.shift()?.trim();
+      const content = lines.join('\n').trim();
+      if (!label || !filePath || !content) continue;
+
+      files.push({ label, filePath, content });
+    }
+
+    return files;
+  }
+
+  /**
    * Parse remote agent output into AgentDefinition objects
    */
   private parseRemoteAgents(
@@ -2917,6 +3094,224 @@ export class SSHService {
     }
   }
 
+  private async syncBuildMcpServersInternal(client: Client, strict = false): Promise<void> {
+    try {
+      const { mcpService } = await import('./mcp.service');
+      const { servers, serverIds, removeServerIds } = mcpService.getClaudeMcpSyncData();
+
+      console.log('[SSH Service] Syncing Claude MCP servers to remote:', serverIds);
+
+      const existingContent = await this.execCommand(client, 'cat ~/.claude/config.json 2>/dev/null || true');
+      const configJson = mcpService.buildMergedMcpJson(existingContent, servers, removeServerIds);
+      await this.execCommand(client, `mkdir -p ~/.claude && cat > ~/.claude/config.json << 'CONFIG_EOF'
+${configJson}
+CONFIG_EOF`);
+
+      console.log('[SSH Service] MCP servers synced to remote ~/.claude/config.json');
+    } catch (err) {
+      console.warn('[SSH Service] Could not sync MCP servers to remote:', err);
+      if (strict) throw err;
+    }
+  }
+
+  private async uploadDirectoryViaSftp(client: Client, localDir: string, remoteDir: string): Promise<void> {
+    const path = await import('path');
+    const fsPromises = await import('fs/promises');
+    const sftp = await new Promise<import('ssh2').SFTPWrapper>((resolve, reject) => {
+      client.sftp((err, sftpSession) => {
+        if (err) reject(err);
+        else resolve(sftpSession);
+      });
+    });
+
+    const mkdirp = async (dir: string): Promise<void> => {
+      const normalized = path.posix.normalize(dir);
+      const parts = normalized.split('/').filter(Boolean);
+      let current = normalized.startsWith('/') ? '/' : '';
+
+      for (const part of parts) {
+        current = current === '/' ? `/${part}` : current ? `${current}/${part}` : part;
+        await new Promise<void>((resolve, reject) => {
+          sftp.mkdir(current, (err) => {
+            if (!err) {
+              resolve();
+              return;
+            }
+
+            sftp.stat(current, (statErr, attrs) => {
+              if (!statErr && attrs.isDirectory()) {
+                resolve();
+                return;
+              }
+              reject(err);
+            });
+          });
+        });
+      }
+    };
+
+    const uploadDir = async (sourceDir: string, targetDir: string): Promise<void> => {
+      await mkdirp(targetDir);
+      const entries = await fsPromises.readdir(sourceDir, { withFileTypes: true });
+
+      for (const entry of entries) {
+        const localPath = path.join(sourceDir, entry.name);
+        const remotePath = path.posix.join(targetDir, entry.name);
+
+        if (entry.isDirectory()) {
+          await uploadDir(localPath, remotePath);
+          continue;
+        }
+
+        if (!entry.isFile()) {
+          continue;
+        }
+
+        await new Promise<void>((resolve, reject) => {
+          sftp.fastPut(localPath, remotePath, (err) => {
+            if (err) reject(err);
+            else resolve();
+          });
+        });
+      }
+    };
+
+    try {
+      await uploadDir(localDir, remoteDir);
+    } finally {
+      sftp.end();
+    }
+  }
+
+  private async syncMcpAuthInternal(client: Client, strict = false): Promise<void> {
+    const path = await import('path');
+    const os = await import('os');
+    const fsPromises = await import('fs/promises');
+
+    try {
+      const localMcpAuth = path.join(os.homedir(), '.mcp-auth');
+      const stats = await fsPromises.stat(localMcpAuth).catch(() => null);
+      if (!stats?.isDirectory()) {
+        console.log('[SSH Service] No local ~/.mcp-auth directory, skipping MCP auth sync');
+        return;
+      }
+
+      const remoteHome = (await this.execCommand(client, 'printf %s "$HOME"')).trim();
+      const remoteMcpAuth = `${remoteHome || '~'}/.mcp-auth`;
+
+      console.log('[SSH Service] Syncing MCP auth tokens to remote via SFTP...');
+      await this.uploadDirectoryViaSftp(client, localMcpAuth, remoteMcpAuth);
+      await this.execCommand(client, `chmod -R go-rwx ${this.quoteForShell(remoteMcpAuth)} 2>/dev/null || true`);
+
+      // mcp-remote stores tokens per-version (e.g., mcp-remote-0.1.29/).
+      // Local and remote may run different versions. Copy token files from
+      // the newest local version into ALL remote version folders so tokens
+      // are found regardless of which mcp-remote version the remote uses.
+      try {
+        await this.execCommand(client, `
+          cd ${this.quoteForShell(remoteMcpAuth)} && \
+          SRC=$(ls -d mcp-remote-* 2>/dev/null | sort -V | while read d; do \
+            ls "$d"/*_tokens.json >/dev/null 2>&1 && echo "$d"; \
+          done | tail -1) && \
+          if [ -n "$SRC" ]; then \
+            for DST in mcp-remote-*; do \
+              [ "$DST" = "$SRC" ] && continue; \
+              ls "$DST"/*_tokens.json >/dev/null 2>&1 && continue; \
+              cp "$SRC"/*_tokens.json "$SRC"/*_client_info.json "$SRC"/*_code_verifier.txt "$DST/" 2>/dev/null; \
+            done; \
+          fi
+        `);
+      } catch {
+        // Non-critical — tokens may already be in the right place
+      }
+
+      console.log('[SSH Service] MCP auth tokens synced to remote');
+    } catch (err) {
+      console.warn('[SSH Service] Could not sync MCP auth tokens:', err);
+      if (strict) throw err;
+    }
+  }
+
+  private async readRemoteTextFileOrEmpty(client: Client, remotePath: string): Promise<string> {
+    return this.execCommand(client, `cat ${this.quoteForShell(remotePath)} 2>/dev/null || true`);
+  }
+
+  private async writeRemoteTextFile(client: Client, remotePath: string, content: string): Promise<void> {
+    const dir = remotePath.substring(0, remotePath.lastIndexOf('/'));
+    const marker = `BUILD_MCP_EOF_${Date.now()}`;
+    await this.execCommand(client, `mkdir -p ${this.quoteForShell(dir)} && cat > ${this.quoteForShell(remotePath)} << '${marker}'
+${content}
+${marker}`);
+  }
+
+  private async syncHarnessMcpConfigsInternal(client: Client, strict = false): Promise<void> {
+    try {
+      const { mcpService } = await import('./mcp.service');
+      const { servers, serverIds, removeServerIds } = mcpService.getHarnessMcpSyncData();
+
+      if (serverIds.length === 0 && removeServerIds.length === 0) {
+        console.log('[SSH Service] No harness MCP configs to sync');
+        return;
+      }
+
+      const home = (await this.execCommand(client, 'printf %s "$HOME"')).trim() || '~';
+      const cursorPath = `${home}/.cursor/mcp.json`;
+      const geminiPath = `${home}/.gemini/settings.json`;
+      const codexPath = `${home}/.codex/config.toml`;
+      const opencodeDefaultPath = `${home}/.config/opencode/opencode.json`;
+      const opencodeBuildPath = `${home}/.config/opencode/build-mcp.json`;
+
+      const cursorJson = mcpService.buildMergedMcpJson(
+        await this.readRemoteTextFileOrEmpty(client, cursorPath),
+        servers,
+        removeServerIds
+      );
+      await this.writeRemoteTextFile(client, cursorPath, cursorJson);
+
+      const geminiJson = mcpService.buildMergedMcpJson(
+        await this.readRemoteTextFileOrEmpty(client, geminiPath),
+        servers,
+        removeServerIds
+      );
+      await this.writeRemoteTextFile(client, geminiPath, geminiJson);
+
+      const codexToml = mcpService.buildMergedCodexConfig(
+        await this.readRemoteTextFileOrEmpty(client, codexPath),
+        servers,
+        removeServerIds
+      );
+      await this.writeRemoteTextFile(client, codexPath, codexToml);
+
+      const opencodeJson = mcpService.buildMergedOpenCodeConfig(
+        await this.readRemoteTextFileOrEmpty(client, opencodeDefaultPath),
+        servers,
+        removeServerIds
+      );
+      await this.writeRemoteTextFile(client, opencodeBuildPath, opencodeJson);
+
+      console.log('[SSH Service] Harness MCP configs synced to remote Cursor/Gemini/Codex/OpenCode:', serverIds);
+    } catch (err) {
+      console.warn('[SSH Service] Could not sync harness MCP configs to remote:', err);
+      if (strict) throw err;
+    }
+  }
+
+  private async setupMcpReverseTunnelsForSession(sessionId: string, config: SSHConfig, strict = false): Promise<void> {
+    try {
+      const { mcpService } = await import('./mcp.service');
+      const localhostPorts = mcpService.getLocalhostMcpPorts();
+      if (localhostPorts.length === 0) return;
+
+      for (const { serverId, port, url } of localhostPorts) {
+        await this.setupReverseTunnel(sessionId, config, port);
+        console.log(`[SSH Service] Reverse tunnel for ${serverId} MCP (${url}): remote:${port} -> local:${port}`);
+      }
+    } catch (err) {
+      console.warn('[SSH Service] Could not set up MCP reverse tunnels:', err);
+      if (strict) throw err;
+    }
+  }
+
   /**
    * Internal method to sync settings without creating a new connection
    */
@@ -2945,38 +3340,7 @@ SETTINGS_EOF`);
       console.warn('[SSH Service] Could not read local settings:', err);
     }
 
-    // Sync MCP server configs to remote ~/.claude/config.json
-    try {
-      const { mcpService } = await import('./mcp.service');
-      const mcpServers = mcpService.getUserMcpServersConfig();
-
-      if (Object.keys(mcpServers).length > 0) {
-        console.log('[SSH Service] Syncing MCP servers to remote:', Object.keys(mcpServers));
-
-        // Read existing remote config or create new one
-        let remoteConfig: any = {};
-        try {
-          const stdout = await this.execCommand(client, 'cat ~/.claude/config.json 2>/dev/null || echo "{}"');
-          remoteConfig = JSON.parse(stdout.trim() || '{}');
-        } catch {
-          remoteConfig = {};
-        }
-
-        // Merge MCP servers into remote config
-        remoteConfig.mcpServers = mcpServers;
-
-        // Write config to remote
-        const configJson = JSON.stringify(remoteConfig, null, 2);
-        const escapedConfig = configJson.replace(/'/g, "'\\''");
-        await this.execCommand(client, `cat > ~/.claude/config.json << 'CONFIG_EOF'
-${configJson}
-CONFIG_EOF`);
-
-        console.log('[SSH Service] MCP servers synced to remote ~/.claude/config.json');
-      }
-    } catch (err) {
-      console.warn('[SSH Service] Could not sync MCP servers to remote:', err);
-    }
+    await this.syncBuildMcpServersInternal(client);
 
     // Sync skills to remote — rsync ~/.claude/skills/ (excluding binaries/node_modules)
     try {
@@ -3003,51 +3367,8 @@ CONFIG_EOF`);
       console.warn('[SSH Service] Could not sync skills to remote:', err);
     }
 
-    // Sync MCP auth tokens (~/.mcp-auth/) so OAuth-based MCP servers
-    // (Linear, Sentry, etc via mcp-remote) work on the remote without
-    // needing a browser for the OAuth flow.
-    try {
-      const localMcpAuth = path.join(os.homedir(), '.mcp-auth');
-      const stats = await fsPromises.stat(localMcpAuth).catch(() => null);
-      if (stats?.isDirectory()) {
-        const { execSync } = await import('child_process');
-        const host = config.host;
-        const user = config.username;
-        const port = config.port || 22;
-        const keyPath = config.privateKeyPath;
-        const keyFlag = keyPath ? `-e "ssh -i ${keyPath} -p ${port} -o StrictHostKeyChecking=no"` : `-e "ssh -p ${port} -o StrictHostKeyChecking=no"`;
-
-        await this.execCommand(client, 'mkdir -p ~/.mcp-auth');
-        const rsyncCmd = `rsync -az ${keyFlag} ${localMcpAuth}/ ${user}@${host}:~/.mcp-auth/`;
-        console.log('[SSH Service] Syncing MCP auth tokens to remote...');
-        execSync(rsyncCmd, { timeout: 30000, stdio: 'pipe' });
-
-        // mcp-remote stores tokens per-version (e.g., mcp-remote-0.1.29/).
-        // Local and remote may run different versions. Copy token files from
-        // the newest local version into ALL remote version folders so tokens
-        // are found regardless of which mcp-remote version the remote uses.
-        try {
-          await this.execCommand(client, `
-            cd ~/.mcp-auth && \
-            SRC=$(ls -d mcp-remote-* 2>/dev/null | sort -V | while read d; do \
-              ls "$d"/*_tokens.json >/dev/null 2>&1 && echo "$d"; \
-            done | tail -1) && \
-            if [ -n "$SRC" ]; then \
-              for DST in mcp-remote-*; do \
-                [ "$DST" = "$SRC" ] && continue; \
-                ls "$DST"/*_tokens.json >/dev/null 2>&1 && continue; \
-                cp "$SRC"/*_tokens.json "$SRC"/*_client_info.json "$SRC"/*_code_verifier.txt "$DST/" 2>/dev/null; \
-              done; \
-            fi
-          `);
-        } catch {
-          // Non-critical — tokens may already be in the right place
-        }
-        console.log('[SSH Service] MCP auth tokens synced to remote');
-      }
-    } catch (err) {
-      console.warn('[SSH Service] Could not sync MCP auth tokens:', err);
-    }
+    await this.syncMcpAuthInternal(client);
+    await this.syncHarnessMcpConfigsInternal(client);
   }
 
   /**
@@ -3062,38 +3383,36 @@ CONFIG_EOF`);
       }
 
       const client = connection.client;
-      const { mcpService } = await import('./mcp.service');
-      const mcpServers = mcpService.getUserMcpServersConfig();
+      console.log('[SSH Service] Syncing MCP servers/auth to session:', sessionId);
 
-      if (Object.keys(mcpServers).length === 0) {
-        console.log('[SSH Service] No MCP servers to sync');
-        return { success: true };
-      }
-
-      console.log('[SSH Service] Syncing MCP servers to session:', sessionId, Object.keys(mcpServers));
-
-      // Read existing remote config or create new one
-      let remoteConfig: any = {};
-      try {
-        const stdout = await this.execCommand(client, 'cat ~/.claude/config.json 2>/dev/null || echo "{}"');
-        remoteConfig = JSON.parse(stdout.trim() || '{}');
-      } catch {
-        remoteConfig = {};
-      }
-
-      // Merge MCP servers into remote config
-      remoteConfig.mcpServers = mcpServers;
-
-      // Write config to remote
-      const configJson = JSON.stringify(remoteConfig, null, 2);
-      await this.execCommand(client, `cat > ~/.claude/config.json << 'CONFIG_EOF'
-${configJson}
-CONFIG_EOF`);
-
+      await this.syncBuildMcpServersInternal(client, true);
+      await this.syncMcpAuthInternal(client, true);
+      await this.syncHarnessMcpConfigsInternal(client, true);
+      await this.setupMcpReverseTunnelsForSession(sessionId, connection.config, true);
       console.log('[SSH Service] MCP servers synced to remote for session:', sessionId);
       return { success: true };
     } catch (error) {
       console.error('[SSH Service] Error syncing MCP servers:', error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      };
+    }
+  }
+
+  async syncMcpConfigsToRemote(sessionId: string, config: SSHConfig): Promise<{ success: boolean; error?: string }> {
+    try {
+      const client = await this.getConnection(sessionId, config);
+      console.log('[SSH Service] Syncing MCP configs to remote:', sessionId);
+
+      await this.syncBuildMcpServersInternal(client, true);
+      await this.syncMcpAuthInternal(client, true);
+      await this.syncHarnessMcpConfigsInternal(client, true);
+      await this.setupMcpReverseTunnelsForSession(sessionId, config, true);
+
+      return { success: true };
+    } catch (error) {
+      console.error('[SSH Service] Error syncing MCP configs to remote:', error);
       return {
         success: false,
         error: error instanceof Error ? error.message : 'Unknown error',
@@ -3112,8 +3431,6 @@ CONFIG_EOF`);
    * Used for localhost MCP servers — the remote `claude` process connects to 127.0.0.1:port
    * which gets tunneled back to the local machine.
    */
-  private activeTunnels: Set<string> = new Set();
-
   async setupReverseTunnel(sessionId: string, config: SSHConfig, localPort: number): Promise<void> {
     const tunnelKey = `${sessionId}:${localPort}`;
     if (this.activeTunnels.has(tunnelKey)) return; // Already set up

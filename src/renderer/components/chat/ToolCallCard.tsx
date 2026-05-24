@@ -2,6 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { Terminal, FileText, Search, FolderOpen, Play, Edit2, Globe, Code, HelpCircle, ListTodo, Loader2, ChevronRight, ChevronDown, CheckCircle2, Circle, Clock, ExternalLink, ListPlus, ListChecks, FileSearch, List, ArrowUpRight } from 'lucide-react';
 import { LazyMonacoEditor, LazyDiffEditor } from './LazyMonacoEditor';
 import type { ToolCall } from '../../../shared/types';
+import { normalizeToolCall } from '../../../shared/utils/tool-call-transformer';
 import { useEditorStore } from '../../stores/editor.store';
 
 interface ToolCallCardProps {
@@ -29,11 +30,23 @@ const TOOL_CONFIG: Record<string, {
   iconSize?: number;    // Optional icon size override
 }> = {
   Bash: { icon: Terminal, label: 'Bash', color: 'text-green-400' },
+  BashOutput: { icon: Terminal, label: 'Bash Output', color: 'text-green-400' },
+  KillShell: { icon: Terminal, label: 'Kill Shell', color: 'text-red-400' },
   Read: { icon: FileText, label: 'Read', color: 'text-blue-400' },
   Grep: { icon: Search, label: 'Grep', color: 'text-purple-400' },
   Glob: { icon: FolderOpen, label: 'Glob', color: 'text-yellow-400' },
   Write: { icon: FileText, label: 'Write', color: 'text-pink-400' },
   Edit: { icon: Edit2, label: 'Edit', color: 'text-orange-400' },
+  Delete: { icon: FileText, label: 'Delete', color: 'text-red-400' },
+  Ls: { icon: FolderOpen, label: 'List', color: 'text-yellow-400' },
+  MCP: { icon: Code, label: 'MCP', color: 'text-indigo-400' },
+  ToolSearch: { icon: Search, label: 'Tool Search', color: 'text-purple-400' },
+  Skill: { icon: Code, label: 'Skill', color: 'text-violet-400' },
+  Monitor: { icon: Clock, label: 'Monitor', color: 'text-sky-400' },
+  Lint: { icon: FileSearch, label: 'Lint', color: 'text-rose-400' },
+  GenerateImage: { icon: FileText, label: 'Generate Image', color: 'text-pink-400' },
+  RecordScreen: { icon: Play, label: 'Record Screen', color: 'text-cyan-400' },
+  UpdateTopic: { icon: Edit2, label: 'Update Topic', color: 'text-indigo-400' },
   WebFetch: { icon: Globe, label: 'WebFetch', color: 'text-cyan-400' },
   WebSearch: { icon: Search, label: 'WebSearch', color: 'text-teal-400' },
   Task: {
@@ -125,6 +138,10 @@ function formatToolInput(name: string, input: Record<string, unknown>): string {
   switch (name) {
     case 'Bash':
       return (input.command as string) || 'Running command...';
+    case 'BashOutput':
+      return (input.shell_id as string) || 'Reading shell output...';
+    case 'KillShell':
+      return (input.shell_id as string) || 'Stopping shell...';
     case 'Read':
       return (input.file_path as string) || 'Reading file...';
     case 'Grep':
@@ -135,6 +152,20 @@ function formatToolInput(name: string, input: Record<string, unknown>): string {
       return (input.file_path as string) || 'Writing file...';
     case 'Edit':
       return (input.file_path as string) || 'Editing file...';
+    case 'Delete':
+      return (input.file_path as string) || 'Deleting file...';
+    case 'Ls':
+      return (input.path as string) || 'Listing directory...';
+    case 'MCP':
+      return `${input.server || ''} ${input.tool || ''}`.trim() || 'Calling MCP tool...';
+    case 'ToolSearch':
+      return (input.query as string) || 'Searching tools...';
+    case 'Skill':
+      return (input.skill as string) || 'Running skill...';
+    case 'Monitor':
+      return (input.task as string) || 'Monitoring task...';
+    case 'UpdateTopic':
+      return (input.topic as string) || 'Updating topic...';
     case 'WebFetch':
       return (input.url as string) || 'Fetching URL...';
     case 'WebSearch':
@@ -871,6 +902,7 @@ function ExpandedContent({ toolCall, priority = false }: { toolCall: ToolCall; p
 }
 
 export default function ToolCallCard({ toolCall, isLatest = false, isLatestToolCall = false, defaultCollapsed = false, onBackground }: ToolCallCardProps) {
+  const normalizedToolCall = useMemo(() => normalizeToolCall(toolCall), [toolCall]);
   // Start collapsed for old messages (performance optimization) - otherwise expanded by default
   const [isExpanded, setIsExpanded] = useState(!defaultCollapsed);
   // Track if content has ever been rendered (to prevent Monaco disposal errors on collapse)
@@ -886,21 +918,17 @@ export default function ToolCallCard({ toolCall, isLatest = false, isLatestToolC
   // Keep isLatest/isLatestToolCall for potential future use but don't auto-collapse
   const _shouldExpand = isLatest || isLatestToolCall; // eslint-disable-line @typescript-eslint/no-unused-vars
 
-  // Extract base tool name from MCP prefixed names (e.g., mcp__claudette-browser__BrowserNavigate -> BrowserNavigate)
-  const baseToolName = toolCall.name.includes('__') ? toolCall.name.split('__').pop() || toolCall.name : toolCall.name;
-  if (!TOOL_CONFIG[baseToolName]) {
-    console.warn('[ToolCallCard] Unknown tool name:', toolCall.name, '→ baseToolName:', baseToolName);
-  }
+  const baseToolName = normalizedToolCall.name;
   const config = TOOL_CONFIG[baseToolName] || DEFAULT_CONFIG;
   const Icon = config.icon;
 
-  const commandDisplay = useMemo(() => formatToolInput(baseToolName, toolCall.input), [baseToolName, toolCall.input]);
+  const commandDisplay = useMemo(() => formatToolInput(baseToolName, normalizedToolCall.input), [baseToolName, normalizedToolCall.input]);
 
-  const isRunning = toolCall.status === 'running' || toolCall.status === 'pending';
+  const isRunning = normalizedToolCall.status === 'running' || normalizedToolCall.status === 'pending';
 
   // Detect if this is a Task tool (subagent)
   const isTaskTool = baseToolName === 'Task';
-  const subagentType = isTaskTool ? getSubagentType(toolCall.input) : null;
+  const subagentType = isTaskTool ? getSubagentType(normalizedToolCall.input) : null;
 
   // Detect if this is a running Bash command that can be backgrounded
   const isBashTool = baseToolName === 'Bash';
@@ -928,8 +956,16 @@ export default function ToolCallCard({ toolCall, isLatest = false, isLatestToolC
       )}
 
       {/* Header row - clickable */}
-      <button
+      <div
+        role="button"
+        tabIndex={0}
         onClick={() => setIsExpanded(!isExpanded)}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            setIsExpanded(!isExpanded);
+          }
+        }}
         className={buttonClasses}
       >
         {/* Expand/collapse chevron */}
@@ -966,7 +1002,7 @@ export default function ToolCallCard({ toolCall, isLatest = false, isLatestToolC
           <button
             onClick={(e) => {
               e.stopPropagation();
-              onBackground(toolCall);
+              onBackground(normalizedToolCall);
             }}
             className="ml-1 px-1.5 py-0.5 text-[10px] font-bold bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-400 border border-cyan-500/30 flex items-center gap-1"
             style={{ borderRadius: 0 }}
@@ -976,7 +1012,7 @@ export default function ToolCallCard({ toolCall, isLatest = false, isLatestToolC
             <span>BG</span>
           </button>
         )}
-      </button>
+      </div>
 
       {/* Expanded content - once rendered, hide with CSS to prevent Monaco disposal errors */}
       {hasBeenExpanded && (
@@ -988,7 +1024,7 @@ export default function ToolCallCard({ toolCall, isLatest = false, isLatestToolC
           }}
         >
           {/* Priority loading for recent/active tool calls */}
-          <ExpandedContent toolCall={toolCall} priority={isLatest || isLatestToolCall || isRunning} />
+          <ExpandedContent toolCall={normalizedToolCall} priority={isLatest || isLatestToolCall || isRunning} />
         </div>
       )}
     </div>

@@ -964,18 +964,27 @@ function ManualMcpInstallDialog({
     setResult(null);
 
     try {
-      // Build config for Claudette's electron-store
-      const config: Record<string, unknown> = {
-        type: 'stdio',
-        command: 'npx',
-        args: installType === 'npm'
-          ? ['-y', npmPackage.trim()]
-          : ['-y', 'mcp-remote', remoteUrl.trim()],
-      };
+      // Build config for Claudette's electron-store. Remote URL entries are
+      // stored natively so the main process can wrap them with mcp-remote for
+      // every harness and keep shared auth in ~/.mcp-auth.
+      const config: Record<string, unknown> = installType === 'npm'
+        ? {
+            type: 'stdio',
+            command: 'npx',
+            args: ['-y', npmPackage.trim()],
+          }
+        : {
+            type: remoteUrl.trim().endsWith('/sse') ? 'sse' : 'http',
+            url: remoteUrl.trim(),
+          };
 
       // Add auth environment variable if provided
       if (authKey.trim() && authValue.trim()) {
-        config.env = { [authKey.trim()]: authValue.trim() };
+        if (installType === 'remote') {
+          config.headers = { [authKey.trim()]: authValue.trim() };
+        } else {
+          config.env = { [authKey.trim()]: authValue.trim() };
+        }
       } else {
         config.env = {};
       }
@@ -1125,7 +1134,7 @@ function ManualMcpInstallDialog({
                 disabled={installing}
               />
               <p className="text-xs text-claude-text-secondary mt-1">
-                Agent SDK will run: npx -y mcp-remote &lt;url&gt;
+                Build will share this URL with every harness through mcp-remote
               </p>
             </div>
           )}
@@ -1144,7 +1153,7 @@ function ManualMcpInstallDialog({
                   type="text"
                   value={authKey}
                   onChange={(e) => setAuthKey(e.target.value)}
-                  placeholder="ENV_VAR_NAME"
+                  placeholder={installType === 'remote' ? 'Header-Name' : 'ENV_VAR_NAME'}
                   className="w-full px-2 py-1.5 bg-claude-bg border border-claude-border text-xs font-mono text-claude-text placeholder:text-claude-text-secondary focus:outline-none focus:border-green-400"
                   disabled={installing}
                 />
@@ -1161,7 +1170,7 @@ function ManualMcpInstallDialog({
               </div>
             </div>
             <p className="text-[10px] text-claude-text-secondary">
-              Environment variable to pass to the MCP server
+              {installType === 'remote' ? 'Header to pass to the remote MCP server' : 'Environment variable to pass to the MCP server'}
             </p>
           </div>
 

@@ -32,9 +32,11 @@ export class GitService {
   }
 
   private getWorktreePath(sessionId: string): string {
-    const session = this.store.get(`sessions.${sessionId}`) as { worktreePath: string } | undefined;
-    if (!session) throw new Error(`Session ${sessionId} not found`);
-    return session.worktreePath;
+    const session = (this.store.get(`sessions.${sessionId}`)
+      || this.store.get(`discoveredSessions.${sessionId}`)) as Pick<Session, 'worktreePath' | 'repoPath'> | undefined;
+    const worktreePath = session?.worktreePath || session?.repoPath;
+    if (!worktreePath) throw new Error(`Session ${sessionId} not found`);
+    return worktreePath;
   }
 
   private getGit(sessionId: string): SimpleGit {

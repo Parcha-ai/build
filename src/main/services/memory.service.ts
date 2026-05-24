@@ -54,6 +54,15 @@ export class MemoryService {
   }
 
   /**
+   * Only local filesystem project paths can safely sync to MEMORY.md. Remote
+   * sessions use stable URI-like keys in electron-store so we do not create
+   * accidental /home/... paths on the user's local machine.
+   */
+  private shouldSyncMemoryFile(projectPath: string): boolean {
+    return !/^[a-z][a-z0-9+.-]*:\/\//i.test(projectPath);
+  }
+
+  /**
    * Get the memory file path for a project
    */
   private getMemoryFilePath(projectPath: string): string {
@@ -143,8 +152,10 @@ export class MemoryService {
     memories.facts.push(newFact);
     this.setProjectMemories(resolvedPath, memories);
 
-    // Sync to MEMORY.md file
-    await this.syncToMemoryFile(resolvedPath, memories);
+    // Sync to MEMORY.md file when the project path is local.
+    if (this.shouldSyncMemoryFile(resolvedPath)) {
+      await this.syncToMemoryFile(resolvedPath, memories);
+    }
 
     console.log('[Memory Service] Remembered fact:', newFact.id, newFact.category, newFact.content.substring(0, 50));
     return newFact;
@@ -210,7 +221,9 @@ export class MemoryService {
 
     if (memories.facts.length < initialLength) {
       this.setProjectMemories(projectPath, memories);
-      await this.syncToMemoryFile(projectPath, memories);
+      if (this.shouldSyncMemoryFile(projectPath)) {
+        await this.syncToMemoryFile(projectPath, memories);
+      }
       console.log('[Memory Service] Forgot fact:', factId);
       return true;
     }
@@ -224,7 +237,9 @@ export class MemoryService {
    */
   async listMemories(projectPath: string): Promise<MemoryFact[]> {
     // First sync from file to ensure we have latest
-    await this.syncFromMemoryFile(projectPath);
+    if (this.shouldSyncMemoryFile(projectPath)) {
+      await this.syncFromMemoryFile(projectPath);
+    }
 
     const memories = this.getProjectMemories(projectPath);
     return memories.facts;
@@ -234,6 +249,9 @@ export class MemoryService {
    * Full sync - read from MEMORY.md and merge with stored facts
    */
   async syncMemoryFile(projectPath: string): Promise<void> {
+    if (!this.shouldSyncMemoryFile(projectPath)) {
+      return;
+    }
     await this.syncFromMemoryFile(projectPath);
     const memories = this.getProjectMemories(projectPath);
     await this.syncToMemoryFile(projectPath, memories);

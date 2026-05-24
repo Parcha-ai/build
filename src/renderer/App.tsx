@@ -325,7 +325,10 @@ function ElectronApp() {
       const bedtimeSnoozed = localStorage.getItem('bedtime-snooze-until');
 
       const settings = await window.electronAPI.settings.get();
-      if (!settings.bedtimeReminderEnabled) return;
+      if (!settings.bedtimeReminderEnabled) {
+        setShowBedtimeModal(false);
+        return;
+      }
 
       const configuredTime = settings.bedtimeReminderTime || '23:00';
       const [bedHour, bedMinute] = configuredTime.split(':').map(Number);
@@ -335,7 +338,10 @@ function ElectronApp() {
       // Check if snoozed and snooze hasn't expired
       if (bedtimeSnoozed) {
         const snoozeExpiry = new Date(bedtimeSnoozed);
-        if (now < snoozeExpiry) return; // Still in snooze period
+        if (now < snoozeExpiry) {
+          setShowBedtimeModal(false);
+          return; // Still in snooze period
+        }
       }
 
       // Bedtime window: from bedtime hour until 4 AM the next morning.
@@ -405,8 +411,10 @@ function ElectronApp() {
   useEffect(() => {
     const checkBedtimeTaskReview = async () => {
       const settings = await window.electronAPI.settings.get();
-      if (!(settings as any).bedtimeTaskReviewEnabled) return;
-      if (!settings.bedtimeReminderEnabled) return;
+      if (!(settings as any).bedtimeTaskReviewEnabled || !settings.bedtimeReminderEnabled) {
+        setShowBedtimeTaskReviewModal(false);
+        return;
+      }
 
       const now = new Date();
       const bedtime = settings.bedtimeReminderTime || '23:00';

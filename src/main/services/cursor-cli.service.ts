@@ -1,9 +1,13 @@
 import Store from 'electron-store';
-import { spawn, execSync, ChildProcess } from 'child_process';
+import { spawn, execSync, execFileSync, ChildProcess } from 'child_process';
 import * as readline from 'readline';
 import * as fs from 'fs';
 import * as os from 'os';
 import type { CursorStreamEvent } from './cursor.service';
+import { terminateProcessTree } from '../utils/process-tree';
+import { mcpService } from './mcp.service';
+import { sshService } from './ssh.service';
+import type { SSHConfig } from '../../shared/types';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 interface ToolCallData {
@@ -29,26 +33,29 @@ interface CursorCliJsonEvent {
   };
   tool_call?: ToolCallData;
   call_id?: string;
+  usage?: {
+    inputTokens?: number;
+    outputTokens?: number;
+    cacheReadTokens?: number;
+    cacheWriteTokens?: number;
+  };
+  [key: string]: unknown;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const settingsStore = new Store({ name: 'claudette-settings' }) as any;
 
-interface SshConfig {
-  host: string;
-  username: string;
-  remoteWorkdir?: string;
-}
-
 class CursorCliService {
   private activeProcesses: Map<string, { process: ChildProcess; abortController: AbortController }> = new Map();
   private agentBinaryCache: string | null | false = null;
-  private lastAssistantLen = 0;
   private chatIds: Map<string, string> = new Map();
 
   private getApiKey(): string | undefined {
     const settings = settingsStore.get('settings', {}) as Record<string, unknown>;
-    return (settings.cursorApiKey as string) || undefined;
+    return (settings.cursorApiKey as string)?.trim()
+      || (settingsStore.get('cursorApiKey') as string | undefined)?.trim()
+      || process.env.CURSOR_API_KEY?.trim()
+      || undefined;
   }
 
   findAgentBinary(): string | null {
@@ -111,6 +118,37 @@ class CursorCliService {
     this.chatIds.delete(sessionId);
   }
 
+  private quoteForRemoteShell(value: string): string {
+    return `'${value.replace(/'/g, "'\\''")}'`;
+  }
+
+  private remotePathForShell(value: string): string {
+    return !value || value === '~' ? '$HOME' : this.quoteForRemoteShell(value);
+  }
+
+  private getRemotePathPrefix(): string {
+    return 'export PATH="$HOME/.local/bin:$HOME/.cursor/bin:$HOME/.bun/bin:$HOME/.npm-global/bin:$HOME/bin:$PATH"';
+  }
+
+  private buildSshTarget(sshConfig: SSHConfig): string {
+    return sshConfig.username ? `${sshConfig.username}@${sshConfig.host}` : sshConfig.host;
+  }
+
+  private buildSshArgs(sshConfig: SSHConfig, remoteCommand: string): string[] {
+    const args = [
+      '-o', 'StrictHostKeyChecking=no',
+      '-o', 'BatchMode=yes',
+    ];
+    if (sshConfig.port) {
+      args.push('-p', String(sshConfig.port));
+    }
+    if (sshConfig.privateKeyPath) {
+      args.push('-i', sshConfig.privateKeyPath);
+    }
+    args.push(this.buildSshTarget(sshConfig), remoteCommand);
+    return args;
+  }
+
   async createChat(workDir: string): Promise<string | null> {
     const agentBin = this.findAgentBinary();
     if (!agentBin) return null;
@@ -133,10 +171,15 @@ class CursorCliService {
     }
   }
 
-  async createSshChat(sshConfig: SshConfig, remoteDir: string): Promise<string | null> {
+  async createSshChat(sshConfig: SSHConfig, remoteDir: string): Promise<string | null> {
     try {
-      const remoteCmd = `cd ${remoteDir} && export PATH="$HOME/.local/bin:$HOME/.cursor/bin:$PATH" && cursor-agent create-chat 2>/dev/null || agent create-chat 2>/dev/null`;
-      const chatId = execSync(`ssh -o StrictHostKeyChecking=no -o BatchMode=yes ${sshConfig.host} '${remoteCmd}'`, {
+      const remoteCmd = [
+        `cd ${this.remotePathForShell(remoteDir)}`,
+        this.getRemotePathPrefix(),
+        'agent_bin="$(command -v cursor-agent || command -v agent)"',
+        '"$agent_bin" create-chat',
+      ].join(' && ');
+      const chatId = execFileSync('ssh', this.buildSshArgs(sshConfig, remoteCmd), {
         encoding: 'utf8',
         timeout: 15000,
       }).trim();
@@ -151,7 +194,7 @@ class CursorCliService {
     }
   }
 
-  private translateEvent(event: CursorCliJsonEvent): CursorStreamEvent | null {
+  private translateEvent(event: CursorCliJsonEvent, assistantState: { lastLen: number }): CursorStreamEvent | null {
     switch (event.type) {
       case 'system':
         if (event.subtype === 'init') {
@@ -166,10 +209,10 @@ class CursorCliService {
         return null;
 
       case 'assistant': {
-        const text = event.message?.content?.[0]?.text;
+        const text = this.extractMessageText(event);
         if (text) {
-          const delta = text.substring(this.lastAssistantLen);
-          this.lastAssistantLen = text.length;
+          const delta = text.substring(assistantState.lastLen);
+          assistantState.lastLen = text.length;
           if (delta) {
             return { type: 'text_delta', content: delta };
           }
@@ -178,7 +221,7 @@ class CursorCliService {
       }
 
       case 'tool_call':
-        this.lastAssistantLen = 0;
+        assistantState.lastLen = 0;
         if (event.subtype === 'started') {
           const name = this.extractToolName(event);
           const input = this.extractToolInput(event);
@@ -216,7 +259,17 @@ class CursorCliService {
         return null;
 
       case 'result':
-        return { type: 'message_complete' };
+        return {
+          type: 'message_complete',
+          message: this.buildResultMessage(event),
+          usage: {
+            inputTokens: event.usage?.inputTokens,
+            outputTokens: event.usage?.outputTokens,
+            cacheReadTokens: event.usage?.cacheReadTokens,
+            cacheWriteTokens: event.usage?.cacheWriteTokens,
+            model: event.model,
+          },
+        };
 
       case 'error':
         return { type: 'error', error: event.message?.content?.[0]?.text || 'Cursor CLI error' };
@@ -224,6 +277,40 @@ class CursorCliService {
       default:
         return null;
     }
+  }
+
+  private extractMessageText(event: CursorCliJsonEvent): string {
+    const parts: string[] = [];
+    const content = event.message?.content;
+    if (Array.isArray(content)) {
+      for (const block of content) {
+        if (typeof block === 'string') {
+          parts.push(block);
+        } else if (block && typeof block.text === 'string') {
+          parts.push(block.text);
+        } else if (block && typeof (block as { content?: unknown }).content === 'string') {
+          parts.push((block as { content: string }).content);
+        }
+      }
+    }
+
+    if (event.type === 'assistant' && typeof event.text === 'string') {
+      parts.push(event.text);
+    }
+
+    return parts.join('');
+  }
+
+  private buildResultMessage(event: CursorCliJsonEvent): CursorStreamEvent['message'] | undefined {
+    const content = this.extractMessageText(event);
+    if (!content.trim()) return undefined;
+    return {
+      id: `cursor-cli-result-${Date.now()}`,
+      role: 'assistant',
+      content,
+      timestamp: new Date(),
+      harness: 'cursor',
+    };
   }
 
   private extractToolName(event: CursorCliJsonEvent): string {
@@ -270,11 +357,11 @@ class CursorCliService {
     message: string,
     workDir: string,
     model: string,
-    sshConfig?: SshConfig,
+    sshConfig?: SSHConfig,
     chatId?: string,
   ): AsyncGenerator<CursorStreamEvent> {
     const apiKey = this.getApiKey();
-    this.lastAssistantLen = 0;
+    const assistantState = { lastLen: 0 };
 
     const cursorModel = model.replace('cursor:', '');
 
@@ -287,24 +374,53 @@ class CursorCliService {
     };
 
     let child: ChildProcess;
+    this.cancel(sessionId);
     const abortController = new AbortController();
 
     if (sshConfig) {
+      const syncResult = await sshService.syncMcpConfigsToRemote(sessionId, sshConfig);
+      if (!syncResult.success) {
+        yield { type: 'error', error: `Failed to sync MCP config to remote: ${syncResult.error}` };
+        return;
+      }
+
       const remoteDir = workDir || sshConfig.remoteWorkdir || '~';
       const b64Message = Buffer.from(message).toString('base64');
-      const apiEnv = apiKey ? `CURSOR_API_KEY='${apiKey}' ` : '';
-      const resumeFlag = chatId ? ` --resume ${chatId}` : '';
-      const remoteCmd = `cd ${remoteDir} && export PATH="$HOME/.local/bin:$HOME/.cursor/bin:$PATH" && ${apiEnv}cursor-agent -p "$(echo '${b64Message}' | base64 -d)" --output-format stream-json --stream-partial-output --force${resumeFlag}${cursorModel ? ` --model "${cursorModel}"` : ''}`;
+      const remoteArgs = [
+        '-p', `"$(printf '%s' '${b64Message}' | base64 -d)"`,
+        '--output-format', 'stream-json',
+        '--force',
+        '--trust',
+        '--approve-mcps',
+      ];
+      if (chatId) {
+        remoteArgs.push('--resume', this.quoteForRemoteShell(chatId));
+      }
+      if (cursorModel) {
+        remoteArgs.push('--model', this.quoteForRemoteShell(cursorModel));
+      }
+
+      const remoteCmd = [
+        `cd ${this.remotePathForShell(remoteDir)}`,
+        this.getRemotePathPrefix(),
+        apiKey ? `export CURSOR_API_KEY=${this.quoteForRemoteShell(apiKey)}` : '',
+        'agent_bin="$(command -v cursor-agent || command -v agent)"',
+        `"$agent_bin" ${remoteArgs.join(' ')}`,
+      ].filter(Boolean).join(' && ');
 
       console.log(`[Cursor CLI] SSH exec on ${sshConfig.host}: cursor-agent -p <${message.length} chars> --model ${cursorModel}${chatId ? ` --resume ${chatId}` : ' (new chat)'}`);
 
-      child = spawn('ssh', [
-        '-o', 'StrictHostKeyChecking=no',
-        '-o', 'BatchMode=yes',
-        sshConfig.host,
-        remoteCmd,
-      ], { signal: abortController.signal });
+      child = spawn('ssh', this.buildSshArgs(sshConfig, remoteCmd), {
+        signal: abortController.signal,
+        detached: process.platform !== 'win32',
+      });
     } else {
+      const syncResult = await mcpService.syncLocalHarnessConfigs();
+      if (Object.keys(syncResult.errors).length > 0) {
+        yield { type: 'error', error: `Failed to sync local MCP config: ${JSON.stringify(syncResult.errors)}` };
+        return;
+      }
+
       const agentBin = this.findAgentBinary();
       if (!agentBin) {
         yield { type: 'error', error: 'Cursor agent CLI not found. Install it with: curl https://cursor.com/install -fsS | bash' };
@@ -314,8 +430,9 @@ class CursorCliService {
       const args = [
         '-p', message,
         '--output-format', 'stream-json',
-        '--stream-partial-output',
         '--force',
+        '--trust',
+        '--approve-mcps',
       ];
       if (chatId) {
         args.push('--resume', chatId);
@@ -333,12 +450,19 @@ class CursorCliService {
         env,
         cwd: workDir,
         signal: abortController.signal,
+        detached: process.platform !== 'win32',
       });
     }
+    child.once('error', (error: NodeJS.ErrnoException) => {
+      if (error.code !== 'ABORT_ERR') {
+        console.warn('[Cursor CLI] Process error:', error);
+      }
+    });
 
     this.activeProcesses.set(sessionId, { process: child, abortController });
 
     let stderrOutput = '';
+    let nonJsonOutput = '';
     if (child.stderr) {
       child.stderr.on('data', (data: Buffer) => {
         const text = data.toString();
@@ -355,6 +479,8 @@ class CursorCliService {
 
     const rl = readline.createInterface({ input: child.stdout });
     let eventCount = 0;
+    let sawAssistantText = false;
+    let sawToolActivity = false;
 
     try {
       for await (const line of rl) {
@@ -362,12 +488,33 @@ class CursorCliService {
         try {
           const event = JSON.parse(line) as CursorCliJsonEvent;
           eventCount++;
-          const translated = this.translateEvent(event);
+          const translated = this.translateEvent(event, assistantState);
           if (translated) {
+            if (translated.type === 'text_delta' && translated.content?.trim()) {
+              sawAssistantText = true;
+            }
+            if (translated.type === 'tool_use' || translated.type === 'tool_result') {
+              sawToolActivity = true;
+            }
+            if (translated.type === 'message_complete') {
+              const finalText = translated.message?.content?.trim();
+              if (!sawAssistantText && !finalText && sawToolActivity) {
+                const completion = 'Cursor completed tool work but did not return a final text response.';
+                yield { type: 'text_delta', content: completion };
+                translated.message = {
+                  id: `cursor-cli-tool-only-${Date.now()}`,
+                  role: 'assistant',
+                  content: completion,
+                  timestamp: new Date(),
+                  harness: 'cursor',
+                };
+              }
+            }
             yield translated;
             if (translated.type === 'message_complete') return;
           }
         } catch {
+          nonJsonOutput += `${line}\n`;
           console.warn('[Cursor CLI] Non-JSON line:', line.substring(0, 150));
         }
       }
@@ -377,12 +524,37 @@ class CursorCliService {
       console.log(`[Cursor CLI] Stream ended. Events: ${eventCount}, chatId: ${chatId || 'none'}`);
     }
 
-    if (eventCount === 0 && stderrOutput) {
-      const lastLine = stderrOutput.split('\n').filter(l => l.trim()).pop();
+    if (eventCount === 0) {
+      const combinedOutput = `${stderrOutput}\n${nonJsonOutput}`;
+      if (/press any key to sign in|provided API key is invalid|authenticat/i.test(combinedOutput)) {
+        yield {
+          type: 'error',
+          error: 'Cursor Agent is not authenticated for non-interactive use. Complete Cursor CLI auth, or add a Cursor API key in Settings > API Keys / CURSOR_API_KEY.',
+        };
+        return;
+      }
+
+      const lastLine = combinedOutput.split('\n').filter(l => l.trim()).pop();
       if (lastLine) {
         yield { type: 'error', error: lastLine };
         return;
       }
+    }
+
+    if (!sawAssistantText && sawToolActivity) {
+      const completion = 'Cursor completed tool work but did not return a final text response.';
+      yield { type: 'text_delta', content: completion };
+      yield {
+        type: 'message_complete',
+        message: {
+          id: `cursor-cli-tool-only-${Date.now()}`,
+          role: 'assistant',
+          content: completion,
+          timestamp: new Date(),
+          harness: 'cursor',
+        },
+      };
+      return;
     }
 
     yield { type: 'message_complete' };
@@ -392,12 +564,8 @@ class CursorCliService {
     const active = this.activeProcesses.get(sessionId);
     if (active) {
       console.log(`[Cursor CLI] Cancelling run for ${sessionId}`);
+      terminateProcessTree(active.process, 1000, true);
       active.abortController.abort();
-      active.process.kill('SIGTERM');
-      const proc = active.process;
-      setTimeout(() => {
-        try { if (!proc.killed) proc.kill('SIGKILL'); } catch { /* already dead */ }
-      }, 1000);
       this.activeProcesses.delete(sessionId);
     }
   }
@@ -405,8 +573,8 @@ class CursorCliService {
   disposeAll(): void {
     for (const [id, active] of this.activeProcesses) {
       try {
+        terminateProcessTree(active.process, 1000, true);
         active.abortController.abort();
-        active.process.kill('SIGTERM');
       } catch { /* best-effort */ }
       this.activeProcesses.delete(id);
     }

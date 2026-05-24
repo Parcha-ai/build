@@ -3,13 +3,24 @@ import Store from 'electron-store';
 import { IPC_CHANNELS } from '../../shared/constants/channels';
 import { ClaudeService } from '../services/claude.service';
 import { getMainWindow } from '../index';
-import type { QuestionResponse, Attachment, PlanApprovalResponse, ChatMessage } from '../../shared/types';
+import type { QuestionResponse, Attachment, PlanApprovalResponse, ChatMessage, ContentBlock, ToolCall } from '../../shared/types';
+import {
+  hasRecoverableOutput,
+  mergeRecoveredStreamMessages,
+  normalizeCompletedStreamMessage,
+  serializeCompletedStreamMessage,
+  type PersistedChatMessage,
+} from '../../shared/utils/message-recovery';
+import { buildCompletedStreamMessage } from '../../shared/utils/stream-finalization';
 import { sessionService } from './session.ipc';
 import { DEFAULT_AUDIO_SETTINGS } from '../../shared/types/audio';
 
 // Settings store for Ralph Loop check
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const settingsStore = new Store({ name: 'claudette-settings' }) as any;
+// Durable buffer for harness responses that are not backed by a Claude transcript.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const completedStreamStore = new Store({ name: 'claudette-completed-stream-messages' }) as any;
 
 // Ralph Loop completion marker
 // Ralph Loop uses Stop hook in claude.service.ts (Anthropic SDK pattern)
@@ -18,6 +29,42 @@ const RALPH_LOOP_COMPLETION_MARKER = '<promise>COMPLETE</promise>';
 
 const claudeService = new ClaudeService();
 claudeService.setOnSessionNameChanged(() => sessionService.refreshSessionList());
+
+const completedStreamMessages = new Map<string, ChatMessage[]>();
+const COMPLETED_STREAM_MESSAGE_LIMIT = 100;
+
+function loadCompletedStreamMessages(sessionId: string): ChatMessage[] {
+  const cached = completedStreamMessages.get(sessionId);
+  if (cached) return cached;
+
+  const stored = completedStreamStore.get(sessionId, []) as PersistedChatMessage[];
+  const normalized = (Array.isArray(stored) ? stored : [])
+    .map(normalizeCompletedStreamMessage)
+    .filter((message): message is ChatMessage => Boolean(message));
+  completedStreamMessages.set(sessionId, normalized);
+  return normalized;
+}
+
+function saveCompletedStreamMessages(sessionId: string, messages: ChatMessage[]): void {
+  const capped = messages.slice(-COMPLETED_STREAM_MESSAGE_LIMIT);
+  completedStreamMessages.set(sessionId, capped);
+  completedStreamStore.set(sessionId, capped.map(serializeCompletedStreamMessage));
+}
+
+function recordCompletedStreamMessage(sessionId: string, message: ChatMessage): void {
+  if (!hasRecoverableOutput(message)) return;
+
+  const normalizedMessage = normalizeCompletedStreamMessage(message);
+  if (!normalizedMessage) return;
+
+  const existing = loadCompletedStreamMessages(sessionId);
+  const withoutDuplicate = existing.filter((item) => item.id !== message.id);
+  saveCompletedStreamMessages(sessionId, [...withoutDuplicate, normalizedMessage]);
+}
+
+function mergeCompletedStreamMessages(transcriptMessages: ChatMessage[], sessionId: string, limit?: number): ChatMessage[] {
+  return mergeRecoveredStreamMessages(transcriptMessages, loadCompletedStreamMessages(sessionId), limit);
+}
 
 // Batching helper to reduce IPC overhead
 class ChunkBatcher {
@@ -137,7 +184,32 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
       let hadError = false;
       let sentStreamEnd = false;
       let needsCompactionRetry = false;
-      const accumulatedToolCalls: Array<{ id: string; name: string; input: Record<string, unknown>; status: string; result?: string }> = [];
+      let latestResolvedModel: string | undefined;
+      const accumulatedToolCalls: ToolCall[] = [];
+      const accumulatedContentBlocks: ContentBlock[] = [];
+      const upsertAccumulatedToolCall = (toolCall: ToolCall | undefined): void => {
+        if (!toolCall) return;
+        const idx = accumulatedToolCalls.findIndex(tc => tc.id === toolCall.id);
+        if (idx >= 0) {
+          accumulatedToolCalls[idx] = toolCall;
+        } else {
+          accumulatedToolCalls.push(toolCall);
+        }
+      };
+      const appendTextContentBlock = (content: string | undefined, agentId?: string): void => {
+        if (!content) return;
+        const lastBlock = accumulatedContentBlocks[accumulatedContentBlocks.length - 1];
+        if (lastBlock?.type === 'text' && lastBlock.agentId === agentId) {
+          lastBlock.text = (lastBlock.text || '') + content;
+        } else {
+          accumulatedContentBlocks.push({ type: 'text', text: content, agentId });
+        }
+      };
+      const appendToolContentBlock = (toolCall: ToolCall | undefined, agentId?: string): void => {
+        if (!toolCall?.id) return;
+        if (accumulatedContentBlocks.some(block => block.type === 'tool_use' && block.toolCallId === toolCall.id)) return;
+        accumulatedContentBlocks.push({ type: 'tool_use', toolCallId: toolCall.id, agentId: toolCall.agentId || agentId });
+      };
 
         try {
           // Stream the response (Stop hook handles Ralph Loop iteration)
@@ -149,12 +221,14 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
             eventCount++;
             lastEventType = event.type;
             lastEventTime = Date.now();
+            latestResolvedModel = event.resolvedModel || latestResolvedModel;
             if (event.type !== 'text_delta' && event.type !== 'thinking_delta') {
               console.log(`[Claude IPC] Event #${eventCount} type=${event.type} for ${sessionId.substring(0, 8)} (+${Date.now() - streamStartTime}ms)`);
             }
             switch (event.type) {
               case 'text_delta':
                 batcher.addText(event.content || '', event.agentId);
+                appendTextContentBlock(event.content, event.agentId);
                 fullMessageContent += event.content || '';
                 break;
 
@@ -162,28 +236,23 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
                 batcher.addThinking(event.content || '');
                 break;
 
-              case 'tool_use':
-                if (event.toolCall) accumulatedToolCalls.push(event.toolCall as typeof accumulatedToolCalls[0]);
-                sendToSender(IPC_CHANNELS.CLAUDE_TOOL_CALL, {
-                  sessionId,
-                  toolCall: event.toolCall,
+	              case 'tool_use':
+	                upsertAccumulatedToolCall(event.toolCall as ToolCall | undefined);
+	                appendToolContentBlock(event.toolCall as ToolCall | undefined, event.agentId);
+	                sendToSender(IPC_CHANNELS.CLAUDE_TOOL_CALL, {
+	                  sessionId,
+	                  toolCall: event.toolCall,
                   agentId: event.agentId,
                 });
                 break;
 
-              case 'tool_result':
-                // Update the accumulated tool call with result
-                if (event.toolCall) {
-                  const idx = accumulatedToolCalls.findIndex(tc => tc.id === (event.toolCall as { id: string }).id);
-                  if (idx >= 0) {
-                    accumulatedToolCalls[idx] = event.toolCall as typeof accumulatedToolCalls[0];
-                  } else {
-                    accumulatedToolCalls.push(event.toolCall as typeof accumulatedToolCalls[0]);
-                  }
-                }
-                sendToSender(IPC_CHANNELS.CLAUDE_TOOL_RESULT, {
-                  sessionId,
-                  toolCall: event.toolCall,
+	              case 'tool_result':
+	                // Update the accumulated tool call with result
+	                upsertAccumulatedToolCall(event.toolCall as ToolCall | undefined);
+	                appendToolContentBlock(event.toolCall as ToolCall | undefined, event.agentId);
+	                sendToSender(IPC_CHANNELS.CLAUDE_TOOL_RESULT, {
+	                  sessionId,
+	                  toolCall: event.toolCall,
                   agentId: event.agentId,
                 });
                 break;
@@ -241,27 +310,65 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
                   console.log('[Claude IPC] Starting retry stream after compaction');
                   try {
                     for await (const retryEvent of claudeService.streamMessage(sessionId, message, attachments, permissionMode, thinkingMode, model, gstackMode, supplementalMessages)) {
+                      latestResolvedModel = retryEvent.resolvedModel || latestResolvedModel;
                       // Process retry events the same way
                       switch (retryEvent.type) {
                         case 'text_delta':
                           batcher.addText(retryEvent.content || '', retryEvent.agentId);
+                          appendTextContentBlock(retryEvent.content, retryEvent.agentId);
                           fullMessageContent += retryEvent.content || '';
                           break;
-                        case 'thinking_delta':
-                          batcher.addThinking(retryEvent.content || '');
-                          break;
-                        case 'message_complete':
-                          batcher.flush();
-                          const retryMessage = retryEvent.message || {
-                            id: Date.now().toString(),
-                            role: 'assistant' as const,
-                            content: fullMessageContent,
-                            timestamp: new Date(),
-                          };
+	                        case 'thinking_delta':
+	                          batcher.addThinking(retryEvent.content || '');
+	                          break;
+	                        case 'tool_use':
+	                          upsertAccumulatedToolCall(retryEvent.toolCall as ToolCall | undefined);
+	                          appendToolContentBlock(retryEvent.toolCall as ToolCall | undefined, retryEvent.agentId);
+	                          sendToSender(IPC_CHANNELS.CLAUDE_TOOL_CALL, {
+	                            sessionId,
+	                            toolCall: retryEvent.toolCall,
+	                            agentId: retryEvent.agentId,
+	                          });
+	                          break;
+	                        case 'tool_result':
+	                          upsertAccumulatedToolCall(retryEvent.toolCall as ToolCall | undefined);
+	                          appendToolContentBlock(retryEvent.toolCall as ToolCall | undefined, retryEvent.agentId);
+	                          sendToSender(IPC_CHANNELS.CLAUDE_TOOL_RESULT, {
+	                            sessionId,
+	                            toolCall: retryEvent.toolCall,
+	                            agentId: retryEvent.agentId,
+	                          });
+	                          break;
+	                        case 'system':
+	                          sendToSender(IPC_CHANNELS.CLAUDE_SYSTEM_INFO, {
+	                            sessionId,
+	                            systemInfo: retryEvent.systemInfo,
+	                          });
+	                          break;
+	                        case 'context_usage':
+	                          sendToSender(IPC_CHANNELS.CLAUDE_CONTEXT_USAGE, {
+	                            sessionId,
+	                            inputTokens: (retryEvent as any).inputTokens,
+	                            contextWindowSize: (retryEvent as any).contextWindowSize,
+	                            percentage: (retryEvent as any).percentage,
+	                            ...((retryEvent as any).contextUsageBreakdown ? { breakdown: (retryEvent as any).contextUsageBreakdown } : {}),
+	                          });
+	                          break;
+	                        case 'message_complete':
+	                          batcher.flush();
+	                          const finalRetryMessage = buildCompletedStreamMessage({
+	                            message: retryEvent.message,
+	                            content: fullMessageContent,
+	                            toolCalls: accumulatedToolCalls,
+	                            contentBlocks: accumulatedContentBlocks,
+	                            model,
+	                            resolvedModel: retryEvent.resolvedModel || latestResolvedModel,
+	                          });
+                          recordCompletedStreamMessage(sessionId, finalRetryMessage);
                           sentStreamEnd = true;
                           sendToSender(IPC_CHANNELS.CLAUDE_STREAM_END, {
                             sessionId,
-                            message: retryMessage,
+                            message: finalRetryMessage,
                           });
                           break;
                         case 'error':
@@ -291,17 +398,15 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
                 console.log(`[Claude IPC] message_complete for ${sessionId}. fullMessageContent length: ${fullMessageContent.length}, sentStreamEnd was: ${sentStreamEnd}`);
 
                 // Send STREAM_END (Stop hook handles Ralph Loop iteration)
-                const finalMessage = event.message ? {
-                  ...event.message,
-                  content: event.message.content || fullMessageContent,
-                  toolCalls: event.message.toolCalls || (accumulatedToolCalls.length > 0 ? accumulatedToolCalls : undefined),
-                } : {
-                  id: Date.now().toString(),
-                  role: 'assistant' as const,
+                const finalMessage = buildCompletedStreamMessage({
+                  message: event.message,
                   content: fullMessageContent,
-                  timestamp: new Date(),
-                  toolCalls: accumulatedToolCalls.length > 0 ? accumulatedToolCalls : undefined,
-                };
+                  toolCalls: accumulatedToolCalls,
+                  contentBlocks: accumulatedContentBlocks,
+                  model,
+                  resolvedModel: event.resolvedModel || latestResolvedModel,
+                });
+                recordCompletedStreamMessage(sessionId, finalMessage);
                 sentStreamEnd = true;
                 sendToSender(IPC_CHANNELS.CLAUDE_STREAM_END, {
                   sessionId,
@@ -359,15 +464,20 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
           // gracefully even when isStreaming is already false.
           if (!sentStreamEnd) {
             console.log('[Claude IPC] Safety net: sending STREAM_END for', sessionId, 'hadError:', hadError, 'contentLength:', fullMessageContent.length);
+            const finalMessage: ChatMessage = buildCompletedStreamMessage({
+              content: fullMessageContent || '',
+              toolCalls: accumulatedToolCalls,
+              contentBlocks: accumulatedContentBlocks,
+              model,
+              resolvedModel: latestResolvedModel,
+            });
+            if (hadError) {
+              finalMessage.interrupted = true;
+            }
+            recordCompletedStreamMessage(sessionId, finalMessage);
             sendToSender(IPC_CHANNELS.CLAUDE_STREAM_END, {
               sessionId,
-              message: {
-                id: Date.now().toString(),
-                role: 'assistant' as const,
-                content: hadError ? '' : (fullMessageContent || ''),
-                timestamp: new Date(),
-                toolCalls: !hadError && accumulatedToolCalls.length > 0 ? accumulatedToolCalls : undefined,
-              },
+              message: finalMessage,
             });
           }
         }
@@ -386,7 +496,8 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
   });
 
   ipcMain.handle(IPC_CHANNELS.CLAUDE_GET_MESSAGES, async (_, sessionId: string, limit?: number) => {
-    return claudeService.getMessages(sessionId, limit);
+    const transcriptMessages = await claudeService.getMessages(sessionId, limit);
+    return mergeCompletedStreamMessages(transcriptMessages, sessionId, limit);
   });
 
   // Handle permission responses from user

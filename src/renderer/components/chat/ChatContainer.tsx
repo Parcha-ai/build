@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
-import { useSessionStore, type BackgroundTask } from '../../stores/session.store';
+import { useSessionStore, withMaterializedSession, type BackgroundTask } from '../../stores/session.store';
 import { useAudioStore } from '../../stores/audio.store';
 import { useUIStore } from '../../stores/ui.store';
 import MessageList from './MessageList';
@@ -35,7 +35,9 @@ function SessionGitInfo({ sessionId }: { sessionId: string }) {
 
     const fetchGitInfo = async () => {
       try {
-        const status = await window.electronAPI?.git?.getStatus(sessionId);
+        const status = await withMaterializedSession(sessionId, async () => {
+          return window.electronAPI?.git?.getStatus(sessionId);
+        });
         if (cancelled || !status) return;
 
         const info: typeof gitInfo = {

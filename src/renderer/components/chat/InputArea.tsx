@@ -118,9 +118,13 @@ function GStackLauncher({ sessionId, onClose }: { sessionId: string; onClose: ()
     window.electronAPI.gstack.isInstalled().then(installed => {
       setIsInstalled(installed);
       if (installed) {
-        window.electronAPI.gstack.getModes().then(setSkills).catch(() => {});
+        window.electronAPI.gstack.getModes().then(setSkills).catch((error) => {
+          console.warn('[GStackLauncher] Failed to load modes:', error);
+        });
       }
-    }).catch(() => {});
+    }).catch((error) => {
+      console.warn('[GStackLauncher] Failed to check installation:', error);
+    });
   }, []);
 
   useEffect(() => {
@@ -241,6 +245,45 @@ interface Attachment {
 // Stable empty arrays to avoid reference changes when session data is missing
 const EMPTY_QUEUE: never[] = [];
 const EMPTY_MODELS: never[] = [];
+const PLAN_MODE_NUDGE_SUPPRESSED_KEY = 'grep-plan-mode-nudge-suppressed';
+
+function isPlanModeNudgeSuppressed(): boolean {
+  try {
+    return localStorage.getItem(PLAN_MODE_NUDGE_SUPPRESSED_KEY) === 'true';
+  } catch {
+    return false;
+  }
+}
+
+function suppressPlanModeNudge(): void {
+  try {
+    localStorage.setItem(PLAN_MODE_NUDGE_SUPPRESSED_KEY, 'true');
+  } catch {
+    // Ignore storage errors.
+  }
+}
+
+function shouldSuggestPlanModeNudge(
+  text: string,
+  attachments: Attachment[],
+  currentModel: string,
+  currentMode: PermissionMode,
+): boolean {
+  if (currentModel === 'auto' || currentMode === 'plan' || isPlanModeNudgeSuppressed()) return false;
+
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+
+  const lower = trimmed.toLowerCase();
+  const hasVisualContext = attachments.some((attachment) => attachment.type === 'image' || attachment.type === 'dom_element');
+  const broadScope = /\b(site|website|landing|homepage|hero|page|section|sections|overall|whole|entire|full|all|end[- ]to[- ]end|rewrite)\b/.test(lower);
+  const planningIntent = /\b(plan|strategy|positioning|messaging|narrative|information architecture|content strategy|copy strategy|rewrite strategy|approach|direction)\b/.test(lower);
+  const copyRewriteIntent = /\b(copy|rewrite|messaging|headline|tagline|value prop|value proposition|tone|voice|content|landing page|website)\b/.test(lower);
+  const largeEnough = trimmed.length > 180;
+
+  if (planningIntent && (broadScope || hasVisualContext || largeEnough)) return true;
+  return copyRewriteIntent && broadScope && (hasVisualContext || trimmed.length > 120);
+}
 
 export default function InputArea({ sessionId, disabled, systemInfo, isStreaming: isStreamingProp }: InputAreaProps) {
   const [message, setMessage] = useState('');
@@ -252,6 +295,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
   const [escapeKeyCount, setEscapeKeyCount] = useState(0);
   const [escapeTimeout, setEscapeTimeout] = useState<NodeJS.Timeout | null>(null);
   const [showEscapeWarning, setShowEscapeWarning] = useState(false);
+  const [showPlanModeNudge, setShowPlanModeNudge] = useState(false);
 
   // GStack skill launcher
   const [showGStack, setShowGStack] = useState(false);
@@ -276,7 +320,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
   // Per-session data selectors — only re-render when THIS session's data changes
   const isStreamingState = useSessionStore(useCallback((s) => s.isStreaming[sessionId] || false, [sessionId]));
   const currentMode = useSessionStore(useCallback((s) => normalizePermissionModeForModel(
-    s.selectedModel[sessionId] || 'claude-opus-4-7',
+    s.selectedModel[sessionId] || 'auto',
     s.permissionMode[sessionId],
   ), [sessionId]));
   const contextUsage = useSessionStore(useCallback((s) => s.contextUsage[sessionId] || null, [sessionId]));
@@ -284,7 +328,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
   const currentHtmlMode = useSessionStore(useCallback((s) => s.htmlRenderMode[sessionId] || 'md', [sessionId]));
   const activeGStackMode = useSessionStore(useCallback((s) => s.gstackMode[sessionId] || null, [sessionId]));
   const queuedMessages = useSessionStore(useCallback((s) => s.messageQueue[sessionId] || EMPTY_QUEUE, [sessionId]));
-  const currentModel = useSessionStore(useCallback((s) => s.selectedModel[sessionId] || 'claude-opus-4-7', [sessionId]));
+  const currentModel = useSessionStore(useCallback((s) => s.selectedModel[sessionId] || 'auto', [sessionId]));
   const autoRouteDecision = useSessionStore(useCallback((s) => s.autoRouteDecision[sessionId] || null, [sessionId]));
   const compactionSwitch = useSessionStore(useCallback((s) => s.compactionSwitch[sessionId] || null, [sessionId]));
   const availableModels = useSessionStore((s) => s.availableModels || EMPTY_MODELS);
@@ -298,6 +342,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
   const rejectPlan = useSessionStore((s) => s.rejectPlan);
   const cyclePermissionMode = useSessionStore((s) => s.cyclePermissionMode);
   const setGStackMode = useSessionStore((s) => s.setGStackMode);
+  const setPermissionMode = useSessionStore((s) => s.setPermissionMode);
   const cycleThinkingMode = useSessionStore((s) => s.cycleThinkingMode);
   const setThinkingMode = useSessionStore((s) => s.setThinkingMode);
   const cycleHtmlRenderMode = useSessionStore((s) => s.cycleHtmlRenderMode);
@@ -893,7 +938,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
     textareaRef.current?.focus();
   }, []);
 
-  const handleSubmit = async () => {
+  const handleSubmit = async (planNudgeAction?: 'switch-to-plan' | 'keep-current' | 'suppress') => {
     if (!message.trim() && attachments.length === 0) return;
     if (disabled) return;
 
@@ -917,6 +962,26 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
     }
 
     // Note: We don't block on isSending - the store handles queueing if already streaming
+
+    if (planNudgeAction === 'suppress') {
+      suppressPlanModeNudge();
+    }
+
+    if (planNudgeAction === 'switch-to-plan') {
+      setSelectedModel(sessionId, 'auto', 'plan-nudge');
+      setPermissionMode(sessionId, 'plan');
+    }
+
+    if (
+      !planNudgeAction &&
+      shouldSuggestPlanModeNudge(message, attachments, currentModel, currentMode)
+    ) {
+      setShowPlanModeNudge(true);
+      textareaRef.current?.focus();
+      return;
+    }
+
+    setShowPlanModeNudge(false);
 
     // Save to history before sending
     saveToHistory(message.trim());
@@ -1419,6 +1484,43 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
         />
       )}
 
+      {showPlanModeNudge && !showCommands && !showMentions && (
+        <div className="absolute bottom-full left-4 right-4 mb-2 bg-claude-surface border border-claude-border shadow-lg z-50 p-3">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start">
+            <Brain size={14} className="text-blue-400 mt-0.5 shrink-0" />
+            <div className="min-w-0 flex-1">
+              <div className="text-xs text-claude-text font-mono">This looks like planning or copy strategy.</div>
+              <div className="text-[11px] text-claude-text-secondary mt-1">
+                Switch from {currentModelInfo.name} to Auto Build Plan before sending?
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+              <button
+                type="button"
+                onClick={() => void handleSubmit('switch-to-plan')}
+                className="px-2 py-1 text-[11px] font-mono bg-blue-500/15 text-blue-300 border border-blue-500/30 hover:bg-blue-500/25"
+              >
+                Plan
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleSubmit('keep-current')}
+                className="px-2 py-1 text-[11px] font-mono text-claude-text-secondary border border-claude-border hover:bg-claude-bg hover:text-claude-text"
+              >
+                No
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleSubmit('suppress')}
+                className="px-2 py-1 text-[11px] font-mono text-claude-text-secondary border border-claude-border hover:bg-claude-bg hover:text-claude-text"
+              >
+                Don't ask again
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Message History Dropdown */}
       {showHistory && messageHistory.length > 0 && (
         <div
@@ -1680,7 +1782,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
             disabled={disabled}
             className="p-1 transition-colors hover:bg-claude-bg disabled:opacity-40 disabled:cursor-not-allowed text-claude-text-secondary hover:text-claude-accent"
             style={{ borderRadius: 0 }}
-            title="Ping for update (sends 'continue')"
+            title="Continue with next turn"
           >
             <RefreshCw size={14} />
           </button>
@@ -1884,16 +1986,18 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
             onClick={() => setShowModelDropdown(!showModelDropdown)}
             disabled={disabled}
             className="text-claude-text-secondary hover:text-claude-text transition-colors disabled:opacity-40 flex items-center gap-1.5"
-            title={currentModel === 'auto' && autoRouteDecision
-              ? `Auto Build: ${autoRouteDecision.tier.toUpperCase()} → ${autoRouteDecision.resolvedModel} (${Math.round(autoRouteDecision.confidence * 100)}% confidence)`
+            title={currentModel === 'auto' && isSending && autoRouteDecision
+              ? `Auto Build: ${autoRouteDecision.tier.toUpperCase()}${autoRouteDecision.domain ? ` / ${autoRouteDecision.domain}` : ''} → ${autoRouteDecision.resolvedModel} (${Math.round(autoRouteDecision.confidence * 100)}% confidence${autoRouteDecision.orchestration ? `, ${autoRouteDecision.orchestration.mode}` : ''})`
               : `${currentModelInfo.description} (click to change)`}
           >
             {currentModel === 'auto' ? (
-              autoRouteDecision ? (
+              isSending && autoRouteDecision ? (
                 <AutoRouteBadge
                   tier={autoRouteDecision.tier}
+                  domain={autoRouteDecision.domain}
                   resolvedModel={autoRouteDecision.resolvedModel}
                   confidence={autoRouteDecision.confidence}
+                  orchestration={autoRouteDecision.orchestration}
                 />
               ) : (
                 <span className="text-[10px] font-mono">

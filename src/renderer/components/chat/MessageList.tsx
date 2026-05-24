@@ -29,6 +29,14 @@ interface MessageListProps {
   onBackgroundTask?: (toolCall: ToolCall) => void; // Callback to background a running Bash command
 }
 
+function getAgentDividerLabel(agentId?: string): string {
+  if (!agentId?.startsWith('autobuild:')) return 'TEAMMATE';
+
+  const [, tier, harness] = agentId.split(':');
+  const tierLabel = tier ? tier.toUpperCase() : 'HELPER';
+  return harness ? `AUTO BUILD ${tierLabel} ${harness.toUpperCase()}` : `AUTO BUILD ${tierLabel}`;
+}
+
 export default function MessageList({
   messages,
   isStreaming,
@@ -189,6 +197,7 @@ export default function MessageList({
             const agentChanged = event.agentId !== prevEvent?.agentId;
             const isTeammate = !!event.agentId;
             const agentColor = (isTeammate && activeSessionId) ? getAgentColor(activeSessionId, event.agentId!) : undefined;
+            const agentDividerLabel = getAgentDividerLabel(event.agentId);
 
             // Agent badge for teammate events when agent changes
             const agentBadge = (agentChanged && isTeammate && agentColor) ? (
@@ -204,7 +213,7 @@ export default function MessageList({
                   }}
                 >
                   <div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: agentColor }} />
-                  TEAMMATE
+                  {agentDividerLabel}
                 </div>
                 <div className="h-px flex-1 opacity-30" style={{ backgroundColor: agentColor }} />
               </div>

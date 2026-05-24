@@ -57,7 +57,8 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
 
   // Get current branch for SSH sessions (runs git rev-parse on the remote)
   ipcMain.handle(IPC_CHANNELS.GIT_REMOTE_BRANCH, async (_, sessionId: string) => {
-    const session = sessionStore.get(`sessions.${sessionId}`) as Session | undefined;
+    const session = (sessionStore.get(`sessions.${sessionId}`)
+      || sessionStore.get(`discoveredSessions.${sessionId}`)) as Session | undefined;
     if (!session?.sshConfig) return null;
     return sshService.getRemoteBranch(sessionId, session.sshConfig);
   });

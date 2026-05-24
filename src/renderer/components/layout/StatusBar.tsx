@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef, useMemo, useCallback } from 'react';
-import { useSessionStore } from '../../stores/session.store';
+import { isSessionNotFoundError, useSessionStore } from '../../stores/session.store';
 import { useAuthStore } from '../../stores/auth.store';
 import { ChevronDown, Check } from 'lucide-react';
 import CostBadge from '../analytics/CostBadge';
@@ -51,7 +51,7 @@ export default function StatusBar() {
 
   // Fetch app version on mount
   useEffect(() => {
-    window.electronAPI?.app.getVersion().then(setAppVersion).catch(() => {});
+    window.electronAPI?.app.getVersion().then(setAppVersion).catch(() => undefined);
   }, []);
 
   const activeSession = sessions.find((s) => s.id === activeSessionId);
@@ -60,13 +60,19 @@ export default function StatusBar() {
   useEffect(() => {
     if (!activeSessionId) return;
 
-    // Start watching the branch file
-    window.electronAPI.git.watchBranch(activeSessionId).then((result) => {
+    const startBranchWatcher = async () => {
+      let result = await window.electronAPI.git.watchBranch(activeSessionId);
+      if (!result.success && result.error && isSessionNotFoundError(result.error, activeSessionId)) {
+        await window.electronAPI.sessions.update(activeSessionId, {});
+        result = await window.electronAPI.git.watchBranch(activeSessionId);
+      }
       if (result.success && result.branch) {
         // Initial branch value from the watcher
         refreshSessionBranch(activeSessionId);
       }
-    }).catch(console.error);
+    };
+
+    startBranchWatcher().catch(console.error);
 
     // Clean up: stop watching when session changes or component unmounts
     return () => {

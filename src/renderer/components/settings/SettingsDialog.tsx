@@ -128,7 +128,7 @@ export default function SettingsDialog() {
   // Auto Build model routing categories
   const availableModels = useSessionStore((s) => s.availableModels || []);
   const [autoBuildCategories, setAutoBuildCategories] = useState<Array<{ id: string; label: string; model: string }>>([
-    { id: 'plan', label: 'Planning', model: 'claude-opus-4-7' },
+    { id: 'plan', label: 'Planning', model: 'claude-sonnet-4-6' },
     { id: 'build', label: 'Execution', model: 'codex:gpt-5.5' },
     { id: 'verify', label: 'Verification', model: 'codex:gpt-5.5' },
     { id: 'refine', label: 'Refinement', model: 'cursor:composer-2.5' },
@@ -781,7 +781,7 @@ export default function SettingsDialog() {
     };
 
     const addCategory = () => {
-      const updated = [...autoBuildCategories, { id: `custom-${Date.now()}`, label: 'New Category', model: 'claude-opus-4-7' }];
+      const updated = [...autoBuildCategories, { id: `custom-${Date.now()}`, label: 'New Category', model: 'claude-sonnet-4-6' }];
       setAutoBuildCategories(updated);
       autoSaveAppSettings({ autoRouterConfig: { categories: updated, costAware: autoBuildCostAware } } as any);
     };
@@ -791,7 +791,7 @@ export default function SettingsDialog() {
         <div>
           <h3 className="text-sm font-medium text-claude-text mb-1">Auto Build Mode</h3>
           <p className="text-[10px] text-claude-text-secondary mb-4">
-            Configure which model or harness handles each type of task. When Auto Build is selected as your model, the router classifies each query and routes it to the assigned model.
+            Configure the default model or harness for each task tier. When Auto Build is selected, the orchestrator picks a lead harness, injects shared project context, and plans helper handoffs automatically.
           </p>
         </div>
 
@@ -869,7 +869,7 @@ export default function SettingsDialog() {
         {/* Info section */}
         <div className="border-t border-claude-border/30 pt-4">
           <p className="text-[10px] text-claude-text-secondary">
-            Select <span className="text-purple-400 font-bold">Auto Build</span> from the model picker in any session to enable intelligent routing. The router uses keyword matching and an LLM fallback (Cerebras) to classify each message.
+            Select <span className="text-purple-400 font-bold">Auto Build</span> from the model picker in any session to enable orchestration. Build injects transcripts, project instructions, agents, and skills into CLI harnesses where possible.
           </p>
         </div>
       </div>

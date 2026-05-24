@@ -164,8 +164,10 @@ const config: ForgeConfig = {
     new AutoUnpackNativesPlugin({}),
     new WebpackPlugin({
       mainConfig,
+      port: parseInt(process.env.DEV_WEBPACK_PORT || '3000', 10),
+      loggerPort: parseInt(process.env.DEV_WEBPACK_LOGGER_PORT || '9000', 10),
       devServer: {
-        port: parseInt(process.env.DEV_WEBPACK_PORT || '9000', 10),
+        port: parseInt(process.env.DEV_WEBPACK_PORT || '3000', 10),
         // Filter out Monaco editor disposal errors from the error overlay
         // These are harmless race conditions in @monaco-editor/react
         client: {

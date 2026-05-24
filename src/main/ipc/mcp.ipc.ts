@@ -9,7 +9,36 @@ import { sshService } from '../services/ssh.service';
 import { sessionService } from './session.ipc';
 import type { MCPServerInfo, MarketplaceMCPServer } from '../../shared/types';
 
+let remoteAuthSyncListenerRegistered = false;
+
 export function registerMcpHandlers(ipcMain: IpcMain): void {
+  const syncHarnessesAndSshSessions = async () => {
+    const sessions = await sessionService.listSessions();
+    for (const session of sessions) {
+      if (session.sshConfig && sshService.isConnected(session.id)) {
+        console.log('[MCP IPC] Syncing MCP servers to SSH session:', session.id);
+        await sshService.syncMcpConfigsToRemote(session.id, session.sshConfig).catch((err) => {
+          console.error('[MCP IPC] Error syncing to SSH session:', err);
+        });
+      }
+    }
+
+    await mcpService.syncLocalHarnessConfigs().catch((err) => {
+      console.error('[MCP IPC] Error syncing local harness MCP configs:', err);
+    });
+  };
+
+  if (!remoteAuthSyncListenerRegistered) {
+    remoteAuthSyncListenerRegistered = true;
+    mcpService.onRemoteAuthPrewarmFinished((event) => {
+      if (!event.authenticated) return;
+
+      syncHarnessesAndSshSessions().catch((err) => {
+        console.error('[MCP IPC] Error syncing MCP configs after remote auth prewarm:', err);
+      });
+    });
+  }
+
   // Get list of active/configured MCP servers
   ipcMain.handle(
     IPC_CHANNELS.MCP_GET_SERVERS,
@@ -76,15 +105,7 @@ export function registerMcpHandlers(ipcMain: IpcMain): void {
 
         // If successful, sync to all active SSH sessions
         if (result.success) {
-          const sessions = await sessionService.listSessions();
-          for (const session of sessions) {
-            if (session.sshConfig) {
-              console.log('[MCP IPC] Syncing MCP servers to SSH session:', session.id);
-              await sshService.syncMcpServersToSession(session.id).catch((err) => {
-                console.error('[MCP IPC] Error syncing to SSH session:', err);
-              });
-            }
-          }
+          await syncHarnessesAndSshSessions();
         }
 
         return result;
@@ -112,15 +133,7 @@ export function registerMcpHandlers(ipcMain: IpcMain): void {
 
         // If successful, sync to all active SSH sessions
         if (result.success) {
-          const sessions = await sessionService.listSessions();
-          for (const session of sessions) {
-            if (session.sshConfig) {
-              console.log('[MCP IPC] Syncing MCP servers to SSH session:', session.id);
-              await sshService.syncMcpServersToSession(session.id).catch((err) => {
-                console.error('[MCP IPC] Error syncing to SSH session:', err);
-              });
-            }
-          }
+          await syncHarnessesAndSshSessions();
         }
 
         return result;
@@ -140,7 +153,11 @@ export function registerMcpHandlers(ipcMain: IpcMain): void {
     async (_event, serverId: string): Promise<{ success: boolean; error?: string }> => {
       try {
         console.log('[MCP IPC] Uninstalling server:', serverId);
-        return await mcpService.uninstallServer(serverId);
+        const result = await mcpService.uninstallServer(serverId);
+        if (result.success) {
+          await syncHarnessesAndSshSessions();
+        }
+        return result;
       } catch (error) {
         console.error('[MCP IPC] Error uninstalling server:', error);
         return {

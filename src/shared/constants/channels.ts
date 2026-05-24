@@ -299,6 +299,10 @@ export const IPC_CHANNELS = {
   ANALYTICS_GET_SESSION_COST: 'analytics:get-session-cost',
   ANALYTICS_GET_TIER_CONFIG: 'analytics:get-tier-config',
   ANALYTICS_SET_TIER_CONFIG: 'analytics:set-tier-config',
+  ANALYTICS_GET_HARNESS_INSIGHTS: 'analytics:get-harness-insights',
+  ANALYTICS_REFRESH_HISTORICAL_USAGE: 'analytics:refresh-historical-usage',
+  ANALYTICS_RUN_ROUTER_EVAL: 'analytics:run-router-eval',
+  ANALYTICS_RECORD_HARNESS_SELECTION: 'analytics:record-harness-selection',
   ANALYTICS_TOKEN_EVENT: 'analytics:token-event', // Real-time event pushed to renderer
 
   // Auto Build mode (intelligent model routing)

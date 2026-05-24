@@ -57,6 +57,7 @@ export class SessionService extends EventEmitter {
   private readonly DISCOVERY_CACHE_TTL = 60000; // 1 minute cache
   private isInitialLoadDone = false;
   private discoveryInProgress = false;
+  private invalidNameGenerationApiKey: string | null = null;
 
   constructor() {
     super();
@@ -164,17 +165,28 @@ export class SessionService extends EventEmitter {
     await fs.mkdir(this.sessionsPath, { recursive: true });
   }
 
+  private isAnthropicAuthenticationError(error: unknown): boolean {
+    const maybeError = error as { status?: number; name?: string; message?: string };
+    return maybeError?.status === 401
+      || maybeError?.name === 'AuthenticationError'
+      || Boolean(maybeError?.message?.includes('invalid x-api-key'));
+  }
+
   private generateSessionNameAsync(sessionId: string, firstUserMessage: string, actualPath: string): void {
     // Run name generation in background without blocking discovery
     (async () => {
+      let apiKey: string | undefined;
       try {
         // Get API key from settings store
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const settingsStore = new Store({ name: 'claudette-settings' }) as any;
-        const apiKey = settingsStore.get('anthropicApiKey') as string | undefined;
+        apiKey = (settingsStore.get('anthropicApiKey') as string | undefined)?.trim() || undefined;
 
         if (!apiKey) {
           console.log('[Session] No API key, skipping name generation for:', sessionId);
+          return;
+        }
+        if (this.invalidNameGenerationApiKey === apiKey) {
           return;
         }
 
@@ -202,6 +214,13 @@ Only return the title, nothing else.`
           this.emit('sessionNameGenerated', { sessionId, name: title });
         }
       } catch (error) {
+        if (apiKey && this.isAnthropicAuthenticationError(error)) {
+          if (this.invalidNameGenerationApiKey !== apiKey) {
+            console.warn('[Session] Saved Anthropic API key was rejected; skipping background session name generation until the key changes.');
+          }
+          this.invalidNameGenerationApiKey = apiKey;
+          return;
+        }
         console.error('[Session] Error generating name:', error);
       }
     })();

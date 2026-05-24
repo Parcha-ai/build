@@ -9,7 +9,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { spawn } from 'child_process';
-import type { ChatMessage, ToolCall, Session, QuestionRequest, QuestionResponse, Attachment, ContentBlock, CompactionStatus, CompactionComplete, PlanApprovalRequest, PlanApprovalResponse } from '../../shared/types';
+import type { ChatMessage, ToolCall, Session, QuestionRequest, QuestionResponse, Attachment, ContentBlock, CompactionStatus, CompactionComplete, PlanApprovalRequest, PlanApprovalResponse, OrchestrationPlan, OrchestrationStage, Harness, TaskTier, TaskDomain, RoutingDecision } from '../../shared/types';
 import { powerService } from './power.service';
 import { BrowserWindow, nativeImage } from 'electron';
 import { IPC_CHANNELS } from '../../shared/constants/channels';
@@ -19,14 +19,20 @@ import { stagehandService } from './stagehand.service';
 import { computerUseService } from './computer-use.service';
 import { documentService } from './document.service';
 import { sshService } from './ssh.service';
+import type { RemoteCliCapabilities } from './ssh.service';
 import { memoryService, MemoryCategory } from './memory.service';
 import { qmdService } from './qmd.service';
 import { mcpService } from './mcp.service';
 import { codexService } from './codex.service';
 import { openclawService } from './openclaw.service';
-import { formatConversationContext, mergeConversationMessages, buildCrossHarnessContext } from './codex-context';
+import { getCursorCliService } from './cursor-cli.service';
+import { getCursorService } from './cursor.service';
+import { getGeminiService } from './gemini.service';
+import { getOpenCodeService } from './opencode.service';
+import { autoRouterService } from './auto-router.service';
+import { formatConversationContext, mergeConversationMessages, buildCrossHarnessContext, buildUnifiedHarnessContext, formatProjectInstructionContextFiles } from './codex-context';
 import { secureKeysService } from './secure-keys.service';
-import { analyticsService, estimateCost } from './analytics.service';
+import { analyticsService, estimateBaselineCost, estimateCost } from './analytics.service';
 
 const STREAM_DEBUG = process.env.GREP_DEBUG_STREAMING === '1';
 
@@ -60,6 +66,16 @@ interface StreamEvent {
   terminalReason?: string;
   // Rich context usage breakdown from SDK getContextUsage() (v0.2.86+)
   contextUsageBreakdown?: Record<string, unknown>;
+  usage?: {
+    inputTokens?: number;
+    outputTokens?: number;
+    totalTokens?: number;
+    cacheReadTokens?: number;
+    cacheWriteTokens?: number;
+    model?: string;
+    costUsd?: number;
+  };
+  resolvedModel?: string;
 }
 
 interface PendingQuestion {
@@ -410,7 +426,7 @@ export class ClaudeService {
     // Fallback to default Anthropic models
     console.log('[Claude Service] Using default Anthropic model list');
     const models: Array<{ id: string; name: string; description: string }> = [
-      { id: 'auto', name: 'Auto Build', description: 'Intelligent routing — picks the optimal model per task (Plan/Build/Verify/Refine)' },
+      { id: 'auto', name: 'Auto Build', description: 'Harness orchestration — picks the lead model, helper handoffs, and shared context per task' },
       { id: 'claude-opus-4-7', name: 'Opus 4.7', description: 'Latest and most capable model - best for complex tasks' },
       { id: 'claude-opus-4-6', name: 'Opus 4.6', description: 'Highly capable model' },
       { id: 'claude-opus-4-5-20251101', name: 'Opus 4.5', description: 'Previous generation Opus' },
@@ -557,12 +573,22 @@ You are intelligent enough to determine what URLs to test based on the project s
     gstackMode?: string,
     secureEnvContext?: string,
     supplementalConversationContext?: string,
+    autoOrchestrationContext?: string,
   ): string {
     // Start with static content (cached by the API) then append dynamic context
     let append = ClaudeService.STATIC_SYSTEM_PROMPT;
 
     if (secureEnvContext) {
       append += `\n\n${secureEnvContext}`;
+    }
+
+    if (autoOrchestrationContext && autoOrchestrationContext.trim()) {
+      append += `
+
+## Auto Build Ultra Orchestration
+
+${autoOrchestrationContext}
+`;
     }
 
     // Add SSH remote execution context if this is an SSH session
@@ -681,11 +707,45 @@ For substantive responses (more than ~500 characters of content), respond with a
       : path.join(os.tmpdir(), `g-build-secure-env-${sessionId}.sh`);
   }
 
+  private isJavaScriptEntrypoint(commandOrArg: string | undefined): boolean {
+    return !!commandOrArg && /\.(?:cjs|mjs|js|jsx|ts|tsx)$/i.test(commandOrArg);
+  }
+
+  private resolveLocalClaudeLaunch(
+    nodeExecutable: string | undefined,
+    options: { command: string; args: string[] }
+  ): { command: string; args: string[]; mode: 'node-override' | 'node-script' | 'sdk-command' } {
+    if (!nodeExecutable) {
+      return { command: options.command, args: options.args, mode: 'sdk-command' };
+    }
+
+    const commandName = path.basename(options.command).replace(/\.exe$/i, '').toLowerCase();
+    const commandIsNode = commandName === 'node' || commandName === 'nodejs';
+
+    if (commandIsNode || this.isJavaScriptEntrypoint(options.args[0])) {
+      return { command: nodeExecutable, args: options.args, mode: 'node-override' };
+    }
+
+    if (this.isJavaScriptEntrypoint(options.command)) {
+      return { command: nodeExecutable, args: [options.command, ...options.args], mode: 'node-script' };
+    }
+
+    return { command: options.command, args: options.args, mode: 'sdk-command' };
+  }
+
   private createLocalClaudeCodeProcess(
     nodeExecutable: string | undefined,
     options: { command: string; args: string[]; cwd?: string; env: Record<string, string | undefined>; signal: AbortSignal }
   ): SpawnedProcess {
-    const child = spawn(nodeExecutable || options.command, options.args, {
+    const launch = this.resolveLocalClaudeLaunch(nodeExecutable, options);
+    console.log('[Claude Service] Spawning local Claude Code:', {
+      command: launch.command,
+      mode: launch.mode,
+      sdkCommand: options.command,
+      firstArg: launch.args[0],
+    });
+
+    const child = spawn(launch.command, launch.args, {
       cwd: options.cwd,
       env: options.env,
       stdio: ['pipe', 'pipe', options.env.DEBUG_CLAUDE_AGENT_SDK ? 'pipe' : 'ignore'],
@@ -841,6 +901,611 @@ Read or source that file if you need the actual values. Do not print secret valu
     }
 
     return formatConversationContext(relevantMessages, contextBudget);
+  }
+
+  private getHarnessFromModel(model: string): Harness {
+    if (model.startsWith('codex:')) return 'codex';
+    if (model.startsWith('cursor:')) return 'cursor';
+    if (model.startsWith('gemini:')) return 'gemini';
+    if (model.startsWith('opencode:')) return 'opencode';
+    if (model.startsWith('custom:')) return 'custom';
+    return 'claude';
+  }
+
+  private recordHarnessOverride(sessionId: string, fromModel: string | undefined, toModel: string, taskTier?: TaskTier, taskDomain?: TaskDomain): void {
+    if (!toModel || toModel === 'auto') return;
+    try {
+      analyticsService.recordHarnessOverride({
+        sessionId,
+        timestamp: Date.now(),
+        fromModel,
+        toModel,
+        harness: this.getHarnessFromModel(toModel),
+        taskTier,
+        taskDomain,
+      });
+    } catch (error) {
+      console.warn('[Claude Service] Could not record harness override:', error);
+    }
+  }
+
+  private recordHarnessCompletion(
+    sessionId: string,
+    session: Session | undefined,
+    model: string | undefined,
+    event: StreamEvent | undefined,
+    success: boolean,
+    error?: string,
+    taskTier?: TaskTier,
+    taskDomain?: TaskDomain,
+  ): void {
+    if (!model || model === 'auto') return;
+    const harness = this.getHarnessFromModel(model);
+    const usage = event?.usage;
+    const inputTokens = usage?.inputTokens ?? Math.max(0, (usage?.totalTokens || 0) - (usage?.outputTokens || 0));
+    const outputTokens = usage?.outputTokens || 0;
+    const cacheReadTokens = usage?.cacheReadTokens || 0;
+    const cacheWriteTokens = usage?.cacheWriteTokens || 0;
+    const totalTokens = inputTokens + outputTokens;
+    const analyticsModel = usage?.model || model;
+    const cost = usage
+      ? usage.costUsd ?? estimateCost(analyticsModel, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens)
+      : 0;
+
+    try {
+      if (usage && totalTokens > 0) {
+        const baselineCost = estimateBaselineCost(inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens);
+        const tokenEvent = {
+          sessionId,
+          sessionName: session?.name || sessionId,
+          timestamp: Date.now(),
+          model: analyticsModel,
+          harness,
+          inputTokens,
+          outputTokens,
+          cacheReadTokens,
+          cacheWriteTokens,
+          estimatedCostUsd: cost,
+          baselineCostUsd: baselineCost,
+          savingsVsBaselineUsd: Math.max(0, baselineCost - cost),
+          costMethod: 'estimated' as const,
+        };
+        analyticsService.recordTokenEvent(tokenEvent);
+        if (this.mainWindow) {
+          this.mainWindow.webContents.send(IPC_CHANNELS.ANALYTICS_TOKEN_EVENT, tokenEvent);
+        }
+      }
+
+      analyticsService.recordHarnessOutcome({
+        sessionId,
+        timestamp: Date.now(),
+        harness,
+        model: analyticsModel,
+        success,
+        taskTier,
+        taskDomain,
+        tokens: totalTokens,
+        costUsd: cost,
+        error,
+      });
+    } catch (analyticsError) {
+      console.warn('[Claude Service] Could not record harness completion:', analyticsError);
+    }
+  }
+
+  private async buildRemoteProjectInstructionContext(sessionId: string, session: Session, projectPath: string): Promise<string> {
+    if (!session.sshConfig) return '';
+
+    const remoteWorkdir = session.worktreePath || session.sshConfig.remoteWorkdir || projectPath;
+    try {
+      const files = await sshService.scanRemoteHarnessContextFiles(sessionId, session.sshConfig, remoteWorkdir);
+      return formatProjectInstructionContextFiles(files);
+    } catch (error) {
+      console.warn('[Claude Service] Could not collect remote project instruction context:', error);
+      return '';
+    }
+  }
+
+  private getMemoryProjectPath(session: Session, fallbackPath?: string): string | undefined {
+    if (session.sshConfig) {
+      const remotePath = session.worktreePath || session.repoPath || session.sshConfig.remoteWorkdir;
+      if (!remotePath) return undefined;
+      const normalizedRemotePath = remotePath.startsWith('/') ? remotePath : `/${remotePath}`;
+      return `ssh://${session.sshConfig.username}@${session.sshConfig.host}:${session.sshConfig.port || 22}${normalizedRemotePath}`;
+    }
+
+    return session.worktreePath || session.repoPath || fallbackPath;
+  }
+
+  private async buildUnifiedContextForHarness(
+    sessionId: string,
+    session: Session,
+    currentHarness: Harness,
+    normalizedSupplementalMessages: ChatMessage[],
+    projectPath: string,
+    autoOrchestrationContext: string,
+  ): Promise<string> {
+    const transcriptMessages = await this.getMessages(sessionId);
+    const mergedMessages = mergeConversationMessages(transcriptMessages, normalizedSupplementalMessages);
+    const memoryProjectPath = this.getMemoryProjectPath(session, projectPath);
+    const memoriesContext = memoryProjectPath
+      ? await memoryService.getMemoriesForPrompt(memoryProjectPath).catch((error) => {
+        console.warn(`[Claude Service] Could not load memories for ${currentHarness} context:`, error);
+        return '';
+      })
+      : '';
+    const remoteProjectContext = await this.buildRemoteProjectInstructionContext(sessionId, session, projectPath);
+
+    return buildUnifiedHarnessContext({
+      messages: mergedMessages,
+      currentHarness,
+      projectPath,
+      additionalProjectContext: remoteProjectContext,
+      orchestrationContext: autoOrchestrationContext,
+      memoriesContext,
+    });
+  }
+
+  private canAutoBuildStageEdit(stage: OrchestrationStage, sdkPermissionMode?: string): boolean {
+    if (stage.tier !== 'build' && stage.tier !== 'refine') return false;
+    return sdkPermissionMode !== 'plan' && sdkPermissionMode !== 'dontAsk';
+  }
+
+  private getAutoBuildCodexPermissionMode(stage: OrchestrationStage, sdkPermissionMode?: string): string {
+    if (!this.canAutoBuildStageEdit(stage, sdkPermissionMode)) return 'dontAsk';
+    return sdkPermissionMode === 'bypassPermissions' ? 'bypassPermissions' : 'acceptEdits';
+  }
+
+  private shouldRunAutoBuildStage(stage: OrchestrationStage, orchestration: OrchestrationPlan, leadContent: string, sdkPermissionMode?: string): boolean {
+    if (stage.model === orchestration.leadModel && stage.trigger === 'now') return false;
+    if (stage.trigger === 'now' || stage.trigger === 'manual-follow-up') return false;
+    if (stage.harness === 'claude' || stage.harness === 'custom') return false;
+    if ((stage.tier === 'build' || stage.tier === 'refine') && !this.canAutoBuildStageEdit(stage, sdkPermissionMode)) return false;
+
+    if (stage.trigger === 'on-failure') {
+      return /\b(error|failed|failing|failure|regression|exception|cannot|can't|unable|blocked)\b/i.test(leadContent);
+    }
+
+    return stage.required || orchestration.mode === 'lead-with-delegates';
+  }
+
+  private recordAutoBuildLeadSuccess(sessionId: string, orchestration?: OrchestrationPlan): void {
+    if (!orchestration) return;
+    try {
+      autoRouterService.recordHarnessSuccess(sessionId, orchestration.leadHarness, orchestration.leadModel);
+      const leadStage = orchestration.stages.find((stage) => stage.model === orchestration.leadModel && stage.trigger === 'now')
+        || orchestration.stages[0];
+      if (leadStage) {
+        autoRouterService.recordTierCompletion(sessionId, leadStage.tier);
+      }
+    } catch (error) {
+      console.warn('[Claude Service] Could not record Auto Build lead harness success:', error);
+    }
+  }
+
+  private recordAutoBuildLeadFailure(sessionId: string, orchestration: OrchestrationPlan | undefined, errorMessage: string): void {
+    if (!orchestration) return;
+    try {
+      autoRouterService.recordHarnessFailure(sessionId, orchestration.leadHarness, orchestration.leadModel, errorMessage);
+    } catch (error) {
+      console.warn('[Claude Service] Could not record Auto Build lead harness failure:', error);
+    }
+  }
+
+  private buildAutoBuildStagePrompt(stage: OrchestrationStage, userMessage: string, leadContent: string, canEdit: boolean): string {
+    const stageInstruction = !canEdit || stage.tier === 'verify' || stage.tier === 'plan'
+      ? 'Do not modify files. Inspect, test, reason, and report findings only.'
+      : stage.tier === 'build'
+        ? 'Modify files as needed to implement this build stage. Keep edits scoped to the original request and the lead plan.'
+        : 'Modify files only if needed to apply the requested refinement. Keep edits minimal and verify the result when practical.';
+
+    return `You are an Auto Build helper stage running under the Build orchestrator.
+
+Stage: ${stage.tier.toUpperCase()}
+Purpose: ${stage.purpose}
+Model: ${stage.model}
+
+${stageInstruction}
+Keep the response concise and directly useful to the lead result. If you run checks, say exactly what passed or failed. If you find an issue, include the file/path or command evidence needed to fix it.
+
+Original user request:
+${userMessage}
+
+Lead result so far:
+${leadContent.slice(0, 60000)}
+`;
+  }
+
+  private async buildAutoBuildStageContext(
+    sessionId: string,
+    session: Session,
+    currentHarness: Harness,
+    normalizedSupplementalMessages: ChatMessage[],
+    projectPath: string,
+    autoOrchestrationContext: string,
+  ): Promise<string> {
+    return this.buildUnifiedContextForHarness(
+      sessionId,
+      session,
+      currentHarness,
+      normalizedSupplementalMessages,
+      projectPath,
+      autoOrchestrationContext,
+    );
+  }
+
+  private isQueryCancelled(sessionId: string, signal?: AbortSignal): boolean {
+    return !!signal?.aborted || !this.activeQueries.has(sessionId);
+  }
+
+  private async *streamAutoBuildStage(
+    sessionId: string,
+    session: Session,
+    stage: OrchestrationStage,
+    userMessage: string,
+    leadContent: string,
+    projectPath: string,
+    normalizedSupplementalMessages: ChatMessage[],
+    autoOrchestrationContext: string,
+    sdkPermissionMode?: string,
+    secureEnvContext?: string,
+    abortSignal?: AbortSignal,
+    taskDomain?: TaskDomain,
+  ): AsyncGenerator<StreamEvent> {
+    const stageHarness = this.getHarnessFromModel(stage.model);
+    const stageLabel = `${stage.tier.toUpperCase()} via ${stageHarness}:${stage.model}`;
+    const stageAgentId = `autobuild:${stage.tier}:${stageHarness}`;
+    const stageAgentName = `Auto Build ${stage.tier.toUpperCase()} (${stageHarness})`;
+    const withStageSource = (event: StreamEvent): StreamEvent => {
+      if (event.type === 'text_delta' || event.type === 'thinking_delta' || event.type === 'tool_use' || event.type === 'tool_result') {
+        const sourcedEvent: StreamEvent = {
+          ...event,
+          agentId: event.agentId || stageAgentId,
+          agentName: event.agentName || stageAgentName,
+        };
+        if (sourcedEvent.toolCall && !sourcedEvent.toolCall.agentId) {
+          sourcedEvent.toolCall = { ...sourcedEvent.toolCall, agentId: sourcedEvent.agentId };
+        }
+        return sourcedEvent;
+      }
+      return event;
+    };
+
+    if (this.isQueryCancelled(sessionId, abortSignal)) return;
+    yield withStageSource({ type: 'text_delta', content: `\n\n---\n\nAuto Build ${stageLabel}\n\n` });
+
+    let stageContext = '';
+    try {
+      stageContext = await this.buildAutoBuildStageContext(
+        sessionId,
+        session,
+        stageHarness,
+        normalizedSupplementalMessages,
+        projectPath,
+        autoOrchestrationContext,
+      );
+    } catch (error) {
+      console.warn(`[Claude Service] Auto Build ${stageLabel}: context build failed:`, error);
+    }
+    if (this.isQueryCancelled(sessionId, abortSignal)) return;
+
+    const canEdit = this.canAutoBuildStageEdit(stage, sdkPermissionMode);
+    const prompt = this.buildAutoBuildStagePrompt(stage, userMessage, leadContent, canEdit);
+    const context = [secureEnvContext, stageContext].filter(Boolean).join('\n\n');
+    let emittedStageContent = '';
+    const getMissingFinalStageContent = (event: StreamEvent): string => {
+      const finalContent = event.message?.content || '';
+      const missing = finalContent && finalContent.startsWith(emittedStageContent)
+        ? finalContent.slice(emittedStageContent.length)
+        : (!emittedStageContent.trim() ? finalContent : '');
+      emittedStageContent += missing;
+      return missing;
+    };
+
+    try {
+      if (this.isQueryCancelled(sessionId, abortSignal)) return;
+      if (stageHarness === 'codex') {
+        const codexModel = stage.model.split(':')[1];
+        const codexPermissionMode = this.getAutoBuildCodexPermissionMode(stage, sdkPermissionMode);
+        for await (const event of codexService.streamAsChat(sessionId, prompt, projectPath, session.sshConfig, context, codexModel, undefined, codexPermissionMode)) {
+          if (this.isQueryCancelled(sessionId, abortSignal)) return;
+          if (event.type === 'text_delta') {
+            emittedStageContent += event.content || '';
+          }
+          if (event.type === 'message_complete') {
+            const missing = getMissingFinalStageContent(event as StreamEvent);
+            if (missing) {
+              yield withStageSource({ type: 'text_delta', content: missing });
+            }
+            this.recordHarnessCompletion(sessionId, session, stage.model, event as StreamEvent, true, undefined, stage.tier, taskDomain);
+            return;
+          }
+          if (event.type === 'error') {
+            this.recordHarnessCompletion(sessionId, session, stage.model, undefined, false, event.error, stage.tier, taskDomain);
+            yield withStageSource({ type: 'text_delta', content: `Auto Build helper could not complete: ${event.error}\n` });
+            return;
+          }
+          yield withStageSource(event as StreamEvent);
+        }
+        return;
+      }
+
+      if (stageHarness === 'cursor') {
+        const cursorCliService = getCursorCliService();
+        const fullPrompt = context ? `${context}\n\n${prompt}` : prompt;
+        const workDir = session.worktreePath || session.repoPath || projectPath;
+        for await (const event of cursorCliService.streamMessage(sessionId, fullPrompt, workDir, stage.model, session.sshConfig)) {
+          if (this.isQueryCancelled(sessionId, abortSignal)) return;
+          if (event.type === 'text_delta') {
+            emittedStageContent += event.content || '';
+          }
+          if (event.type === 'message_complete') {
+            const missing = getMissingFinalStageContent(event as StreamEvent);
+            if (missing) {
+              yield withStageSource({ type: 'text_delta', content: missing });
+            }
+            this.recordHarnessCompletion(sessionId, session, stage.model, event as StreamEvent, true, undefined, stage.tier, taskDomain);
+            return;
+          }
+          if (event.type === 'error') {
+            this.recordHarnessCompletion(sessionId, session, stage.model, undefined, false, event.error, stage.tier, taskDomain);
+            yield withStageSource({ type: 'text_delta', content: `Auto Build helper could not complete: ${event.error}\n` });
+            return;
+          }
+          yield withStageSource(event as StreamEvent);
+        }
+        return;
+      }
+
+      if (stageHarness === 'gemini') {
+        const geminiService = getGeminiService();
+        const fullPrompt = context ? `${context}\n\n${prompt}` : prompt;
+        const workDir = session.worktreePath || session.repoPath || session.sshConfig?.remoteWorkdir || projectPath;
+        for await (const event of geminiService.streamMessage(sessionId, fullPrompt, workDir, stage.model, session.sshConfig)) {
+          if (this.isQueryCancelled(sessionId, abortSignal)) return;
+          if (event.type === 'text_delta') {
+            emittedStageContent += event.content || '';
+          }
+          if (event.type === 'message_complete') {
+            const missing = getMissingFinalStageContent(event as StreamEvent);
+            if (missing) {
+              yield withStageSource({ type: 'text_delta', content: missing });
+            }
+            this.recordHarnessCompletion(sessionId, session, stage.model, event as StreamEvent, true, undefined, stage.tier, taskDomain);
+            return;
+          }
+          if (event.type === 'error') {
+            this.recordHarnessCompletion(sessionId, session, stage.model, undefined, false, event.error, stage.tier, taskDomain);
+            yield withStageSource({ type: 'text_delta', content: `Auto Build helper could not complete: ${event.error}\n` });
+            return;
+          }
+          yield withStageSource(event as StreamEvent);
+        }
+        return;
+      }
+
+      if (stageHarness === 'opencode') {
+        const openCodeService = getOpenCodeService();
+        const fullPrompt = context ? `${context}\n\n${prompt}` : prompt;
+        const workDir = session.worktreePath || session.repoPath || projectPath;
+        for await (const event of openCodeService.streamMessage(sessionId, fullPrompt, workDir, stage.model, session.sshConfig, sdkPermissionMode)) {
+          if (this.isQueryCancelled(sessionId, abortSignal)) return;
+          if (event.type === 'text_delta') {
+            emittedStageContent += event.content || '';
+          }
+          if (event.type === 'message_complete') {
+            const missing = getMissingFinalStageContent(event as StreamEvent);
+            if (missing) {
+              yield withStageSource({ type: 'text_delta', content: missing });
+            }
+            this.recordHarnessCompletion(sessionId, session, stage.model, event as StreamEvent, true, undefined, stage.tier, taskDomain);
+            return;
+          }
+          if (event.type === 'error') {
+            this.recordHarnessCompletion(sessionId, session, stage.model, undefined, false, event.error, stage.tier, taskDomain);
+            yield withStageSource({ type: 'text_delta', content: `Auto Build helper could not complete: ${event.error}\n` });
+            return;
+          }
+          yield withStageSource(event as StreamEvent);
+        }
+        return;
+      }
+
+      this.recordHarnessCompletion(sessionId, session, stage.model, undefined, false, `${stageHarness} helper stages are not executable yet`, stage.tier, taskDomain);
+      yield withStageSource({ type: 'text_delta', content: `Auto Build helper skipped: ${stageHarness} helper stages are not executable yet.\n` });
+    } catch (error) {
+      if (this.isQueryCancelled(sessionId, abortSignal)) return;
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.recordHarnessCompletion(sessionId, session, stage.model, undefined, false, errorMessage, stage.tier, taskDomain);
+      yield withStageSource({ type: 'text_delta', content: `Auto Build helper could not complete: ${errorMessage}\n` });
+    }
+  }
+
+  private async *streamAutoBuildStages(
+    sessionId: string,
+    session: Session,
+    orchestration: OrchestrationPlan | undefined,
+    userMessage: string,
+    leadContent: string,
+    projectPath: string,
+    normalizedSupplementalMessages: ChatMessage[],
+    autoOrchestrationContext: string,
+    sdkPermissionMode?: string,
+    secureEnvContext?: string,
+    abortSignal?: AbortSignal,
+    taskDomain?: TaskDomain,
+  ): AsyncGenerator<StreamEvent> {
+    if (!orchestration || orchestration.stages.length <= 1) return;
+    if (this.isQueryCancelled(sessionId, abortSignal)) return;
+
+    let accumulatedStageContext = leadContent;
+    for (const stage of orchestration.stages) {
+      if (this.isQueryCancelled(sessionId, abortSignal)) return;
+      if (!this.shouldRunAutoBuildStage(stage, orchestration, accumulatedStageContext, sdkPermissionMode)) continue;
+
+      const fallbackStages = (stage.fallbackModels || []).map((model) => ({
+        ...stage,
+        model,
+        harness: this.getHarnessFromModel(model),
+        fallbackModels: undefined,
+        purpose: `${stage.purpose} (fallback)`,
+      }));
+      const attempts = [stage, ...fallbackStages];
+      let stageSucceeded = false;
+      let stageOutputs = '';
+
+      for (let attemptIndex = 0; attemptIndex < attempts.length; attemptIndex++) {
+        if (this.isQueryCancelled(sessionId, abortSignal)) return;
+        const attempt = attempts[attemptIndex];
+        if (attemptIndex > 0) {
+          yield {
+            type: 'text_delta',
+            content: `\nAuto Build retrying ${stage.tier.toUpperCase()} with ${attempt.harness}:${attempt.model}.\n`,
+          };
+        }
+
+        console.log(`[Claude Service] Auto Build stage starting: ${attempt.tier} via ${attempt.model}`);
+        let stageContent = '';
+        let stageFailed = false;
+        for await (const event of this.streamAutoBuildStage(
+          sessionId,
+          session,
+          attempt,
+          userMessage,
+          accumulatedStageContext,
+          projectPath,
+          normalizedSupplementalMessages,
+          autoOrchestrationContext,
+          sdkPermissionMode,
+          secureEnvContext,
+          abortSignal,
+          taskDomain,
+        )) {
+          if (this.isQueryCancelled(sessionId, abortSignal)) return;
+          if (event.type === 'text_delta') {
+            const content = event.content || '';
+            stageContent += content;
+            if (/Auto Build helper (could not complete|skipped)/i.test(content)) {
+              stageFailed = true;
+            }
+          }
+          yield event;
+        }
+        if (this.isQueryCancelled(sessionId, abortSignal)) return;
+
+        if (stageFailed) {
+          try {
+            autoRouterService.recordHarnessFailure(sessionId, attempt.harness, attempt.model, stageContent);
+          } catch (error) {
+            console.warn(`[Claude Service] Could not record Auto Build ${attempt.harness} failure:`, error);
+          }
+          accumulatedStageContext += `\n\nAuto Build ${attempt.tier.toUpperCase()} failed (${attempt.harness}:${attempt.model}):\n${stageContent}`;
+          continue;
+        }
+
+        if (stageContent.trim()) {
+          const resultLabel = attemptIndex === 0 ? 'result' : `fallback ${attemptIndex} result`;
+          stageOutputs += `\n\nAuto Build ${attempt.tier.toUpperCase()} ${resultLabel} (${attempt.harness}:${attempt.model}):\n${stageContent}`;
+        }
+
+        try {
+          autoRouterService.recordHarnessSuccess(sessionId, attempt.harness, attempt.model);
+          autoRouterService.recordTierCompletion(sessionId, attempt.tier);
+        } catch (error) {
+          console.warn(`[Claude Service] Could not record Auto Build ${attempt.tier} completion:`, error);
+        }
+
+        stageSucceeded = true;
+        break;
+      }
+
+      if (stageOutputs.trim()) {
+        accumulatedStageContext += stageOutputs;
+      }
+
+      if (!stageSucceeded && stage.required) {
+        if (this.isQueryCancelled(sessionId, abortSignal)) return;
+        yield { type: 'text_delta', content: '\nRequired Auto Build stage failed after available fallback attempts; skipping dependent helper stages.\n' };
+        break;
+      }
+    }
+  }
+
+  private async *streamLeadWithAutoBuildStages(
+    leadEvents: AsyncIterable<StreamEvent>,
+    sessionId: string,
+    session: Session,
+    orchestration: OrchestrationPlan | undefined,
+    userMessage: string,
+    projectPath: string,
+    normalizedSupplementalMessages: ChatMessage[],
+    autoOrchestrationContext: string,
+    sdkPermissionMode?: string,
+    secureEnvContext?: string,
+    leadModelOverride?: string,
+    abortSignal?: AbortSignal,
+    taskDomain?: TaskDomain,
+  ): AsyncGenerator<StreamEvent> {
+    let leadContent = '';
+    let leadError = '';
+    let sawComplete = false;
+    let completionEvent: StreamEvent | undefined;
+
+    for await (const event of leadEvents) {
+      if (this.isQueryCancelled(sessionId, abortSignal)) return;
+      if (event.type === 'text_delta') {
+        leadContent += event.content || '';
+      }
+      if (event.type === 'error') {
+        leadError = event.error || 'Lead harness reported an error';
+      }
+
+      if (event.type === 'message_complete') {
+        const finalContent = event.message?.content || '';
+        const missingFinalContent = finalContent && finalContent.startsWith(leadContent)
+          ? finalContent.slice(leadContent.length)
+          : (!leadContent.trim() ? finalContent : '');
+        if (missingFinalContent) {
+          leadContent += missingFinalContent;
+          yield { type: 'text_delta', content: missingFinalContent };
+        }
+        sawComplete = true;
+        completionEvent = event;
+        break;
+      }
+
+      yield event;
+    }
+    if (this.isQueryCancelled(sessionId, abortSignal)) return;
+
+    if (sawComplete) {
+      this.recordHarnessCompletion(sessionId, session, leadModelOverride || orchestration?.leadModel, completionEvent, true, undefined, orchestration?.stages[0]?.tier, taskDomain);
+      this.recordAutoBuildLeadSuccess(sessionId, orchestration);
+
+      for await (const event of this.streamAutoBuildStages(
+        sessionId,
+        session,
+        orchestration,
+        userMessage,
+        leadContent,
+        projectPath,
+        normalizedSupplementalMessages,
+        autoOrchestrationContext,
+        sdkPermissionMode,
+        secureEnvContext,
+        abortSignal,
+        taskDomain,
+      )) {
+        if (this.isQueryCancelled(sessionId, abortSignal)) return;
+        yield event;
+      }
+
+      if (this.isQueryCancelled(sessionId, abortSignal)) return;
+      yield { type: 'message_complete', resolvedModel: leadModelOverride || orchestration?.leadModel };
+    } else if (orchestration && leadError) {
+      this.recordAutoBuildLeadFailure(sessionId, orchestration, leadError);
+      this.recordHarnessCompletion(sessionId, session, leadModelOverride || orchestration?.leadModel, undefined, false, leadError, orchestration.stages[0]?.tier, taskDomain);
+    }
   }
 
   // Get or create MCP server with browser snapshot tool for session
@@ -1015,7 +1680,10 @@ Read or source that file if you need the actual values. Do not print secret valu
           console.log('[Claude Service] Computer Use action:', args.action);
           const result = await computerUseService.executeAction(sessionId, args as any);
 
-          const content: Array<{ type: string; text?: string; data?: string; mimeType?: string }> = [
+          const content: Array<
+            | { type: 'text'; text: string }
+            | { type: 'image'; data: string; mimeType: string }
+          > = [
             { type: 'text', text: result.message }
           ];
 
@@ -1023,7 +1691,7 @@ Read or source that file if you need the actual values. Do not print secret valu
             content.push({
               type: 'image',
               data: result.screenshot,
-              mimeType: 'image/png'
+              mimeType: 'image/png',
             });
 
             // Emit browser update with screenshot
@@ -1033,7 +1701,7 @@ Read or source that file if you need the actual values. Do not print secret valu
           return { content, isError: !result.success };
         } catch (error) {
           return {
-            content: [{ type: 'text', text: `Computer use error: ${error instanceof Error ? error.message : String(error)}` }],
+            content: [{ type: 'text' as const, text: `Computer use error: ${error instanceof Error ? error.message : String(error)}` }],
             isError: true
           };
         }
@@ -1708,9 +2376,14 @@ Read or source that file if you need the actual values. Do not print secret valu
     // These tools allow the agent to persist knowledge across sessions
 
     // Get project path from session for memory operations
-    const getProjectPath = (): string | undefined => {
+    const getFilesystemProjectPath = (): string | undefined => {
       const session = this.sessionStore.get(`sessions.${sessionId}`) as Session | undefined;
-      return session?.worktreePath || session?.repoPath;
+      return session?.worktreePath || session?.repoPath || session?.sshConfig?.remoteWorkdir;
+    };
+
+    const getMemoryPath = (): string | undefined => {
+      const session = this.sessionStore.get(`sessions.${sessionId}`) as Session | undefined;
+      return session ? this.getMemoryProjectPath(session, getFilesystemProjectPath()) : undefined;
     };
 
     const memoryRememberTool = tool(
@@ -1723,7 +2396,7 @@ Read or source that file if you need the actual values. Do not print secret valu
       async (args) => {
         try {
           const { category, content } = args;
-          const projectPath = getProjectPath();
+          const projectPath = getMemoryPath();
 
           if (!projectPath) {
             return {
@@ -1772,7 +2445,7 @@ Read or source that file if you need the actual values. Do not print secret valu
       async (args) => {
         try {
           const { query, category, limit } = args;
-          const projectPath = getProjectPath();
+          const projectPath = getMemoryPath();
 
           if (!projectPath) {
             return {
@@ -1832,7 +2505,7 @@ Read or source that file if you need the actual values. Do not print secret valu
       async (args) => {
         try {
           const { factId } = args;
-          const projectPath = getProjectPath();
+          const projectPath = getMemoryPath();
 
           if (!projectPath) {
             return {
@@ -1882,7 +2555,7 @@ Read or source that file if you need the actual values. Do not print secret valu
       {},
       async () => {
         try {
-          const projectPath = getProjectPath();
+          const projectPath = getMemoryPath();
 
           if (!projectPath) {
             return {
@@ -1958,7 +2631,7 @@ Read or source that file if you need the actual values. Do not print secret valu
             ? `Context: ${args.context}\n\nTask: ${args.prompt}`
             : args.prompt;
 
-          const cwd = getProjectPath() || process.cwd();
+          const cwd = getFilesystemProjectPath() || process.cwd();
           const result = await codexService.runForTool(sessionId, fullPrompt, cwd);
 
           let responseText = result.summary;
@@ -2806,8 +3479,9 @@ Read or source that file if you need the actual values. Do not print secret valu
       this.backgroundListeners.get(sessionId)?.abort();
       codexService.cancel(sessionId);
       openclawService.cancel(sessionId);
-      try { const { getCursorService } = require('./cursor.service'); getCursorService().cancel(sessionId); } catch { /* not loaded */ }
-      try { const { getGeminiService } = require('./gemini.service'); getGeminiService().cancel(sessionId); } catch { /* not loaded */ }
+      getCursorService().cancel(sessionId);
+      getGeminiService().cancel(sessionId);
+      getOpenCodeService().cancel(sessionId);
 
       // Kill orphaned remote processes from the old query
       if (session?.sshConfig) {
@@ -2834,6 +3508,16 @@ Read or source that file if you need the actual values. Do not print secret valu
       sshService.invalidateTranscriptCache(sdkSessionId || sessionId);
     }
 
+    let selectedModel = model;
+    let selectionMode: 'auto' | 'manual' | 'default' = model === 'auto' ? 'auto' : model ? 'manual' : 'default';
+    let selectionSource: 'request' | 'session' | 'default' = model ? 'request' : 'default';
+    let autoOrchestrationContext = '';
+    let autoOrchestrationPlan: OrchestrationPlan | undefined;
+    let autoRoutedTier: TaskTier | undefined;
+    let autoRoutedDomain: TaskDomain | undefined;
+    let routingDecisionForAnalytics: RoutingDecision | undefined;
+    const normalizedSupplementalMessages = this.normalizeConversationMessages(supplementalMessages);
+
     try {
       // Validate and cast permission mode to SDK type
       const validModes = ['default', 'acceptEdits', 'bypassPermissions', 'plan', 'dontAsk'] as const;
@@ -2853,6 +3537,14 @@ Read or source that file if you need the actual values. Do not print secret valu
 
       // Check if bypassPermissions mode requires the danger flag
       const requiresDangerFlag = sdkPermissionMode === 'bypassPermissions';
+
+      if (session.sshConfig) {
+        const syncResult = await sshService.syncMcpConfigsToRemote(sessionId, session.sshConfig);
+        if (!syncResult.success) {
+          yield { type: 'error', error: `Failed to sync MCP config to remote: ${syncResult.error}` };
+          return;
+        }
+      }
 
       // Map thinking mode to effort levels (via maxThinkingTokens)
       // The Claude Agent SDK uses maxThinkingTokens, which maps to Claude 4.6's effort parameter:
@@ -2878,10 +3570,10 @@ Read or source that file if you need the actual values. Do not print secret valu
       // 2. Session's saved model (session.model)
       // 3. Foundry default (if Foundry enabled)
       // 4. First model in the available models list (always the top/latest)
-      let selectedModel = model;
-
       if (!selectedModel && session.model) {
         selectedModel = session.model;
+        selectionMode = selectedModel === 'auto' ? 'auto' : 'manual';
+        selectionSource = 'session';
         console.log('[Claude Service] Using session model:', selectedModel);
       }
 
@@ -2892,6 +3584,8 @@ Read or source that file if you need the actual values. Do not print secret valu
           const foundrySonnet = settings.foundryDefaultSonnetModel as string | undefined;
           if (foundrySonnet) {
             selectedModel = foundrySonnet;
+            selectionMode = 'default';
+            selectionSource = 'default';
             console.log('[Claude Service] Using Foundry default sonnet:', selectedModel);
           }
         }
@@ -2900,20 +3594,44 @@ Read or source that file if you need the actual values. Do not print secret valu
       if (!selectedModel) {
         // Use the first model in the available list — always the latest/best
         const available = await this.getAvailableModels();
-        selectedModel = available[0]?.id || 'claude-opus-4-7';
+        selectedModel = available[0]?.id || 'auto';
+        selectionMode = 'default';
+        selectionSource = 'default';
         console.log('[Claude Service] Using top available model:', selectedModel);
       }
 
       // Auto Build mode — resolve 'auto' to a concrete model via the router
       if (selectedModel === 'auto') {
         try {
-          const { autoRouterService } = require('./auto-router.service');
+          let recentRoutingMessages = normalizedSupplementalMessages;
+          try {
+            const transcriptMessages = await this.getMessages(sessionId);
+            recentRoutingMessages = mergeConversationMessages(transcriptMessages, normalizedSupplementalMessages);
+          } catch (error) {
+            console.warn('[Claude Service] Auto Build: Could not load recent messages for routing phase inference:', error);
+          }
+
+          let remoteCliCapabilities: RemoteCliCapabilities | undefined;
+          if (session.sshConfig) {
+            remoteCliCapabilities = await sshService.detectRemoteCliCapabilities(sessionId, session.sshConfig);
+          }
+
           const routingDecision = await autoRouterService.classifyAndRoute(sessionId, userMessage, {
             gstackMode: gstackMode || undefined,
             permissionMode: sdkPermissionMode,
             isSSH: !!session.sshConfig,
+            remoteCliCapabilities,
+            attachmentCount: attachments?.length || 0,
+            attachmentTypes: attachments?.map((attachment) => attachment.type) || [],
+            recentMessages: recentRoutingMessages,
           });
-          selectedModel = routingDecision.resolvedModel;
+          const routedModel = routingDecision.resolvedModel;
+          selectedModel = routedModel;
+          routingDecisionForAnalytics = routingDecision;
+          autoOrchestrationContext = routingDecision.orchestration?.handoffPrompt || '';
+          autoOrchestrationPlan = routingDecision.orchestration;
+          autoRoutedTier = routingDecision.tier;
+          autoRoutedDomain = routingDecision.domain;
           console.log(`[Claude Service] Auto Build resolved: ${routingDecision.tier.toUpperCase()} → ${selectedModel}`);
 
           // Emit routing decision to renderer for UI display
@@ -2923,9 +3641,14 @@ Read or source that file if you need the actual values. Do not print secret valu
               decision: routingDecision,
             });
           }
+          yield {
+            type: 'system',
+            systemInfo: { tools: [], model: selectedModel },
+            resolvedModel: selectedModel,
+          };
 
           // Enable Codex goals for Verify tier
-          if (routingDecision.enableGoals && selectedModel.startsWith('codex:')) {
+          if (routingDecision.enableGoals && routedModel.startsWith('codex:')) {
             try {
               const configPath = path.join(os.homedir(), '.codex', 'config.toml');
               const configContent = fs.existsSync(configPath) ? fs.readFileSync(configPath, 'utf-8') : '';
@@ -2941,9 +3664,47 @@ Read or source that file if you need the actual values. Do not print secret valu
             }
           }
         } catch (e) {
-          console.warn('[Claude Service] Auto Build router failed, falling back to Opus:', e);
-          selectedModel = 'claude-opus-4-7';
+          console.warn('[Claude Service] Auto Build router failed, falling back to Sonnet:', e);
+          selectedModel = 'claude-sonnet-4-6';
+          selectionMode = 'default';
+          selectionSource = 'default';
         }
+      }
+      selectedModel = selectedModel || 'claude-sonnet-4-6';
+
+      try {
+        analyticsService.recordRoutingTrainingExample({
+          sessionId,
+          sessionName: session.name,
+          timestamp: Date.now(),
+          prompt: userMessage,
+          requestedModel: model,
+          selectedModel,
+          selectedHarness: this.getHarnessFromModel(selectedModel),
+          selectionMode,
+          selectionSource,
+          manualSelection: selectionMode === 'manual',
+          taskTier: autoRoutedTier,
+          taskDomain: autoRoutedDomain,
+          routingDecision: routingDecisionForAnalytics,
+          permissionMode: sdkPermissionMode,
+          thinkingMode,
+          gstackMode,
+          isSSH: !!session.sshConfig,
+          attachmentCount: attachments?.length || 0,
+          attachmentTypes: attachments?.map((attachment) => attachment.type) || [],
+        });
+      } catch (analyticsError) {
+        console.warn('[Claude Service] Could not record routing training example:', analyticsError);
+      }
+
+      const explicitlySelectedModel = model && model !== 'auto'
+        ? model
+        : !model && session.model && session.model !== 'auto'
+          ? session.model
+          : undefined;
+      if (explicitlySelectedModel && selectedModel === explicitlySelectedModel) {
+        this.recordHarnessOverride(sessionId, 'auto', selectedModel, autoRoutedTier, autoRoutedDomain);
       }
 
       let secureEnvContext: string | undefined;
@@ -2952,8 +3713,6 @@ Read or source that file if you need the actual values. Do not print secret valu
       } catch (error) {
         console.warn('[Claude Service] Failed to prepare secure environment variable handoff:', error);
       }
-
-      const normalizedSupplementalMessages = this.normalizeConversationMessages(supplementalMessages);
 
       // Route to OpenClaw when session has openclawConfig
       if (session.openclawConfig) {
@@ -2973,7 +3732,7 @@ Read or source that file if you need the actual values. Do not print secret valu
       if (selectedModel?.startsWith('codex:')) {
         const codexModel = selectedModel.split(':')[1];
         console.log(`[Claude Service] Routing to Codex model=${codexModel} ssh=${!!session.sshConfig}`);
-        const projectPath = session.worktreePath || session.repoPath || process.cwd();
+        const projectPath = session.worktreePath || session.repoPath || session.sshConfig?.remoteWorkdir || process.cwd();
 
         // Enable Codex goals when Ralph Loop is on
         const audioSettings = this.store.get('audioSettings') as Record<string, unknown> | undefined;
@@ -2998,11 +3757,16 @@ Read or source that file if you need the actual values. Do not print secret valu
 
         let conversationContext = '';
         try {
-          const transcriptMessages = await this.getMessages(sessionId);
-          const mergedMessages = mergeConversationMessages(transcriptMessages, normalizedSupplementalMessages);
-          conversationContext = buildCrossHarnessContext(mergedMessages, [], 'codex');
+          conversationContext = await this.buildUnifiedContextForHarness(
+            sessionId,
+            session,
+            'codex',
+            normalizedSupplementalMessages,
+            projectPath,
+            autoOrchestrationContext,
+          );
           if (conversationContext) {
-            console.log(`[Claude Service] Codex cross-harness context: ${conversationContext.length} chars from ${mergedMessages.length} messages`);
+            console.log(`[Claude Service] Codex unified harness context: ${conversationContext.length} chars`);
           }
         } catch (e) {
           console.warn('[Claude Service] Could not load messages for Codex context:', e);
@@ -3014,22 +3778,36 @@ Read or source that file if you need the actual values. Do not print secret valu
         const ralphWithGoals = audioSettings?.ralphLoopEnabled && permissionMode === 'bypassPermissions';
         const codexPrompt = ralphWithGoals ? `/goal ${userMessage}` : userMessage;
 
-        for await (const event of codexService.streamAsChat(sessionId, codexPrompt, projectPath, session.sshConfig, codexContext, codexModel, attachments, sdkPermissionMode)) {
-          yield event as StreamEvent;
+        const codexEvents = codexService.streamAsChat(sessionId, codexPrompt, projectPath, session.sshConfig, codexContext, codexModel, attachments, sdkPermissionMode) as AsyncIterable<StreamEvent>;
+        for await (const event of this.streamLeadWithAutoBuildStages(
+          codexEvents,
+          sessionId,
+          session,
+          autoOrchestrationPlan,
+          userMessage,
+          projectPath,
+          normalizedSupplementalMessages,
+          autoOrchestrationContext,
+          sdkPermissionMode,
+	          secureEnvContext,
+	          selectedModel,
+          abortController.signal,
+          autoRoutedDomain,
+        )) {
+          yield event;
         }
         return;
       }
 
       // Route to Cursor for cursor:* models
       if (selectedModel?.startsWith('cursor:')) {
-        const { getCursorCliService } = require('./cursor-cli.service');
         const cursorCliService = getCursorCliService();
         const cursorApiKey = ((this.store.get('settings', {}) as Record<string, unknown>).cursorApiKey as string) || '';
 
         // Resume existing Cursor chat only if the last turn was also Cursor.
         // If another harness ran in between, start a fresh chat with cross-harness
         // context so Cursor knows what happened while it was away.
-        let chatId = cursorCliService.getChatId(sessionId);
+        let chatId: string | null | undefined = cursorCliService.getChatId(sessionId);
         let cursorContext = '';
         let needsFreshChat = !chatId;
 
@@ -3050,7 +3828,7 @@ Read or source that file if you need the actual values. Do not print secret valu
         }
 
         if (needsFreshChat) {
-          const workDir = session.worktreePath || session.repoPath || process.cwd();
+          const workDir = session.worktreePath || session.repoPath || session.sshConfig?.remoteWorkdir || process.cwd();
           if (session.sshConfig) {
             const remoteDir = session.worktreePath || session.sshConfig.remoteWorkdir || '~';
             chatId = await cursorCliService.createSshChat(session.sshConfig, remoteDir);
@@ -3066,11 +3844,16 @@ Read or source that file if you need the actual values. Do not print secret valu
           }
 
           try {
-            const transcriptMessages = await this.getMessages(sessionId);
-            const merged = mergeConversationMessages(transcriptMessages, normalizedSupplementalMessages);
-            cursorContext = buildCrossHarnessContext(merged, [], 'cursor');
+            cursorContext = await this.buildUnifiedContextForHarness(
+              sessionId,
+              session,
+              'cursor',
+              normalizedSupplementalMessages,
+              workDir,
+              autoOrchestrationContext,
+            );
             if (cursorContext) {
-              console.log(`[Claude Service] Cursor cross-harness context: ${cursorContext.length} chars`);
+              console.log(`[Claude Service] Cursor unified harness context: ${cursorContext.length} chars`);
             }
           } catch (e) {
             console.warn('[Claude Service] Could not load messages for Cursor context:', e);
@@ -3086,25 +3869,69 @@ Read or source that file if you need the actual values. Do not print secret valu
           if (session.sshConfig) {
             const remoteDir = session.worktreePath || session.sshConfig.remoteWorkdir || '~';
             console.log(`[Claude Service] Cursor SSH → CLI on remote ${session.sshConfig.host}:${remoteDir}`);
-            for await (const event of cursorCliService.streamMessage(sessionId, fullMessage, remoteDir, selectedModel, session.sshConfig, chatId || undefined)) {
-              yield event as StreamEvent;
+            const cursorEvents = cursorCliService.streamMessage(sessionId, fullMessage, remoteDir, selectedModel, session.sshConfig, chatId || undefined) as AsyncIterable<StreamEvent>;
+            for await (const event of this.streamLeadWithAutoBuildStages(
+              cursorEvents,
+              sessionId,
+              session,
+              autoOrchestrationPlan,
+              userMessage,
+              remoteDir,
+              normalizedSupplementalMessages,
+              autoOrchestrationContext,
+              sdkPermissionMode,
+              secureEnvContext,
+              selectedModel,
+              abortController.signal,
+              autoRoutedDomain,
+            )) {
+              yield event;
             }
             return;
           }
 
           // Local: SDK path (multi-turn) or CLI path
           if (cursorApiKey && !chatId) {
-            const { getCursorService } = require('./cursor.service');
             const cursorService = getCursorService();
             const workDir = session.repoPath || process.cwd();
-            for await (const event of cursorService.streamMessage(sessionId, fullMessage, workDir, selectedModel)) {
-              yield event as StreamEvent;
+            const cursorSdkEvents = cursorService.streamMessage(sessionId, fullMessage, workDir, selectedModel) as AsyncIterable<StreamEvent>;
+            for await (const event of this.streamLeadWithAutoBuildStages(
+              cursorSdkEvents,
+              sessionId,
+              session,
+              autoOrchestrationPlan,
+              userMessage,
+              workDir,
+              normalizedSupplementalMessages,
+              autoOrchestrationContext,
+              sdkPermissionMode,
+              secureEnvContext,
+              selectedModel,
+              abortController.signal,
+              autoRoutedDomain,
+            )) {
+              yield event;
             }
           } else {
             const workDir = session.repoPath || process.cwd();
             console.log(`[Claude Service] Cursor local → CLI${chatId ? ` (resume ${chatId})` : ' (new chat)'}`);
-            for await (const event of cursorCliService.streamMessage(sessionId, fullMessage, workDir, selectedModel, undefined, chatId || undefined)) {
-              yield event as StreamEvent;
+            const cursorEvents = cursorCliService.streamMessage(sessionId, fullMessage, workDir, selectedModel, undefined, chatId || undefined) as AsyncIterable<StreamEvent>;
+            for await (const event of this.streamLeadWithAutoBuildStages(
+              cursorEvents,
+              sessionId,
+              session,
+              autoOrchestrationPlan,
+              userMessage,
+              workDir,
+              normalizedSupplementalMessages,
+              autoOrchestrationContext,
+              sdkPermissionMode,
+              secureEnvContext,
+              selectedModel,
+              abortController.signal,
+              autoRoutedDomain,
+            )) {
+              yield event;
             }
           }
         } finally {
@@ -3115,28 +3942,47 @@ Read or source that file if you need the actual values. Do not print secret valu
 
       // Route to Gemini CLI for gemini:* models
       if (selectedModel?.startsWith('gemini:')) {
-        const { getGeminiService } = require('./gemini.service');
         const geminiService = getGeminiService();
-        const workDir = session.worktreePath || session.repoPath || process.cwd();
+        const workDir = session.worktreePath || session.repoPath || session.sshConfig?.remoteWorkdir || process.cwd();
 
         // Only build cross-harness context if Claude transcript has messages.
         let geminiContext = '';
         try {
-          const transcriptMessages = await this.getMessages(sessionId);
-          const merged = mergeConversationMessages(transcriptMessages, normalizedSupplementalMessages);
-          geminiContext = buildCrossHarnessContext(merged, [], 'gemini');
+          geminiContext = await this.buildUnifiedContextForHarness(
+            sessionId,
+            session,
+            'gemini',
+            normalizedSupplementalMessages,
+            workDir,
+            autoOrchestrationContext,
+          );
           if (geminiContext) {
-            console.log(`[Claude Service] Gemini cross-harness context: ${geminiContext.length} chars from ${merged.length} messages`);
+            console.log(`[Claude Service] Gemini unified harness context: ${geminiContext.length} chars`);
           }
         } catch (e) {
           console.warn('[Claude Service] Could not load messages for Gemini context:', e);
         }
 
         const baseGeminiMessage = geminiContext ? `${geminiContext}\n\n${userMessage}` : userMessage;
-        const { message: fullMessage, cleanup: geminiCleanup } = await this.prepareCliAttachments(sessionId, baseGeminiMessage, attachments);
+        const { message: fullMessage, cleanup: geminiCleanup } = await this.prepareCliAttachments(sessionId, baseGeminiMessage, attachments, session.sshConfig);
         try {
-          for await (const event of geminiService.streamMessage(sessionId, fullMessage, workDir, selectedModel)) {
-            yield event as StreamEvent;
+          const geminiEvents = geminiService.streamMessage(sessionId, fullMessage, workDir, selectedModel, session.sshConfig) as AsyncIterable<StreamEvent>;
+          for await (const event of this.streamLeadWithAutoBuildStages(
+            geminiEvents,
+            sessionId,
+            session,
+            autoOrchestrationPlan,
+            userMessage,
+            workDir,
+            normalizedSupplementalMessages,
+            autoOrchestrationContext,
+            sdkPermissionMode,
+            secureEnvContext,
+            selectedModel,
+            abortController.signal,
+            autoRoutedDomain,
+          )) {
+            yield event;
           }
         } finally {
           await geminiCleanup();
@@ -3146,8 +3992,51 @@ Read or source that file if you need the actual values. Do not print secret valu
 
       // Route to OpenCode for opencode:* models
       if (selectedModel?.startsWith('opencode:')) {
-        // TODO: Phase 2 — OpenCodeService integration
-        yield { type: 'error', error: 'OpenCode/DeepSeek agent support coming soon. Switching back to Claude.' };
+        const openCodeService = getOpenCodeService();
+        const workDir = session.worktreePath || session.repoPath || session.sshConfig?.remoteWorkdir || process.cwd();
+
+        let openCodeContext = '';
+        try {
+          openCodeContext = await this.buildUnifiedContextForHarness(
+            sessionId,
+            session,
+            'opencode',
+            normalizedSupplementalMessages,
+            workDir,
+            autoOrchestrationContext,
+          );
+          if (openCodeContext) {
+            console.log(`[Claude Service] OpenCode unified harness context: ${openCodeContext.length} chars`);
+          }
+        } catch (e) {
+          console.warn('[Claude Service] Could not load messages for OpenCode context:', e);
+        }
+
+        const openCodeHandoffContext = [secureEnvContext, openCodeContext].filter(Boolean).join('\n\n');
+        const baseOpenCodeMessage = openCodeHandoffContext ? `${openCodeHandoffContext}\n\n${userMessage}` : userMessage;
+        const { message: fullMessage, cleanup: openCodeCleanup } = await this.prepareCliAttachments(sessionId, baseOpenCodeMessage, attachments, session.sshConfig);
+        try {
+          const openCodeEvents = openCodeService.streamMessage(sessionId, fullMessage, workDir, selectedModel, session.sshConfig, sdkPermissionMode) as AsyncIterable<StreamEvent>;
+          for await (const event of this.streamLeadWithAutoBuildStages(
+            openCodeEvents,
+            sessionId,
+            session,
+            autoOrchestrationPlan,
+            userMessage,
+            workDir,
+            normalizedSupplementalMessages,
+            autoOrchestrationContext,
+            sdkPermissionMode,
+            secureEnvContext,
+            selectedModel,
+            abortController.signal,
+            autoRoutedDomain,
+          )) {
+            yield event;
+          }
+        } finally {
+          await openCodeCleanup();
+        }
         return;
       }
 
@@ -3231,7 +4120,7 @@ Read or source that file if you need the actual values. Do not print secret valu
       // sending to the model. The renderer replaced detected API keys with
       // placeholders to keep them out of the transcript/UI, but the model
       // needs the actual values to function (e.g. curl -H "Authorization: <key>").
-      let resolvedMessage = userMessage.replace(
+      const resolvedMessage = userMessage.replace(
         /\[SECURE_KEY:([^\]]+)\]/g,
         (_match, keyId) => {
           const realValue = secureKeysService.getKey(keyId);
@@ -3304,13 +4193,13 @@ Read or source that file if you need the actual values. Do not print secret valu
         console.log('[Claude Service] DOM element context included in text prompt');
       }
 
-      // Pre-fetch agent memories to inject into system prompt
-      // Skip for SSH sessions since memory files are local
-      const projectPath = session.worktreePath || session.repoPath || process.cwd();
+      // Pre-fetch agent memories to inject into system prompt.
+      const projectPath = session.worktreePath || session.repoPath || session.sshConfig?.remoteWorkdir || process.cwd();
+      const memoryProjectPath = this.getMemoryProjectPath(session, projectPath);
       let memoriesPrompt: string | undefined;
-      if (!session.sshConfig) {
+      if (memoryProjectPath) {
         try {
-          memoriesPrompt = await memoryService.getMemoriesForPrompt(projectPath);
+          memoriesPrompt = await memoryService.getMemoriesForPrompt(memoryProjectPath);
           if (memoriesPrompt) {
             console.log('[Claude Service] Loaded memories for session, length:', memoriesPrompt.length);
           }
@@ -3364,7 +4253,7 @@ Read or source that file if you need the actual values. Do not print secret valu
       // Load user-installed MCP servers from Claudette's electron-store
       // This runs on EVERY message, so new MCP servers are picked up automatically
       try {
-        const userMcpServers = mcpService.getUserMcpServersConfig();
+        const userMcpServers = mcpService.getClaudeMcpServersConfig();
 
         // For SSH sessions, remove chrome-devtools stdio config (can't run npx on remote)
         // The PreToolUse hook will intercept all chrome-devtools calls and run them locally
@@ -3373,49 +4262,6 @@ Read or source that file if you need the actual values. Do not print secret valu
           delete userMcpServers['chrome-devtools'];
           // Register a local in-process chrome-devtools MCP server so tools are still visible to the agent
           mcpServersConfig['chrome-devtools'] = this.getChromeDevtoolsMcpServer(sessionId);
-        }
-
-        // For SSH sessions, set up reverse SSH tunnels for localhost MCP servers
-        // so they're accessible from the remote machine
-        if (session.sshConfig) {
-          for (const [name, config] of Object.entries(userMcpServers)) {
-            const args = (config as { args?: string[] }).args || [];
-            const localhostArg = args.find((a: string) =>
-              /https?:\/\/(localhost|127\.0\.0\.1)(:\d+)/.test(a)
-            );
-            if (localhostArg) {
-              const portMatch = localhostArg.match(/:(\d+)/);
-              if (portMatch) {
-                const localPort = parseInt(portMatch[1], 10);
-                // Set up reverse tunnel: remote:localPort → local:localPort
-                sshService.setupReverseTunnel(sessionId, session.sshConfig, localPort).then(() => {
-                  console.log(`[Claude Service] Reverse tunnel for ${name} MCP: remote:${localPort} → local:${localPort}`);
-                }).catch(err => {
-                  console.warn(`[Claude Service] Failed to set up tunnel for ${name} MCP:`, err.message);
-                });
-              }
-            }
-          }
-        }
-
-        // Handle mcp-remote stdio wrappers (Sentry, Linear, etc.).
-        // For SSH: strip them entirely — remote can't reach these endpoints or do OAuth.
-        // For local: convert to native SDK types (http/sse) with built-in OAuth.
-        for (const name of Object.keys(userMcpServers)) {
-          const cfg = userMcpServers[name] as { type?: string; command?: string; args?: string[] };
-          if (cfg.type === 'stdio' && cfg.command === 'npx' && cfg.args?.includes('mcp-remote')) {
-            if (session.sshConfig) {
-              console.log(`[Claude Service] Stripping ${name} for SSH (mcp-remote can't authenticate remotely)`);
-              delete userMcpServers[name];
-            } else {
-              const urlArg = cfg.args.find((a: string) => /^https?:\/\//.test(a));
-              if (urlArg) {
-                const mcpType = urlArg.endsWith('/sse') ? 'sse' : 'http';
-                console.log(`[Claude Service] Converting ${name} from mcp-remote to native ${mcpType}: ${urlArg}`);
-                userMcpServers[name] = { type: mcpType, url: urlArg } as any;
-              }
-            }
-          }
         }
 
         Object.assign(mcpServersConfig, userMcpServers);
@@ -3687,7 +4533,7 @@ Begin by creating the task structure now.
       const localNodeExecutable = session.sshConfig ? undefined : this.resolveLocalNodeExecutable();
       if (!session.sshConfig) {
         if (localNodeExecutable) {
-          console.log('[Claude Service] Using local Node executable for Claude Code:', localNodeExecutable);
+          console.log('[Claude Service] Resolved local Node executable candidate for Claude Code:', localNodeExecutable);
         } else {
           console.warn('[Claude Service] Could not resolve a local Node executable explicitly; falling back to PATH lookup');
         }
@@ -3731,7 +4577,7 @@ Begin by creating the task structure now.
           systemPrompt: {
             type: 'preset',
             preset: 'claude_code',
-            append: this.buildSystemPromptAppend(session, memoriesPrompt, gstackMode, secureEnvContext, supplementalConversationContext),
+            append: this.buildSystemPromptAppend(session, memoriesPrompt, gstackMode, secureEnvContext, supplementalConversationContext, autoOrchestrationContext),
           },
           // Enable CLAUDE.md and Skills from both user (~/.claude/) and project (.claude/)
           // Skills are discovered automatically by the SDK from these filesystem locations
@@ -4752,6 +5598,7 @@ Begin by creating the task structure now.
 
             // Check for other API errors
             if (resultMsg.is_error && resultMsg.result) {
+              this.recordAutoBuildLeadFailure(sessionId, autoOrchestrationPlan, resultMsg.result);
               yield { type: 'error', error: resultMsg.result };
               return;
             }
@@ -4816,19 +5663,35 @@ Begin by creating the task structure now.
               const cacheReadTokens = successResult.usage.cache_read_input_tokens || 0;
               const cacheWriteTokens = successResult.usage.cache_creation_input_tokens || 0;
               const cost = estimateCost(currentModel, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens);
+              const baselineCost = estimateBaselineCost(inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens);
               const tokenEvent = {
                 sessionId,
                 sessionName: session?.name || sessionId,
                 timestamp: Date.now(),
                 model: currentModel,
+                harness: this.getHarnessFromModel(currentModel),
                 inputTokens,
                 outputTokens,
                 cacheReadTokens,
                 cacheWriteTokens,
                 toolName: lastToolName,
                 estimatedCostUsd: cost,
+                baselineCostUsd: baselineCost,
+                savingsVsBaselineUsd: Math.max(0, baselineCost - cost),
+                costMethod: 'estimated' as const,
               };
               analyticsService.recordTokenEvent(tokenEvent);
+              analyticsService.recordHarnessOutcome({
+                sessionId,
+                timestamp: Date.now(),
+                harness: this.getHarnessFromModel(currentModel),
+                model: currentModel,
+                success: true,
+                taskTier: autoRoutedTier,
+                taskDomain: autoRoutedDomain,
+                tokens: inputTokens + outputTokens,
+                costUsd: cost,
+              });
               if (this.mainWindow) {
                 this.mainWindow.webContents.send(IPC_CHANNELS.ANALYTICS_TOKEN_EVENT, tokenEvent);
               }
@@ -4868,6 +5731,11 @@ Begin by creating the task structure now.
         // but start a background listener for task events from running monitors/agents
         if (queryComplete) {
           console.log('[Claude SDK] Query complete, exiting message loop');
+          // The SDK transport is closed after the result message. Keep the
+          // outer active query alive for Auto Build helper stages, but remove
+          // the injection target so browser/console messages do not try to
+          // stream into a closed Claude process.
+          this.activeQueryObjects.delete(sessionId);
 
           // Keep reading from the iterator in the background for task lifecycle events.
           // The CC process stays alive between turns (especially SSH sessions), so
@@ -4885,6 +5753,7 @@ Begin by creating the task structure now.
       // process likely died. Emit an error so the UI doesn't hang on "thinking...".
       if (!queryComplete && session?.sshConfig) {
         console.error('[Claude SDK] Stream ended without result message — remote process may have died');
+        this.recordAutoBuildLeadFailure(sessionId, autoOrchestrationPlan, 'Remote session disconnected before Claude SDK returned a result message.');
         yield { type: 'error', error: 'Remote session disconnected. The remote process may have stopped. Try sending your message again to reconnect.' };
         return;
       }
@@ -4892,6 +5761,50 @@ Begin by creating the task structure now.
       // Final flush before creating message
       for (const flushed of flushBuffers()) {
         yield flushed;
+      }
+
+      this.recordAutoBuildLeadSuccess(sessionId, autoOrchestrationPlan);
+
+      const projectPathForStages = session.worktreePath || session.repoPath || session.sshConfig?.remoteWorkdir || process.cwd();
+      for await (const stageEvent of this.streamAutoBuildStages(
+        sessionId,
+        session,
+        autoOrchestrationPlan,
+        userMessage,
+        fullContent,
+        projectPathForStages,
+        normalizedSupplementalMessages,
+        autoOrchestrationContext,
+        sdkPermissionMode,
+        secureEnvContext,
+        abortController.signal,
+        autoRoutedDomain,
+      )) {
+        if (stageEvent.type === 'text_delta') {
+          const content = stageEvent.content || '';
+          fullContent += content;
+          const lastBlock = contentBlocks[contentBlocks.length - 1];
+          if (lastBlock && lastBlock.type === 'text' && lastBlock.agentId === stageEvent.agentId) {
+            lastBlock.text = (lastBlock.text || '') + content;
+          } else {
+            contentBlocks.push({ type: 'text', text: content, agentId: stageEvent.agentId });
+          }
+        } else if (stageEvent.type === 'tool_use' && stageEvent.toolCall) {
+          const existingTool = toolCalls.find(tc => tc.id === stageEvent.toolCall?.id);
+          if (!existingTool) {
+            toolCalls.push(stageEvent.toolCall);
+            contentBlocks.push({ type: 'tool_use', toolCallId: stageEvent.toolCall.id, agentId: stageEvent.agentId });
+          }
+        } else if (stageEvent.type === 'tool_result' && stageEvent.toolCall) {
+          const existingTool = toolCalls.find(tc => tc.id === stageEvent.toolCall?.id);
+          if (existingTool) {
+            Object.assign(existingTool, stageEvent.toolCall);
+          } else {
+            toolCalls.push(stageEvent.toolCall);
+          }
+        }
+
+        yield stageEvent;
       }
 
       // Post-process content blocks to merge adjacent text blocks only
@@ -4925,10 +5838,10 @@ Begin by creating the task structure now.
         contentBlocks: mergedBlocks.length > 0 ? mergedBlocks : undefined,
         toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
         timestamp: new Date(),
-        harness: 'claude',
+        harness: this.getHarnessFromModel(selectedModel),
       };
 
-      yield { type: 'message_complete', message, ...(lastTerminalReason ? { terminalReason: lastTerminalReason } : {}) };
+      yield { type: 'message_complete', message, resolvedModel: selectedModel, ...(lastTerminalReason ? { terminalReason: lastTerminalReason } : {}) };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       console.error('[Claude SDK] streamMessage error caught:', errorMessage);
@@ -4965,12 +5878,14 @@ Begin by creating the task structure now.
         return;
       } else if (errorMessage.match(/process exited with code|process terminated by signal/) && session?.sshConfig) {
         console.error('[Claude SDK] SSH process exit caught:', errorMessage);
+        this.recordAutoBuildLeadFailure(sessionId, autoOrchestrationPlan, errorMessage);
         yield {
           type: 'error',
           error: `Remote Claude process exited unexpectedly (${errorMessage}). Messages already streamed are saved on the remote. Send another message to reconnect and continue.`,
         };
       } else if (errorMessage.match(/unauthorized|api.?key.*invalid|invalid.*api.?key|not authenticated|login required|authentication_error/i)) {
         console.error('[Claude SDK] Auth error caught:', errorMessage);
+        this.recordAutoBuildLeadFailure(sessionId, autoOrchestrationPlan, errorMessage);
         yield {
           type: 'error',
           error: 'Authentication failed. Either set your Anthropic API key in Settings → API Keys, or run `claude login` in your terminal to authenticate via OAuth.'
@@ -4984,6 +5899,7 @@ Begin by creating the task structure now.
         yield* this.streamMessage(sessionId, userMessage, attachments, permissionMode, thinkingMode, model, gstackMode, supplementalMessages);
         return;
       } else {
+        this.recordAutoBuildLeadFailure(sessionId, autoOrchestrationPlan, errorMessage);
         yield { type: 'error', error: errorMessage };
       }
     } finally {
@@ -5130,11 +6046,13 @@ Begin by creating the task structure now.
     }
     // Stop background task listener
     this.backgroundListeners.get(sessionId)?.abort();
-    // Also kill any active Codex, Cursor, or Gemini process for this session
+    // Also kill any active external harness process for this session.
     codexService.cancel(sessionId);
-    try { const { getCursorService } = require('./cursor.service'); getCursorService().cancel(sessionId); } catch { /* not loaded */ }
-    try { const { getCursorCliService } = require('./cursor-cli.service'); getCursorCliService().cancel(sessionId); } catch { /* not loaded */ }
-    try { const { getGeminiService } = require('./gemini.service'); getGeminiService().cancel(sessionId); } catch { /* not loaded */ }
+    openclawService.cancel(sessionId);
+    getCursorService().cancel(sessionId);
+    getCursorCliService().cancel(sessionId);
+    getGeminiService().cancel(sessionId);
+    getOpenCodeService().cancel(sessionId);
 
     // Reject pending permissions — the query that requested them is dead
     for (const [reqId, pending] of this.pendingPermissions.entries()) {
@@ -5909,7 +6827,7 @@ Begin by creating the task structure now.
    * @param limit - Optional limit on number of messages to return (most recent). Default 200 for performance.
    */
   // limit: positive = most recent N, 0 or negative = full transcript (cat instead of tail)
-  async getMessages(sessionId: string, limit: number = 200): Promise<ChatMessage[]> {
+  async getMessages(sessionId: string, limit = 200): Promise<ChatMessage[]> {
     const session = this.sessionStore.get(`sessions.${sessionId}`) as Session | undefined;
     console.log(`[Claude] getMessages called for ${sessionId.substring(0, 8)}, hasSSH: ${!!session?.sshConfig}, hasTeleport: ${!!session?.isTeleported}`);
     if (session?.isTeleported) {
@@ -6115,27 +7033,7 @@ Begin by creating the task structure now.
         // Check if we already have a message with this Claude message ID
         const existing = messageMap.get(messageId);
         if (existing) {
-          // Merge content: only add if the new content is different and non-empty
-          if (msg.content && msg.content !== existing.content) {
-            if (!existing.content) {
-              existing.content = msg.content;
-            } else if (msg.content.length > existing.content.length) {
-              existing.content = msg.content;
-            }
-          }
-          // Merge tool calls
-          if (msg.toolCalls && msg.toolCalls.length > 0) {
-            if (!existing.toolCalls) {
-              existing.toolCalls = msg.toolCalls;
-            } else {
-              const existingIds = new Set(existing.toolCalls.map(tc => tc.id));
-              for (const tc of msg.toolCalls) {
-                if (!existingIds.has(tc.id)) {
-                  existing.toolCalls.push(tc);
-                }
-              }
-            }
-          }
+          this.mergeTranscriptMessage(existing, msg);
         } else {
           // New message
           messageMap.set(messageId, msg);
@@ -6213,32 +7111,7 @@ Begin by creating the task structure now.
           // Check if we already have a message with this Claude message ID
           const existing = messageMap.get(messageId);
           if (existing) {
-            // Merge content: only add if the new content is different and non-empty
-            if (msg.content && msg.content !== existing.content) {
-              // If existing has no content, use new content; otherwise don't duplicate
-              if (!existing.content) {
-                existing.content = msg.content;
-              }
-              // Don't concatenate - SDK sends the same message multiple times
-              // as it streams, we want the final/fullest version
-              else if (msg.content.length > existing.content.length) {
-                existing.content = msg.content;
-              }
-            }
-            // Merge tool calls
-            if (msg.toolCalls && msg.toolCalls.length > 0) {
-              if (!existing.toolCalls) {
-                existing.toolCalls = msg.toolCalls;
-              } else {
-                // Add any new tool calls (by id)
-                const existingIds = new Set(existing.toolCalls.map(tc => tc.id));
-                for (const tc of msg.toolCalls) {
-                  if (!existingIds.has(tc.id)) {
-                    existing.toolCalls.push(tc);
-                  }
-                }
-              }
-            }
+            this.mergeTranscriptMessage(existing, msg);
           } else {
             // New message
             messageMap.set(messageId, msg);
@@ -6254,6 +7127,49 @@ Begin by creating the task structure now.
     }
 
     return messages;
+  }
+
+  private contentBlockKey(block: ContentBlock): string {
+    return `${block.type}:${block.text || ''}:${block.toolCallId || ''}:${block.agentId || ''}`;
+  }
+
+  private mergeTranscriptMessage(existing: ChatMessage, msg: ChatMessage): void {
+    // Merge content: SDK may write multiple rows for the same message as it
+    // streams; keep the fullest text rather than concatenating duplicates.
+    if (msg.content && msg.content !== existing.content) {
+      if (!existing.content || msg.content.length > existing.content.length) {
+        existing.content = msg.content;
+      }
+    }
+
+    if (msg.toolCalls && msg.toolCalls.length > 0) {
+      if (!existing.toolCalls) {
+        existing.toolCalls = [...msg.toolCalls];
+      } else {
+        const existingIds = new Set(existing.toolCalls.map(tc => tc.id));
+        for (const tc of msg.toolCalls) {
+          if (!existingIds.has(tc.id)) {
+            existing.toolCalls.push(tc);
+            existingIds.add(tc.id);
+          }
+        }
+      }
+    }
+
+    if (msg.contentBlocks && msg.contentBlocks.length > 0) {
+      if (!existing.contentBlocks) {
+        existing.contentBlocks = [...msg.contentBlocks];
+      } else {
+        const existingKeys = new Set(existing.contentBlocks.map(block => this.contentBlockKey(block)));
+        for (const block of msg.contentBlocks) {
+          const key = this.contentBlockKey(block);
+          if (!existingKeys.has(key)) {
+            existing.contentBlocks.push(block);
+            existingKeys.add(key);
+          }
+        }
+      }
+    }
   }
 
   /**
@@ -6300,12 +7216,14 @@ Begin by creating the task structure now.
     if (type === 'assistant') {
       const content = this.extractContent(entry);
       const toolCalls = this.extractToolCalls(entry);
+      const contentBlocks = this.extractContentBlocks(entry);
       return {
         msg: {
           id: (entry.uuid as string) || `assistant-${Date.now()}-${Math.random()}`,
           role: 'assistant',
           content: content || '',
           toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+          contentBlocks: contentBlocks.length > 0 ? contentBlocks : undefined,
           timestamp: entry.timestamp ? new Date(entry.timestamp as string) : new Date(),
           harness: 'claude' as const,
         },
@@ -6365,5 +7283,28 @@ Begin by creating the task structure now.
     }
 
     return toolCalls;
+  }
+
+  private extractContentBlocks(entry: Record<string, unknown>): ContentBlock[] {
+    const blocks: ContentBlock[] = [];
+    const content = entry.content || (entry.message as Record<string, unknown>)?.content;
+    if (!Array.isArray(content)) return blocks;
+
+    for (const block of content) {
+      if (!block || typeof block !== 'object') continue;
+      const contentBlock = block as Record<string, unknown>;
+      if (contentBlock.type === 'text' && typeof contentBlock.text === 'string' && contentBlock.text.trim()) {
+        const lastBlock = blocks[blocks.length - 1];
+        if (lastBlock?.type === 'text') {
+          lastBlock.text = (lastBlock.text || '') + contentBlock.text;
+        } else {
+          blocks.push({ type: 'text', text: contentBlock.text });
+        }
+      } else if (contentBlock.type === 'tool_use' && typeof contentBlock.id === 'string') {
+        blocks.push({ type: 'tool_use', toolCallId: contentBlock.id });
+      }
+    }
+
+    return blocks;
   }
 }

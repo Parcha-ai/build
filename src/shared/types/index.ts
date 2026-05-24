@@ -111,16 +111,47 @@ export const GSTACK_MODE_META: Record<string, { color: string; shortName: string
   'sdd':              { color: '#0d9488', shortName: 'SDD' },
 };
 
-// Auto Build mode — intelligent model routing
+export type Harness = 'claude' | 'codex' | 'cursor' | 'gemini' | 'opencode' | 'custom';
+
+// Auto Build mode — intelligent model routing and harness orchestration
 export type TaskTier = 'plan' | 'build' | 'verify' | 'refine';
+export type TaskDomain = 'copy' | 'frontend' | 'backend' | 'fullstack' | 'debug' | 'ops' | 'docs' | 'data' | 'general';
+
+export interface OrchestrationStage {
+  tier: TaskTier;
+  harness: Harness;
+  model: string;
+  fallbackModels?: string[];
+  purpose: string;
+  required: boolean;
+  trigger: 'now' | 'after-plan' | 'after-build' | 'on-failure' | 'manual-follow-up';
+}
+
+export interface OrchestrationPlan {
+  mode: 'single' | 'lead-with-delegates' | 'sequential';
+  leadHarness: Harness;
+  leadModel: string;
+  stages: OrchestrationStage[];
+  contextPolicy: {
+    includeTranscript: boolean;
+    includeProjectInstructions: boolean;
+    includeSkills: boolean;
+    includeAgents: boolean;
+    includeMemories: boolean;
+  };
+  handoffPrompt: string;
+}
 
 export interface RoutingDecision {
   tier: TaskTier;
+  domain?: TaskDomain;
   resolvedModel: string;
+  resolvedHarness?: Harness;
   confidence: number;
   reason: string;
   method: 'heuristic' | 'llm';
   enableGoals?: boolean;
+  orchestration?: OrchestrationPlan;
 }
 
 export interface AutoRouterConfig {
@@ -241,8 +272,6 @@ export interface ContentBlock {
   agentId?: string; // Which agent produced this block (null = lead agent)
 }
 
-export type Harness = 'claude' | 'codex' | 'cursor' | 'gemini' | 'opencode' | 'custom';
-
 export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant' | 'system';
@@ -343,6 +372,9 @@ export interface AppSettings {
   dailyReviewTime?: string;
   bedtimeTaskReviewEnabled?: boolean;
   showClearContextOnPlanAccept?: boolean;
+  // Product analytics / routing fine-tuning
+  posthogApiKey?: string;
+  posthogHost?: string;
 }
 
 export interface CustomModelConfig {
@@ -480,7 +512,7 @@ export interface MCPServerInfo {
   description: string;
   version: string;
   status: 'active' | 'inactive' | 'error';
-  type: 'sdk' | 'stdio' | 'http';
+  type: 'sdk' | 'stdio' | 'http' | 'sse';
   tools: MCPServerTool[];
   errorMessage?: string;
   projectEnabled?: boolean;

@@ -1,10 +1,35 @@
 import { create } from 'zustand';
-import type { Session, ChatMessage, ToolCall, PermissionRequest, PermissionResponse, QuestionRequest, QuestionResponse, SetupProgressEvent, CompactionStatus, PlanApprovalRequest, PlanApprovalResponse, GStackMode, Harness } from '../../shared/types';
+import type { Session, ChatMessage, ToolCall, ContentBlock, PermissionRequest, PermissionResponse, QuestionRequest, QuestionResponse, SetupProgressEvent, CompactionStatus, PlanApprovalRequest, PlanApprovalResponse, GStackMode, Harness } from '../../shared/types';
 import { AGENT_COLORS } from '../../shared/types';
+import { normalizeToolCall } from '../../shared/utils/tool-call-transformer';
+import { contentBlockSignature, isCloseContentDuplicate, isCloseTimelineDuplicate, isInterruptedSafetyNetDuplicate, toolSignature } from '../../shared/utils/message-recovery';
+import { buildCompletedStreamMessage } from '../../shared/utils/stream-finalization';
 import { useAudioStore } from './audio.store';
 
 // Check if running in Electron environment
 const hasElectronAPI = typeof window !== 'undefined' && !!window.electronAPI;
+const noop = () => undefined;
+
+export function isSessionNotFoundError(error: unknown, sessionId: string): boolean {
+  const message = String((error as { message?: string } | undefined)?.message || error || '');
+  return message.includes(`Session ${sessionId} not found`);
+}
+
+export async function withMaterializedSession<T>(
+  sessionId: string,
+  action: () => Promise<T>
+): Promise<T> {
+  try {
+    return await action();
+  } catch (error) {
+    if (!hasElectronAPI || !isSessionNotFoundError(error, sessionId)) {
+      throw error;
+    }
+
+    await window.electronAPI.sessions.update(sessionId, {});
+    return action();
+  }
+}
 
 interface SystemInfo {
   tools: string[];
@@ -20,6 +45,33 @@ const CODEX_PERMISSION_MODES: PermissionMode[] = ALL_PERMISSION_MODES.filter(
   (mode): mode is PermissionMode => mode === 'auto' || mode === 'acceptEdits' || mode === 'bypassPermissions' || mode === 'plan',
 );
 const SUPPLEMENTAL_MESSAGES_STORAGE_PREFIX = 'grep-supplemental-messages-';
+const AUTO_BUILD_SECTION_MARKER = '\n\n---\n\nAuto Build ';
+const queueDrainSuppressedUntil: Record<string, number> = {};
+type HarnessSelectionTrigger = 'model-picker' | 'plan-nudge' | 'api' | 'other';
+
+type AutoRouteDecisionState = {
+  tier: string;
+  domain?: string;
+  resolvedModel: string;
+  resolvedHarness?: string;
+  confidence: number;
+  reason: string;
+  method: string;
+  orchestration?: {
+    mode: string;
+    leadHarness: string;
+    leadModel: string;
+    stages: Array<{ tier: string; harness: string; model: string; purpose: string; fallbackModels?: string[] }>;
+  };
+};
+
+const suppressQueueDrain = (sessionId: string, ms = 3000) => {
+  queueDrainSuppressedUntil[sessionId] = Date.now() + ms;
+};
+
+const isQueueDrainSuppressed = (sessionId: string) => {
+  return Date.now() < (queueDrainSuppressedUntil[sessionId] || 0);
+};
 
 // Effort levels: maps to Claude API's effort parameter
 // low = fast/efficient, medium = balanced, high = full capability (default), max = maximum (Opus only)
@@ -138,13 +190,13 @@ interface SessionState {
   // GStack workflow mode per session
   gstackMode: Record<string, GStackMode | null>;
   // Auto Build routing decisions per session
-  autoRouteDecision: Record<string, { tier: string; resolvedModel: string; confidence: number; reason: string; method: string } | null>;
+  autoRouteDecision: Record<string, AutoRouteDecisionState | null>;
 
   // Codex (second opinion) state
   codexStreaming: Record<string, boolean>;
   codexContent: Record<string, string>;
   codexThinking: Record<string, string>;
-  codexToolCalls: Record<string, Array<{ id: string; name: string; input: Record<string, unknown>; status: string; result?: string }>>;
+  codexToolCalls: Record<string, ToolCall[]>;
   codexError: Record<string, string | null>;
   codexPrompt: Record<string, string>;
 
@@ -192,7 +244,7 @@ interface SessionState {
   cycleThinkingMode: (sessionId: string) => void;
   setHtmlRenderMode: (sessionId: string, mode: 'md' | 'html') => void;
   cycleHtmlRenderMode: (sessionId: string) => void;
-  setSelectedModel: (sessionId: string, model: string) => void;
+  setSelectedModel: (sessionId: string, model: string, trigger?: HarnessSelectionTrigger) => void;
   loadAvailableModels: () => Promise<void>;
   sendMessage: (sessionId: string, message: string, attachments?: unknown[], opts?: { existingMessageId?: string }) => Promise<void>;
   loadMessages: (sessionId: string, options?: LoadMessagesOptions) => Promise<void>;
@@ -299,12 +351,12 @@ export function normalizePermissionModeForModel(model?: string | null, mode?: Pe
 }
 
 const PREFERRED_CLAUDE_FALLBACK_MODELS = [
-  'claude-opus-4-7',
-  'claude-opus-4-6',
   'claude-sonnet-4-6',
   'claude-sonnet-4-5-20250929',
   'claude-sonnet-4-20250514',
   'claude-haiku-4-5-20251001',
+  'claude-opus-4-7',
+  'claude-opus-4-6',
 ];
 
 const PREFERRED_CODEX_FALLBACK_MODELS = [
@@ -385,6 +437,18 @@ function startRemoteProcessMonitor(
 
             const queue = getState().messageQueue[sessionId] || [];
             if (queue.length > 0) {
+              if (isQueueDrainSuppressed(sessionId)) {
+                console.log(`[SessionStore] Remote process finished after cancel; clearing ${queue.length} queued message(s)`);
+                setState((state: SessionState) => ({
+                  isProcessingQueue: { ...state.isProcessingQueue, [sessionId]: false },
+                  messageQueue: {
+                    ...state.messageQueue,
+                    [sessionId]: [],
+                  },
+                }));
+                break;
+              }
+
               const nextMsg = queue[0];
               setState((state: SessionState) => ({
                 messageQueue: {
@@ -460,7 +524,33 @@ function normalizeChatMessageTimestamp(message: ChatMessage): ChatMessage {
   return {
     ...message,
     timestamp,
+    toolCalls: message.toolCalls?.map(normalizeToolCall),
   };
+}
+
+function isGenericToolName(name: string | undefined): boolean {
+  const normalized = (name || '').trim().toLowerCase();
+  return !normalized || normalized === 'tool' || normalized === 'unknown';
+}
+
+function hasToolInput(input: Record<string, unknown> | undefined): boolean {
+  return !!input && Object.keys(input).length > 0;
+}
+
+function isDevRendererRuntime(): boolean {
+  if (typeof window === 'undefined') return false;
+  return window.location.hostname === 'localhost' && window.location.port === '3000';
+}
+
+function mergeToolCall(existing: ToolCall, updates: Partial<ToolCall>): ToolCall {
+  const normalized = normalizeToolCall({ ...existing, ...updates });
+  if (isGenericToolName(normalized.name) && !isGenericToolName(existing.name)) {
+    normalized.name = existing.name;
+  }
+  if (!hasToolInput(normalized.input) && hasToolInput(existing.input)) {
+    normalized.input = existing.input;
+  }
+  return normalized;
 }
 
 function serializeChatMessage(message: ChatMessage): PersistedChatMessage {
@@ -501,21 +591,66 @@ function compareChatMessages(a: ChatMessage, b: ChatMessage): number {
 
 function buildMessageFingerprint(message: ChatMessage): string {
   const normalized = normalizeChatMessageTimestamp(message);
-  const toolFingerprint = (normalized.toolCalls || [])
-    .map((toolCall) => `${toolCall.id}:${toolCall.name}:${toolCall.status}:${toolCall.result || ''}`)
-    .join('|');
 
   return [
     normalized.role,
+    normalized.harness || '',
     normalized.timestamp.getTime(),
     normalized.content,
-    toolFingerprint,
+    toolSignature(normalized),
+    contentBlockSignature(normalized),
     normalized.interrupted ? '1' : '0',
   ].join('::');
 }
 
+function normalizeContentForTimelineCompare(content?: string): string {
+  return (content || '').replace(/\r\n/g, '\n').trim();
+}
+
+function isCloseExactDuplicate(a: ChatMessage, b: ChatMessage): boolean {
+  return isCloseTimelineDuplicate(
+    normalizeChatMessageTimestamp(a),
+    normalizeChatMessageTimestamp(b),
+  );
+}
+
+function isCloseReloadDuplicate(a: ChatMessage, b: ChatMessage): boolean {
+  const normalizedA = normalizeChatMessageTimestamp(a);
+  const normalizedB = normalizeChatMessageTimestamp(b);
+  return isCloseTimelineDuplicate(normalizedA, normalizedB)
+    || isCloseContentDuplicate(normalizedA, normalizedB);
+}
+
+function isAutoBuildAssistantMessage(message: ChatMessage): boolean {
+  return message.role === 'assistant' && (message.content || '').includes(AUTO_BUILD_SECTION_MARKER);
+}
+
+function isAutoBuildSuperset(base: ChatMessage, candidate: ChatMessage): boolean {
+  if (base.role !== 'assistant' || !isAutoBuildAssistantMessage(candidate)) return false;
+
+  const baseContent = normalizeContentForTimelineCompare(base.content);
+  const candidateContent = normalizeContentForTimelineCompare(candidate.content);
+  return baseContent.length > 0 && candidateContent.startsWith(baseContent);
+}
+
 function mergeTimelineMessages(primary: ChatMessage[], supplemental: ChatMessage[]): ChatMessage[] {
-  const merged = [...primary, ...supplemental]
+  const normalizedPrimary = primary.map(normalizeChatMessageTimestamp);
+  const normalizedSupplemental = supplemental.map(normalizeChatMessageTimestamp);
+  const autoBuildSupplemental = normalizedSupplemental.filter(isAutoBuildAssistantMessage);
+
+  const filteredPrimary = normalizedPrimary.filter((message) => {
+    if (autoBuildSupplemental.some((candidate) => isAutoBuildSuperset(message, candidate))) {
+      return false;
+    }
+    return true;
+  });
+
+  const filteredSupplemental = normalizedSupplemental.filter((message) => {
+    if (isAutoBuildAssistantMessage(message)) return true;
+    return !normalizedPrimary.some((primaryMessage) => isCloseExactDuplicate(primaryMessage, message));
+  });
+
+  const merged = [...filteredPrimary, ...filteredSupplemental]
     .map(normalizeChatMessageTimestamp)
     .sort(compareChatMessages);
 
@@ -541,6 +676,73 @@ function mergeTimelineMessages(primary: ChatMessage[], supplemental: ChatMessage
   return deduped;
 }
 
+function extractAutoBuildHelperContent(content: string): string {
+  const markerIndex = content.indexOf(AUTO_BUILD_SECTION_MARKER);
+  if (markerIndex === -1) return '';
+  return content.slice(markerIndex).trim();
+}
+
+function buildAutoBuildContextMessage(
+  baseMessage: ChatMessage,
+  decision: AutoRouteDecisionState | null | undefined,
+  helperContent: string,
+  leadError?: string,
+): ChatMessage {
+  const stages = decision?.orchestration?.stages || [];
+  const stageSummary = stages.length > 0
+    ? stages.map((stage, index) => {
+      const fallbackSummary = stage.fallbackModels?.length ? ` (fallbacks: ${stage.fallbackModels.join(', ')})` : '';
+      return `${index + 1}. planned ${stage.tier}: ${stage.harness}:${stage.model}${fallbackSummary} - ${stage.purpose}`;
+    }).join('\n')
+    : 'No stage plan was recorded.';
+  const leadHarness = decision?.resolvedHarness || decision?.orchestration?.leadHarness || 'unknown';
+  const leadModel = decision?.resolvedModel || decision?.orchestration?.leadModel || 'unknown';
+  const helperSummary = helperContent || (leadError
+    ? 'No delegate output was recorded because the lead stage failed.'
+    : 'No delegate output was recorded. The visible assistant response is the lead stage result for this Auto Build turn.');
+
+  return {
+    id: `autobuild-context-${baseMessage.id}`,
+    role: 'system',
+    content: `<auto_build_turn_result>
+Resolved lead: ${leadHarness}:${leadModel}
+Completed lead tier: ${leadError ? 'none' : decision?.tier || 'unknown'}
+Task domain: ${decision?.domain || 'unknown'}
+Lead error: ${leadError ? `${leadHarness}:${leadModel} - ${leadError}` : 'none'}
+Routing reason: ${decision?.reason || 'not recorded'}
+Stages:
+${stageSummary}
+
+Helper output:
+${helperSummary}
+</auto_build_turn_result>`,
+    timestamp: new Date(normalizeChatMessageTimestamp(baseMessage).timestamp.getTime() + 1),
+  };
+}
+
+function buildContentBlocksFromStreamEvents(events: StreamEvent[]): ContentBlock[] | undefined {
+  if (events.length === 0) return undefined;
+
+  const blocks: ContentBlock[] = [];
+  for (const event of events) {
+    if (event.type === 'text' && event.content) {
+      const lastBlock = blocks[blocks.length - 1];
+      if (lastBlock?.type === 'text' && lastBlock.agentId === event.agentId) {
+        lastBlock.text = (lastBlock.text || '') + event.content;
+      } else {
+        blocks.push({ type: 'text', text: event.content, agentId: event.agentId });
+      }
+      continue;
+    }
+
+    if (event.type === 'tool' && event.toolCall?.id) {
+      blocks.push({ type: 'tool_use', toolCallId: event.toolCall.id, agentId: event.toolCall.agentId || event.agentId });
+    }
+  }
+
+  return blocks.length > 0 ? blocks : undefined;
+}
+
 function loadSupplementalMessages(sessionId: string): ChatMessage[] {
   if (typeof window === 'undefined') return [];
 
@@ -561,14 +763,14 @@ function loadSupplementalMessages(sessionId: string): ChatMessage[] {
   }
 }
 
-const SUPPLEMENTAL_MAX_MESSAGES = 50;
-const SUPPLEMENTAL_MAX_BYTES = 1 * 1024 * 1024;
+const SUPPLEMENTAL_MAX_MESSAGES = 500;
+const SUPPLEMENTAL_MAX_BYTES = 5 * 1024 * 1024;
 
 function saveSupplementalMessages(sessionId: string, messages: ChatMessage[]): void {
   if (typeof window === 'undefined') return;
 
   try {
-    let capped = messages.slice(-SUPPLEMENTAL_MAX_MESSAGES);
+    const capped = messages.slice(-SUPPLEMENTAL_MAX_MESSAGES);
     let serialized = capped
       .map(serializeChatMessage)
       .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
@@ -1001,7 +1203,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       if (session.sshConfig) {
         currentBranch = await window.electronAPI.git.getRemoteBranch(sessionId);
       } else {
-        const status = await window.electronAPI.git.getStatus(sessionId);
+        const status = await withMaterializedSession(sessionId, () => window.electronAPI.git.getStatus(sessionId));
         currentBranch = status?.current || null;
       }
       if (!currentBranch) return null;
@@ -1023,7 +1225,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
 
   subscribeToSessionChanges: () => {
-    if (!hasElectronAPI) return () => {};
+    if (!hasElectronAPI) return noop;
 
     // Subscribe to individual session status changes
     const unsubscribeStatus = window.electronAPI.sessions.onStatusChanged((session) => {
@@ -1068,13 +1270,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   // Chat methods
   addMessage: (sessionId, message) => {
+    const normalizedMessage = normalizeChatMessageTimestamp(message);
     set((state) => {
       const existingMessages = state.messages[sessionId] || [];
       const lastMessage = existingMessages[existingMessages.length - 1];
       const isDuplicateAssistantMessage =
-        message.role === 'assistant' &&
+        normalizedMessage.role === 'assistant' &&
         lastMessage?.role === 'assistant' &&
-        lastMessage.id === message.id;
+        lastMessage.id === normalizedMessage.id;
 
       if (isDuplicateAssistantMessage) {
         console.warn(`[SessionStore] Ignoring duplicate assistant message for ${sessionId}`);
@@ -1084,7 +1287,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       return {
         messages: {
           ...state.messages,
-          [sessionId]: [...existingMessages, message],
+          [sessionId]: [...existingMessages, normalizedMessage],
         },
       };
     });
@@ -1155,14 +1358,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
 
   addToolCall: (sessionId, toolCall) => {
+    const normalizedToolCall = normalizeToolCall(toolCall);
     set((state) => {
       const existingToolCalls = state.currentToolCalls[sessionId] || [];
-      const existingIndex = existingToolCalls.findIndex(tc => tc.id === toolCall.id);
+      const existingIndex = existingToolCalls.findIndex(tc => tc.id === normalizedToolCall.id);
 
       // If tool call already exists, update it instead of adding duplicate
       if (existingIndex !== -1) {
         const updatedToolCalls = [...existingToolCalls];
-        updatedToolCalls[existingIndex] = { ...existingToolCalls[existingIndex], ...toolCall };
+        updatedToolCalls[existingIndex] = mergeToolCall(existingToolCalls[existingIndex], normalizedToolCall);
         return {
           currentToolCalls: {
             ...state.currentToolCalls,
@@ -1177,13 +1381,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       return {
         currentToolCalls: {
           ...state.currentToolCalls,
-          [sessionId]: [...existingToolCalls, toolCall],
+          [sessionId]: [...existingToolCalls, normalizedToolCall],
         },
         streamEvents: {
           ...state.streamEvents,
           [sessionId]: [
             ...(state.streamEvents[sessionId] || []),
-            { id: toolCall.id, type: 'tool', timestamp: Date.now(), toolCall, agentId: toolCall.agentId },
+            { id: normalizedToolCall.id, type: 'tool', timestamp: Date.now(), toolCall: normalizedToolCall, agentId: normalizedToolCall.agentId },
           ],
         },
       };
@@ -1195,7 +1399,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       currentToolCalls: {
         ...state.currentToolCalls,
         [sessionId]: (state.currentToolCalls[sessionId] || []).map((tc) =>
-          tc.id === toolCallId ? { ...tc, ...updates } : tc
+          tc.id === toolCallId ? mergeToolCall(tc, updates) : tc
+        ),
+      },
+      streamEvents: {
+        ...state.streamEvents,
+        [sessionId]: (state.streamEvents[sessionId] || []).map((event) =>
+          event.toolCall?.id === toolCallId
+            ? { ...event, toolCall: mergeToolCall(event.toolCall, updates) }
+            : event
         ),
       },
     }));
@@ -1213,6 +1425,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       activeStreamModel: isStreaming
         ? state.activeStreamModel
         : { ...state.activeStreamModel, [sessionId]: undefined },
+      autoRouteDecision: { ...state.autoRouteDecision, [sessionId]: null },
       // Clear stream state on BOTH transitions: starting (fresh slate) and
       // ending (content has been finalized into a message by onStreamEnd).
       // Without clearing on end, stale streamEvents linger and flash away
@@ -1232,78 +1445,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         : state.agentColorMap,
     }));
 
-    // Process queued messages when streaming ends
-    if (!isStreaming) {
-      // Use a microtask to ensure state has propagated
-      Promise.resolve().then(() => {
-        const state = get();
-        const queue = state.messageQueue[sessionId] || [];
-        console.log(`[SessionStore] Stream ended. Checking queue for ${sessionId}. Queue length: ${queue.length}`);
-
-        if (queue.length > 0) {
-          const nextMessage = queue[0];
-          console.log(`[SessionStore] Processing next queued message: "${nextMessage.message.slice(0, 50)}..."`);
-
-          // Lock the queue so new messages from the user don't bypass during the processing window
-          set((state) => ({
-            isProcessingQueue: { ...state.isProcessingQueue, [sessionId]: true },
-          }));
-
-          // Atomically remove message from queue and verify we're not streaming
-          set((state) => {
-            // Double-check we're still not streaming before removing from queue
-            if (state.isStreaming[sessionId]) {
-              console.warn(`[SessionStore] Streaming started again before queue could be processed. Aborting.`);
-              return { isProcessingQueue: { ...state.isProcessingQueue, [sessionId]: false } };
-            }
-
-            const currentQueue = state.messageQueue[sessionId] || [];
-            if (currentQueue.length === 0) {
-              console.warn(`[SessionStore] Queue became empty before processing. Race condition avoided.`);
-              return { isProcessingQueue: { ...state.isProcessingQueue, [sessionId]: false } };
-            }
-
-            const [, ...remainingQueue] = currentQueue;
-            console.log(`[SessionStore] Removed message from queue. Remaining: ${remainingQueue.length}`);
-
-            return {
-              messageQueue: {
-                ...state.messageQueue,
-                [sessionId]: remainingQueue,
-              },
-            };
-          });
-
-          // Send the message after a small delay to ensure state updates have propagated
-          setTimeout(() => {
-            // Clear the processing lock before sending (sendMessage will set isStreaming=true)
-            set((state) => ({
-              isProcessingQueue: { ...state.isProcessingQueue, [sessionId]: false },
-            }));
-
-            const currentState = get();
-            const stillStreaming = currentState.isStreaming[sessionId];
-            console.log(`[SessionStore] About to send queued message. Currently streaming: ${stillStreaming}`);
-
-            if (!stillStreaming) {
-              console.log(`[SessionStore] Sending queued message now`);
-              currentState.sendMessage(sessionId, nextMessage.message, nextMessage.attachments, { existingMessageId: nextMessage.id });
-            } else {
-              console.warn(`[SessionStore] Cannot send queued message - streaming started again. Re-queueing.`);
-              // Re-add to front of queue
-              set((s) => ({
-                messageQueue: {
-                  ...s.messageQueue,
-                  [sessionId]: [nextMessage, ...(s.messageQueue[sessionId] || [])],
-                },
-              }));
-            }
-          }, 150); // Slightly longer delay for reliability
-        } else {
-          console.log(`[SessionStore] No messages in queue for ${sessionId}`);
-        }
-      });
-    }
+    // Queue draining is handled by STREAM_END/STREAM_ERROR after the terminal
+    // event has been associated with a message. Doing it here races with stale
+    // cancel events and can start a second CLI process while the first is alive.
   },
 
   setSystemInfo: (sessionId, systemInfo) => {
@@ -1463,8 +1607,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     get().updateSession(sessionId, { htmlRenderMode: next });
   },
 
-  setSelectedModel: (sessionId, model) => {
+  setSelectedModel: (sessionId, model, trigger = 'model-picker') => {
     const state = get();
+    const previousModel = getSessionModel(state, sessionId);
 
     // If currently streaming, cancel the active stream before switching models
     // This prevents Codex processes from running orphaned after switching to Claude
@@ -1490,6 +1635,18 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }));
 
     persistModelSelection(sessionId, model, normalizedPermissionMode);
+    if (hasElectronAPI && previousModel !== model) {
+      window.electronAPI.analytics.recordHarnessSelection?.({
+        sessionId,
+        timestamp: Date.now(),
+        fromModel: previousModel,
+        toModel: model,
+        trigger,
+        isManualSelection: model !== 'auto',
+      }).catch((err: Error) => {
+        console.warn('[SessionStore] Failed to record harness selection:', err);
+      });
+    }
   },
 
   loadAvailableModels: async () => {
@@ -1538,13 +1695,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     console.log(`[SessionStore] isStreaming: ${currentIsStreaming}, isProcessingQueue: ${currentIsProcessingQueue}, queueLength: ${currentQueueLength}`);
     console.log(`[SessionStore] Message: "${message.slice(0, 80)}..."`);
 
-    if (!currentIsStreaming) {
+    if (!currentIsStreaming && !currentIsProcessingQueue) {
       console.warn(`[SessionStore] ⚠️ isStreaming is FALSE — message will be sent as NEW query instead of queued!`);
       console.warn(`[SessionStore] Stack trace:`, new Error().stack);
     }
 
-    // If already streaming, queue the message
-    if (state.isStreaming[sessionId]) {
+    // If already streaming or queue handoff is in progress, queue the message.
+    if (state.isStreaming[sessionId] || state.isProcessingQueue[sessionId]) {
       const queuedMsg = {
         id: `msg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
         message,
@@ -1637,7 +1794,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     if (!alreadyInChat) {
       addMessage(sessionId, userMessage);
     }
-    if (isNonClaudeHarness(model)) {
+    if (isNonClaudeHarness(model) || model === 'auto') {
       persistSupplementalMessage(sessionId, userMessage);
     }
 
@@ -1676,6 +1833,16 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       console.log('[SessionStore] sendMessage returned:', result);
     } catch (error) {
       setStreaming(sessionId, false);
+      const errorText = error instanceof Error ? error.message : String(error);
+      const errorMessage: ChatMessage = {
+        id: `send-error-${Date.now()}`,
+        role: 'assistant',
+        content: `Error: ${errorText}`,
+        timestamp: new Date(),
+        harness: harnessFromModel(model),
+      };
+      persistSupplementalMessage(sessionId, errorMessage);
+      addMessage(sessionId, errorMessage);
       console.error('[SessionStore] Failed to send message:', error);
       console.error('[SessionStore] Error stack:', error instanceof Error ? error.stack : 'No stack');
     }
@@ -1701,19 +1868,18 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             return { isLoadingMessages: { ...state.isLoadingMessages, [sessionId]: false } };
           }
 
-          // Merge: use transcript as base but keep any in-memory messages
-          // that are newer (added by onStreamEnd after the transcript was read).
-          // Simply replacing caused data loss when loadMessages raced with
-          // onStreamEnd — the freshly added response got wiped.
+          // Merge: use transcript/supplemental as base but keep any in-memory
+          // messages that arrived after the transcript read. This path must use
+          // the same close-duplicate rules as supplemental recovery because
+          // tool-only/content-block-only harness messages are valid output even
+          // when content is empty.
           const existing = state.messages[sessionId] || [];
           if (existing.length > 0 && mergedMessages.length > 0) {
-            // Find messages in memory that aren't in the transcript (by ID)
-            const transcriptIds = new Set(mergedMessages.map(m => m.id));
-            const extraInMemory = existing.filter(m => !transcriptIds.has(m.id));
-
-            // If we have extra in-memory messages (from streaming), append them
+            const extraInMemory = existing.filter((message) => (
+              !mergedMessages.some((loadedMessage) => isCloseReloadDuplicate(loadedMessage, message))
+            ));
             const finalMessages = extraInMemory.length > 0
-              ? [...mergedMessages, ...extraInMemory]
+              ? mergeTimelineMessages(mergedMessages, extraInMemory)
               : mergedMessages;
 
             return {
@@ -1772,7 +1938,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
 
   subscribeToClaude: () => {
-    if (!hasElectronAPI) return () => {};
+    if (!hasElectronAPI) return noop;
     const { addMessage, updateStreamContent, updateThinkingContent, addToolCall, updateToolCall, setStreaming, setSystemInfo } = get();
 
     const unsubChunk = window.electronAPI.claude.onStreamChunk(({ sessionId, content, agentId }) => {
@@ -1786,7 +1952,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     const unsubToolCall = window.electronAPI.claude.onToolCall(({ sessionId, toolCall }) => {
 
-      const tc = toolCall as ToolCall;
+      const tc = normalizeToolCall(toolCall as ToolCall);
       console.log('[SessionStore] onToolCall received:', tc?.name, 'input:', JSON.stringify(tc?.input || {}));
       addToolCall(sessionId, tc);
 
@@ -1867,10 +2033,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const unsubToolResult = window.electronAPI.claude.onToolResult(async ({ sessionId, toolCall }) => {
 
       if (!toolCall) return;
-      const tc = toolCall as ToolCall;
+      const tc = normalizeToolCall(toolCall as ToolCall);
       console.log('[SessionStore] onToolResult received:', tc.name, 'input:', JSON.stringify(tc.input || {}));
       // Update all fields that might have changed, including input which may have been streamed
       updateToolCall(sessionId, tc.id, {
+        name: tc.name,
         input: tc.input,
         status: tc.status,
         result: tc.result,
@@ -2161,6 +2328,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const unsubAutoRoute = window.electronAPI.claude.onAutoRouteDecision(({ sessionId, decision }) => {
       set((state) => ({
         autoRouteDecision: { ...state.autoRouteDecision, [sessionId]: decision },
+        activeStreamModel: state.selectedModel[sessionId] === 'auto' && decision.resolvedModel
+          ? { ...state.activeStreamModel, [sessionId]: decision.resolvedModel }
+          : state.activeStreamModel,
       }));
     });
 
@@ -2172,9 +2342,16 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // recently (< 1s ago), and this event has no content (safety-net cleanup),
       // it's almost certainly from the OLD cancelled stream — skip it.
       const streamAge = Date.now() - (currentState.streamStartTime[sessionId] || 0);
-      const hasContent = !!(message.content?.trim() || currentState.currentStreamContent[sessionId]?.trim());
-      if (currentState.isStreaming[sessionId] && streamAge < 1000 && !hasContent) {
-        console.log(`[SessionStore] onStreamEnd SKIPPED for ${sessionId} — stale event (stream only ${streamAge}ms old, no content)`);
+      const hasVisibleEndOutput = Boolean(
+        message.content?.trim()
+        || currentState.currentStreamContent[sessionId]?.trim()
+        || message.toolCalls?.length
+        || currentState.currentToolCalls[sessionId]?.length
+        || message.contentBlocks?.length
+        || currentState.streamEvents[sessionId]?.length
+      );
+      if (currentState.isStreaming[sessionId] && streamAge < 1000 && !hasVisibleEndOutput) {
+        console.log(`[SessionStore] onStreamEnd SKIPPED for ${sessionId} — stale event (stream only ${streamAge}ms old, no visible output)`);
         return;
       }
 
@@ -2189,26 +2366,50 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
       // Get the accumulated stream content - this is what was actually streamed
       const streamedContent = currentState.currentStreamContent[sessionId] || '';
-      const messageContent = message.content || streamedContent;
 
       console.log(`[SessionStore] onStreamEnd received for ${sessionId}. Backend message length: ${message.content?.length || 0}, streamed content length: ${streamedContent.length}`);
       console.log(`[SessionStore] onStreamEnd - Queue has ${queueLength} messages waiting`);
 
       setStreaming(sessionId, false);
 
-      // Use the streamed content if the backend message is empty (e.g., interrupted)
-      const finalMessage: ChatMessage = {
-        ...message,
-        content: messageContent,
-        harness: harnessFromModel(streamModel),
-      };
+      const autoBuildDecision = currentState.autoRouteDecision[sessionId];
+      const resolvedStreamModel = streamModel === 'auto' ? autoBuildDecision?.resolvedModel : streamModel;
+      const finalMessage = buildCompletedStreamMessage({
+        message,
+        content: streamedContent,
+        toolCalls: currentState.currentToolCalls[sessionId] || [],
+        contentBlocks: buildContentBlocksFromStreamEvents(currentState.streamEvents[sessionId] || []),
+        model: streamModel,
+        resolvedModel: resolvedStreamModel,
+      });
+      const finalToolCalls = finalMessage.toolCalls || [];
+      const finalContentBlocks = finalMessage.contentBlocks;
+      const finalHarness = finalMessage.harness;
+      const finalContent = finalMessage.content || '';
+      const autoBuildHelperContent = extractAutoBuildHelperContent(finalContent);
+      const isAutoBuildTurn = currentState.selectedModel[sessionId] === 'auto' && Boolean(autoBuildDecision);
+      const hasFinalContent = finalContent.trim().length > 0;
+      const hasVisibleOutput = hasFinalContent || finalToolCalls.length > 0 || Boolean(finalContentBlocks?.length);
+      const alreadyRenderedFinal = !currentState.isStreaming[sessionId]
+        && (currentState.messages[sessionId] || []).some((existing) => isInterruptedSafetyNetDuplicate(
+          normalizeChatMessageTimestamp(existing),
+          normalizeChatMessageTimestamp(finalMessage),
+        ));
 
-      if (isNonClaudeHarness(streamModel)) {
+      if (!alreadyRenderedFinal && hasVisibleOutput && (isNonClaudeHarness(resolvedStreamModel) || finalHarness !== 'claude' || Boolean(autoBuildHelperContent))) {
         persistSupplementalMessage(sessionId, finalMessage);
       }
+      if (!alreadyRenderedFinal && isAutoBuildTurn && hasFinalContent) {
+        persistSupplementalMessage(
+          sessionId,
+          buildAutoBuildContextMessage(finalMessage, autoBuildDecision, autoBuildHelperContent),
+        );
+      }
 
-      if (messageContent.trim()) {
+      if (hasVisibleOutput && !alreadyRenderedFinal) {
         addMessage(sessionId, finalMessage);
+      } else if (alreadyRenderedFinal) {
+        console.log(`[SessionStore] onStreamEnd skipped duplicate finalized output for ${sessionId}`);
       }
 
       // Clear stream content after adding to messages
@@ -2216,16 +2417,17 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         activeStreamModel: { ...state.activeStreamModel, [sessionId]: undefined },
         currentStreamContent: { ...state.currentStreamContent, [sessionId]: '' },
         currentThinkingContent: { ...state.currentThinkingContent, [sessionId]: '' },
+        currentToolCalls: { ...state.currentToolCalls, [sessionId]: [] },
         streamEvents: { ...state.streamEvents, [sessionId]: [] },
       }));
 
       // Desktop notification for non-active sessions when a turn completes
-      if (finalMessage.role === 'assistant' && messageContent) {
+      if (finalMessage.role === 'assistant' && finalContent) {
         const activeId = get().activeSessionId;
         if (sessionId !== activeId) {
           const session = get().sessions.find(s => s.id === sessionId);
           const sessionName = session?.forkName || session?.name || 'Session';
-          const preview = messageContent.replace(/\s+/g, ' ').trim().slice(0, 80);
+          const preview = finalContent.replace(/\s+/g, ' ').trim().slice(0, 80);
           try {
             const notification = new Notification(sessionName, {
               body: preview || 'Turn complete',
@@ -2243,21 +2445,33 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }
 
       // Auto-play TTS if audio mode is active and message has content
-      if (messageContent && finalMessage.role === 'assistant') {
+      if (finalContent && finalMessage.role === 'assistant') {
         // Import audio store and trigger auto-play
         import('./audio.store').then(({ useAudioStore }) => {
-          useAudioStore.getState().triggerAutoPlayTTS(sessionId, finalMessage.id, messageContent);
+          useAudioStore.getState().triggerAutoPlayTTS(sessionId, finalMessage.id, finalContent);
         });
       }
 
       // Process next queued message if any
       const queue = get().messageQueue[sessionId] || [];
       if (queue.length > 0) {
+        if (isQueueDrainSuppressed(sessionId)) {
+          console.log(`[SessionStore] Stream ended after cancel; clearing ${queue.length} queued message(s)`);
+          set((state) => ({
+            isProcessingQueue: { ...state.isProcessingQueue, [sessionId]: false },
+            messageQueue: {
+              ...state.messageQueue,
+              [sessionId]: [],
+            },
+          }));
+          return;
+        }
+
         console.log(`[SessionStore] Stream ended, processing next queued message (${queue.length} in queue)`);
         const nextMsg = queue[0];
 
-        // Remove from queue
         set((state) => ({
+          isProcessingQueue: { ...state.isProcessingQueue, [sessionId]: true },
           messageQueue: {
             ...state.messageQueue,
             [sessionId]: state.messageQueue[sessionId].slice(1),
@@ -2269,7 +2483,22 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         // and skips re-adding it — otherwise each dequeued message duplicates
         // in the chat.
         setTimeout(() => {
-          get().sendMessage(sessionId, nextMsg.message, nextMsg.attachments, { existingMessageId: nextMsg.id });
+          const latestState = get();
+          if (latestState.isStreaming[sessionId]) {
+            set((state) => ({
+              isProcessingQueue: { ...state.isProcessingQueue, [sessionId]: false },
+              messageQueue: {
+                ...state.messageQueue,
+                [sessionId]: [nextMsg, ...(state.messageQueue[sessionId] || [])],
+              },
+            }));
+            return;
+          }
+
+          set((state) => ({
+            isProcessingQueue: { ...state.isProcessingQueue, [sessionId]: false },
+          }));
+          latestState.sendMessage(sessionId, nextMsg.message, nextMsg.attachments, { existingMessageId: nextMsg.id });
         }, 100);
       }
     });
@@ -2281,7 +2510,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // new stream has started. If the stream started very recently (< 1s),
       // this error is from the OLD cancelled query — don't kill the new stream.
       const streamAge = Date.now() - (currentState.streamStartTime[sessionId] || 0);
-      if (currentState.isStreaming[sessionId] && streamAge < 1000) {
+      const isImmediateFatalError = /unknown option|not found|authentication|api key|no stdout|exited|failed/i.test(error);
+      if (currentState.isStreaming[sessionId] && streamAge < 1000 && !isImmediateFatalError) {
         console.log(`[SessionStore] onStreamError SKIPPED for ${sessionId} — stale error from previous stream (stream only ${streamAge}ms old): ${error}`);
         return;
       }
@@ -2297,23 +2527,31 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }
 
       const streamModel = currentState.activeStreamModel[sessionId];
+      const autoBuildDecision = currentState.autoRouteDecision[sessionId];
+      const resolvedStreamModel = streamModel === 'auto' ? autoBuildDecision?.resolvedModel : streamModel;
 
       // Get any streamed content before the error
       const streamedContent = currentState.currentStreamContent[sessionId] || '';
 
-      // If we have streamed content, save it as a partial message before showing error
-      if (streamedContent.trim()) {
+      const partialToolCalls = currentState.currentToolCalls[sessionId] || [];
+      const partialContentBlocks = buildContentBlocksFromStreamEvents(currentState.streamEvents[sessionId] || []);
+      const hasPartialOutput = Boolean(streamedContent.trim() || partialToolCalls.length || partialContentBlocks?.length);
+
+      // If we have streamed output, save it as a partial message before showing error.
+      // Tool-only harness turns still need a visible message; checking only text
+      // dropped tool cards when the process errored before final prose.
+      if (hasPartialOutput) {
         const partialMessage: ChatMessage = {
           id: `partial-${Date.now()}`,
           role: 'assistant',
           content: streamedContent,
+          contentBlocks: partialContentBlocks,
+          toolCalls: partialToolCalls.length > 0 ? partialToolCalls : undefined,
           timestamp: new Date(),
           interrupted: true,
-          harness: harnessFromModel(streamModel),
+          harness: harnessFromModel(resolvedStreamModel),
         };
-        if (isNonClaudeHarness(streamModel)) {
-          persistSupplementalMessage(sessionId, partialMessage);
-        }
+        persistSupplementalMessage(sessionId, partialMessage);
         addMessage(sessionId, partialMessage);
       }
 
@@ -2327,6 +2565,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         activeStreamModel: { ...state.activeStreamModel, [sessionId]: undefined },
         currentStreamContent: { ...state.currentStreamContent, [sessionId]: '' },
         currentThinkingContent: { ...state.currentThinkingContent, [sessionId]: '' },
+        currentToolCalls: { ...state.currentToolCalls, [sessionId]: [] },
         streamEvents: { ...state.streamEvents, [sessionId]: [] },
         pendingPermission: { ...state.pendingPermission, [sessionId]: null },
         pendingQuestion: { ...state.pendingQuestion, [sessionId]: null },
@@ -2337,10 +2576,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         role: 'assistant',
         content: `Error: ${error}`,
         timestamp: new Date(),
-        harness: harnessFromModel(streamModel),
+        harness: harnessFromModel(resolvedStreamModel),
       };
-      if (isNonClaudeHarness(streamModel)) {
-        persistSupplementalMessage(sessionId, errorMessage);
+      const isAutoBuildTurn = currentState.selectedModel[sessionId] === 'auto' && Boolean(autoBuildDecision);
+      persistSupplementalMessage(sessionId, errorMessage);
+      if (isAutoBuildTurn) {
+        persistSupplementalMessage(
+          sessionId,
+          buildAutoBuildContextMessage(errorMessage, autoBuildDecision, '', error),
+        );
       }
       addMessage(sessionId, errorMessage);
 
@@ -2349,6 +2593,18 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // input that should still be sent. Only clear if the error is fatal.
       const queue = currentState.messageQueue[sessionId] || [];
       if (queue.length > 0) {
+        if (isQueueDrainSuppressed(sessionId)) {
+          console.log(`[SessionStore] Stream errored after cancel; clearing ${queue.length} queued message(s)`);
+          set((state) => ({
+            isProcessingQueue: { ...state.isProcessingQueue, [sessionId]: false },
+            messageQueue: {
+              ...state.messageQueue,
+              [sessionId]: [],
+            },
+          }));
+          return;
+        }
+
         console.log(`[SessionStore] Stream error — retrying next queued message (${queue.length} in queue)`);
         const nextMsg = queue[0];
         set((state) => ({
@@ -2462,7 +2718,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       console.log(`[SessionStore] Wakeup fired for ${data.sessionId}: ${data.reason}`);
       const { sendMessage } = get();
       sendMessage(data.sessionId, data.prompt);
-    }) || (() => {});
+    }) || noop;
 
     return () => {
       unsubChunk();
@@ -2722,6 +2978,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   cancelStream: (sessionId) => {
     const state = get();
+    suppressQueueDrain(sessionId);
 
     // Cancel current streaming
     window.electronAPI.claude.cancel(sessionId);
@@ -2729,18 +2986,22 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // Save partial content as an interrupted message before clearing
     const partialContent = state.currentStreamContent[sessionId] || '';
     const partialToolCalls = state.currentToolCalls[sessionId] || [];
+    const partialContentBlocks = buildContentBlocksFromStreamEvents(state.streamEvents[sessionId] || []);
+    const streamModel = state.activeStreamModel[sessionId];
 
-    if (partialContent || partialToolCalls.length > 0) {
+    if (partialContent || partialToolCalls.length > 0 || partialContentBlocks?.length) {
       // Create an interrupted message with whatever content we had
       const interruptedMessage: ChatMessage = {
         id: `interrupted-${Date.now()}`,
         role: 'assistant',
         content: partialContent || '(interrupted)',
+        contentBlocks: partialContentBlocks,
         toolCalls: partialToolCalls.length > 0 ? partialToolCalls : undefined,
         timestamp: new Date(),
         interrupted: true,
-        harness: harnessFromModel(state.activeStreamModel[sessionId]),
+        harness: harnessFromModel(streamModel),
       };
+      persistSupplementalMessage(sessionId, interruptedMessage);
       state.addMessage(sessionId, interruptedMessage);
       console.log(`[cancelStream] Saved interrupted message with ${partialContent.length} chars of content`);
     }
@@ -2748,6 +3009,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // Clear current streaming state and bump generation to invalidate stale events
     set((state) => ({
       isStreaming: { ...state.isStreaming, [sessionId]: false },
+      isProcessingQueue: { ...state.isProcessingQueue, [sessionId]: false },
+      sessionActivity: { ...state.sessionActivity, [sessionId]: 'idle' },
+      messageQueue: { ...state.messageQueue, [sessionId]: [] },
+      activeStreamModel: { ...state.activeStreamModel, [sessionId]: undefined },
       streamGeneration: {
         ...state.streamGeneration,
         [sessionId]: (state.streamGeneration[sessionId] || 0) + 1,
@@ -2756,6 +3021,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       currentStreamContent: { ...state.currentStreamContent, [sessionId]: '' },
       currentThinkingContent: { ...state.currentThinkingContent, [sessionId]: '' },
       currentToolCalls: { ...state.currentToolCalls, [sessionId]: [] },
+      pendingPermission: { ...state.pendingPermission, [sessionId]: null },
+      pendingQuestion: { ...state.pendingQuestion, [sessionId]: null },
     }));
 
     console.log(`Stream cancelled for session ${sessionId}`);
@@ -2776,18 +3043,22 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // Save partial content as an interrupted message before clearing
       const partialContent = state.currentStreamContent[sessionId] || '';
       const partialToolCalls = state.currentToolCalls[sessionId] || [];
+      const partialContentBlocks = buildContentBlocksFromStreamEvents(state.streamEvents[sessionId] || []);
+      const streamModel = state.activeStreamModel[sessionId];
 
-      if (partialContent || partialToolCalls.length > 0) {
+      if (partialContent || partialToolCalls.length > 0 || partialContentBlocks?.length) {
         // Create an interrupted message with whatever content we had
         const interruptedMessage: ChatMessage = {
           id: `interrupted-${Date.now()}`,
           role: 'assistant',
           content: partialContent || '(interrupted)',
+          contentBlocks: partialContentBlocks,
           toolCalls: partialToolCalls.length > 0 ? partialToolCalls : undefined,
           timestamp: new Date(),
           interrupted: true,
-          harness: harnessFromModel(state.activeStreamModel[sessionId]),
+          harness: harnessFromModel(streamModel),
         };
+        persistSupplementalMessage(sessionId, interruptedMessage);
         state.addMessage(sessionId, interruptedMessage);
         console.log(`[interruptAndSend] Saved interrupted message with ${partialContent.length} chars of content`);
       }
@@ -2830,7 +3101,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
 
   subscribeToSetupProgress: () => {
-    if (!hasElectronAPI) return () => {};
+    if (!hasElectronAPI) return noop;
 
     const handleProgress = (progress: { sessionId: string; status: 'running' | 'completed' | 'error'; message?: string; output?: string; error?: string }) => {
       const { setupProgress, setSetupProgress, addMessage } = get();
@@ -2915,7 +3186,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
 
   subscribeToBackgroundTasks: () => {
-    if (!hasElectronAPI) return () => {};
+    if (!hasElectronAPI) return noop;
 
     const { updateBackgroundTask } = get();
 
@@ -3037,7 +3308,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
       set((state) => {
         const existing = state.monitorInstances[sid] || [];
-        let idx = existing.findIndex((m) => m.id === taskId);
+        const idx = existing.findIndex((m) => m.id === taskId);
 
         // Auto-create monitor entry if we get an update for an unknown task
         if (idx < 0) {
@@ -3173,7 +3444,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
 
   subscribeToCompaction: () => {
-    if (!hasElectronAPI) return () => {};
+    if (!hasElectronAPI) return noop;
 
     const { setCompactionStatus } = get();
 
@@ -3271,6 +3542,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   // Auto-resume methods for Build It mode
   saveAutoResumeState: async (sessionId) => {
     if (!hasElectronAPI) return;
+    if (isDevRendererRuntime()) {
+      return;
+    }
 
     const state = get();
     const isStreaming = state.isStreaming[sessionId];
@@ -3296,6 +3570,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   checkAndAutoResume: async () => {
     if (!hasElectronAPI) return;
+    if (isDevRendererRuntime()) {
+      await window.electronAPI.claude.clearAutoResumeState();
+      return;
+    }
 
     try {
       const resumeState = await window.electronAPI.claude.getAutoResumeState();
@@ -3357,7 +3635,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
 
   setupAutoResumeOnClose: () => {
-    if (!hasElectronAPI || typeof window === 'undefined') return () => {};
+    if (!hasElectronAPI || typeof window === 'undefined') return noop;
+    if (isDevRendererRuntime()) return noop;
 
     const handleBeforeUnload = () => {
       const state = get();
@@ -3607,7 +3886,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
 
   subscribeToCodex: () => {
-    if (!hasElectronAPI) return () => {};
+    if (!hasElectronAPI) return noop;
 
     const unsubChunk = window.electronAPI.codex.onStreamChunk(({ sessionId, content }) => {
       set((state) => ({
@@ -3628,13 +3907,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     });
 
     const unsubToolCall = window.electronAPI.codex.onToolCall(({ sessionId, toolCall }) => {
+      const normalizedToolCall = normalizeToolCall(toolCall as ToolCall);
       set((state) => {
         const existing = state.codexToolCalls[sessionId] || [];
         // Update existing tool call or add new one
-        const idx = existing.findIndex(tc => tc.id === toolCall.id);
+        const idx = existing.findIndex(tc => tc.id === normalizedToolCall.id);
         const updated = idx >= 0
-          ? existing.map((tc, i) => i === idx ? toolCall : tc)
-          : [...existing, toolCall];
+          ? existing.map((tc, i) => i === idx ? normalizedToolCall : tc)
+          : [...existing, normalizedToolCall];
         return {
           codexToolCalls: { ...state.codexToolCalls, [sessionId]: updated },
         };
@@ -3683,7 +3963,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
 
   subscribeToBtw: () => {
-    if (!hasElectronAPI) return () => {};
+    if (!hasElectronAPI) return noop;
     const unsub = window.electronAPI.claude.onBtwResponse(({ sessionId, content, done }) => {
       set((state) => {
         const current = state.btw[sessionId];
@@ -3731,7 +4011,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
 
   subscribeToRemoteControl: () => {
-    if (!hasElectronAPI) return () => {};
+    if (!hasElectronAPI) return noop;
     const unsubStarted = window.electronAPI.claude.onRcStarted(({ sessionId, url }) => {
       get().setRemoteControl(sessionId, url);
     });

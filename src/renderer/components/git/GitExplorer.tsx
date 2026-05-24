@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import { withMaterializedSession } from '../../stores/session.store';
 import {
   GitBranch,
   GitCommit,
@@ -26,26 +27,26 @@ export default function GitExplorer({ session }: GitExplorerProps) {
 
   const { data: commits, isLoading: commitsLoading, refetch: refetchCommits } = useQuery({
     queryKey: ['git-log', session.id],
-    queryFn: () => window.electronAPI.git.getLog(session.id, 100),
+    queryFn: () => withMaterializedSession(session.id, () => window.electronAPI.git.getLog(session.id, 100)),
     enabled: session.status === 'running',
   });
 
   const { data: branches, refetch: refetchBranches } = useQuery({
     queryKey: ['git-branches', session.id],
-    queryFn: () => window.electronAPI.git.getBranches(session.id),
+    queryFn: () => withMaterializedSession(session.id, () => window.electronAPI.git.getBranches(session.id)),
     enabled: session.status === 'running',
   });
 
   const { data: status, refetch: refetchStatus } = useQuery({
     queryKey: ['git-status', session.id],
-    queryFn: () => window.electronAPI.git.getStatus(session.id),
+    queryFn: () => withMaterializedSession(session.id, () => window.electronAPI.git.getStatus(session.id)),
     enabled: session.status === 'running',
     refetchInterval: 5000,
   });
 
   const { data: diff } = useQuery({
     queryKey: ['git-diff', session.id, selectedCommit],
-    queryFn: () => window.electronAPI.git.getDiff(session.id, selectedCommit || undefined),
+    queryFn: () => withMaterializedSession(session.id, () => window.electronAPI.git.getDiff(session.id, selectedCommit || undefined)),
     enabled: session.status === 'running',
   });
 
@@ -56,12 +57,12 @@ export default function GitExplorer({ session }: GitExplorerProps) {
   };
 
   const handlePush = async () => {
-    await window.electronAPI.git.push(session.id);
+    await withMaterializedSession(session.id, () => window.electronAPI.git.push(session.id));
     handleRefresh();
   };
 
   const handlePull = async () => {
-    await window.electronAPI.git.pull(session.id);
+    await withMaterializedSession(session.id, () => window.electronAPI.git.pull(session.id));
     handleRefresh();
   };
 

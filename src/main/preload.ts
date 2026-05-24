@@ -27,6 +27,17 @@ import type {
 // Dev instance name from environment variable (set by scripts/dev.sh)
 const DEV_INSTANCE_NAME = process.env.DEV_INSTANCE_NAME || null;
 
+type ProviderStatus = {
+  installed?: boolean;
+  loggedIn: boolean;
+  method?: 'cli' | 'apiKey' | 'chatgpt';
+  detail?: string;
+  path?: string | null;
+  version?: string | null;
+  installCommand?: string;
+  docsUrl?: string;
+};
+
 // Type-safe API for renderer process
 const electronAPI = {
   // App info
@@ -41,8 +52,11 @@ const electronAPI = {
     getRepos: (): Promise<GitHubRepo[]> =>
       ipcRenderer.invoke(IPC_CHANNELS.AUTH_GET_REPOS),
     checkProviders: (): Promise<{
-      claude: { loggedIn: boolean; method?: 'cli' | 'apiKey' | 'chatgpt'; detail?: string };
-      codex: { loggedIn: boolean; method?: 'cli' | 'apiKey' | 'chatgpt'; detail?: string };
+      claude: ProviderStatus;
+      codex: ProviderStatus;
+      cursor: ProviderStatus;
+      gemini: ProviderStatus;
+      opencode: ProviderStatus;
     }> => ipcRenderer.invoke(IPC_CHANNELS.AUTH_CHECK_PROVIDERS),
     onOAuthCallback: (callback: (data: { code: string }) => void) => {
       const handler = (_: IpcRendererEvent, data: { code: string }) => callback(data);
@@ -272,7 +286,7 @@ const electronAPI = {
     respondToPlanApproval: (response: { requestId: string; approved: boolean }): Promise<void> =>
       ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_PLAN_APPROVAL_RESPONSE, response),
     // Auto Build routing decision listener
-    onAutoRouteDecision: (callback: (data: { sessionId: string; decision: { tier: string; resolvedModel: string; confidence: number; reason: string; method: string; enableGoals?: boolean } }) => void) => {
+    onAutoRouteDecision: (callback: (data: { sessionId: string; decision: { tier: string; domain?: string; resolvedModel: string; resolvedHarness?: string; confidence: number; reason: string; method: string; enableGoals?: boolean; orchestration?: { mode: string; leadHarness: string; leadModel: string; stages: Array<{ tier: string; harness: string; model: string; purpose: string; fallbackModels?: string[] }> } } }) => void) => {
       const handler = (_: IpcRendererEvent, data: any) => callback(data);
       ipcRenderer.on(IPC_CHANNELS.CLAUDE_AUTO_ROUTE_DECISION, handler);
       return () => ipcRenderer.removeListener(IPC_CHANNELS.CLAUDE_AUTO_ROUTE_DECISION, handler);
@@ -1093,6 +1107,14 @@ const electronAPI = {
       ipcRenderer.invoke(IPC_CHANNELS.ANALYTICS_GET_TIER_CONFIG),
     setTierConfig: (config: { monthlyIncludedUsd: number; planName: string }): Promise<any> =>
       ipcRenderer.invoke(IPC_CHANNELS.ANALYTICS_SET_TIER_CONFIG, config),
+    getHarnessInsights: (): Promise<any> =>
+      ipcRenderer.invoke(IPC_CHANNELS.ANALYTICS_GET_HARNESS_INSIGHTS),
+    refreshHistoricalUsage: (options?: { includeSubagents?: boolean; maxFiles?: number }): Promise<any> =>
+      ipcRenderer.invoke(IPC_CHANNELS.ANALYTICS_REFRESH_HISTORICAL_USAGE, options),
+    runRouterEval: (options?: { limit?: number; includeSubagents?: boolean; useLlmClassifier?: boolean }): Promise<any> =>
+      ipcRenderer.invoke(IPC_CHANNELS.ANALYTICS_RUN_ROUTER_EVAL, options),
+    recordHarnessSelection: (event: any): Promise<any> =>
+      ipcRenderer.invoke(IPC_CHANNELS.ANALYTICS_RECORD_HARNESS_SELECTION, event),
     onTokenEvent: (callback: (data: any) => void) => {
       const handler = (_: IpcRendererEvent, data: any) => callback(data);
       ipcRenderer.on(IPC_CHANNELS.ANALYTICS_TOKEN_EVENT, handler);
