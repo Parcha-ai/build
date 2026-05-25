@@ -38,6 +38,21 @@ type ProviderStatus = {
   docsUrl?: string;
 };
 
+type RemoteCliCapabilities = {
+  claude: boolean;
+  codex: boolean;
+  cursor: boolean;
+  gemini: boolean;
+  opencode: boolean;
+};
+
+type RemoteCliSetupCommand = {
+  harness: keyof RemoteCliCapabilities;
+  label: string;
+  command: string;
+  docsUrl: string;
+};
+
 // Type-safe API for renderer process
 const electronAPI = {
   // App info
@@ -788,6 +803,9 @@ const electronAPI = {
       error?: string;
       claudeCodeVersion?: string;
       hostname?: string;
+      cliCapabilities?: RemoteCliCapabilities;
+      setupWarning?: string;
+      missingCliInstallCommands?: RemoteCliSetupCommand[];
     }> => ipcRenderer.invoke(IPC_CHANNELS.SSH_TEST_CONNECTION, config),
     createSession: (data: { name: string; sshConfig: SSHConfig; resumeSessionId?: string; parentSessionId?: string }): Promise<Session> =>
       ipcRenderer.invoke(IPC_CHANNELS.SSH_CREATE_SESSION, data),

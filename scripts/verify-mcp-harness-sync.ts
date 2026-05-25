@@ -41,6 +41,15 @@ moduleLoader._load = function loadWithElectronStoreMock(this: unknown, request: 
   if (request === 'electron-store') {
     return MockStore;
   }
+  if (request === '@cursor/sdk') {
+    return {
+      Agent: {
+        create: async () => {
+          throw new Error('Cursor SDK is not used by this verifier');
+        },
+      },
+    };
+  }
   return originalLoad.call(this, request, parent, isMain);
 };
 
@@ -75,6 +84,11 @@ async function main(): Promise<void> {
       command: 'npx',
       args: ['-y', 'mcp-remote', 'http://localhost:9988/mcp', '--allow-http'],
     },
+    LocalWrappedMissingAllow: {
+      type: 'stdio',
+      command: 'npx',
+      args: ['-y', 'mcp-remote', 'http://localhost:9989/mcp'],
+    },
     shell: {
       type: 'stdio',
       command: 'node',
@@ -99,7 +113,7 @@ async function main(): Promise<void> {
   assert.equal(nativeLinear.url, 'https://mcp.linear.app/sse');
 
   const claudeSync = mcpService.getClaudeMcpSyncData();
-  assert.deepEqual(claudeSync.serverIds.sort(), ['LocalWrapped', 'Paper', 'linear', 'shell'].sort());
+  assert.deepEqual(claudeSync.serverIds.sort(), ['LocalWrapped', 'LocalWrappedMissingAllow', 'Paper', 'linear', 'shell'].sort());
   assert.ok(claudeSync.removeServerIds.includes('removed-by-build'));
 
   const linearClaude = claudeSync.servers.linear;
@@ -116,6 +130,16 @@ async function main(): Promise<void> {
 
   assert.ok(claudeSync.servers.LocalWrapped.args?.includes('mcp-remote@0.1.38'));
   assert.ok(!claudeSync.servers.LocalWrapped.args?.includes('mcp-remote'));
+  assert.ok(claudeSync.servers.LocalWrappedMissingAllow.args?.includes('mcp-remote@0.1.38'));
+  assert.ok(claudeSync.servers.LocalWrappedMissingAllow.args?.includes('--allow-http'));
+  assert.ok(!claudeSync.servers.LocalWrappedMissingAllow.args?.includes('mcp-remote'));
+
+  const migratedStore = store('claudette-mcp-servers') as Record<string, { args?: string[] }>;
+  assert.ok(migratedStore.LocalWrapped.args?.includes('mcp-remote@0.1.38'));
+  assert.ok(!migratedStore.LocalWrapped.args?.includes('mcp-remote'));
+  assert.ok(migratedStore.LocalWrappedMissingAllow.args?.includes('mcp-remote@0.1.38'));
+  assert.ok(migratedStore.LocalWrappedMissingAllow.args?.includes('--allow-http'));
+  assert.ok(!migratedStore.LocalWrappedMissingAllow.args?.includes('mcp-remote'));
 
   const harnessSync = mcpService.getHarnessMcpSyncData();
   assert.deepEqual(harnessSync.servers.linear, linearClaude);
@@ -168,21 +192,32 @@ command = "old"
 
   const openCodeConfig = JSON.parse(mcpService.buildMergedOpenCodeConfig(JSON.stringify({
     provider: { keep: true },
+    theme: 'base',
+    mcp: {
+      baseOpenCodeOnly: { type: 'local', command: ['base-custom'] },
+      linear: { type: 'local', command: ['base-old'] },
+    },
+  }), harnessSync.servers, harnessSync.removeServerIds, JSON.stringify({
+    theme: 'stale-build',
     mcp: {
       customOpenCodeOnly: { type: 'local', command: ['custom'] },
       linear: { type: 'local', command: ['old'] },
+      'removed-by-build': { type: 'local', command: ['removed'] },
     },
-  }), harnessSync.servers, harnessSync.removeServerIds));
+  })));
   assert.deepEqual(openCodeConfig.provider, { keep: true });
+  assert.equal(openCodeConfig.theme, 'base');
+  assert.deepEqual(openCodeConfig.mcp.baseOpenCodeOnly, { type: 'local', command: ['base-custom'] });
   assert.deepEqual(openCodeConfig.mcp.customOpenCodeOnly, { type: 'local', command: ['custom'] });
   assert.equal(openCodeConfig.mcp.linear.type, 'local');
   assert.deepEqual(openCodeConfig.mcp.linear.command.slice(0, 3), ['npx', '-y', 'mcp-remote@0.1.38']);
   assert.equal(openCodeConfig.mcp.linear.environment.BUILD_MCP_LINEAR_AUTHORIZATION, 'Bearer linear-token');
+  assert.equal(openCodeConfig.mcp['removed-by-build'], undefined);
 
   const localhostPorts = mcpService.getLocalhostMcpPorts()
     .map(({ serverId, port }) => `${serverId}:${port}`)
     .sort();
-  assert.deepEqual(localhostPorts, ['LocalWrapped:9988', 'Paper:29979']);
+  assert.deepEqual(localhostPorts, ['LocalWrapped:9988', 'LocalWrappedMissingAllow:9989', 'Paper:29979']);
 
   const cursorSdkServers = toCursorSdkMcpServers(harnessSync.servers);
   assert.deepEqual(cursorSdkServers.linear, {

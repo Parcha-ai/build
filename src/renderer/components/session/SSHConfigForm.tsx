@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Loader2, CheckCircle, XCircle, Server, Key, Folder, AlertTriangle, Terminal, Settings, Wifi, Wrench, Upload, FolderSearch } from 'lucide-react';
+import { Loader2, CheckCircle, XCircle, Server, Key, Folder, AlertTriangle, Terminal, Settings, Wifi, Wrench, Upload, FolderSearch, Copy } from 'lucide-react';
 import type { SSHConfig, SavedSSHConfig, Session, SSHResumeCandidate } from '../../../shared/types';
 import RemoteFileBrowser from './RemoteFileBrowser';
 
@@ -12,6 +12,43 @@ interface SSHConfigFormProps {
 }
 
 type TabId = 'connection' | 'setup';
+
+type RemoteCliCapabilities = {
+  claude?: boolean;
+  codex?: boolean;
+  cursor?: boolean;
+  gemini?: boolean;
+  opencode?: boolean;
+};
+
+type RemoteCliSetupCommand = {
+  harness: keyof RemoteCliCapabilities;
+  label: string;
+  command: string;
+  docsUrl: string;
+};
+
+const REMOTE_HARNESS_LABELS: Record<keyof RemoteCliCapabilities, string> = {
+  claude: 'Claude',
+  codex: 'Codex',
+  cursor: 'Cursor',
+  gemini: 'Gemini',
+  opencode: 'OpenCode',
+};
+
+const REMOTE_HARNESS_ORDER: Array<keyof RemoteCliCapabilities> = ['claude', 'codex', 'cursor', 'gemini', 'opencode'];
+
+function getRemoteHarnessLabels(capabilities?: RemoteCliCapabilities): string[] {
+  if (!capabilities) return [];
+  return REMOTE_HARNESS_ORDER
+    .filter((key) => capabilities[key])
+    .map((key) => REMOTE_HARNESS_LABELS[key]);
+}
+
+function formatRemoteHarnesses(capabilities?: RemoteCliCapabilities): string {
+  const labels = getRemoteHarnessLabels(capabilities);
+  return labels.length > 0 ? `Harnesses: ${labels.join(', ')}` : '';
+}
 
 export default function SSHConfigForm({ onBack, onConnect, teleportSource, onTeleport }: SSHConfigFormProps) {
   const isTeleportMode = !!teleportSource;
@@ -39,6 +76,9 @@ export default function SSHConfigForm({ onBack, onConnect, teleportSource, onTel
     error?: string;
     claudeCodeVersion?: string;
     hostname?: string;
+    cliCapabilities?: RemoteCliCapabilities;
+    setupWarning?: string;
+    missingCliInstallCommands?: RemoteCliSetupCommand[];
   } | null>(null);
   const [isCreating, setIsCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
@@ -405,7 +445,7 @@ export default function SSHConfigForm({ onBack, onConnect, teleportSource, onTel
                   <FolderSearch size={14} className="text-claude-text-secondary" />
                 </button>
               </div>
-              <p className="text-[9px] text-claude-text-secondary mt-1">Where Claude will execute tools</p>
+              <p className="text-[9px] text-claude-text-secondary mt-1">Where remote harnesses will execute tools</p>
             </div>
 
             {/* Session Name */}
@@ -455,7 +495,7 @@ export default function SSHConfigForm({ onBack, onConnect, teleportSource, onTel
                   <FolderSearch size={14} className="text-claude-text-secondary" />
                 </button>
               </div>
-              <p className="text-[9px] text-claude-text-secondary mt-1">Runs before Claude starts (e.g., clone repo, create worktree)</p>
+              <p className="text-[9px] text-claude-text-secondary mt-1">Runs before the agent starts (e.g., clone repo, create worktree)</p>
             </div>
 
             {/* Sync Settings */}
@@ -574,9 +614,43 @@ export default function SSHConfigForm({ onBack, onConnect, teleportSource, onTel
                 <XCircle size={14} className="text-red-400" />
               )}
               <span className={testResult.success ? 'text-green-400' : 'text-red-400'}>
-                {testResult.success ? `Connected! ${testResult.claudeCodeVersion || ''}` : testResult.error}
+                {testResult.success
+                  ? `Connected. ${formatRemoteHarnesses(testResult.cliCapabilities) || testResult.claudeCodeVersion || ''}`
+                  : testResult.error}
               </span>
             </div>
+            {testResult.success && testResult.claudeCodeVersion && (
+              <div className="mt-1 pl-6 text-green-300/80">
+                Claude Code: {testResult.claudeCodeVersion}
+              </div>
+            )}
+            {testResult.success && testResult.setupWarning && (
+              <div className="mt-2 flex items-start gap-2 text-amber-300">
+                <AlertTriangle size={12} className="mt-0.5 shrink-0" />
+                <span>{testResult.setupWarning}</span>
+              </div>
+            )}
+            {testResult.missingCliInstallCommands && testResult.missingCliInstallCommands.length > 0 && (
+              <div className="mt-2 space-y-1">
+                {testResult.missingCliInstallCommands.map((setup) => (
+                  <div key={setup.harness} className="flex items-center gap-2">
+                    <span className="w-20 shrink-0 text-[9px] text-claude-text-secondary">{setup.label}</span>
+                    <code className="flex-1 min-w-0 px-2 py-1 bg-claude-bg border border-claude-border text-[9px] font-mono text-claude-text-secondary truncate">
+                      {setup.command}
+                    </code>
+                    <button
+                      type="button"
+                      onClick={() => navigator.clipboard?.writeText(setup.command).catch(() => undefined)}
+                      className="p-1 border border-claude-border text-claude-text-secondary hover:text-claude-text hover:bg-claude-surface"
+                      title={`Copy ${setup.label} install command`}
+                      style={{ borderRadius: 0 }}
+                    >
+                      <Copy size={11} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
 
@@ -591,7 +665,14 @@ export default function SSHConfigForm({ onBack, onConnect, teleportSource, onTel
         {!testResult?.success && (
           <div className="p-2 bg-amber-400/10 border border-amber-400/30 text-[9px] text-claude-text-secondary flex items-start gap-2">
             <AlertTriangle size={12} className="text-amber-400 mt-0.5 shrink-0" />
-            <span>Requires <code className="bg-claude-bg px-1">claude</code> CLI on remote</span>
+            <span>
+              Requires at least one supported remote harness CLI:{' '}
+              <code className="bg-claude-bg px-1">claude</code>,{' '}
+              <code className="bg-claude-bg px-1">codex</code>,{' '}
+              <code className="bg-claude-bg px-1">cursor-agent</code>,{' '}
+              <code className="bg-claude-bg px-1">gemini</code>, or{' '}
+              <code className="bg-claude-bg px-1">opencode</code>.
+            </span>
           </div>
         )}
 

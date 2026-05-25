@@ -118,6 +118,15 @@ function pinMcpRemotePackageArg(args: string[]): string[] {
   });
 }
 
+function normalizeMcpRemoteArgs(args: string[]): string[] {
+  const normalized = pinMcpRemotePackageArg(args);
+  const remoteUrl = normalized.find((arg) => /^https?:\/\//.test(arg));
+  if (remoteUrl?.startsWith('http://') && !normalized.includes('--allow-http')) {
+    normalized.push('--allow-http');
+  }
+  return normalized;
+}
+
 function mcpHeaderEnvName(serverId: string, headerName: string, index: number): string {
   const normalizedServer = serverId.replace(/[^A-Za-z0-9_]/g, '_').replace(/^([^A-Za-z_])/, '_$1').toUpperCase();
   const normalizedHeader = headerName.replace(/[^A-Za-z0-9_]/g, '_').replace(/^([^A-Za-z_])/, '_$1').toUpperCase();
@@ -191,7 +200,7 @@ export function normalizeMcpServerForClaude(
 
   if (!remoteUrl || !options.preferNativeRemoteTransports) {
     if (remoteUrl && cloned.args) {
-      cloned.args = pinMcpRemotePackageArg(cloned.args);
+      cloned.args = normalizeMcpRemoteArgs(cloned.args);
     }
     return cloned;
   }
@@ -261,7 +270,7 @@ function sanitizeHarnessConfig(config: MCPServerConfig, serverId: string): MCPSe
     if (config.args?.length) {
       sanitized.args = config.args.filter((arg) => typeof arg === 'string');
       if (sanitized.args.some(isMcpRemotePackageArg)) {
-        sanitized.args = pinMcpRemotePackageArg(sanitized.args);
+        sanitized.args = normalizeMcpRemoteArgs(sanitized.args);
       }
     }
     if (env) sanitized.env = env;
@@ -269,6 +278,18 @@ function sanitizeHarnessConfig(config: MCPServerConfig, serverId: string): MCPSe
   }
 
   return null;
+}
+
+function normalizeStoredMcpServerConfig(config: MCPServerConfig): MCPServerConfig {
+  const normalized = cloneServerConfig(config);
+  if (normalized.args?.some(isMcpRemotePackageArg)) {
+    normalized.args = normalizeMcpRemoteArgs(normalized.args);
+  }
+  return normalized;
+}
+
+function configsEqual(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 function tomlString(value: string): string {
@@ -396,6 +417,24 @@ function renderOpenCodeConfig(servers: Record<string, MCPServerConfig>): string 
     $schema: 'https://opencode.ai/config.json',
     mcp: renderOpenCodeMcpEntries(servers),
   }, null, 2)}\n`;
+}
+
+function parseJsonObject(content: string): Record<string, unknown> {
+  try {
+    const parsed = content ? JSON.parse(content) as unknown : {};
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function getObjectProperty(data: Record<string, unknown>, key: string): Record<string, unknown> {
+  const value = data[key];
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
 }
 
 /**
@@ -555,7 +594,7 @@ class MCPService {
    * Get installed MCP servers for display
    */
   getInstalledServers(): MCPServerInfo[] {
-    const configs = (mcpStore as any).store as Record<string, MCPServerConfig>;
+    const configs = this.getStoredMcpServersConfig();
     const servers: MCPServerInfo[] = [];
 
     for (const [id, config] of Object.entries(configs)) {
@@ -579,7 +618,7 @@ class MCPService {
    * Get the raw electron-store config for a single MCP server
    */
   getRawConfig(serverId: string): Record<string, unknown> | null {
-    const configs = (mcpStore as any).store as Record<string, MCPServerConfig>;
+    const configs = this.getStoredMcpServersConfig();
     return (configs[serverId] as unknown as Record<string, unknown>) || null;
   }
 
@@ -587,7 +626,26 @@ class MCPService {
    * Get all MCP servers for Agent SDK (installed + built-ins)
    */
   getUserMcpServersConfig(): Record<string, MCPServerConfig> {
-    return { ...(mcpStore as any).store };
+    return this.getStoredMcpServersConfig();
+  }
+
+  private getStoredMcpServersConfig(): Record<string, MCPServerConfig> {
+    const configs = (mcpStore as any).store as Record<string, MCPServerConfig>;
+    const normalized: Record<string, MCPServerConfig> = {};
+    let changed = false;
+
+    for (const [name, config] of Object.entries(configs)) {
+      normalized[name] = normalizeStoredMcpServerConfig(config);
+      if (!configsEqual(normalized[name], config)) {
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      (mcpStore as any).store = normalized;
+    }
+
+    return { ...normalized };
   }
 
   getClaudeMcpServersConfig(options: ClaudeMcpOptions = {}): Record<string, MCPServerConfig> {
@@ -712,17 +770,23 @@ class MCPService {
     return renderOpenCodeConfig(servers);
   }
 
-  buildMergedOpenCodeConfig(existingContent: string, servers: Record<string, MCPServerConfig>, removeServerIds: string[]): string {
-    let data: Record<string, unknown> = {};
-    try {
-      data = existingContent ? JSON.parse(existingContent) as Record<string, unknown> : {};
-    } catch {
-      data = {};
-    }
+  buildMergedOpenCodeConfig(
+    baseContent: string,
+    servers: Record<string, MCPServerConfig>,
+    removeServerIds: string[],
+    existingBuildContent = '',
+  ): string {
+    const baseData = parseJsonObject(baseContent);
+    const existingBuildData = parseJsonObject(existingBuildContent);
+    const data = {
+      ...existingBuildData,
+      ...baseData,
+    };
 
-    const existingMcp = data.mcp && typeof data.mcp === 'object' && !Array.isArray(data.mcp)
-      ? data.mcp as Record<string, unknown>
-      : {};
+    const existingMcp = {
+      ...getObjectProperty(existingBuildData, 'mcp'),
+      ...getObjectProperty(baseData, 'mcp'),
+    };
 
     for (const id of removeServerIds) {
       delete existingMcp[id];
@@ -767,15 +831,25 @@ class MCPService {
   }
 
   private async writeOpenCodeConfig(filePath: string, baseConfigPath: string, servers: Record<string, MCPServerConfig>, removeServerIds: Set<string>): Promise<void> {
-    let existing = '';
+    let baseConfig = '';
+    let existingBuildConfig = '';
     try {
-      existing = await fs.readFile(baseConfigPath, 'utf-8');
+      baseConfig = await fs.readFile(baseConfigPath, 'utf-8');
     } catch {
-      existing = '';
+      baseConfig = '';
+    }
+    try {
+      existingBuildConfig = await fs.readFile(filePath, 'utf-8');
+    } catch {
+      existingBuildConfig = '';
     }
 
     await fs.mkdir(path.dirname(filePath), { recursive: true });
-    await fs.writeFile(filePath, this.buildMergedOpenCodeConfig(existing, servers, [...removeServerIds]), 'utf-8');
+    await fs.writeFile(
+      filePath,
+      this.buildMergedOpenCodeConfig(baseConfig, servers, [...removeServerIds], existingBuildConfig),
+      'utf-8'
+    );
   }
 
   async syncLocalHarnessConfigs(): Promise<HarnessMcpSyncResult> {

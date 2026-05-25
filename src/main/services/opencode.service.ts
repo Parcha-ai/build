@@ -26,12 +26,27 @@ export interface OpenCodeStreamEvent {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const settingsStore = new Store({ name: 'claudette-settings' }) as any;
 
-function findOpenCodeBinary(): string {
+interface OpenCodeCommand {
+  command: string;
+  prefixArgs: string[];
+  label: string;
+}
+
+function findExecutable(binaryName: string): string | null {
   try {
-    const result = execSync('which opencode', { encoding: 'utf8' }).trim();
+    const result = execSync(`which ${binaryName}`, { encoding: 'utf8' }).trim();
     if (result) return result;
   } catch {
     // Not in PATH.
+  }
+
+  return null;
+}
+
+function findOpenCodeCommand(): OpenCodeCommand {
+  const pathBinary = findExecutable('opencode');
+  if (pathBinary) {
+    return { command: pathBinary, prefixArgs: [], label: 'opencode' };
   }
 
   const home = os.homedir();
@@ -44,10 +59,17 @@ function findOpenCodeBinary(): string {
   ];
 
   for (const candidate of candidates) {
-    if (fs.existsSync(candidate)) return candidate;
+    if (fs.existsSync(candidate)) {
+      return { command: candidate, prefixArgs: [], label: 'opencode' };
+    }
   }
 
-  throw new Error('Unable to locate OpenCode CLI binary. Install it with the OpenCode installer or package manager.');
+  const npxBinary = findExecutable('npx');
+  if (npxBinary) {
+    return { command: npxBinary, prefixArgs: ['-y', 'opencode-ai'], label: 'npx opencode-ai' };
+  }
+
+  throw new Error('Unable to locate OpenCode CLI runner. Install OpenCode with npm install -g opencode-ai, or install Node/npm so Build can run npx opencode-ai.');
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -147,6 +169,14 @@ function remotePathForShell(value: string): string {
   return !value || value === '~' ? '$HOME' : quoteForRemoteShell(value);
 }
 
+function getRemotePathPrefix(): string {
+  return [
+    'export PATH="$HOME/.local/bin:$HOME/.cursor/bin:$HOME/.bun/bin:$HOME/.npm-global/bin:$HOME/bin:$HOME/.cargo/bin:/usr/local/bin:/usr/bin:$PATH"',
+    'for d in "$HOME"/.nvm/versions/node/*/bin; do [ -d "$d" ] && PATH="$d:$PATH"; done',
+    'export PATH',
+  ].join(' && ');
+}
+
 function buildSshTarget(sshConfig: SSHConfig): string {
   return sshConfig.username ? `${sshConfig.username}@${sshConfig.host}` : sshConfig.host;
 }
@@ -168,7 +198,7 @@ function buildSshArgs(sshConfig: SSHConfig, remoteCommand: string): string[] {
 
 class OpenCodeService {
   private activeProcesses: Map<string, { process: ChildProcess; abortController: AbortController }> = new Map();
-  private binaryPath: string | null = null;
+  private openCodeCommand: OpenCodeCommand | null = null;
   private lastAssistantTextBySession = new Map<string, string>();
 
   getApiKey(): string | undefined {
@@ -176,11 +206,11 @@ class OpenCodeService {
     return (settings.deepseekApiKey as string) || process.env.DEEPSEEK_API_KEY || undefined;
   }
 
-  private getBinary(): string {
-    if (!this.binaryPath) {
-      this.binaryPath = findOpenCodeBinary();
+  private getCommand(): OpenCodeCommand {
+    if (!this.openCodeCommand) {
+      this.openCodeCommand = findOpenCodeCommand();
     }
-    return this.binaryPath;
+    return this.openCodeCommand;
   }
 
   private translateJsonEvent(sessionId: string, event: Record<string, unknown>): OpenCodeStreamEvent | null {
@@ -217,8 +247,9 @@ class OpenCodeService {
     return delta ? { type: 'text_delta', content: delta } : null;
   }
 
-  private buildLocalSpawn(binary: string, message: string, workDir: string, opencodeModel: string, abortController: AbortController, permissionMode?: string) {
+  private buildLocalSpawn(openCodeCommand: OpenCodeCommand, message: string, workDir: string, opencodeModel: string, abortController: AbortController, permissionMode?: string) {
     const args = [
+      ...openCodeCommand.prefixArgs,
       'run',
       message,
       '--model', opencodeModel,
@@ -240,7 +271,9 @@ class OpenCodeService {
     env.OPENCODE_DISABLE_TERMINAL_TITLE = 'true';
     env.OPENCODE_ENABLE_EXPERIMENTAL_MODELS = 'true';
 
-    return spawn(binary, args, {
+    console.log(`[OpenCode Service] Local spawn via ${openCodeCommand.label}: ${openCodeCommand.command} ${args.slice(0, openCodeCommand.prefixArgs.length + 1).join(' ')} <${message.length} chars>`);
+
+    return spawn(openCodeCommand.command, args, {
       cwd: workDir,
       env,
       signal: abortController.signal,
@@ -256,7 +289,7 @@ class OpenCodeService {
       : '';
     const command = [
       `cd ${remotePathForShell(remoteDir)}`,
-      'export PATH="$HOME/.local/bin:$HOME/.bun/bin:$HOME/.npm-global/bin:$HOME/bin:$PATH"',
+      getRemotePathPrefix(),
       apiKey ? `export DEEPSEEK_API_KEY=${quoteForRemoteShell(apiKey)}` : '',
       `export OPENCODE_PERMISSION=${quoteForRemoteShell(permissionConfig)}`,
       'export OPENCODE_CLIENT=build-autobuild',
@@ -264,7 +297,8 @@ class OpenCodeService {
       'export OPENCODE_DISABLE_AUTOUPDATE=true',
       'export OPENCODE_DISABLE_TERMINAL_TITLE=true',
       'export OPENCODE_ENABLE_EXPERIMENTAL_MODELS=true',
-      `opencode run ${quoteForRemoteShell(message)} --model ${quoteForRemoteShell(opencodeModel)} --format json --dir ${remotePathForShell(remoteDir)}${skipFlag}`,
+      'if command -v opencode >/dev/null 2>&1; then opencode_cmd="$(command -v opencode)"; opencode_prefix=""; elif command -v npx >/dev/null 2>&1; then opencode_cmd="$(command -v npx)"; opencode_prefix="-y opencode-ai"; else echo "OpenCode runner not found on remote. Install OpenCode with: npm install -g opencode-ai, or install Node/npm for npx fallback." >&2; exit 127; fi',
+      `"$opencode_cmd" \${opencode_prefix} run ${quoteForRemoteShell(message)} --model ${quoteForRemoteShell(opencodeModel)} --format json --dir ${remotePathForShell(remoteDir)}${skipFlag}`,
     ].filter(Boolean).join(' && ');
 
     const abortController = new AbortController();
@@ -323,9 +357,9 @@ class OpenCodeService {
         child = sshSpawn.child;
         abortController = sshSpawn.abortController;
       } else {
-        const binary = this.getBinary();
+        const openCodeCommand = this.getCommand();
         abortController = new AbortController();
-        child = this.buildLocalSpawn(binary, message, workDir, opencodeModel, abortController, permissionMode);
+        child = this.buildLocalSpawn(openCodeCommand, message, workDir, opencodeModel, abortController, permissionMode);
       }
     } catch (error) {
       yield { type: 'error', error: `Failed to start OpenCode: ${error instanceof Error ? error.message : String(error)}` };

@@ -67,6 +67,9 @@ export interface SSHConnectionTestResult {
   error?: string;
   claudeCodeVersion?: string;
   hostname?: string;
+  cliCapabilities?: RemoteCliCapabilities;
+  setupWarning?: string;
+  missingCliInstallCommands?: RemoteCliSetupCommand[];
 }
 
 export interface SSHConnectionInfo {
@@ -75,11 +78,52 @@ export interface SSHConnectionInfo {
 }
 
 export interface RemoteCliCapabilities {
+  claude: boolean;
   codex: boolean;
   cursor: boolean;
   gemini: boolean;
   opencode: boolean;
 }
+
+export interface RemoteCliSetupCommand {
+  harness: keyof RemoteCliCapabilities;
+  label: string;
+  command: string;
+  docsUrl: string;
+}
+
+const REMOTE_CLI_SETUP_COMMANDS: Record<keyof RemoteCliCapabilities, RemoteCliSetupCommand> = {
+  claude: {
+    harness: 'claude',
+    label: 'Claude Code',
+    command: 'npm install -g @anthropic-ai/claude-code',
+    docsUrl: 'https://docs.anthropic.com/claude-code',
+  },
+  codex: {
+    harness: 'codex',
+    label: 'Codex',
+    command: 'npm install -g @openai/codex',
+    docsUrl: 'https://github.com/openai/codex',
+  },
+  cursor: {
+    harness: 'cursor',
+    label: 'Cursor Agent',
+    command: 'curl https://cursor.com/install -fsS | bash',
+    docsUrl: 'https://cursor.com/cli',
+  },
+  gemini: {
+    harness: 'gemini',
+    label: 'Gemini CLI',
+    command: 'npm install -g @google/gemini-cli',
+    docsUrl: 'https://github.com/google-gemini/gemini-cli',
+  },
+  opencode: {
+    harness: 'opencode',
+    label: 'OpenCode',
+    command: 'npm install -g opencode-ai',
+    docsUrl: 'https://opencode.ai/docs',
+  },
+};
 
 /**
  * Service for managing SSH connections and remote process execution
@@ -121,7 +165,7 @@ export class SSHService {
   }
 
   /**
-   * Test an SSH connection and verify Claude Code is installed on the remote
+   * Test an SSH connection and report supported remote harness CLIs.
    */
   async testConnection(config: SSHConfig): Promise<SSHConnectionTestResult> {
     const client = new Client();
@@ -136,31 +180,49 @@ export class SSHService {
         clearTimeout(timeout);
 
         try {
-          // Test by checking Claude Code version
-          // Check common installation paths since non-interactive SSH doesn't load shell profile
-          const versionResult = await this.execCommand(
-            client,
-            'export PATH="$HOME/.local/bin:$HOME/.nvm/versions/node/*/bin:/usr/local/bin:$PATH" && claude --version 2>/dev/null || echo "NOT_FOUND"'
+          const capabilities = this.parseRemoteCliCapabilities(
+            await this.execCommand(client, this.buildRemoteCliDetectionCommand(config))
           );
+          const hasHarnessCli = Object.values(capabilities).some(Boolean);
 
-          if (versionResult.includes('NOT_FOUND') || !versionResult.trim()) {
+          if (!hasHarnessCli) {
+            const missingCliInstallCommands = this.getMissingRemoteCliSetupCommands(capabilities);
             client.end();
             resolve({
               success: false,
-              error: 'Claude Code CLI is not installed on the remote machine. Install it with: npm install -g @anthropic-ai/claude-code',
+              error: 'No supported harness CLI is installed on the remote machine. Install Claude Code, Codex, Cursor Agent, Gemini CLI, or OpenCode first.',
+              cliCapabilities: capabilities,
+              missingCliInstallCommands,
             });
             return;
+          }
+
+          let claudeCodeVersion: string | undefined;
+          if (capabilities.claude) {
+            const versionResult = await this.execCommand(
+              client,
+              `${this.getRemoteCommandPathPrefix(config)}\nclaude --version 2>/dev/null || true`
+            );
+            claudeCodeVersion = versionResult.trim() || undefined;
           }
 
           // Get hostname for display
           const hostnameResult = await this.execCommand(client, 'hostname');
           const hostname = hostnameResult.trim();
+          const missingCliInstallCommands = this.getMissingRemoteCliSetupCommands(capabilities);
+          const missingHarnesses = missingCliInstallCommands.map((command) => command.label);
+          const setupWarning = missingHarnesses.length > 0
+            ? `Missing remote harness CLIs: ${missingHarnesses.join(', ')}. Those harnesses will be skipped until installed.`
+            : undefined;
 
           client.end();
           resolve({
             success: true,
-            claudeCodeVersion: versionResult.trim(),
             hostname,
+            claudeCodeVersion,
+            cliCapabilities: capabilities,
+            setupWarning,
+            missingCliInstallCommands,
           });
         } catch (error) {
           client.end();
@@ -859,20 +921,8 @@ export class SSHService {
     return `export PATH="/home/${config.username}/.local/bin:/home/${config.username}/.cursor/bin:/home/${config.username}/.bun/bin:/home/${config.username}/.npm-global/bin:/home/${config.username}/bin:$HOME/.local/bin:$HOME/.cursor/bin:$HOME/.bun/bin:$HOME/.npm-global/bin:$HOME/bin:$HOME/.cargo/bin:/usr/local/bin:/usr/bin:$PATH"; for d in "$HOME"/.nvm/versions/node/*/bin; do [ -d "$d" ] && PATH="$d:$PATH"; done; export PATH`;
   }
 
-  async detectRemoteCliCapabilities(
-    sessionId: string,
-    config: SSHConfig
-  ): Promise<RemoteCliCapabilities> {
-    const capabilities: RemoteCliCapabilities = {
-      codex: false,
-      cursor: false,
-      gemini: false,
-      opencode: false,
-    };
-
-    try {
-      const client = await this.getConnection(sessionId, config);
-      const command = `
+  private buildRemoteCliDetectionCommand(config: SSHConfig): string {
+    return `
 ${this.getRemoteCommandPathPrefix(config)}
 detect_cli() {
   key="$1"
@@ -886,18 +936,55 @@ detect_cli() {
   printf '%s=0\\n' "$key"
 }
 
+detect_cli claude claude
 detect_cli codex codex
 detect_cli cursor cursor-agent agent
-detect_cli opencode opencode
+detect_cli opencode opencode npx
 detect_cli gemini gemini
 `;
+  }
 
-      const output = await this.execCommand(client, command);
-      for (const line of output.split('\n')) {
-        const match = /^(codex|cursor|gemini|opencode)=(0|1)$/.exec(line.trim());
-        if (!match) continue;
-        capabilities[match[1] as keyof RemoteCliCapabilities] = match[2] === '1';
-      }
+  private parseRemoteCliCapabilities(output: string): RemoteCliCapabilities {
+    const capabilities: RemoteCliCapabilities = {
+      claude: false,
+      codex: false,
+      cursor: false,
+      gemini: false,
+      opencode: false,
+    };
+
+    for (const line of output.split('\n')) {
+      const match = /^(claude|codex|cursor|gemini|opencode)=(0|1)$/.exec(line.trim());
+      if (!match) continue;
+      capabilities[match[1] as keyof RemoteCliCapabilities] = match[2] === '1';
+    }
+
+    return capabilities;
+  }
+
+  private getMissingRemoteCliSetupCommands(capabilities: RemoteCliCapabilities): RemoteCliSetupCommand[] {
+    return (Object.keys(REMOTE_CLI_SETUP_COMMANDS) as Array<keyof RemoteCliCapabilities>)
+      .filter((harness) => !capabilities[harness])
+      .map((harness) => REMOTE_CLI_SETUP_COMMANDS[harness]);
+  }
+
+  async detectRemoteCliCapabilities(
+    sessionId: string,
+    config: SSHConfig
+  ): Promise<RemoteCliCapabilities> {
+    let capabilities: RemoteCliCapabilities = {
+      claude: false,
+      codex: false,
+      cursor: false,
+      gemini: false,
+      opencode: false,
+    };
+
+    try {
+      const client = await this.getConnection(sessionId, config);
+      capabilities = this.parseRemoteCliCapabilities(
+        await this.execCommand(client, this.buildRemoteCliDetectionCommand(config))
+      );
 
       console.log('[SSH Service] Remote CLI capabilities:', capabilities);
     } catch (error) {
@@ -3285,7 +3372,8 @@ ${marker}`);
       const opencodeJson = mcpService.buildMergedOpenCodeConfig(
         await this.readRemoteTextFileOrEmpty(client, opencodeDefaultPath),
         servers,
-        removeServerIds
+        removeServerIds,
+        await this.readRemoteTextFileOrEmpty(client, opencodeBuildPath)
       );
       await this.writeRemoteTextFile(client, opencodeBuildPath, opencodeJson);
 
@@ -3443,7 +3531,11 @@ SETTINGS_EOF`);
       client.forwardIn('127.0.0.1', localPort, (err) => {
         if (err) {
           // EADDRINUSE means the port is already forwarded (from a previous session)
-          if (err.message?.includes('address already in use') || err.message?.includes('EADDRINUSE')) {
+          if (
+            err.message?.includes('address already in use') ||
+            err.message?.includes('EADDRINUSE') ||
+            err.message?.includes('Unable to bind')
+          ) {
             console.log(`[SSH Service] Reverse tunnel port ${localPort} already in use on remote — reusing`);
             this.activeTunnels.add(tunnelKey);
             resolve();

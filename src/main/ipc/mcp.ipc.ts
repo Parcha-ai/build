@@ -10,22 +10,75 @@ import { sessionService } from './session.ipc';
 import type { MCPServerInfo, MarketplaceMCPServer } from '../../shared/types';
 
 let remoteAuthSyncListenerRegistered = false;
+let remoteMcpSyncInFlight = false;
+let remoteMcpSyncQueued = false;
+
+const REMOTE_MCP_SYNC_TIMEOUT_MS = 30_000;
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+  });
+
+  return Promise.race([
+    promise.finally(() => {
+      if (timer) clearTimeout(timer);
+    }),
+    timeout,
+  ]);
+}
 
 export function registerMcpHandlers(ipcMain: IpcMain): void {
-  const syncHarnessesAndSshSessions = async () => {
+  const syncConnectedSshSessions = async () => {
     const sessions = await sessionService.listSessions();
-    for (const session of sessions) {
-      if (session.sshConfig && sshService.isConnected(session.id)) {
-        console.log('[MCP IPC] Syncing MCP servers to SSH session:', session.id);
-        await sshService.syncMcpConfigsToRemote(session.id, session.sshConfig).catch((err) => {
-          console.error('[MCP IPC] Error syncing to SSH session:', err);
-        });
-      }
+    await Promise.allSettled(
+      sessions
+        .filter((session) => session.sshConfig && sshService.isConnected(session.id))
+        .map((session) => {
+          console.log('[MCP IPC] Syncing MCP servers to SSH session:', session.id);
+          return withTimeout(
+            sshService.syncMcpConfigsToRemote(session.id, session.sshConfig!),
+            REMOTE_MCP_SYNC_TIMEOUT_MS,
+            `MCP sync to SSH session ${session.id}`
+          ).catch((err) => {
+            console.error('[MCP IPC] Error syncing to SSH session:', err);
+          });
+        })
+    );
+  };
+
+  const scheduleRemoteMcpSync = () => {
+    if (remoteMcpSyncInFlight) {
+      remoteMcpSyncQueued = true;
+      return;
     }
 
+    remoteMcpSyncInFlight = true;
+    void (async () => {
+      try {
+        do {
+          remoteMcpSyncQueued = false;
+          await syncConnectedSshSessions();
+        } while (remoteMcpSyncQueued);
+      } catch (err) {
+        console.error('[MCP IPC] Error syncing MCP configs to SSH sessions:', err);
+      } finally {
+        remoteMcpSyncInFlight = false;
+        if (remoteMcpSyncQueued) {
+          scheduleRemoteMcpSync();
+        }
+      }
+    })();
+  };
+
+  const syncHarnessesAndSshSessions = async () => {
     await mcpService.syncLocalHarnessConfigs().catch((err) => {
       console.error('[MCP IPC] Error syncing local harness MCP configs:', err);
     });
+    scheduleRemoteMcpSync();
   };
 
   if (!remoteAuthSyncListenerRegistered) {

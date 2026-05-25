@@ -163,6 +163,13 @@ async function main(): Promise<void> {
   assert.ok(!readTempHome('.codex/config.toml').includes(serverId));
   assert.ok(!readTempHome('.config/opencode/build-mcp.json').includes(serverId));
 
+  const mcpIpcSource = fs.readFileSync(path.join(__dirname, '../src/main/ipc/mcp.ipc.ts'), 'utf8');
+  assert.ok(mcpIpcSource.includes('REMOTE_MCP_SYNC_TIMEOUT_MS'), 'Remote MCP sync should be timeboxed');
+  const localSyncIndex = mcpIpcSource.indexOf('mcpService.syncLocalHarnessConfigs()');
+  const remoteScheduleIndex = mcpIpcSource.lastIndexOf('scheduleRemoteMcpSync();');
+  assert.ok(localSyncIndex !== -1 && remoteScheduleIndex !== -1 && localSyncIndex < remoteScheduleIndex,
+    'Extension install should sync local harness configs before scheduling remote SSH sync');
+
   console.log('mcp extension e2e verifier passed');
 }
 
