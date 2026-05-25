@@ -301,12 +301,6 @@ function getRemotePathPrefix(): string {
   ].join(' && ');
 }
 
-function buildRemotePromptAssignment(message: string): string {
-  const encoded = Buffer.from(message).toString('base64');
-  const quotedEncoded = quoteForRemoteShell(encoded);
-  return `prompt="$(printf '%s' ${quotedEncoded} | base64 -d 2>/dev/null || printf '%s' ${quotedEncoded} | base64 -D)"`;
-}
-
 class GeminiService {
   private activeProcesses: Map<string, { process: ChildProcess; abortController: AbortController }> = new Map();
   private geminiBinaryPath: string | null = null;
@@ -490,7 +484,7 @@ class GeminiService {
       if (sshConfig) {
         const remoteDir = workDir || sshConfig.remoteWorkdir || '~';
         const remoteArgs = [
-          '-p', '"$prompt"',
+          '-p', "''",
           '--output-format', 'stream-json',
           '--sandbox',
           '--yolo',
@@ -505,16 +499,16 @@ class GeminiService {
           `export GEMINI_API_KEY=${quoteForRemoteShell(apiKey)}`,
           `export GOOGLE_API_KEY=${quoteForRemoteShell(apiKey)}`,
           'export GEMINI_CLI_TRUST_WORKSPACE=true',
-          buildRemotePromptAssignment(message),
           'gemini_bin="$(command -v gemini)" || { echo "Gemini CLI not found on remote. Install it with: npm install -g @google/gemini-cli" >&2; exit 127; }',
           `"$gemini_bin" ${remoteArgs.join(' ')}`,
         ].join(' && ');
 
-        console.log(`[Gemini Service] SSH exec on ${sshConfig.host}: gemini -p <${message.length} chars> --model ${geminiModel}`);
+        console.log(`[Gemini Service] SSH exec on ${sshConfig.host}: gemini -p <stdin:${message.length} chars> --model ${geminiModel}`);
         child = spawn('ssh', buildSshArgs(sshConfig, remoteCommand), {
           signal: abortController.signal,
           detached: process.platform !== 'win32',
         });
+        child.stdin?.end(message);
       } else {
         // Run via `node <gemini-script>` directly — avoids shell: true which
         // corrupts arguments containing shell metacharacters ($, backticks, quotes).

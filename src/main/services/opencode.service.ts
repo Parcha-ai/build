@@ -300,8 +300,12 @@ class OpenCodeService {
       'export OPENCODE_DISABLE_AUTOUPDATE=true',
       'export OPENCODE_DISABLE_TERMINAL_TITLE=true',
       'export OPENCODE_ENABLE_EXPERIMENTAL_MODELS=true',
+      'prompt_file="$(mktemp "${TMPDIR:-/tmp}/build-opencode-prompt.XXXXXX")"',
+      'cleanup_prompt_file() { rm -f "$prompt_file"; }',
+      'trap cleanup_prompt_file EXIT',
+      'cat > "$prompt_file"',
       'if command -v opencode >/dev/null 2>&1; then opencode_cmd="$(command -v opencode)"; opencode_prefix=""; elif command -v npx >/dev/null 2>&1; then opencode_cmd="$(command -v npx)"; opencode_prefix="-y opencode-ai"; else echo "OpenCode runner not found on remote. Install OpenCode with: npm install -g opencode-ai, or install Node/npm for npx fallback." >&2; exit 127; fi',
-      `"$opencode_cmd" \${opencode_prefix} run ${quoteForRemoteShell(message)} --model ${quoteForRemoteShell(opencodeModel)} --format json --dir ${remotePathForShell(remoteDir)}${skipFlag}`,
+      `"$opencode_cmd" \${opencode_prefix} run "$(cat "$prompt_file")" --model ${quoteForRemoteShell(opencodeModel)} --format json --dir ${remotePathForShell(remoteDir)}${skipFlag}`,
     ].filter(Boolean).join(' && ');
 
     const abortController = new AbortController();
@@ -309,6 +313,7 @@ class OpenCodeService {
       signal: abortController.signal,
       detached: process.platform !== 'win32',
     });
+    child.stdin?.end(message);
 
     return { child, abortController };
   }
