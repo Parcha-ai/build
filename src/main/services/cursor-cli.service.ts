@@ -422,7 +422,7 @@ class CursorCliService {
 
       const remoteDir = workDir || sshConfig.remoteWorkdir || '~';
       const remoteArgs = [
-        '-p', '"$(cat "$prompt_file")"',
+        '-p', "''",
         '--output-format', 'stream-json',
         '--force',
         '--trust',
@@ -439,10 +439,6 @@ class CursorCliService {
         `cd ${this.remotePathForShell(remoteDir)}`,
         this.getRemotePathPrefix(),
         apiKey ? `export CURSOR_API_KEY=${this.quoteForRemoteShell(apiKey)}` : '',
-        'prompt_file="$(mktemp "${TMPDIR:-/tmp}/build-cursor-prompt.XXXXXX")"',
-        'cleanup_prompt_file() { rm -f "$prompt_file"; }',
-        'trap cleanup_prompt_file EXIT',
-        'cat > "$prompt_file"',
         'agent_bin="$(command -v cursor-agent || command -v agent)" || { echo "Cursor Agent CLI not found on remote. Install it with: curl https://cursor.com/install -fsS | bash" >&2; exit 127; }',
         `"$agent_bin" ${remoteArgs.join(' ')}`,
       ].filter(Boolean).join(' && ');
@@ -468,7 +464,7 @@ class CursorCliService {
       }
 
       const args = [
-        '-p', message,
+        '-p', '',
         '--output-format', 'stream-json',
         '--force',
         '--trust',
@@ -484,7 +480,7 @@ class CursorCliService {
       const env: Record<string, string> = { ...(process.env as Record<string, string>) };
       if (apiKey) env.CURSOR_API_KEY = apiKey;
 
-      console.log(`[Cursor CLI] Local spawn: cursor-agent -p <${message.length} chars> --model ${cursorModel}${chatId ? ` --resume ${chatId}` : ' (new chat)'}`);
+      console.log(`[Cursor CLI] Local spawn: cursor-agent -p <stdin:${message.length} chars> --model ${cursorModel}${chatId ? ` --resume ${chatId}` : ' (new chat)'}`);
 
       child = spawn(agentBin, args, {
         env,
@@ -492,6 +488,7 @@ class CursorCliService {
         signal: abortController.signal,
         detached: process.platform !== 'win32',
       });
+      child.stdin?.end(message);
     }
     child.once('error', (error: NodeJS.ErrnoException) => {
       if (error.code !== 'ABORT_ERR') {
