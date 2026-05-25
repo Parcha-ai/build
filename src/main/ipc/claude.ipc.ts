@@ -1,4 +1,4 @@
-import { IpcMain } from 'electron';
+import { BrowserWindow, IpcMain } from 'electron';
 import Store from 'electron-store';
 import { IPC_CHANNELS } from '../../shared/constants/channels';
 import { ClaudeService } from '../services/claude.service';
@@ -153,7 +153,6 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
         }
         // Sender destroyed mid-stream — fall back to any live window
         console.warn(`[Claude IPC] Sender destroyed, falling back for ${channel}`);
-        const { BrowserWindow } = require('electron');
         for (const w of BrowserWindow.getAllWindows()) {
           if (!w.isDestroyed()) {
             w.webContents.send(channel, ...args);
@@ -485,6 +484,186 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
     }
   );
 
+  ipcMain.handle(
+    IPC_CHANNELS.CLAUDE_RESUME_REMOTE_TURN,
+    async (event, sessionId: string, model?: string) => {
+      const mainWindow = getMainWindow();
+      if (!mainWindow) return;
+
+      const senderContents = event.sender;
+      const sendToSender = (channel: string, ...args: unknown[]) => {
+        if (!senderContents.isDestroyed()) {
+          senderContents.send(channel, ...args);
+          return;
+        }
+
+        for (const w of BrowserWindow.getAllWindows()) {
+          if (!w.isDestroyed()) {
+            w.webContents.send(channel, ...args);
+            return;
+          }
+        }
+      };
+
+      claudeService.setMainWindow(mainWindow);
+
+      const batcher = new ChunkBatcher(
+        sessionId,
+        (content, agentId) => sendToSender(IPC_CHANNELS.CLAUDE_STREAM_CHUNK, { sessionId, content, agentId }),
+        (content) => sendToSender(IPC_CHANNELS.CLAUDE_THINKING_CHUNK, { sessionId, content })
+      );
+
+      let fullMessageContent = '';
+      let hadError = false;
+      let sentStreamEnd = false;
+      let latestResolvedModel: string | undefined = model;
+      const accumulatedToolCalls: ToolCall[] = [];
+      const accumulatedContentBlocks: ContentBlock[] = [];
+
+      const upsertAccumulatedToolCall = (toolCall: ToolCall | undefined): void => {
+        if (!toolCall) return;
+        const idx = accumulatedToolCalls.findIndex(tc => tc.id === toolCall.id);
+        if (idx >= 0) {
+          accumulatedToolCalls[idx] = toolCall;
+        } else {
+          accumulatedToolCalls.push(toolCall);
+        }
+      };
+      const appendTextContentBlock = (content: string | undefined, agentId?: string): void => {
+        if (!content) return;
+        const lastBlock = accumulatedContentBlocks[accumulatedContentBlocks.length - 1];
+        if (lastBlock?.type === 'text' && lastBlock.agentId === agentId) {
+          lastBlock.text = (lastBlock.text || '') + content;
+        } else {
+          accumulatedContentBlocks.push({ type: 'text', text: content, agentId });
+        }
+      };
+      const appendToolContentBlock = (toolCall: ToolCall | undefined, agentId?: string): void => {
+        if (!toolCall?.id) return;
+        if (accumulatedContentBlocks.some(block => block.type === 'tool_use' && block.toolCallId === toolCall.id)) return;
+        accumulatedContentBlocks.push({ type: 'tool_use', toolCallId: toolCall.id, agentId: toolCall.agentId || agentId });
+      };
+
+      try {
+        console.log('[Claude IPC] resumeRemoteTurn received for:', sessionId, 'model:', model);
+        for await (const streamEvent of claudeService.resumeRemoteTurn(sessionId, model)) {
+          latestResolvedModel = streamEvent.resolvedModel || latestResolvedModel;
+
+          switch (streamEvent.type) {
+            case 'text_delta':
+              batcher.addText(streamEvent.content || '', streamEvent.agentId);
+              appendTextContentBlock(streamEvent.content, streamEvent.agentId);
+              fullMessageContent += streamEvent.content || '';
+              break;
+
+            case 'thinking_delta':
+              batcher.addThinking(streamEvent.content || '');
+              break;
+
+            case 'tool_use':
+              upsertAccumulatedToolCall(streamEvent.toolCall as ToolCall | undefined);
+              appendToolContentBlock(streamEvent.toolCall as ToolCall | undefined, streamEvent.agentId);
+              sendToSender(IPC_CHANNELS.CLAUDE_TOOL_CALL, {
+                sessionId,
+                toolCall: streamEvent.toolCall,
+                agentId: streamEvent.agentId,
+              });
+              break;
+
+            case 'tool_result':
+              upsertAccumulatedToolCall(streamEvent.toolCall as ToolCall | undefined);
+              appendToolContentBlock(streamEvent.toolCall as ToolCall | undefined, streamEvent.agentId);
+              sendToSender(IPC_CHANNELS.CLAUDE_TOOL_RESULT, {
+                sessionId,
+                toolCall: streamEvent.toolCall,
+                agentId: streamEvent.agentId,
+              });
+              break;
+
+            case 'system':
+              sendToSender(IPC_CHANNELS.CLAUDE_SYSTEM_INFO, {
+                sessionId,
+                systemInfo: streamEvent.systemInfo,
+              });
+              break;
+
+            case 'context_usage':
+              sendToSender(IPC_CHANNELS.CLAUDE_CONTEXT_USAGE, {
+                sessionId,
+                inputTokens: (streamEvent as any).inputTokens,
+                contextWindowSize: (streamEvent as any).contextWindowSize,
+                percentage: (streamEvent as any).percentage,
+                ...((streamEvent as any).contextUsageBreakdown ? { breakdown: (streamEvent as any).contextUsageBreakdown } : {}),
+              });
+              break;
+
+            case 'compaction_status':
+              sendToSender(IPC_CHANNELS.CLAUDE_COMPACTION_STATUS, streamEvent.compactionStatus);
+              break;
+
+            case 'compaction_complete':
+              sendToSender(IPC_CHANNELS.CLAUDE_COMPACTION_COMPLETE, streamEvent.compactionComplete);
+              break;
+
+            case 'message_complete': {
+              batcher.flush();
+              const finalMessage = buildCompletedStreamMessage({
+                message: streamEvent.message,
+                content: fullMessageContent,
+                toolCalls: accumulatedToolCalls,
+                contentBlocks: accumulatedContentBlocks,
+                model,
+                resolvedModel: streamEvent.resolvedModel || latestResolvedModel,
+              });
+              recordCompletedStreamMessage(sessionId, finalMessage);
+              sentStreamEnd = true;
+              sendToSender(IPC_CHANNELS.CLAUDE_STREAM_END, {
+                sessionId,
+                message: finalMessage,
+                ...((streamEvent as any).terminalReason ? { terminalReason: (streamEvent as any).terminalReason } : {}),
+              });
+              break;
+            }
+
+            case 'error':
+              batcher.flush();
+              sendToSender(IPC_CHANNELS.CLAUDE_STREAM_ERROR, {
+                sessionId,
+                error: streamEvent.error,
+              });
+              hadError = true;
+              break;
+          }
+        }
+      } catch (error) {
+        batcher.flush();
+        sendToSender(IPC_CHANNELS.CLAUDE_STREAM_ERROR, {
+          sessionId,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        });
+        hadError = true;
+      } finally {
+        if (!sentStreamEnd) {
+          const finalMessage: ChatMessage = buildCompletedStreamMessage({
+            content: fullMessageContent || '',
+            toolCalls: accumulatedToolCalls,
+            contentBlocks: accumulatedContentBlocks,
+            model,
+            resolvedModel: latestResolvedModel,
+          });
+          if (hadError) {
+            finalMessage.interrupted = true;
+          }
+          recordCompletedStreamMessage(sessionId, finalMessage);
+          sendToSender(IPC_CHANNELS.CLAUDE_STREAM_END, {
+            sessionId,
+            message: finalMessage,
+          });
+        }
+      }
+    }
+  );
+
   ipcMain.handle(IPC_CHANNELS.CLAUDE_CANCEL, async (_, sessionId: string) => {
     claudeService.cancelQuery(sessionId);
     // Wait for the abort signal to propagate through the SDK generator and
@@ -519,6 +698,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
     wasStreaming: boolean;
     permissionMode: string;
     lastMessage?: string;
+    isSSH?: boolean;
   }) => {
     console.log('[Claude IPC] Saving auto-resume state:', state.sessionId, 'wasStreaming:', state.wasStreaming);
     settingsStore.set('autoResumeState', {
@@ -535,6 +715,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
       wasStreaming: boolean;
       permissionMode: string;
       lastMessage?: string;
+      isSSH?: boolean;
       timestamp: number;
     } | undefined;
 
@@ -542,10 +723,11 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
       return null;
     }
 
-    // Only return state if it's recent (within last 5 minutes)
-    // Older states are likely stale
-    const fiveMinutesAgo = Date.now() - 5 * 60 * 1000;
-    if (state.timestamp < fiveMinutesAgo) {
+    // Local renderer-only auto-resume gets stale quickly. SSH bridge recovery
+    // can safely survive laptop sleep and app restarts for much longer because
+    // the remote job is explicitly checked before reattaching.
+    const staleAfterMs = state.isSSH ? 24 * 60 * 60 * 1000 : 5 * 60 * 1000;
+    if (state.timestamp < Date.now() - staleAfterMs) {
       console.log('[Claude IPC] Auto-resume state is stale, ignoring');
       settingsStore.delete('autoResumeState');
       return null;

@@ -939,4 +939,18 @@ export function registerSSHHandlers(ipcMain: IpcMain): void {
       }
     }
   );
+
+  ipcMain.handle(
+    IPC_CHANNELS.SSH_HAS_RECOVERABLE_REMOTE_PROCESS,
+    async (_event, sessionId: string) => {
+      try {
+        const session = sessionStore.get(`sessions.${sessionId}`) as Session | undefined;
+        if (!session?.sshConfig) return false;
+        return sshService.hasRecoverableRemoteProcess(sessionId, session.sshConfig);
+      } catch (error) {
+        console.warn('[SSH IPC] Failed to check recoverable remote process:', error);
+        return false;
+      }
+    }
+  );
 }

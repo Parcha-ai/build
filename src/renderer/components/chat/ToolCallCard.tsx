@@ -3,6 +3,7 @@ import { Terminal, FileText, Search, FolderOpen, Play, Edit2, Globe, Code, HelpC
 import { LazyMonacoEditor, LazyDiffEditor } from './LazyMonacoEditor';
 import type { ToolCall } from '../../../shared/types';
 import { normalizeToolCall } from '../../../shared/utils/tool-call-transformer';
+import { extractContentBlockText } from '../../../shared/utils/content-block-text';
 import { useEditorStore } from '../../stores/editor.store';
 
 interface ToolCallCardProps {
@@ -822,6 +823,8 @@ function ExpandedContent({ toolCall, priority = false }: { toolCall: ToolCall; p
   }
 
   // For other tools, show input and result
+  const contentBlockResult = extractContentBlockText(result);
+
   return (
     <div className="space-y-2 text-xs">
       {/* Input section - only show if there's meaningful input */}
@@ -886,6 +889,10 @@ function ExpandedContent({ toolCall, priority = false }: { toolCall: ToolCall; p
                 />
               )}
             </div>
+          ) : contentBlockResult.matched ? (
+            <pre className="whitespace-pre-wrap text-claude-text bg-claude-bg/50 p-2 overflow-x-auto max-h-60 overflow-y-auto">
+              {contentBlockResult.text}
+            </pre>
           ) : typeof result === 'object' ? (
             <JSONResultViewer data={result} toolCallId={toolCall.id} priority={priority} />
           ) : tryParseJSON(String(result)) ? (

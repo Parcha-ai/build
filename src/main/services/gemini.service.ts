@@ -280,6 +280,9 @@ function buildSshArgs(sshConfig: SSHConfig, remoteCommand: string): string[] {
   const args = [
     '-o', 'StrictHostKeyChecking=no',
     '-o', 'BatchMode=yes',
+    '-o', 'ControlMaster=no',
+    '-o', 'ControlPersist=no',
+    '-S', 'none',
   ];
   if (sshConfig.port) {
     args.push('-p', String(sshConfig.port));

@@ -4,6 +4,7 @@ import { AGENT_COLORS } from '../../shared/types';
 import { normalizeToolCall } from '../../shared/utils/tool-call-transformer';
 import { contentBlockSignature, isCloseContentDuplicate, isCloseTimelineDuplicate, isInterruptedSafetyNetDuplicate, toolSignature } from '../../shared/utils/message-recovery';
 import { buildCompletedStreamMessage } from '../../shared/utils/stream-finalization';
+import { extractContentBlockText, stringifyToolResultForDisplay } from '../../shared/utils/content-block-text';
 import { useAudioStore } from './audio.store';
 
 // Check if running in Electron environment
@@ -379,24 +380,30 @@ function startRemoteProcessMonitor(
   setState: any,
   loadMessages: (sessionId: string, options?: LoadMessagesOptions) => Promise<void>,
 ) {
-  window.electronAPI.ssh.hasActiveRemoteProcess(sessionId)
-    .then((hasActiveRemoteProcess) => {
-      if (!hasActiveRemoteProcess) return;
+  const hasRecoverableProcess = window.electronAPI.ssh.hasRecoverableRemoteProcess
+    ? window.electronAPI.ssh.hasRecoverableRemoteProcess(sessionId)
+    : window.electronAPI.ssh.hasActiveRemoteProcess(sessionId);
 
-      const hasLocalLiveStream = () => {
-        const state = getState();
-        return Boolean(
-          (state.currentStreamContent[sessionId] || '').trim()
-          || (state.currentThinkingContent[sessionId] || '').trim()
-          || (state.currentToolCalls[sessionId] || []).length
-          || (state.streamEvents[sessionId] || []).length
-        );
-      };
+  hasRecoverableProcess
+    .then((recoverable) => {
+      if (!recoverable) return;
 
-      console.log(`[SessionStore] SSH session ${sessionId} has active remote Claude process — preserving queue state`);
+      console.log(`[SessionStore] SSH session ${sessionId} has recoverable remote Claude process — attaching stream state`);
       setState((state: SessionState) => ({
         isStreaming: { ...state.isStreaming, [sessionId]: true },
         sessionActivity: { ...state.sessionActivity, [sessionId]: 'active' },
+        streamGeneration: {
+          ...state.streamGeneration,
+          [sessionId]: (state.streamGeneration[sessionId] || 0) + 1,
+        },
+        streamStartTime: {
+          ...state.streamStartTime,
+          [sessionId]: Date.now(),
+        },
+        activeStreamModel: {
+          ...state.activeStreamModel,
+          [sessionId]: getSessionModel(state, sessionId),
+        },
       }));
 
       if (remoteProcessPollers.has(sessionId)) return;
@@ -409,6 +416,15 @@ function startRemoteProcessMonitor(
           if (existingMessages.length === 0) {
             console.log(`[SessionStore] Loading initial SSH transcript for ${sessionId}`);
             await loadMessages(sessionId, { replaceWhileStreaming: true });
+          }
+
+          const backendAlreadyStreaming = await window.electronAPI.claude.hasActiveQuery(sessionId).catch(() => false);
+          if (!backendAlreadyStreaming) {
+            console.log(`[SessionStore] Reattaching to detached SSH turn for ${sessionId}`);
+            await window.electronAPI.claude.resumeRemoteTurn(sessionId, getSessionModel(getState(), sessionId));
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            await loadMessages(sessionId);
+            return;
           }
 
           while (remoteProcessPollers.has(sessionId)) {
@@ -535,6 +551,34 @@ function isGenericToolName(name: string | undefined): boolean {
 
 function hasToolInput(input: Record<string, unknown> | undefined): boolean {
   return !!input && Object.keys(input).length > 0;
+}
+
+function compactPlainStatusLabel(value: unknown, maxLength = 120): string | undefined {
+  if (extractContentBlockText(value).matched || typeof value !== 'string') return undefined;
+  const compact = value.replace(/\s+/g, ' ').trim();
+  if (!compact) return undefined;
+  return compact.length > maxLength ? `${compact.slice(0, Math.max(0, maxLength - 3))}...` : compact;
+}
+
+function getToolCallStatusLabel(toolCall: ToolCall): string {
+  const input = toolCall.input || {};
+  const candidates = [
+    input.description,
+    input.command,
+    input.file_path,
+    input.path,
+    input.pattern,
+    input.query,
+    input.prompt,
+    toolCall.name,
+  ];
+
+  for (const candidate of candidates) {
+    const label = compactPlainStatusLabel(candidate);
+    if (label) return label;
+  }
+
+  return toolCall.name;
 }
 
 function isDevRendererRuntime(): boolean {
@@ -1959,11 +2003,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // Sub-agent tool activity: inject progress into chat stream so the user
       // sees what's happening. The SDK doesn't stream sub-agent text over SSH.
       if (tc.agentId && get().isStreaming[sessionId]) {
-        const desc = (tc.input as Record<string, unknown>)?.description as string
-          || (tc.input as Record<string, unknown>)?.command as string
-          || tc.name;
-        const label = typeof desc === 'string' ? desc.slice(0, 120) : tc.name;
-        updateStreamContent(sessionId, `\n> **Running:** ${label}\n`, tc.agentId);
+        updateStreamContent(sessionId, `\n> **Running:** ${getToolCallStatusLabel(tc)}\n\n`, tc.agentId);
       }
 
       // Track real backgrounded shells via Claude Code's native tool suite:
@@ -2049,7 +2089,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // 2. BashOutput result → append lines to matching shell_id monitor
       // 3. KillShell result → mark that shell_id inactive
       if (tc.id && tc.result) {
-        const resultText = typeof tc.result === 'string' ? tc.result : JSON.stringify(tc.result);
+        const resultText = stringifyToolResultForDisplay(tc.result);
 
         // Bash tool result — swap placeholder id for real shell_id
         if (tc.name === 'Bash') {
@@ -3556,10 +3596,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
 
     console.log('[SessionStore] Saving auto-resume state for Build It session:', sessionId);
+    const session = state.sessions.find(s => s.id === sessionId);
     await window.electronAPI.claude.saveAutoResumeState({
       sessionId,
       wasStreaming: true,
       permissionMode,
+      isSSH: !!session?.sshConfig,
     });
   },
 
@@ -3603,9 +3645,22 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         return;
       }
 
-      // Skip auto-resume for SSH sessions - no local process to resume
       if (session.sshConfig) {
-        console.log('[SessionStore] Skipping auto-resume for SSH session:', sessionId);
+        const hasRecoverable = window.electronAPI.ssh.hasRecoverableRemoteProcess
+          ? await window.electronAPI.ssh.hasRecoverableRemoteProcess(sessionId)
+          : await window.electronAPI.ssh.hasActiveRemoteProcess(sessionId);
+
+        if (!hasRecoverable) {
+          console.log('[SessionStore] SSH auto-resume state found, but no recoverable remote turn exists:', sessionId);
+          return;
+        }
+
+        console.log('[SessionStore] Auto-resuming SSH Build It session by reattaching:', sessionId);
+        state.setActiveSession(sessionId);
+        set((s) => ({
+          permissionMode: { ...s.permissionMode, [sessionId]: 'bypassPermissions' },
+        }));
+        startRemoteProcessMonitor(sessionId, get, set, state.loadMessages);
         return;
       }
 

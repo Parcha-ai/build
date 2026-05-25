@@ -53,6 +53,7 @@ export const IPC_CHANNELS = {
 
   // Claude channels
   CLAUDE_SEND_MESSAGE: 'claude:send-message',
+  CLAUDE_RESUME_REMOTE_TURN: 'claude:resume-remote-turn',
   CLAUDE_GET_MESSAGES: 'claude:get-messages',
   CLAUDE_GET_MODELS: 'claude:get-models',
   CLAUDE_STREAM_CHUNK: 'claude:stream-chunk',
@@ -204,6 +205,7 @@ export const IPC_CHANNELS = {
   SSH_RECONNECT: 'ssh:reconnect',
   SSH_CONNECTION_LOST: 'ssh:connection-lost',
   SSH_HAS_ACTIVE_REMOTE_PROCESS: 'ssh:has-active-remote-process',
+  SSH_HAS_RECOVERABLE_REMOTE_PROCESS: 'ssh:has-recoverable-remote-process',
   SSH_BROWSE_REMOTE_FILES: 'ssh:browse-remote-files',
 
   // Secure Keys channels (API key/token interception)

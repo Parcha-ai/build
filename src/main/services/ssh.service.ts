@@ -56,6 +56,28 @@ interface DetachedRemoteBridgeConfig {
   env: Record<string, string>;
 }
 
+export interface DetachedRemoteBridgeJob {
+  jobDir: string;
+  socketPath: string;
+  logPath: string;
+  exitPath: string;
+  eofPath: string;
+  pidPath: string;
+  pid?: string;
+  command?: string;
+  active: boolean;
+  completed: boolean;
+  recovered: boolean;
+  hasMetadata: boolean;
+  logBytes: number;
+  updatedAt: number;
+}
+
+export interface AttachedDetachedRemoteProcess {
+  process: SpawnedProcess;
+  job: DetachedRemoteBridgeJob;
+}
+
 interface RemoteBridgeInstall {
   bridgePath: string;
   nodeCommand: string;
@@ -642,21 +664,14 @@ export class SSHService {
   async hasActiveRemoteProcess(sessionId: string, config: SSHConfig): Promise<boolean> {
     try {
       const client = await this.getConnection(sessionId, config);
-      const bridgeDir = this.getDetachedBridgeSessionDir(sessionId);
       const legacyTmuxName = `grep-${sessionId.substring(0, 8)}`;
+      const jobs = await this.listDetachedBridgeJobs(sessionId, config);
+      if (jobs.some(job => job.active && !job.completed && !job.recovered && (!job.command || job.command === 'claude'))) {
+        return true;
+      }
 
       const output = await this.execCommand(client,
         'active=0; ' +
-        `if test -d ${this.quoteForShell(bridgeDir)}; then ` +
-        `for pidfile in ${this.quoteForShell(bridgeDir)}/*/pid; do ` +
-        'test -f "$pidfile" || continue; ' +
-        'jobdir="$(dirname "$pidfile")"; ' +
-        'pid="$(cat "$pidfile" 2>/dev/null || true)"; ' +
-        'cmd="$(test -n "$pid" && ps -p "$pid" -o command= 2>/dev/null || true)"; ' +
-        'completed="$(test -f "$jobdir/stdout.log" && grep -q \'"type":"result"\' "$jobdir/stdout.log" && echo 1 || echo 0)"; ' +
-        'if test -n "$pid" && echo "$cmd" | grep -q "claude" && test "$completed" = "0"; then active=1; fi; ' +
-        'done; ' +
-        'fi; ' +
         `if test "$active" = "0" && tmux has-session -t ${this.quoteForShell(legacyTmuxName)} 2>/dev/null; then active=1; fi; ` +
         'echo "$active"'
       );
@@ -665,6 +680,99 @@ export class SSHService {
     } catch (error) {
       console.warn(`[SSH Service] Failed to check active remote process for ${sessionId}:`, error);
       return false;
+    }
+  }
+
+  private parseDetachedBridgeJobs(output: string): DetachedRemoteBridgeJob[] {
+    return output
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line): DetachedRemoteBridgeJob | null => {
+        const [jobDir, pid, command, active, completed, recovered, hasMetadata, updatedAt, logBytes, logPath, exitPath] = line.split('\t');
+        if (!jobDir) return null;
+        const normalizedJobDir = jobDir.replace(/\/+$/, '');
+        return {
+          jobDir: normalizedJobDir,
+          socketPath: `${normalizedJobDir}/stdin.sock`,
+          logPath: logPath || `${normalizedJobDir}/stdout.log`,
+          exitPath: exitPath || `${normalizedJobDir}/exit.json`,
+          eofPath: `${normalizedJobDir}/stdin.eof`,
+          pidPath: `${normalizedJobDir}/pid`,
+          pid: pid || undefined,
+          command: command || undefined,
+          active: active === '1',
+          completed: completed === '1',
+          recovered: recovered === '1',
+          hasMetadata: hasMetadata === '1',
+          logBytes: Number(logBytes || 0) || 0,
+          updatedAt: Number(updatedAt || 0) || 0,
+        };
+      })
+      .filter((job): job is DetachedRemoteBridgeJob => Boolean(job));
+  }
+
+  async listDetachedBridgeJobs(sessionId: string, config: SSHConfig): Promise<DetachedRemoteBridgeJob[]> {
+    try {
+      const client = await this.getConnection(sessionId, config);
+      const bridgeDir = this.getDetachedBridgeSessionDir(sessionId);
+      const output = await this.execCommand(client,
+        `if test -d ${this.quoteForShell(bridgeDir)}; then ` +
+        `for jobdir in ${this.quoteForShell(bridgeDir)}/*; do ` +
+        'test -d "$jobdir" || continue; ' +
+        'pidfile="$jobdir/pid"; log="$jobdir/stdout.log"; exitfile="$jobdir/exit.json"; recoveredfile="$jobdir/recovered.json"; ' +
+        'pid="$(cat "$pidfile" 2>/dev/null || true)"; ' +
+        'cmdname="$(sed -n \'s/^[[:space:]]*"command"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p\' "$jobdir/config.json" 2>/dev/null | head -1)"; ' +
+        'active=0; test -n "$pid" && kill -0 "$pid" 2>/dev/null && active=1; ' +
+        'completed=0; ' +
+        'if test -f "$exitfile"; then completed=1; ' +
+        'elif test -f "$log" && grep -q \'"type":"result"\' "$log" 2>/dev/null; then completed=1; fi; ' +
+        'recovered=0; test -f "$recoveredfile" && recovered=1; ' +
+        'metadata=0; test -f "$jobdir/metadata.json" && metadata=1; ' +
+        'updated="$(stat -c %Y "$jobdir" 2>/dev/null || stat -f %m "$jobdir" 2>/dev/null || echo 0)"; ' +
+        'bytes="$(wc -c < "$log" 2>/dev/null || echo 0)"; ' +
+        'printf "%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n" "$jobdir" "$pid" "$cmdname" "$active" "$completed" "$recovered" "$metadata" "$updated" "$bytes" "$log" "$exitfile"; ' +
+        'done; ' +
+        'fi; true'
+      );
+      return this.parseDetachedBridgeJobs(output).sort((a, b) => b.updatedAt - a.updatedAt);
+    } catch (error) {
+      console.warn(`[SSH Service] Failed to list detached bridge jobs for ${sessionId}:`, error);
+      return [];
+    }
+  }
+
+  async getLatestRecoverableRemoteProcess(sessionId: string, config: SSHConfig): Promise<DetachedRemoteBridgeJob | null> {
+    const jobs = await this.listDetachedBridgeJobs(sessionId, config);
+    const recentCompletedCutoff = Math.floor((Date.now() - 24 * 60 * 60 * 1000) / 1000);
+    return jobs.find((job) => {
+      if (job.recovered) return false;
+      if (job.command && job.command !== 'claude') return false;
+      if (job.active) return true;
+      if (!job.hasMetadata) return false;
+      if (job.logBytes <= 0) return false;
+      return job.completed && job.updatedAt >= recentCompletedCutoff;
+    }) || null;
+  }
+
+  async hasRecoverableRemoteProcess(sessionId: string, config: SSHConfig): Promise<boolean> {
+    return Boolean(await this.getLatestRecoverableRemoteProcess(sessionId, config));
+  }
+
+  async markDetachedBridgeJobRecovered(sessionId: string, config: SSHConfig, jobDir: string): Promise<void> {
+    try {
+      const safeJobDir = jobDir.replace(/\/+$/, '');
+      if (!safeJobDir.startsWith(this.getDetachedBridgeSessionDir(sessionId) + '/')) {
+        throw new Error('Refusing to mark unrelated bridge job as recovered');
+      }
+      const client = await this.getConnection(sessionId, config);
+      const payload = JSON.stringify({ recoveredAt: new Date().toISOString() });
+      await this.execCommand(
+        client,
+        `printf %s ${this.quoteForShell(payload)} > ${this.quoteForShell(`${safeJobDir}/recovered.json`)}`
+      );
+    } catch (error) {
+      console.warn(`[SSH Service] Failed to mark bridge job recovered for ${sessionId}:`, error);
     }
   }
 
@@ -1442,6 +1550,9 @@ detect_cli gemini gemini
       emitter.emit('exit', code, signal);
       passThrough.stdout.end();
       options.signal?.removeEventListener('abort', abortHandler);
+      if (flushRemaining && !killed) {
+        void this.markDetachedBridgeJobRecovered(sessionId, config, bridge.jobDir);
+      }
     };
 
     const attachReader = async (): Promise<void> => {
@@ -1654,6 +1765,274 @@ detect_cli gemini gemini
     } as SpawnedProcess;
   }
 
+  private createDetachedBridgeConfigFromJob(job: DetachedRemoteBridgeJob): DetachedRemoteBridgeConfig {
+    return {
+      jobDir: job.jobDir,
+      socketPath: job.socketPath,
+      logPath: job.logPath,
+      exitPath: job.exitPath,
+      eofPath: job.eofPath,
+      pidPath: job.pidPath,
+      command: 'claude',
+      args: [],
+      cwd: '.',
+      env: {},
+    };
+  }
+
+  async attachLatestDetachedCommandProcess(
+    sessionId: string,
+    config: SSHConfig,
+    signal?: AbortSignal
+  ): Promise<AttachedDetachedRemoteProcess | null> {
+    const job = await this.getLatestRecoverableRemoteProcess(sessionId, config);
+    if (!job) {
+      return null;
+    }
+
+    const process = this.attachDetachedCommandProcess(sessionId, config, job, signal);
+    return { process, job };
+  }
+
+  private attachDetachedCommandProcess(
+    sessionId: string,
+    config: SSHConfig,
+    job: DetachedRemoteBridgeJob,
+    signal?: AbortSignal
+  ): SpawnedProcess {
+    const passThrough = {
+      stdin: new PassThrough(),
+      stdout: new PassThrough(),
+    };
+
+    const bridge = this.createDetachedBridgeConfigFromJob(job);
+    const emitter = new EventEmitter();
+    let killed = false;
+    let exitCode: number | null = null;
+    let readerChannel: ClientChannel | null = null;
+    let stdoutOffset = 0;
+    let finalized = false;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let exitPoller: ReturnType<typeof setInterval> | null = null;
+
+    passThrough.stdin.on('data', () => {
+      // Attach-only recovery never sends a new user prompt. Input is ignored
+      // unless the user explicitly cancels, which goes through kill().
+    });
+
+    const clearTimers = () => {
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+      if (exitPoller) {
+        clearInterval(exitPoller);
+        exitPoller = null;
+      }
+    };
+
+    const scheduleReaderReconnect = () => {
+      if (finalized || killed || reconnectTimer) return;
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        attachReader().catch((error) => {
+          console.warn('[SSH Service] Failed to reattach recovered remote stdout bridge:', error);
+          scheduleReaderReconnect();
+        });
+      }, 1000);
+    };
+
+    const fetchRemainingOutput = async (): Promise<void> => {
+      const client = await this.getConnection(sessionId, config);
+      const remaining = await this.execCommand(
+        client,
+        `tail -c +${stdoutOffset + 1} ${this.quoteForShell(bridge.logPath)} 2>/dev/null || true`
+      );
+      if (remaining) {
+        stdoutOffset += Buffer.byteLength(remaining);
+        passThrough.stdout.write(Buffer.from(remaining));
+      }
+    };
+
+    const finalize = async (code: number | null, signalName: NodeJS.Signals | null, flushRemaining: boolean): Promise<void> => {
+      if (finalized) return;
+      finalized = true;
+      clearTimers();
+
+      if (readerChannel) {
+        try {
+          readerChannel.close();
+        } catch {
+          // Best-effort bridge teardown.
+        }
+        readerChannel = null;
+      }
+
+      if (flushRemaining) {
+        try {
+          await fetchRemainingOutput();
+        } catch (error) {
+          console.warn('[SSH Service] Failed to fetch trailing recovered bridge output:', error);
+        }
+      }
+
+      exitCode = code;
+      emitter.emit('exit', code, signalName);
+      passThrough.stdout.end();
+      signal?.removeEventListener('abort', abortHandler);
+    };
+
+    const attachReader = async (): Promise<void> => {
+      if (finalized || killed || readerChannel) return;
+      const client = await this.getConnection(sessionId, config);
+      const command = `touch ${this.quoteForShell(bridge.logPath)} && tail -c +${stdoutOffset + 1} -F ${this.quoteForShell(bridge.logPath)}`;
+
+      await new Promise<void>((resolve, reject) => {
+        client.exec(command, (err, channel) => {
+          if (err) {
+            reject(err);
+            return;
+          }
+
+          readerChannel = channel;
+          channel.on('data', (data: Buffer) => {
+            stdoutOffset += data.length;
+            passThrough.stdout.write(data);
+          });
+          channel.stderr.on('data', () => {
+            // tail -F can emit transient reopen messages; ignore them.
+          });
+          channel.on('close', () => {
+            readerChannel = null;
+            if (!finalized && !killed) {
+              scheduleReaderReconnect();
+            }
+          });
+          channel.on('error', (error: Error) => {
+            console.warn('[SSH Service] Recovered stdout bridge error:', error.message);
+          });
+
+          resolve();
+        });
+      });
+    };
+
+    const pollForExit = async (): Promise<void> => {
+      if (finalized || killed) return;
+      try {
+        const client = await this.getConnection(sessionId, config);
+        const output = await this.execCommand(
+          client,
+          `if test -f ${this.quoteForShell(bridge.exitPath)}; then ` +
+          `echo __EXIT__; cat ${this.quoteForShell(bridge.exitPath)}; ` +
+          `elif test -f ${this.quoteForShell(bridge.logPath)} && grep -q '"type":"result"' ${this.quoteForShell(bridge.logPath)} 2>/dev/null; then ` +
+          'echo __RESULT__; ' +
+          `else pid="$(cat ${this.quoteForShell(bridge.pidPath)} 2>/dev/null || true)"; ` +
+          'if test -n "$pid" && kill -0 "$pid" 2>/dev/null; then echo __RUNNING__; else echo __GONE__; fi; fi'
+        );
+        const trimmed = output.trim();
+        if (!trimmed || trimmed === '__RUNNING__') {
+          return;
+        }
+
+        if (trimmed.startsWith('__EXIT__')) {
+          const rawJson = trimmed.replace(/^__EXIT__\s*/, '');
+          let parsed: { code?: number | null; signal?: string | null } = {};
+          try {
+            parsed = JSON.parse(rawJson);
+          } catch {
+            parsed = {};
+          }
+          await finalize(
+            typeof parsed.code === 'number' ? parsed.code : null,
+            (parsed.signal as NodeJS.Signals | null) || null,
+            true
+          );
+          return;
+        }
+
+        if (trimmed === '__RESULT__') {
+          await finalize(0, null, true);
+          return;
+        }
+
+        if (trimmed === '__GONE__') {
+          await finalize(1, null, true);
+        }
+      } catch (error) {
+        console.warn('[SSH Service] Recovered bridge exit poll failed:', error);
+      }
+    };
+
+    const abortHandler = () => {
+      killed = true;
+      if (readerChannel) {
+        try {
+          readerChannel.close();
+        } catch {
+          // Best-effort bridge teardown.
+        }
+      }
+      void this.killDetachedProcess(sessionId, config, bridge).finally(() => {
+        void finalize(exitCode, 'SIGTERM', false);
+      });
+    };
+
+    signal?.addEventListener('abort', abortHandler);
+
+    void (async () => {
+      try {
+        if (job.completed && !job.active) {
+          await finalize(0, null, true);
+          return;
+        }
+
+        await attachReader();
+        exitPoller = setInterval(() => {
+          void pollForExit();
+        }, 1000);
+        void pollForExit();
+      } catch (error) {
+        console.warn('[SSH Service] Initial recovered bridge attach failed; retrying:', error);
+        scheduleReaderReconnect();
+        exitPoller = setInterval(() => {
+          void pollForExit();
+        }, 1000);
+      }
+    })();
+
+    return {
+      stdin: passThrough.stdin,
+      stdout: passThrough.stdout,
+      get killed() {
+        return killed;
+      },
+      get exitCode() {
+        return exitCode;
+      },
+      kill: (signalName: NodeJS.Signals) => {
+        if (killed) return false;
+        killed = true;
+        void this.killDetachedProcess(sessionId, config, bridge).finally(() => {
+          void finalize(exitCode, signalName === 'SIGKILL' ? 'SIGKILL' : 'SIGTERM', false);
+        });
+        return true;
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      on(event: string, listener: (...args: any[]) => void) {
+        emitter.on(event, listener);
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      once(event: string, listener: (...args: any[]) => void) {
+        emitter.once(event, listener);
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      off(event: string, listener: (...args: any[]) => void) {
+        emitter.off(event, listener);
+      },
+    } as SpawnedProcess;
+  }
+
   private async launchDetachedRemoteBridge(
     sessionId: string,
     config: SSHConfig,
@@ -1668,6 +2047,14 @@ detect_cli gemini gemini
       `find ${this.quoteForShell(this.getDetachedBridgeSessionDir(sessionId))} -mindepth 1 -maxdepth 1 -type d -mmin +360 -exec rm -rf {} + 2>/dev/null || true`
     );
     await this.writeRemoteFile(sessionId, config, `${bridge.jobDir}/config.json`, JSON.stringify(bridge, null, 2));
+    await this.writeRemoteFile(sessionId, config, `${bridge.jobDir}/metadata.json`, JSON.stringify({
+      sessionId,
+      safeSessionId: this.getSafeSessionId(sessionId),
+      createdAt: new Date().toISOString(),
+      command: bridge.command,
+      args: bridge.args,
+      cwd: bridge.cwd,
+    }, null, 2));
 
     const startCommand = `${this.getRemoteCommandPathPrefix(config)} && (nohup ${install.nodeCommand} ${this.quoteForShell(install.bridgePath)} spawn ${this.quoteForShell(`${bridge.jobDir}/config.json`)} >/dev/null 2>&1 </dev/null & echo __claudette_bridge_started__)`;
     await new Promise<void>((resolve, reject) => {

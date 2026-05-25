@@ -5912,6 +5912,467 @@ Begin by creating the task structure now.
     }
   }
 
+  async *resumeRemoteTurn(
+    sessionId: string,
+    model?: string,
+  ): AsyncGenerator<StreamEvent> {
+    const session = (this.sessionStore.get(`sessions.${sessionId}`) as Session | undefined)
+      || (this.sessionStore.get(`discoveredSessions.${sessionId}`) as Session | undefined);
+
+    if (!session?.sshConfig) {
+      yield { type: 'error', error: 'Session is not an SSH session.' };
+      return;
+    }
+
+    if (this.activeQueries.has(sessionId)) {
+      yield { type: 'error', error: 'A stream is already active for this session.' };
+      return;
+    }
+
+    const abortController = new AbortController();
+    this.activeQueries.set(sessionId, abortController);
+    powerService.sessionStarted();
+    sshService.markSessionActive(sessionId);
+
+    let attachedJobDir: string | undefined;
+    let recoveredCompletely = false;
+
+    try {
+      const attached = await sshService.attachLatestDetachedCommandProcess(
+        sessionId,
+        session.sshConfig,
+        abortController.signal
+      );
+
+      if (!attached) {
+        yield { type: 'error', error: 'No recoverable remote Claude turn was found for this SSH session.' };
+        return;
+      }
+
+      attachedJobDir = attached.job.jobDir;
+      let selectedModel = model || session.model || 'claude-sonnet-4-6';
+      let fullContent = '';
+      const toolCalls: ToolCall[] = [];
+      const contentBlocks: ContentBlock[] = [];
+      let currentAgentId: string | undefined;
+      let textBuffer = '';
+      let textBufferAgentId: string | undefined;
+      let thinkingBuffer = '';
+      let queryComplete = false;
+      let lastTerminalReason: string | undefined;
+
+      const flushBuffers = (): StreamEvent[] => {
+        const events: StreamEvent[] = [];
+
+        if (textBuffer) {
+          const agentId = textBufferAgentId;
+          const content = textBuffer;
+          textBuffer = '';
+          textBufferAgentId = undefined;
+          fullContent += content;
+
+          const lastBlock = contentBlocks[contentBlocks.length - 1];
+          if (lastBlock?.type === 'text' && lastBlock.agentId === agentId) {
+            lastBlock.text = (lastBlock.text || '') + content;
+          } else {
+            contentBlocks.push({ type: 'text', text: content, agentId });
+          }
+
+          events.push({ type: 'text_delta', content, agentId });
+        }
+
+        if (thinkingBuffer) {
+          const content = thinkingBuffer;
+          thinkingBuffer = '';
+          events.push({ type: 'thinking_delta', content });
+        }
+
+        return events;
+      };
+
+      const mergeTextContentBlock = (content: string, agentId?: string): void => {
+        if (!content) return;
+        const lastBlock = contentBlocks[contentBlocks.length - 1];
+        if (lastBlock?.type === 'text' && lastBlock.agentId === agentId) {
+          lastBlock.text = (lastBlock.text || '') + content;
+        } else {
+          contentBlocks.push({ type: 'text', text: content, agentId });
+        }
+      };
+
+      const buildFinalMessage = (interrupted = false): ChatMessage => {
+        const mergedBlocks: ContentBlock[] = [];
+        for (const block of contentBlocks) {
+          const lastMerged = mergedBlocks[mergedBlocks.length - 1];
+          if (block.type === 'text' && lastMerged?.type === 'text' && lastMerged.agentId === block.agentId) {
+            lastMerged.text = (lastMerged.text || '') + (block.text || '');
+          } else {
+            mergedBlocks.push({ ...block });
+          }
+        }
+
+        return {
+          id: Date.now().toString(),
+          role: 'assistant',
+          content: fullContent,
+          contentBlocks: mergedBlocks.length > 0 ? mergedBlocks : undefined,
+          toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+          timestamp: new Date(),
+          interrupted,
+          harness: this.getHarnessFromModel(selectedModel),
+        };
+      };
+
+      const handleRecoveredMessage = (msg: SDKMessage): StreamEvent[] => {
+        const events: StreamEvent[] = [];
+        const flushIntoEvents = () => {
+          events.push(...flushBuffers());
+        };
+
+        if (msg.type !== 'stream_event') {
+          flushIntoEvents();
+        }
+
+        switch (msg.type) {
+          case 'system': {
+            const systemMsg = msg as SDKMessage & {
+              subtype?: string;
+              session_id?: string;
+              tools?: string[];
+              model?: string;
+              status?: string | null;
+              compact_metadata?: {
+                trigger: 'manual' | 'auto';
+                pre_tokens: number;
+              };
+            };
+
+            if (systemMsg.session_id) {
+              this.sessionStore.set(`sdkSessionMappings.${sessionId}`, systemMsg.session_id);
+              const currentSession = this.sessionStore.get(`sessions.${sessionId}`) as Session | undefined;
+              if (currentSession && (currentSession as any).forkFromSdkSessionId) {
+                const { forkFromSdkSessionId: _, ...cleanSession } = currentSession as any;
+                this.sessionStore.set(`sessions.${sessionId}`, { ...cleanSession, sdkSessionId: systemMsg.session_id });
+              }
+            }
+
+            if (systemMsg.model) {
+              selectedModel = systemMsg.model;
+            }
+
+            if (systemMsg.subtype === 'status') {
+              const compactionStatus: CompactionStatus = {
+                sessionId,
+                isCompacting: systemMsg.status === 'compacting',
+              };
+              events.push({ type: 'compaction_status', compactionStatus });
+              break;
+            }
+
+            if (systemMsg.subtype === 'compact_boundary' && systemMsg.compact_metadata) {
+              this.sessionContextPercentage.delete(sessionId);
+              this.sessionsBeingCompacted.delete(sessionId);
+              events.push({
+                type: 'compaction_complete',
+                compactionComplete: {
+                  sessionId,
+                  preTokens: systemMsg.compact_metadata.pre_tokens,
+                },
+              });
+              break;
+            }
+
+            events.push({
+              type: 'system',
+              systemInfo: {
+                tools: systemMsg.tools || [],
+                model: systemMsg.model || selectedModel || '',
+              },
+            });
+            break;
+          }
+
+          case 'assistant': {
+            const assistantMsg = msg as SDKMessage & {
+              parent_tool_use_id?: string | null;
+              message?: {
+                content?: Array<{
+                  type: string;
+                  text?: string;
+                  name?: string;
+                  id?: string;
+                  input?: Record<string, unknown>;
+                }>;
+              };
+            };
+            currentAgentId = assistantMsg.parent_tool_use_id || undefined;
+
+            for (const block of assistantMsg.message?.content || []) {
+              if (block.type === 'text' && block.text && block.text.length > fullContent.length) {
+                const newContent = block.text.slice(fullContent.length);
+                fullContent = block.text;
+                mergeTextContentBlock(newContent, currentAgentId);
+                events.push({ type: 'text_delta', content: newContent, agentId: currentAgentId });
+              } else if (block.type === 'tool_use' && block.name) {
+                const existingTool = toolCalls.find(tc => tc.id === block.id);
+                if (!existingTool) {
+                  const toolCall: ToolCall = {
+                    id: block.id || `tool-${Date.now()}`,
+                    name: block.name,
+                    input: block.input || {},
+                    status: 'running',
+                    startedAt: new Date(),
+                    agentId: currentAgentId,
+                  };
+                  toolCalls.push(toolCall);
+                  contentBlocks.push({ type: 'tool_use', toolCallId: toolCall.id, agentId: currentAgentId });
+                  events.push({ type: 'tool_use', toolCall, agentId: currentAgentId });
+                } else if (block.input && Object.keys(block.input).length > 0) {
+                  existingTool.input = block.input;
+                  events.push({ type: 'tool_use', toolCall: existingTool, agentId: currentAgentId });
+                }
+              }
+            }
+            break;
+          }
+
+          case 'stream_event': {
+            const streamMsg = msg as SDKMessage & { event?: any; parent_tool_use_id?: string | null };
+            currentAgentId = streamMsg.parent_tool_use_id || undefined;
+            const event = streamMsg.event;
+
+            if (event?.type === 'content_block_delta' && event.delta) {
+              if (event.delta.type === 'text_delta' && event.delta.text) {
+                if (textBuffer && textBufferAgentId !== currentAgentId) {
+                  flushIntoEvents();
+                }
+                textBufferAgentId = currentAgentId;
+                textBuffer += event.delta.text;
+                if (textBuffer.length >= 100) {
+                  flushIntoEvents();
+                }
+              } else if (event.delta.type === 'thinking_delta' && event.delta.thinking) {
+                thinkingBuffer += event.delta.thinking;
+                if (thinkingBuffer.length >= 100) {
+                  flushIntoEvents();
+                }
+              } else {
+                flushIntoEvents();
+              }
+            } else if (event?.type === 'content_block_start' && event.content_block) {
+              flushIntoEvents();
+              if (event.content_block.type === 'tool_use' && event.content_block.name) {
+                const existingTool = toolCalls.find(tc => tc.id === event.content_block.id);
+                if (!existingTool) {
+                  const toolCall: ToolCall = {
+                    id: event.content_block.id || `tool-${Date.now()}`,
+                    name: event.content_block.name,
+                    input: event.content_block.input || {},
+                    status: 'running',
+                    startedAt: new Date(),
+                    agentId: currentAgentId,
+                  };
+                  toolCalls.push(toolCall);
+                  contentBlocks.push({ type: 'tool_use', toolCallId: toolCall.id, agentId: currentAgentId });
+                  events.push({ type: 'tool_use', toolCall, agentId: currentAgentId });
+                }
+              }
+            } else if (
+              event?.type === 'content_block_stop'
+              || event?.type === 'message_delta'
+              || event?.type === 'message_stop'
+            ) {
+              flushIntoEvents();
+            }
+            break;
+          }
+
+          case 'tool_progress': {
+            const progressMsg = msg as SDKMessage & {
+              tool_use_id?: string;
+              tool_name?: string;
+              parent_tool_use_id?: string | null;
+            };
+            const progressAgentId = progressMsg.parent_tool_use_id || undefined;
+            if (progressMsg.tool_name && progressMsg.tool_use_id) {
+              const existingTool = toolCalls.find(tc => tc.id === progressMsg.tool_use_id);
+              if (!existingTool) {
+                const toolCall: ToolCall = {
+                  id: progressMsg.tool_use_id,
+                  name: progressMsg.tool_name,
+                  input: {},
+                  status: 'running',
+                  startedAt: new Date(),
+                  agentId: progressAgentId,
+                };
+                toolCalls.push(toolCall);
+                contentBlocks.push({ type: 'tool_use', toolCallId: toolCall.id, agentId: progressAgentId });
+                events.push({ type: 'tool_use', toolCall, agentId: progressAgentId });
+              }
+            }
+            break;
+          }
+
+          case 'user': {
+            const userMsg = msg as SDKMessage & {
+              message?: { content?: Array<{ type: string; tool_use_id?: string; content?: string }> };
+            };
+            for (const block of userMsg.message?.content || []) {
+              if (block.type !== 'tool_result') continue;
+              const toolCall = toolCalls.find(tc => tc.id === block.tool_use_id);
+              if (!toolCall) continue;
+              toolCall.status = 'completed';
+              toolCall.result = block.content || '';
+              toolCall.completedAt = new Date();
+              events.push({ type: 'tool_result', toolCall, result: block.content || '' });
+            }
+            break;
+          }
+
+          case 'result': {
+            const resultMsg = msg as SDKMessage & {
+              is_error?: boolean;
+              result?: string;
+              usage?: {
+                input_tokens?: number;
+                output_tokens?: number;
+                cache_creation_input_tokens?: number;
+                cache_read_input_tokens?: number;
+              };
+              model?: string;
+              terminal_reason?: TerminalReason;
+            };
+
+            flushIntoEvents();
+
+            if (resultMsg.model) {
+              selectedModel = resultMsg.model;
+            }
+
+            if (resultMsg.is_error && resultMsg.result) {
+              queryComplete = true;
+              recoveredCompletely = true;
+              events.push({ type: 'error', error: resultMsg.result });
+              break;
+            }
+
+            if (resultMsg.usage) {
+              const inputTokens = (resultMsg.usage.input_tokens || 0)
+                + (resultMsg.usage.cache_creation_input_tokens || 0)
+                + (resultMsg.usage.cache_read_input_tokens || 0);
+              const outputTokens = resultMsg.usage.output_tokens || 0;
+              const currentModel = resultMsg.model || selectedModel || 'claude-sonnet-4-6';
+              const hasLargeContext = currentModel.includes('opus-4-6') || currentModel.includes('sonnet-4-6') || currentModel.includes('sonnet-4-5');
+              const contextWindowSize = hasLargeContext ? 1000000 : 200000;
+              const percentage = Math.round((inputTokens / contextWindowSize) * 100);
+              const cacheReadTokens = resultMsg.usage.cache_read_input_tokens || 0;
+              const cacheWriteTokens = resultMsg.usage.cache_creation_input_tokens || 0;
+              const cost = estimateCost(currentModel, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens);
+
+              this.sessionContextPercentage.set(sessionId, percentage);
+              events.push({
+                type: 'context_usage',
+                inputTokens,
+                outputTokens,
+                contextWindowSize,
+                percentage,
+                estimatedCostUsd: cost,
+              } as StreamEvent & { inputTokens: number; outputTokens: number; contextWindowSize: number; percentage: number; estimatedCostUsd?: number });
+            }
+
+            if (resultMsg.terminal_reason) {
+              lastTerminalReason = resultMsg.terminal_reason;
+            }
+
+            queryComplete = true;
+            recoveredCompletely = true;
+            events.push({
+              type: 'message_complete',
+              message: buildFinalMessage(false),
+              resolvedModel: selectedModel,
+              ...(lastTerminalReason ? { terminalReason: lastTerminalReason } : {}),
+            });
+            break;
+          }
+
+          default:
+            break;
+        }
+
+        return events;
+      };
+
+      let pending = '';
+      for await (const chunk of attached.process.stdout as AsyncIterable<Buffer | string>) {
+        pending += Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
+        let newlineIndex = pending.indexOf('\n');
+        while (newlineIndex >= 0) {
+          const rawLine = pending.slice(0, newlineIndex);
+          pending = pending.slice(newlineIndex + 1);
+          newlineIndex = pending.indexOf('\n');
+
+          const trimmed = rawLine.trim();
+          if (!trimmed) continue;
+          const jsonStart = trimmed.indexOf('{');
+          if (jsonStart < 0) continue;
+
+          try {
+            const msg = JSON.parse(trimmed.slice(jsonStart)) as SDKMessage;
+            for (const event of handleRecoveredMessage(msg)) {
+              yield event;
+            }
+          } catch (error) {
+            if (STREAM_DEBUG) {
+              console.warn('[Claude Service] Skipping non-JSON recovered bridge line:', trimmed.slice(0, 200), error);
+            }
+          }
+        }
+      }
+
+      const trailing = pending.trim();
+      if (trailing) {
+        const jsonStart = trailing.indexOf('{');
+        if (jsonStart >= 0) {
+          try {
+            const msg = JSON.parse(trailing.slice(jsonStart)) as SDKMessage;
+            for (const event of handleRecoveredMessage(msg)) {
+              yield event;
+            }
+          } catch {
+            // Ignore trailing partial/non-JSON bridge output.
+          }
+        }
+      }
+
+      if (!queryComplete) {
+        for (const event of flushBuffers()) {
+          yield event;
+        }
+
+        if (fullContent.trim() || toolCalls.length > 0) {
+          yield {
+            type: 'message_complete',
+            message: buildFinalMessage(true),
+            resolvedModel: selectedModel,
+          };
+        } else {
+          yield { type: 'error', error: 'Recovered remote turn ended without a Claude result.' };
+        }
+      }
+
+      if (attachedJobDir && recoveredCompletely) {
+        await sshService.markDetachedBridgeJobRecovered(sessionId, session.sshConfig, attachedJobDir);
+      }
+    } catch (error) {
+      yield { type: 'error', error: error instanceof Error ? error.message : String(error) };
+    } finally {
+      this.activeQueries.delete(sessionId);
+      this.activeQueryObjects.delete(sessionId);
+      sshService.markSessionInactive(sessionId);
+      powerService.sessionEnded();
+    }
+  }
+
   // Active background task listeners — one per session, cancelled on next query or cleanup
   private backgroundListeners = new Map<string, AbortController>();
 

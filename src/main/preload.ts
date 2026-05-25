@@ -178,6 +178,8 @@ const electronAPI = {
   claude: {
     sendMessage: (sessionId: string, message: string, attachments?: unknown[], permissionMode?: string, thinkingMode?: string, model?: string, gstackMode?: string, supplementalMessages?: ChatMessage[]): Promise<void> =>
       ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_SEND_MESSAGE, sessionId, message, attachments, permissionMode, thinkingMode, model, gstackMode, supplementalMessages),
+    resumeRemoteTurn: (sessionId: string, model?: string): Promise<void> =>
+      ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_RESUME_REMOTE_TURN, sessionId, model),
     getMessages: (sessionId: string, limit?: number): Promise<ChatMessage[]> =>
       ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_GET_MESSAGES, sessionId, limit),
     getModels: (): Promise<Array<{ id: string; name: string; description: string }>> =>
@@ -285,9 +287,9 @@ const electronAPI = {
       return () => ipcRenderer.removeListener(IPC_CHANNELS.CLAUDE_PLAN_CONTENT, handler);
     },
     // Auto-resume for Build It mode
-    saveAutoResumeState: (state: { sessionId: string; wasStreaming: boolean; permissionMode: string; lastMessage?: string }): Promise<{ success: boolean }> =>
+    saveAutoResumeState: (state: { sessionId: string; wasStreaming: boolean; permissionMode: string; lastMessage?: string; isSSH?: boolean }): Promise<{ success: boolean }> =>
       ipcRenderer.invoke(IPC_CHANNELS.AUTO_RESUME_SAVE_STATE, state),
-    getAutoResumeState: (): Promise<{ sessionId: string; wasStreaming: boolean; permissionMode: string; lastMessage?: string; timestamp: number } | null> =>
+    getAutoResumeState: (): Promise<{ sessionId: string; wasStreaming: boolean; permissionMode: string; lastMessage?: string; isSSH?: boolean; timestamp: number } | null> =>
       ipcRenderer.invoke(IPC_CHANNELS.AUTO_RESUME_GET_STATE),
     clearAutoResumeState: (): Promise<{ success: boolean }> =>
       ipcRenderer.invoke(IPC_CHANNELS.AUTO_RESUME_CLEAR_STATE),
@@ -861,6 +863,8 @@ const electronAPI = {
     }> => ipcRenderer.invoke(IPC_CHANNELS.SSH_RECONNECT, sessionId),
     hasActiveRemoteProcess: (sessionId: string): Promise<boolean> =>
       ipcRenderer.invoke(IPC_CHANNELS.SSH_HAS_ACTIVE_REMOTE_PROCESS, sessionId),
+    hasRecoverableRemoteProcess: (sessionId: string): Promise<boolean> =>
+      ipcRenderer.invoke(IPC_CHANNELS.SSH_HAS_RECOVERABLE_REMOTE_PROCESS, sessionId),
     onConnectionLost: (callback: (data: { sessionId: string; reason?: string }) => void) => {
       const handler = (_: IpcRendererEvent, data: { sessionId: string; reason?: string }) => callback(data);
       ipcRenderer.on(IPC_CHANNELS.SSH_CONNECTION_LOST, handler);
