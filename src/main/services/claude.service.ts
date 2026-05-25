@@ -33,8 +33,37 @@ import { autoRouterService } from './auto-router.service';
 import { formatConversationContext, mergeConversationMessages, buildCrossHarnessContext, buildUnifiedHarnessContext, formatProjectInstructionContextFiles } from './codex-context';
 import { secureKeysService } from './secure-keys.service';
 import { analyticsService, estimateBaselineCost, estimateCost } from './analytics.service';
+import { truncateMiddlePreservingTail } from '../../shared/utils/prompt-truncation';
 
 const STREAM_DEBUG = process.env.GREP_DEBUG_STREAMING === '1';
+
+interface HarnessContextLimits {
+  maxConversationChars?: number;
+  maxProjectContextChars?: number;
+  maxProjectContextFiles?: number;
+  maxFinalChars?: number;
+}
+
+const CLI_HARNESS_CONTEXT_LIMITS: Partial<Record<Harness, HarnessContextLimits>> = {
+  cursor: {
+    maxConversationChars: 60000,
+    maxProjectContextChars: 30000,
+    maxProjectContextFiles: 16,
+    maxFinalChars: 90000,
+  },
+  gemini: {
+    maxConversationChars: 80000,
+    maxProjectContextChars: 40000,
+    maxProjectContextFiles: 18,
+    maxFinalChars: 120000,
+  },
+  opencode: {
+    maxConversationChars: 80000,
+    maxProjectContextChars: 40000,
+    maxProjectContextFiles: 18,
+    maxFinalChars: 120000,
+  },
+};
 
 interface StreamEvent {
   type: 'text_delta' | 'thinking_delta' | 'tool_use' | 'tool_result' | 'message_complete' | 'error' | 'system' | 'permission_request' | 'compaction_status' | 'compaction_complete' | 'plan_content' | 'context_usage';
@@ -993,13 +1022,21 @@ Read or source that file if you need the actual values. Do not print secret valu
     }
   }
 
-  private async buildRemoteProjectInstructionContext(sessionId: string, session: Session, projectPath: string): Promise<string> {
+  private async buildRemoteProjectInstructionContext(
+    sessionId: string,
+    session: Session,
+    projectPath: string,
+    contextLimits?: HarnessContextLimits,
+  ): Promise<string> {
     if (!session.sshConfig) return '';
 
     const remoteWorkdir = session.worktreePath || session.sshConfig.remoteWorkdir || projectPath;
     try {
       const files = await sshService.scanRemoteHarnessContextFiles(sessionId, session.sshConfig, remoteWorkdir);
-      return formatProjectInstructionContextFiles(files);
+      return formatProjectInstructionContextFiles(files, {
+        maxChars: contextLimits?.maxProjectContextChars,
+        maxFiles: contextLimits?.maxProjectContextFiles,
+      });
     } catch (error) {
       console.warn('[Claude Service] Could not collect remote project instruction context:', error);
       return '';
@@ -1034,16 +1071,33 @@ Read or source that file if you need the actual values. Do not print secret valu
         return '';
       })
       : '';
-    const remoteProjectContext = await this.buildRemoteProjectInstructionContext(sessionId, session, projectPath);
+    const contextLimits = CLI_HARNESS_CONTEXT_LIMITS[currentHarness];
+    const remoteProjectContext = await this.buildRemoteProjectInstructionContext(sessionId, session, projectPath, contextLimits);
 
-    return buildUnifiedHarnessContext({
+    let context = buildUnifiedHarnessContext({
       messages: mergedMessages,
       currentHarness,
       projectPath,
       additionalProjectContext: remoteProjectContext,
       orchestrationContext: autoOrchestrationContext,
       memoriesContext,
+      includeProjectContext: session.sshConfig ? false : true,
+      maxConversationChars: contextLimits?.maxConversationChars,
+      maxProjectContextChars: contextLimits?.maxProjectContextChars,
+      maxProjectContextFiles: contextLimits?.maxProjectContextFiles,
     });
+
+    if (contextLimits?.maxFinalChars && context.length > contextLimits.maxFinalChars) {
+      console.warn(
+        `[Claude Service] ${currentHarness} unified context too long (${context.length} chars), truncating to ${contextLimits.maxFinalChars}`,
+      );
+      context = truncateMiddlePreservingTail(context, contextLimits.maxFinalChars, {
+        marker: `\n\n[... middle of shared ${currentHarness} context truncated for responsiveness ...]\n\n`,
+        tailRatio: 0.35,
+      });
+    }
+
+    return context;
   }
 
   private canAutoBuildStageEdit(stage: OrchestrationStage, sdkPermissionMode?: string): boolean {

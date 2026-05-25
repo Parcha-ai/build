@@ -31,6 +31,14 @@ interface UnifiedHarnessContextOptions {
   orchestrationContext?: string;
   memoriesContext?: string;
   includeProjectContext?: boolean;
+  maxConversationChars?: number;
+  maxProjectContextChars?: number;
+  maxProjectContextFiles?: number;
+}
+
+interface ProjectInstructionContextOptions {
+  maxChars?: number;
+  maxFiles?: number;
 }
 
 function normalizeChatMessageTimestamp(message: ChatMessage): ChatMessage {
@@ -351,7 +359,7 @@ function addUniqueContextFile(files: ProjectInstructionContextFile[], seen: Set<
   files.push(file);
 }
 
-export function buildProjectInstructionContext(projectPath?: string): string {
+export function buildProjectInstructionContext(projectPath?: string, options: ProjectInstructionContextOptions = {}): string {
   const files: ProjectInstructionContextFile[] = [];
   const seen = new Set<string>();
   const instructionNames = new Set(['CLAUDE.md', 'AGENTS.md', 'AGENT.md']);
@@ -424,15 +432,17 @@ export function buildProjectInstructionContext(projectPath?: string): string {
     addUniqueContextFile(files, seen, readContextFile(filePath, `user skill: ${skillName}`, SKILL_CONTEXT_FILE_MAX_CHARS));
   }
 
-  return formatProjectInstructionContextFiles(files);
+  return formatProjectInstructionContextFiles(files, options);
 }
 
-export function formatProjectInstructionContextFiles(files: ProjectInstructionContextFile[]): string {
+export function formatProjectInstructionContextFiles(files: ProjectInstructionContextFile[], options: ProjectInstructionContextOptions = {}): string {
   if (files.length === 0) return '';
 
   const blocks: string[] = [];
   let totalChars = 0;
-  for (const file of files.slice(0, MAX_PROJECT_CONTEXT_FILES)) {
+  const maxFiles = options.maxFiles ?? MAX_PROJECT_CONTEXT_FILES;
+  const maxTotalChars = options.maxChars ?? PROJECT_CONTEXT_MAX_CHARS;
+  for (const file of files.slice(0, maxFiles)) {
     let content = (file.content || '').trim();
     if (!content) continue;
     const maxChars = file.label.includes('skill') ? SKILL_CONTEXT_FILE_MAX_CHARS : PROJECT_CONTEXT_FILE_MAX_CHARS;
@@ -440,7 +450,7 @@ export function formatProjectInstructionContextFiles(files: ProjectInstructionCo
       content = `${content.slice(0, maxChars)}\n[...truncated]`;
     }
     const block = `### ${file.label}\nPath: ${displayPath(file.filePath)}\n\n${content}\n`;
-    if (totalChars + block.length > PROJECT_CONTEXT_MAX_CHARS) break;
+    if (totalChars + block.length > maxTotalChars) break;
     blocks.push(block);
     totalChars += block.length;
   }
@@ -493,7 +503,12 @@ function compressToolCalls(toolCalls: ChatMessage['toolCalls']): string {
  * Messages from the current harness are excluded — it already has those.
  * Tool calls are compressed to one-line summaries.
  */
-export function buildCrossHarnessContext(messages: ChatMessage[], supplemental: ChatMessage[] = [], currentHarness?: Harness): string {
+export function buildCrossHarnessContext(
+  messages: ChatMessage[],
+  supplemental: ChatMessage[] = [],
+  currentHarness?: Harness,
+  maxChars = CROSS_HARNESS_MAX_CHARS,
+): string {
   const merged = mergeConversationMessages(messages, supplemental);
   if (merged.length === 0) return '';
 
@@ -523,7 +538,7 @@ export function buildCrossHarnessContext(messages: ChatMessage[], supplemental: 
       ? `### ${role}\n${content}\n${toolLines}\n`
       : `### ${role}\n${content}\n`;
 
-    if (totalChars + block.length > CROSS_HARNESS_MAX_CHARS) break;
+    if (totalChars + block.length > maxChars) break;
 
     formatted.push(block);
     totalChars += block.length;
@@ -554,6 +569,7 @@ ${options.orchestrationContext.trim()}
     options.messages,
     options.supplemental || [],
     options.currentHarness,
+    options.maxConversationChars,
   );
   if (conversationContext) {
     blocks.push(conversationContext);
@@ -565,12 +581,15 @@ ${options.memoriesContext.trim()}
 </memory_context>`);
   }
 
-  if (options.includeProjectContext !== false) {
-    if (options.additionalProjectContext?.trim()) {
-      blocks.push(options.additionalProjectContext.trim());
-    }
+  if (options.additionalProjectContext?.trim()) {
+    blocks.push(options.additionalProjectContext.trim());
+  }
 
-    const projectContext = buildProjectInstructionContext(options.projectPath);
+  if (options.includeProjectContext !== false) {
+    const projectContext = buildProjectInstructionContext(options.projectPath, {
+      maxChars: options.maxProjectContextChars,
+      maxFiles: options.maxProjectContextFiles,
+    });
     if (projectContext) {
       blocks.push(projectContext);
     }
