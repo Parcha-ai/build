@@ -898,6 +898,15 @@ function chooseModelForTier(
   const configured = config.costAware
     ? applyCostAwareDowngrade(tier, config)
     : resolveModelForTier(tier, config);
+  const configuredHarness = harnessFromModel(configured);
+
+  if (!signals.asksForCapabilityEscalation && configuredHarness !== 'claude') {
+    return {
+      model: configured,
+      harness: configuredHarness,
+      reason: `Configured ${tier} model is user-selected; using ${configured} without silent fallback`,
+    };
+  }
 
   const candidates = candidateModelsForTier(tier, config, signals, options);
   const priorCandidates = researchPriorModelCandidates(tier, config, signals);

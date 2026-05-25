@@ -42,6 +42,10 @@ interface CursorCliJsonEvent {
   [key: string]: unknown;
 }
 
+interface CursorAssistantState {
+  emittedText: string;
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const settingsStore = new Store({ name: 'claudette-settings' }) as any;
 
@@ -201,7 +205,7 @@ class CursorCliService {
     }
   }
 
-  private translateEvent(event: CursorCliJsonEvent, assistantState: { lastLen: number }): CursorStreamEvent | null {
+  private translateEvent(event: CursorCliJsonEvent, assistantState: CursorAssistantState): CursorStreamEvent | null {
     switch (event.type) {
       case 'system':
         if (event.subtype === 'init') {
@@ -218,8 +222,7 @@ class CursorCliService {
       case 'assistant': {
         const text = this.extractMessageText(event);
         if (text) {
-          const delta = text.substring(assistantState.lastLen);
-          assistantState.lastLen = text.length;
+          const delta = this.extractAssistantDelta(text, assistantState);
           if (delta) {
             return { type: 'text_delta', content: delta };
           }
@@ -228,7 +231,6 @@ class CursorCliService {
       }
 
       case 'tool_call':
-        assistantState.lastLen = 0;
         if (event.subtype === 'started') {
           const name = this.extractToolName(event);
           const input = this.extractToolInput(event);
@@ -308,6 +310,33 @@ class CursorCliService {
     return parts.join('');
   }
 
+  private extractAssistantDelta(text: string, assistantState: CursorAssistantState): string {
+    const emitted = assistantState.emittedText;
+    if (!emitted) {
+      assistantState.emittedText = text;
+      return text;
+    }
+
+    if (text.startsWith(emitted)) {
+      const delta = text.slice(emitted.length);
+      assistantState.emittedText += delta;
+      return delta;
+    }
+
+    if (emitted.endsWith(text) || (text.length > 20 && emitted.includes(text))) {
+      return '';
+    }
+
+    let overlap = Math.min(emitted.length, text.length);
+    while (overlap > 0 && !emitted.endsWith(text.slice(0, overlap))) {
+      overlap--;
+    }
+
+    const delta = text.slice(overlap);
+    assistantState.emittedText += delta;
+    return delta;
+  }
+
   private buildResultMessage(event: CursorCliJsonEvent): CursorStreamEvent['message'] | undefined {
     const content = this.extractMessageText(event);
     if (!content.trim()) return undefined;
@@ -368,7 +397,7 @@ class CursorCliService {
     chatId?: string,
   ): AsyncGenerator<CursorStreamEvent> {
     const apiKey = this.getApiKey();
-    const assistantState = { lastLen: 0 };
+    const assistantState: CursorAssistantState = { emittedText: '' };
 
     const cursorModel = model.replace('cursor:', '');
 
