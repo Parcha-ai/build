@@ -165,6 +165,13 @@ interface SessionState {
     startedAt: number;
   }>>;
   activeStreamModel: Record<string, string | undefined>;
+  activeUserPrompt: Record<string, {
+    id: string;
+    message: string;
+    attachments?: unknown[];
+    timestamp: number;
+    model?: string;
+  } | null>;
   permissionMode: Record<string, PermissionMode>;
   thinkingMode: Record<string, ThinkingMode>;
   htmlRenderMode: Record<string, 'md' | 'html'>;
@@ -443,6 +450,7 @@ function startRemoteProcessMonitor(
             setState((state: SessionState) => ({
               isStreaming: { ...state.isStreaming, [sessionId]: false },
               sessionActivity: { ...state.sessionActivity, [sessionId]: 'idle' },
+              activeUserPrompt: { ...state.activeUserPrompt, [sessionId]: null },
             }));
             // Wait for onStreamEnd to fire and add the final message before
             // reloading from transcript. Without this delay, loadMessages
@@ -859,8 +867,26 @@ function pruneSessionLocalStorage(validSessionIds: Set<string>): void {
 }
 
 function persistSupplementalMessage(sessionId: string, message: ChatMessage): void {
-  const merged = mergeTimelineMessages(loadSupplementalMessages(sessionId), [message]);
+  const existing = loadSupplementalMessages(sessionId).filter((existingMessage) => existingMessage.id !== message.id);
+  const merged = mergeTimelineMessages(existing, [message]);
   saveSupplementalMessages(sessionId, merged);
+}
+
+function hasVisibleAssistantActivity(state: SessionState, sessionId: string): boolean {
+  if ((state.currentStreamContent[sessionId] || '').trim()) return true;
+  if ((state.currentThinkingContent[sessionId] || '').trim()) return true;
+  if ((state.currentToolCalls[sessionId] || []).length > 0) return true;
+  if (state.pendingPermission[sessionId] || state.pendingQuestion[sessionId] || state.pendingPlanApproval[sessionId]) return true;
+
+  return (state.streamEvents[sessionId] || []).some((event) => {
+    if (event.type === 'text') return Boolean(event.content?.trim());
+    if (event.type === 'tool') return true;
+    return false;
+  });
+}
+
+function combineUserPrompts(first: string, second: string): string {
+  return [first.trimEnd(), second.trimStart()].filter(Boolean).join('\n\n');
 }
 
 export function cloneSupplementalMessages(fromSessionId: string, toSessionId: string): void {
@@ -895,6 +921,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   currentSystemInfo: {},
   monitorInstances: {},
   activeStreamModel: {},
+  activeUserPrompt: {},
   permissionMode: {},
   thinkingMode: {},
   htmlRenderMode: {},
@@ -1196,6 +1223,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         currentThinkingContent: clean(state.currentThinkingContent),
         currentToolCalls: clean(state.currentToolCalls),
         currentSystemInfo: clean(state.currentSystemInfo),
+        activeUserPrompt: clean(state.activeUserPrompt),
         permissionMode: clean(state.permissionMode),
         thinkingMode: clean(state.thinkingMode),
         htmlRenderMode: clean(state.htmlRenderMode),
@@ -1469,6 +1497,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       activeStreamModel: isStreaming
         ? state.activeStreamModel
         : { ...state.activeStreamModel, [sessionId]: undefined },
+      activeUserPrompt: isStreaming
+        ? state.activeUserPrompt
+        : { ...state.activeUserPrompt, [sessionId]: null },
       autoRouteDecision: { ...state.autoRouteDecision, [sessionId]: null },
       // Clear stream state on BOTH transitions: starting (fresh slate) and
       // ending (content has been finalized into a message by onStreamEnd).
@@ -1744,6 +1775,81 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       console.warn(`[SessionStore] Stack trace:`, new Error().stack);
     }
 
+    // If the user sends a quick follow-up before the agent has visibly started,
+    // restart the turn with both prompts together instead of making the second
+    // prompt wait behind a doomed first draft.
+    if (
+      state.isStreaming[sessionId] &&
+      !state.isProcessingQueue[sessionId] &&
+      currentQueueLength === 0 &&
+      state.activeUserPrompt[sessionId] &&
+      !hasVisibleAssistantActivity(state, sessionId)
+    ) {
+      const activePrompt = state.activeUserPrompt[sessionId]!;
+      const combinedMessage = combineUserPrompts(activePrompt.message, message);
+      const combinedAttachments = [
+        ...(activePrompt.attachments || []),
+        ...(attachments || []),
+      ];
+      const combinedUserMessage: ChatMessage = {
+        id: activePrompt.id,
+        role: 'user',
+        content: combinedMessage,
+        attachments: combinedAttachments as ChatMessage['attachments'],
+        timestamp: new Date(activePrompt.timestamp),
+        harness: harnessFromModel(activePrompt.model || state.activeStreamModel[sessionId] || state.selectedModel[sessionId]),
+      };
+
+      console.log('[SessionStore] Coalescing early follow-up into active prompt:', {
+        sessionId: sessionId.substring(0, 8),
+        originalLength: activePrompt.message.length,
+        followupLength: message.length,
+        combinedLength: combinedMessage.length,
+      });
+
+      set((state) => ({
+        messages: {
+          ...state.messages,
+          [sessionId]: (state.messages[sessionId] || []).map((existingMessage) =>
+            existingMessage.id === activePrompt.id ? combinedUserMessage : existingMessage
+          ),
+        },
+        activeUserPrompt: { ...state.activeUserPrompt, [sessionId]: null },
+      }));
+
+      if (isNonClaudeHarness(activePrompt.model) || activePrompt.model === 'auto') {
+        persistSupplementalMessage(sessionId, combinedUserMessage);
+      }
+
+      await window.electronAPI.claude.cancel(sessionId);
+      set((state) => ({
+        isStreaming: { ...state.isStreaming, [sessionId]: false },
+        isProcessingQueue: { ...state.isProcessingQueue, [sessionId]: false },
+        sessionActivity: { ...state.sessionActivity, [sessionId]: 'idle' },
+        messageQueue: { ...state.messageQueue, [sessionId]: [] },
+        activeStreamModel: { ...state.activeStreamModel, [sessionId]: undefined },
+        activeUserPrompt: { ...state.activeUserPrompt, [sessionId]: null },
+        streamGeneration: {
+          ...state.streamGeneration,
+          [sessionId]: (state.streamGeneration[sessionId] || 0) + 1,
+        },
+        streamEvents: { ...state.streamEvents, [sessionId]: [] },
+        currentStreamContent: { ...state.currentStreamContent, [sessionId]: '' },
+        currentThinkingContent: { ...state.currentThinkingContent, [sessionId]: '' },
+        currentToolCalls: { ...state.currentToolCalls, [sessionId]: [] },
+        currentSystemInfo: { ...state.currentSystemInfo, [sessionId]: null },
+      }));
+
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      get().sendMessage(
+        sessionId,
+        combinedMessage,
+        combinedAttachments.length > 0 ? combinedAttachments : undefined,
+        { existingMessageId: activePrompt.id },
+      );
+      return;
+    }
+
     // If already streaming or queue handoff is in progress, queue the message.
     if (state.isStreaming[sessionId] || state.isProcessingQueue[sessionId]) {
       const queuedMsg = {
@@ -1857,6 +1963,16 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       activeStreamModel: {
         ...state.activeStreamModel,
         [sessionId]: model,
+      },
+      activeUserPrompt: {
+        ...state.activeUserPrompt,
+        [sessionId]: {
+          id: userMessage.id,
+          message: modifiedText,
+          attachments,
+          timestamp: userMessage.timestamp.getTime(),
+          model,
+        },
       },
     }));
 
@@ -2455,6 +2571,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // Clear stream content after adding to messages
       set((state) => ({
         activeStreamModel: { ...state.activeStreamModel, [sessionId]: undefined },
+        activeUserPrompt: { ...state.activeUserPrompt, [sessionId]: null },
         currentStreamContent: { ...state.currentStreamContent, [sessionId]: '' },
         currentThinkingContent: { ...state.currentThinkingContent, [sessionId]: '' },
         currentToolCalls: { ...state.currentToolCalls, [sessionId]: [] },
@@ -2603,6 +2720,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       set((state) => ({
         isStreaming: { ...state.isStreaming, [sessionId]: false },
         activeStreamModel: { ...state.activeStreamModel, [sessionId]: undefined },
+        activeUserPrompt: { ...state.activeUserPrompt, [sessionId]: null },
         currentStreamContent: { ...state.currentStreamContent, [sessionId]: '' },
         currentThinkingContent: { ...state.currentThinkingContent, [sessionId]: '' },
         currentToolCalls: { ...state.currentToolCalls, [sessionId]: [] },
@@ -3053,6 +3171,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       sessionActivity: { ...state.sessionActivity, [sessionId]: 'idle' },
       messageQueue: { ...state.messageQueue, [sessionId]: [] },
       activeStreamModel: { ...state.activeStreamModel, [sessionId]: undefined },
+      activeUserPrompt: { ...state.activeUserPrompt, [sessionId]: null },
       streamGeneration: {
         ...state.streamGeneration,
         [sessionId]: (state.streamGeneration[sessionId] || 0) + 1,
@@ -3106,6 +3225,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // Clear current streaming state
       set((state) => ({
         isStreaming: { ...state.isStreaming, [sessionId]: false },
+        activeUserPrompt: { ...state.activeUserPrompt, [sessionId]: null },
         streamEvents: { ...state.streamEvents, [sessionId]: [] },
         currentStreamContent: { ...state.currentStreamContent, [sessionId]: '' },
         currentThinkingContent: { ...state.currentThinkingContent, [sessionId]: '' },
