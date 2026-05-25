@@ -124,6 +124,7 @@ interface ModelChoice {
 }
 
 interface RemoteCliCapabilities {
+  claude?: boolean;
   codex?: boolean;
   cursor?: boolean;
   gemini?: boolean;
@@ -431,17 +432,19 @@ function hasGeminiCli(): boolean {
   return geminiCliAvailableCache;
 }
 
-function hasOpenCodeCli(): boolean {
+function hasOpenCodeRunner(): boolean {
   if (openCodeCliAvailableCache !== undefined) return openCodeCliAvailableCache;
   const home = os.homedir();
   openCodeCliAvailableCache = binaryExistsInPath(
-    ['opencode'],
+    ['opencode', 'npx'],
     [
       `${home}/.local/bin/opencode`,
       `${home}/.bun/bin/opencode`,
       `${home}/.npm-global/bin/opencode`,
       '/usr/local/bin/opencode',
       '/opt/homebrew/bin/opencode',
+      '/usr/local/bin/npx',
+      '/opt/homebrew/bin/npx',
     ],
   );
   return openCodeCliAvailableCache;
@@ -452,6 +455,10 @@ function hasRemoteCliForModel(model: string, capabilities?: RemoteCliCapabilitie
   if (model.startsWith('cursor:')) return capabilities?.cursor === true;
   if (model.startsWith('gemini:')) return capabilities?.gemini === true;
   if (model.startsWith('opencode:')) return capabilities?.opencode === true;
+  if (model.startsWith('custom:')) return true;
+  if (model.startsWith('claude:') || model.startsWith('claude-') || !model.includes(':')) {
+    return capabilities?.claude === true;
+  }
   return true;
 }
 
@@ -521,7 +528,7 @@ function hasConfiguredCredentialForModel(model: string, options?: ModelAvailabil
   }
 
   if (model.startsWith('opencode:')) {
-    return !!(settings.deepseekApiKey || process.env.DEEPSEEK_API_KEY) && (options?.isSSH ? true : hasOpenCodeCli());
+    return !!(settings.deepseekApiKey || process.env.DEEPSEEK_API_KEY) && (options?.isSSH ? true : hasOpenCodeRunner());
   }
 
   if (model.startsWith('custom:')) {

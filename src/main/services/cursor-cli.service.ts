@@ -127,7 +127,11 @@ class CursorCliService {
   }
 
   private getRemotePathPrefix(): string {
-    return 'export PATH="$HOME/.local/bin:$HOME/.cursor/bin:$HOME/.bun/bin:$HOME/.npm-global/bin:$HOME/bin:$PATH"';
+    return [
+      'export PATH="$HOME/.local/bin:$HOME/.cursor/bin:$HOME/.bun/bin:$HOME/.npm-global/bin:$HOME/bin:$HOME/.cargo/bin:/usr/local/bin:/usr/bin:$PATH"',
+      'for d in "$HOME"/.nvm/versions/node/*/bin; do [ -d "$d" ] && PATH="$d:$PATH"; done',
+      'export PATH',
+    ].join(' && ');
   }
 
   private buildSshTarget(sshConfig: SSHConfig): string {
@@ -176,7 +180,7 @@ class CursorCliService {
       const remoteCmd = [
         `cd ${this.remotePathForShell(remoteDir)}`,
         this.getRemotePathPrefix(),
-        'agent_bin="$(command -v cursor-agent || command -v agent)"',
+        'agent_bin="$(command -v cursor-agent || command -v agent)" || { echo "Cursor Agent CLI not found on remote. Install it with: curl https://cursor.com/install -fsS | bash" >&2; exit 127; }',
         '"$agent_bin" create-chat',
       ].join(' && ');
       const chatId = execFileSync('ssh', this.buildSshArgs(sshConfig, remoteCmd), {
@@ -404,7 +408,7 @@ class CursorCliService {
         `cd ${this.remotePathForShell(remoteDir)}`,
         this.getRemotePathPrefix(),
         apiKey ? `export CURSOR_API_KEY=${this.quoteForRemoteShell(apiKey)}` : '',
-        'agent_bin="$(command -v cursor-agent || command -v agent)"',
+        'agent_bin="$(command -v cursor-agent || command -v agent)" || { echo "Cursor Agent CLI not found on remote. Install it with: curl https://cursor.com/install -fsS | bash" >&2; exit 127; }',
         `"$agent_bin" ${remoteArgs.join(' ')}`,
       ].filter(Boolean).join(' && ');
 

@@ -205,16 +205,22 @@ async function checkOpenCodeCli(): Promise<ProviderStatus> {
     '/usr/local/bin/opencode',
     '/opt/homebrew/bin/opencode',
   ]);
+  const npx = cli.installed ? { installed: false, path: null, version: null } : await resolveCli(['npx'], [
+    '/usr/local/bin/npx',
+    '/opt/homebrew/bin/npx',
+  ]);
+  const hasRunner = cli.installed || npx.installed;
   const settings = settingsStore.get('settings', {}) as Record<string, unknown>;
   const hasKey = !!((settings.deepseekApiKey as string | undefined)?.trim() || process.env.DEEPSEEK_API_KEY);
-  const ready = cli.installed && hasKey;
+  const ready = hasRunner && hasKey;
+  const runnerDetail = cli.installed ? 'OpenCode CLI installed' : npx.installed ? 'OpenCode available via npx opencode-ai' : 'Install OpenCode or Node/npm';
   return {
-    installed: cli.installed,
+    installed: hasRunner,
     loggedIn: ready,
     method: hasKey ? 'apiKey' : undefined,
-    detail: ready ? 'DeepSeek API key configured' : hasKey ? 'API key found; install OpenCode' : cli.installed ? 'CLI installed; add DeepSeek key' : undefined,
-    path: cli.path,
-    version: cli.version,
+    detail: ready ? `DeepSeek API key configured; ${runnerDetail}` : hasKey ? `API key found; ${runnerDetail}` : hasRunner ? `${runnerDetail}; add DeepSeek key` : undefined,
+    path: cli.path || npx.path,
+    version: cli.version || npx.version,
     installCommand: 'npm install -g opencode-ai',
     docsUrl: 'https://opencode.ai/docs',
   };

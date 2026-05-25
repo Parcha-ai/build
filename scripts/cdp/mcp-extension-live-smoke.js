@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+/* eslint-disable @typescript-eslint/no-var-requires */
 
 const assert = require('assert');
 const fs = require('fs');
@@ -121,15 +122,17 @@ async function evaluate(send, fn, args, timeoutMs) {
     timeout: timeoutMs,
   });
 
-  if (result.exceptionDetails) {
-    throw new Error(result.exceptionDetails.text || 'Renderer evaluation failed');
+  const evaluation = result.result || {};
+
+  if (evaluation.exceptionDetails) {
+    throw new Error(evaluation.exceptionDetails.text || 'Renderer evaluation failed');
   }
 
-  if (result.result?.subtype === 'error') {
-    throw new Error(result.result.description || 'Renderer evaluation failed');
+  if (evaluation.result?.subtype === 'error') {
+    throw new Error(evaluation.result.description || 'Renderer evaluation failed');
   }
 
-  return result.result?.value;
+  return evaluation.result?.value;
 }
 
 function harnessFiles() {
@@ -144,6 +147,26 @@ function harnessFiles() {
 
 function readIfExists(filePath) {
   return fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf8') : '';
+}
+
+function snapshotHarnessFiles() {
+  return harnessFiles().map(([name, filePath]) => ({
+    name,
+    filePath,
+    existed: fs.existsSync(filePath),
+    content: readIfExists(filePath),
+  }));
+}
+
+function restoreHarnessFiles(snapshot) {
+  for (const entry of snapshot) {
+    if (entry.existed) {
+      fs.mkdirSync(path.dirname(entry.filePath), { recursive: true });
+      fs.writeFileSync(entry.filePath, entry.content, 'utf8');
+    } else {
+      fs.rmSync(entry.filePath, { force: true });
+    }
+  }
 }
 
 function assertInstalledInHarnessFiles(serverId, url) {
@@ -167,6 +190,7 @@ function assertRemovedFromHarnessFiles(serverId) {
 
 async function main() {
   const args = parseArgs(process.argv);
+  const harnessSnapshot = snapshotHarnessFiles();
   const { send, ws, target } = await connectToRenderer(args.port, args.timeoutMs);
   console.log(`[mcp-live-smoke] Connected to ${target.title} on port ${args.port}`);
 
@@ -229,6 +253,7 @@ async function main() {
     } catch {
       // The main assertion path reports failures. Cleanup here is best-effort.
     }
+    restoreHarnessFiles(harnessSnapshot);
     ws.close();
   }
 }
