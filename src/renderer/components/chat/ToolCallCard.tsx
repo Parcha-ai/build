@@ -607,9 +607,44 @@ function ExpandedContent({ toolCall, priority = false }: { toolCall: ToolCall; p
                 />
               </div>
             ) : (
-              typeof result === 'object' ? (
-                <JSONResultViewer data={result} toolCallId={toolCall.id} priority={priority} />
-              ) : (
+              typeof result === 'object' ? (() => {
+                const r = result as Record<string, unknown>;
+                let imgSrc: string | null = null;
+                if (r.type === 'image' && typeof r.source === 'object' && r.source !== null) {
+                  const s = r.source as Record<string, unknown>;
+                  if (s.type === 'base64' && typeof s.data === 'string') {
+                    imgSrc = `data:${(s.media_type as string) || 'image/png'};base64,${s.data}`;
+                  }
+                }
+                if (!imgSrc && Array.isArray(r)) {
+                  const imgBlock = (r as unknown[]).find((b: unknown) => {
+                    const bl = b as Record<string, unknown>;
+                    return bl?.type === 'image' && typeof bl.source === 'object';
+                  }) as Record<string, unknown> | undefined;
+                  if (imgBlock) {
+                    const s = imgBlock.source as Record<string, unknown>;
+                    if (s?.type === 'base64' && typeof s.data === 'string') {
+                      imgSrc = `data:${(s.media_type as string) || 'image/png'};base64,${s.data}`;
+                    }
+                  }
+                }
+                if (!imgSrc && Array.isArray((r as any).content)) {
+                  const imgBlock = ((r as any).content as unknown[]).find((b: unknown) => {
+                    const bl = b as Record<string, unknown>;
+                    return bl?.type === 'image' && typeof bl.source === 'object';
+                  }) as Record<string, unknown> | undefined;
+                  if (imgBlock) {
+                    const s = imgBlock.source as Record<string, unknown>;
+                    if (s?.type === 'base64' && typeof s.data === 'string') {
+                      imgSrc = `data:${(s.media_type as string) || 'image/png'};base64,${s.data}`;
+                    }
+                  }
+                }
+                if (imgSrc) {
+                  return <MediaPreview src={imgSrc} type="image" alt={filePath.split('/').pop()} />;
+                }
+                return <JSONResultViewer data={result} toolCallId={toolCall.id} priority={priority} />;
+              })() : (
                 <pre className="whitespace-pre-wrap text-claude-text bg-claude-bg/50 p-2 overflow-x-auto max-h-60 overflow-y-auto font-mono text-sm">
                   {String(result)}
                 </pre>

@@ -1710,7 +1710,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
         </div>
 
         {/* Unified toolbar: mode/effort/model left, icons right */}
-        <div className="flex items-center gap-2 text-xs text-claude-text-secondary font-mono" style={{ letterSpacing: '0.03em' }}>
+        <div className="flex items-center gap-2 text-[10px] text-claude-text-secondary font-mono" style={{ letterSpacing: '0.03em' }}>
           {/* Left: mode */}
           <button
             onClick={() => cyclePermissionMode(sessionId)}
@@ -1945,7 +1945,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
           <button
             onClick={() => setShowEffortDropdown(!showEffortDropdown)}
             disabled={disabled}
-            className={`flex items-center gap-1 hover:opacity-80 transition-opacity disabled:opacity-40 ${effortConfig.color}`}
+            className={`flex items-center gap-1 hover:opacity-80 transition-opacity disabled:opacity-40 text-[10px] ${effortConfig.color}`}
             title={`${effortConfig.description} (click to change)`}
           >
             <Brain size={10} />
@@ -1984,11 +1984,21 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
           )}
         </div>
         {/* Model selector - always visible */}
+        {/* Speed toggle */}
+        <span
+          onClick={() => { if (!disabled) toggleFastMode(); }}
+          className={`cursor-pointer hover:opacity-80 text-[10px] ${
+            fastMode ? 'text-amber-400' : 'text-claude-text-secondary'
+          }`}
+          style={{ order: -1 }}
+        >
+          {fastMode ? 'FAST' : 'STD'}
+        </span>
         <div className="relative -order-1" ref={modelDropdownRef}>
           <button
             onClick={() => setShowModelDropdown(!showModelDropdown)}
             disabled={disabled}
-            className="text-claude-text-secondary hover:text-claude-text transition-colors disabled:opacity-40 flex items-center gap-1.5"
+            className="text-[10px] text-claude-text-secondary hover:text-claude-text transition-colors disabled:opacity-40 flex items-center gap-1.5"
             title={currentModel === 'auto' && isSending && autoRouteDecision
               ? `Auto Build: ${autoRouteDecision.tier.toUpperCase()}${autoRouteDecision.domain ? ` / ${autoRouteDecision.domain}` : ''} → ${autoRouteDecision.resolvedModel} (${Math.round(autoRouteDecision.confidence * 100)}% confidence${autoRouteDecision.orchestration ? `, ${autoRouteDecision.orchestration.mode}` : ''})`
               : `${currentModelInfo.description} (click to change)`}
@@ -2155,18 +2165,6 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
             );
           })()}
         </div>
-        {/* Speed toggle — global fast mode */}
-        <button
-          onClick={toggleFastMode}
-          disabled={disabled}
-          className={`hover:opacity-80 transition-opacity disabled:opacity-40 text-[10px] flex items-center gap-0.5 ${
-            fastMode ? 'text-amber-400' : 'text-claude-text-secondary'
-          }`}
-          title={fastMode ? 'Fast mode ON — 1.5x speed, increased usage (click to disable)' : 'Standard speed (click to enable fast mode)'}
-        >
-          <Zap size={10} />
-          <span>{fastMode ? 'FAST' : 'STD'}</span>
-        </button>
         {/* Context usage indicator — pushed to far right */}
         {contextUsage && (
           <div className="flex items-center gap-1.5" style={{ order: -1 }} title={`${contextUsage.inputTokens.toLocaleString()} / ${contextUsage.contextWindowSize.toLocaleString()} tokens (${contextUsage.percentage}%)`}>
