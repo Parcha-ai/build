@@ -36,6 +36,7 @@ type ProviderStatus = {
   path?: string | null;
   version?: string | null;
   installCommand?: string;
+  loginCommand?: string;
   docsUrl?: string;
 };
 
@@ -151,6 +152,21 @@ export default function ApiKeyOnboarding() {
   };
 
   if (!isOnboardingOpen) return null;
+
+  // Auto-poll providers while onboarding is open and something isn't ready
+  useEffect(() => {
+    if (!isOnboardingOpen || !scanComplete) return;
+    const allReady = providers.claude.loggedIn && providers.codex.loggedIn &&
+      providers.cursor.loggedIn && providers.gemini.loggedIn && providers.opencode.loggedIn;
+    if (allReady) return;
+
+    const interval = setInterval(() => {
+      window.electronAPI.auth?.checkProviders?.()
+        .then((res) => { if (res) setProviders(res); })
+        .catch(() => undefined);
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [isOnboardingOpen, scanComplete, providers.claude.loggedIn, providers.codex.loggedIn, providers.cursor.loggedIn, providers.gemini.loggedIn, providers.opencode.loggedIn]);
 
   const anyLoggedIn = providers.claude.loggedIn || providers.codex.loggedIn || providers.cursor.loggedIn || providers.gemini.loggedIn || providers.opencode.loggedIn;
   const showApiKeyOption = scanComplete && (showApiKeyInput || !anyLoggedIn);
@@ -395,6 +411,7 @@ function ProviderRow({
 }) {
   const needsSetup = phaseDone && !phaseActive && !status.loggedIn;
   const missingCli = needsSetup && status.installed === false;
+  const needsAuth = needsSetup && status.installed === true;
   const statusText = phaseActive
     ? `${phaseLabel}...`
     : !phaseDone
@@ -403,13 +420,14 @@ function ProviderRow({
         ? status.detail || 'Ready'
         : missingCli
           ? 'CLI missing'
-          : status.installed
-            ? 'Setup required'
+          : needsAuth
+            ? 'Sign-in required'
             : 'Not ready';
 
+  const activeCommand = needsAuth ? status.loginCommand : status.installCommand;
   const handleCopyCommand = () => {
-    if (status.installCommand) {
-      navigator.clipboard?.writeText(status.installCommand).catch(() => undefined);
+    if (activeCommand) {
+      navigator.clipboard?.writeText(activeCommand).catch(() => undefined);
     }
   };
   const docsUrl = status.docsUrl;
@@ -434,19 +452,19 @@ function ProviderRow({
         </div>
       </div>
 
-      {needsSetup && (status.installCommand || status.docsUrl) && (
+      {needsSetup && (activeCommand || status.docsUrl) && (
         <div className="mt-2 flex items-center gap-2">
-          {status.installCommand && (
+          {activeCommand && (
             <code className="flex-1 min-w-0 px-2 py-1 bg-claude-surface border border-claude-border text-[10px] font-mono text-claude-text-secondary truncate">
-              {status.installCommand}
+              {activeCommand}
             </code>
           )}
-          {status.installCommand && (
+          {activeCommand && (
             <button
               type="button"
               onClick={handleCopyCommand}
               className="p-1.5 border border-claude-border text-claude-text-secondary hover:text-claude-text hover:bg-claude-surface"
-              title="Copy setup command"
+              title={needsAuth ? 'Copy login command' : 'Copy install command'}
             >
               <Copy size={12} />
             </button>

@@ -21,6 +21,7 @@ type ProviderStatus = {
   path?: string | null;
   version?: string | null;
   installCommand?: string;
+  loginCommand?: string;
   docsUrl?: string;
 };
 
@@ -63,7 +64,7 @@ async function checkClaudeCli(): Promise<ProviderStatus> {
       // no creds at this home
     }
   }
-  return { installed: cli.installed, loggedIn: false, path: cli.path, version: cli.version, installCommand: 'npm install -g @anthropic-ai/claude-code', docsUrl: 'https://docs.anthropic.com/claude-code' };
+  return { installed: cli.installed, loggedIn: false, path: cli.path, version: cli.version, installCommand: 'npm install -g @anthropic-ai/claude-code', loginCommand: 'claude login', docsUrl: 'https://docs.anthropic.com/claude-code' };
 }
 
 async function checkCodexCli(): Promise<ProviderStatus> {
@@ -86,7 +87,7 @@ async function checkCodexCli(): Promise<ProviderStatus> {
       // no auth file at this home
     }
   }
-  return { installed: cli.installed, loggedIn: false, path: cli.path, version: cli.version, installCommand: 'npm install -g @openai/codex', docsUrl: 'https://github.com/openai/codex' };
+  return { installed: cli.installed, loggedIn: false, path: cli.path, version: cli.version, installCommand: 'npm install -g @openai/codex', loginCommand: 'codex auth login', docsUrl: 'https://github.com/openai/codex' };
 }
 
 function getCodexCliCandidates(): string[] {
@@ -155,7 +156,7 @@ async function checkCursorCli(): Promise<ProviderStatus> {
     '/usr/local/bin/cursor-agent',
     '/opt/homebrew/bin/cursor-agent',
   ]);
-  const base = { installed: cli.installed, path: cli.path, version: cli.version, installCommand: 'curl https://cursor.com/install -fsS | bash', docsUrl: 'https://cursor.com/cli' };
+  const base = { installed: cli.installed, path: cli.path, version: cli.version, installCommand: 'curl https://cursor.com/install -fsS | bash', loginCommand: 'cursor-agent login', docsUrl: 'https://cursor.com/cli' };
   if (!cli.path) return { ...base, loggedIn: false };
   try {
     const { stdout, stderr } = await execFileAsync(cli.path, ['status'], { timeout: 5000 });

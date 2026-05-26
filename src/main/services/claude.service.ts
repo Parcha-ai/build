@@ -3553,6 +3553,7 @@ ${leadContent.slice(0, 60000)}
     model?: string,
     gstackMode?: string,
     supplementalMessages?: ChatMessage[],
+    fastMode?: boolean,
   ): AsyncGenerator<StreamEvent> {
     const apiKey = this.getApiKey();
 
@@ -4690,6 +4691,7 @@ Begin by creating the task structure now.
             ? { betas: ['context-1m-2025-08-07' as const] }
             : {}),
           ...(maxThinkingTokens ? { maxThinkingTokens } : {}),
+          ...(fastMode ? { fastMode: true } : {}),
           // Ultra Plan Mode: Add hooks if enabled
           ...(hooks ? { hooks } : {}),
           // Use Claude Code's system prompt preset with Build agent context

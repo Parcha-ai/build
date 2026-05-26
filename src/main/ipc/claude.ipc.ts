@@ -139,7 +139,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
 
   ipcMain.handle(
     IPC_CHANNELS.CLAUDE_SEND_MESSAGE,
-    async (event, sessionId: string, message: string, attachments?: Attachment[], permissionMode?: string, thinkingMode?: string, model?: string, gstackMode?: string, supplementalMessages?: ChatMessage[]) => {
+    async (event, sessionId: string, message: string, attachments?: Attachment[], permissionMode?: string, thinkingMode?: string, model?: string, gstackMode?: string, supplementalMessages?: ChatMessage[], fastMode?: boolean) => {
       const mainWindow = getMainWindow();
       if (!mainWindow) return;
 
@@ -216,7 +216,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
           let lastEventType = '';
           let lastEventTime = Date.now();
           const streamStartTime = Date.now();
-          for await (const event of claudeService.streamMessage(sessionId, message, attachments, permissionMode, thinkingMode, model, gstackMode, supplementalMessages)) {
+          for await (const event of claudeService.streamMessage(sessionId, message, attachments, permissionMode, thinkingMode, model, gstackMode, supplementalMessages, fastMode)) {
             eventCount++;
             lastEventType = event.type;
             lastEventTime = Date.now();
@@ -308,7 +308,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
                   // Retry by starting a new stream with the same message
                   console.log('[Claude IPC] Starting retry stream after compaction');
                   try {
-                    for await (const retryEvent of claudeService.streamMessage(sessionId, message, attachments, permissionMode, thinkingMode, model, gstackMode, supplementalMessages)) {
+                    for await (const retryEvent of claudeService.streamMessage(sessionId, message, attachments, permissionMode, thinkingMode, model, gstackMode, supplementalMessages, fastMode)) {
                       latestResolvedModel = retryEvent.resolvedModel || latestResolvedModel;
                       // Process retry events the same way
                       switch (retryEvent.type) {

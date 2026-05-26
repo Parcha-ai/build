@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { X, Image, FileCode, Target, File, Folder, AtSign, Brain, Square, Code, Smartphone, RefreshCw, Slash, Eraser } from 'lucide-react';
+import { X, Image, FileCode, Target, File, Folder, AtSign, Brain, Square, Code, Smartphone, RefreshCw, Slash, Eraser, Zap } from 'lucide-react';
 import { useSessionStore, type PermissionMode, type ThinkingMode, type EffortLevel, migrateThinkingMode, normalizePermissionModeForModel } from '../../stores/session.store';
 import { useUIStore } from '../../stores/ui.store';
 import { useAudioStore } from '../../stores/audio.store';
@@ -333,6 +333,8 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
   const autoRouteDecision = useSessionStore(useCallback((s) => s.autoRouteDecision[sessionId] || null, [sessionId]));
   const compactionSwitch = useSessionStore(useCallback((s) => s.compactionSwitch[sessionId] || null, [sessionId]));
   const availableModels = useSessionStore((s) => s.availableModels || EMPTY_MODELS);
+  const fastMode = useSessionStore((s) => s.fastMode);
+  const toggleFastMode = useSessionStore((s) => s.toggleFastMode);
 
   // Action selectors — stable references, never cause re-renders
   const sendMessage = useSessionStore((s) => s.sendMessage);
@@ -2153,6 +2155,18 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
             );
           })()}
         </div>
+        {/* Speed toggle — global fast mode */}
+        <button
+          onClick={toggleFastMode}
+          disabled={disabled}
+          className={`hover:opacity-80 transition-opacity disabled:opacity-40 text-[10px] flex items-center gap-0.5 ${
+            fastMode ? 'text-amber-400' : 'text-claude-text-secondary'
+          }`}
+          title={fastMode ? 'Fast mode ON — 1.5x speed, increased usage (click to disable)' : 'Standard speed (click to enable fast mode)'}
+        >
+          <Zap size={10} />
+          <span>{fastMode ? 'FAST' : 'STD'}</span>
+        </button>
         {/* Context usage indicator — pushed to far right */}
         {contextUsage && (
           <div className="flex items-center gap-1.5" style={{ order: -1 }} title={`${contextUsage.inputTokens.toLocaleString()} / ${contextUsage.contextWindowSize.toLocaleString()} tokens (${contextUsage.percentage}%)`}>

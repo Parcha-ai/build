@@ -197,6 +197,8 @@ interface SessionState {
   agentColorMap: Record<string, Record<string, number>>; // sessionId -> { agentId -> colorIndex }
   // GStack workflow mode per session
   gstackMode: Record<string, GStackMode | null>;
+  // Global fast mode — when on, harnesses that support fast output use it
+  fastMode: boolean;
   // Auto Build routing decisions per session
   autoRouteDecision: Record<string, AutoRouteDecisionState | null>;
 
@@ -252,6 +254,8 @@ interface SessionState {
   cycleThinkingMode: (sessionId: string) => void;
   setHtmlRenderMode: (sessionId: string, mode: 'md' | 'html') => void;
   cycleHtmlRenderMode: (sessionId: string) => void;
+  setFastMode: (enabled: boolean) => void;
+  toggleFastMode: () => void;
   setSelectedModel: (sessionId: string, model: string, trigger?: HarnessSelectionTrigger) => void;
   loadAvailableModels: () => Promise<void>;
   sendMessage: (sessionId: string, message: string, attachments?: unknown[], opts?: { existingMessageId?: string }) => Promise<void>;
@@ -939,6 +943,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   securedKeys: {},
   agentColorMap: {},
   gstackMode: {},
+  fastMode: JSON.parse(localStorage.getItem('grep-fast-mode') || 'false'),
   autoRouteDecision: {},
   codexStreaming: {},
   codexContent: {},
@@ -1682,6 +1687,16 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     get().updateSession(sessionId, { htmlRenderMode: next });
   },
 
+  setFastMode: (enabled) => {
+    set({ fastMode: enabled });
+    localStorage.setItem('grep-fast-mode', JSON.stringify(enabled));
+  },
+  toggleFastMode: () => {
+    const next = !get().fastMode;
+    set({ fastMode: next });
+    localStorage.setItem('grep-fast-mode', JSON.stringify(next));
+  },
+
   setSelectedModel: (sessionId, model, trigger = 'model-picker') => {
     const state = get();
     const previousModel = getSessionModel(state, sessionId);
@@ -1988,7 +2003,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         thinking,
         model,
         activeGStackMode,
-        supplementalMessagesForContext
+        supplementalMessagesForContext,
+        get().fastMode
       );
       console.log('[SessionStore] sendMessage returned:', result);
     } catch (error) {
