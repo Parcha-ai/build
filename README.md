@@ -1,84 +1,82 @@
 # Grep Build
 
-A desktop IDE for AI-powered development. Chat with Claude, orchestrate multiple AI models, run commands, preview your app, and manage git — all in one window.
-
-**Requires an [Anthropic API key](https://console.anthropic.com/).**
+One IDE for every coding agent. Claude Code, Cursor, Codex, Gemini, OpenCode — same chat, same terminal, same preview, same git. Hot-swap harness mid-session without re-pasting context.
 
 ## Download
 
 Download the latest macOS build from [GitHub Releases](https://github.com/Parcha-ai/grep-build/releases).
 
-The app is code-signed and notarized by Apple — it opens without security warnings.
+Signed and notarized by Apple — opens without security warnings.
 
 > Building from source works on macOS, Linux, and Windows — see [Development](#development) below.
 
 ## What It Does
 
-Grep Build wraps Claude's agent capabilities in a native desktop app with multi-model orchestration. Point it at any project folder and you get:
+Build is a desktop IDE that orchestrates your coding agents. Point it at any project folder and you get:
 
-- **AI chat** with full tool use — Claude can read, write, and execute code in your project
-- **Auto Build** — intelligent model routing that picks the right model and harness (Claude, Codex, Cursor, Gemini) for each task stage: plan, build, verify, refine
-- **Integrated terminal** — see exactly what Claude is running
-- **Live browser preview** — watch your app update as Claude makes changes, with a DOM inspector and CDP automation
-- **Code editor** — Monaco-based editor with quick search and multi-file tabs
+- **Multi-harness orchestration** — Claude Code, Cursor Agent, Codex, OpenCode, and Gemini in one window. Switch harness in a click.
+- **Auto Build** — intelligent routing that picks the right harness and model for each stage: plan, build, verify, refine
+- **Monaco editor** — quick search, multi-file tabs, full syntax support
+- **Integrated terminal** — watch every command your agent runs
+- **Live browser preview** — in-window webview with URL bar, DOM inspector, and live reload
 - **Git UI** — branches, diffs, commit history, push/pull
-- **SSH remote sessions** — connect to remote servers and run AI-assisted development over SSH
-- **Session management** — multiple projects open at once, each with their own context
-- **Semantic search** — QMD-powered codebase search for intelligent code navigation
-- **MCP integration** — connect Model Context Protocol servers for extended tool capabilities
-- **Voice input/output** — talk to Claude and hear responses (optional, requires OpenAI/ElevenLabs keys)
+- **SSH remote sessions** — connect to remote servers and drive agents over SSH
+- **Session management** — multiple projects in parallel, each with their own branch and context
+- **Semantic search** — QMD-powered codebase navigation
+- **MCP servers** — connect Model Context Protocol tools for extended capabilities
+- **Voice mode** — speech-to-speech conversations (optional, requires OpenAI/ElevenLabs keys)
 
 ## Quick Start
 
-1. Download from [Releases](https://github.com/Parcha-ai/grep-build/releases) and open the app
-2. Enter your [Anthropic API key](https://console.anthropic.com/) when prompted
-3. Open a project folder
+1. Download from [Releases](https://github.com/Parcha-ai/grep-build/releases) and drag to Applications
+2. Open any project folder
+3. Bring your own API key — Anthropic, OpenAI, or OpenRouter
 4. Start building
+
+No account required for local-folder mode.
+
+## Harnesses
+
+Build doesn't ship its own agent. It's an IDE that drives existing harnesses from one workspace.
+
+| Harness | Provider | Strengths |
+|---------|----------|-----------|
+| **Claude Code** | Anthropic | Long-horizon refactors, deep tool use, multi-file design |
+| **Cursor Agent** | Cursor | Precision edits, composer-style sessions |
+| **Codex** | OpenAI | Reasoning-heavy tasks, GPT-class and O-series models |
+| **OpenCode** | Community | BYO model — Llama, Qwen, DeepSeek, anything OpenAI-compatible |
+| **Gemini** | Google | Google's models via the Gemini harness |
+
+Hot-swap harness mid-session — the conversation, files, and branch all carry over.
 
 ## Auto Build
 
-Auto Build is an intelligent orchestration mode that routes your tasks across multiple AI models and harnesses:
+Auto Build orchestrates multi-harness sessions automatically:
 
-- **Plan** — uses a lead model to understand and plan the task
-- **Build** — delegates execution to the best-fit harness (Claude, Codex, Cursor, or Gemini)
+- **Plan** — lead model understands and plans the task
+- **Build** — routes execution to the best-fit harness and model
 - **Verify** — validates the output
 - **Refine** — iterates on feedback
 
-Select "Auto Build" from the model picker to enable it. You can also select individual models directly.
+Select "Auto Build" from the model picker, or choose a specific model directly.
 
 ## Models
 
-| Model | ID |
-|-------|-----|
-| Auto Build | Orchestrated multi-model routing |
-| Opus 4.7 | Latest and most capable |
+| Model | Tier |
+|-------|------|
+| Opus 4.7 | Flagship — most capable |
 | Opus 4.6 | Highly capable |
-| Sonnet 4.6 | Latest Sonnet — excellent balance of speed and capability |
+| Sonnet 4.6 | Default — excellent balance of speed and capability |
 | Sonnet 4 | Fast and capable |
-| Haiku 3.5 | Fastest, lightweight tasks |
+| Haiku 3.5 | Instant — sub-agents, quick edits |
+| GPT-5 / O3 / O4-mini | Via Codex harness |
+| BYO local | Via OpenCode — Llama, Qwen, DeepSeek |
 
-Custom models are supported via API proxy configuration (e.g. non-Anthropic models via compatible endpoints). Anthropic Foundry (Azure) deployment is also supported.
+Custom models supported via API proxy. Anthropic Foundry (Azure) deployment also supported.
 
-## Voice Mode (Optional)
+## Local-first, your keys
 
-Voice mode enables hands-free speech-to-speech conversations with Claude. Requires ElevenLabs and OpenAI API keys.
-
-1. Get API keys from [ElevenLabs](https://elevenlabs.io/app/settings/api-keys) and [OpenAI](https://platform.openai.com/api-keys)
-2. Create a Conversational AI agent in the [ElevenLabs dashboard](https://elevenlabs.io/app/conversational-ai) and copy the agent ID
-3. Enter all keys in **Settings > API Keys**
-4. Click the microphone icon in the chat input
-
-## Claude Integration
-
-Grep Build uses the [Claude Agent SDK](https://github.com/anthropic/claude-agent-sdk) to give Claude full access to your development environment:
-
-| Feature | Details |
-|---------|---------|
-| **Thinking** | Off, thinking (10k tokens), ultrathink (100k tokens) |
-| **Permissions** | Accept edits, require approval, bypass all, plan only |
-| **Tools** | File read/write, terminal, browser, git — same as Claude Code CLI |
-| **File mentions** | `@filename` to add files to context |
-| **MCP servers** | Connect custom tool servers via Model Context Protocol |
+Build never proxies your API calls. Bring your own keys — Anthropic, OpenAI, OpenRouter — and calls go straight to the provider. No telemetry by default.
 
 ## Development
 
@@ -104,13 +102,13 @@ Electron app with a React renderer and Node.js main process:
 
 ```
 src/
-├── main/              # Main process — services, IPC handlers, terminal, git
-│   └── services/      # Claude, auto-router, SSH, browser, codex, cursor, git, etc.
+├── main/              # Main process — services, IPC handlers
+│   └── services/      # Auto-router, Claude, Codex, Cursor, SSH, browser, git, etc.
 ├── renderer/          # React UI — Zustand stores, components
 └── shared/            # Types and IPC channel constants
 ```
 
-Key technologies: Electron 38, React 18, TypeScript, Zustand, Tailwind CSS, Monaco Editor, xterm.js, node-pty, Claude Agent SDK.
+Key technologies: Electron 38, React 18, TypeScript, Zustand, Tailwind CSS, Monaco Editor, xterm.js, node-pty.
 
 ## License
 
