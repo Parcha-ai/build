@@ -491,10 +491,6 @@ function isHarnessTemporarilyUnavailable(model: string, options?: ModelAvailabil
 function hasConfiguredCredentialForModel(model: string, options?: ModelAvailabilityOptions): boolean {
   const settings = getSettingsObject();
 
-  if (model.startsWith('cursor:')) {
-    clearRecoveredCursorAuthCooldown(options?.sessionId);
-  }
-
   if (isHarnessTemporarilyUnavailable(model, options)) {
     return false;
   }
@@ -913,13 +909,7 @@ function chooseModelForTier(
   if (signals.asksForCapabilityEscalation) {
     candidates.unshift('claude-opus-4-7', 'claude-opus-4-6', config.planModel, config.fallbackModel);
   }
-  if (signals.hasImageAttachments) {
-    candidates.unshift(...configuredModelsForTier(tier, config).filter((model) => harnessFromModel(model) === 'claude' || harnessFromModel(model) === 'codex'));
-  }
-  if ((signals.needsBrowser || signals.hasAttachments) && tier !== 'verify') {
-    candidates.unshift(...configuredModelsForTier(tier, config).filter((model) => harnessFromModel(model) === 'claude'));
-  }
-  if (signals.asksForMultiHarness && signals.large) {
+  if (signals.asksForMultiHarness && signals.large && tier !== 'refine') {
     candidates.unshift(...configuredModelsForTier(tier, config).filter((model) => harnessFromModel(model) === 'claude'));
   }
   if (configured !== resolveModelForTier(tier, config) && priorCandidates.length === 0 && !signals.asksForCapabilityEscalation) {
@@ -1476,6 +1466,7 @@ class AutoRouterService {
   ): Promise<RoutingDecision> {
     const routeOptions: RouteOptions = { ...options, sessionId };
     const config = getConfig();
+    clearRecoveredCursorAuthCooldown(sessionId);
     inferHarnessFailuresFromMessages(sessionId, routeOptions.recentMessages);
     const storedPhase = getSessionPhase(sessionId);
     const inferredPhase = inferPhaseFromMessages(routeOptions.recentMessages);
@@ -1491,8 +1482,16 @@ class AutoRouterService {
 
     let method: 'heuristic' | 'llm' = 'heuristic';
 
-    // Step 3: If heuristic confidence is low, try LLM classifier
-    if (result.confidence < config.llmConfidenceThreshold && config.useLlmClassifier && !routeOptions.skipLlmClassifier) {
+    // Step 3: If heuristic confidence is low, try LLM classifier.
+    // Skip for attachment-heavy turns — visual/context cues are already in heuristics
+    // and the extra network round-trip noticeably delays send.
+    const skipLlmForAttachments = signals.hasAttachments && result.confidence >= 0.55;
+    if (
+      result.confidence < config.llmConfidenceThreshold
+      && config.useLlmClassifier
+      && !routeOptions.skipLlmClassifier
+      && !skipLlmForAttachments
+    ) {
       const settings = getSettingsObject();
       const cerebrasKey = (settings.cerebrasApiKey as string) || EMBEDDED_KEYS.cerebras || process.env.CEREBRAS_API_KEY || '';
       if (cerebrasKey) {

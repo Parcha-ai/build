@@ -1,28 +1,31 @@
 # Grep Build
 
-A desktop IDE for [Claude Code](https://docs.anthropic.com/en/docs/claude-code). Chat with Claude, run commands, preview your app, and manage git — all in one window.
+A desktop IDE for AI-powered development. Chat with Claude, orchestrate multiple AI models, run commands, preview your app, and manage git — all in one window.
 
 **Requires an [Anthropic API key](https://console.anthropic.com/).**
-
-<!-- TODO: Add hero screenshot -->
-<!-- ![Grep Build](docs/screenshots/main-view.png) -->
 
 ## Download
 
 Download the latest macOS build from [GitHub Releases](https://github.com/Parcha-ai/grep-build/releases).
 
+The app is code-signed and notarized by Apple — it opens without security warnings.
+
 > Building from source works on macOS, Linux, and Windows — see [Development](#development) below.
 
 ## What It Does
 
-Grep Build wraps Claude's agent capabilities in a native desktop app. Point it at any project folder and you get:
+Grep Build wraps Claude's agent capabilities in a native desktop app with multi-model orchestration. Point it at any project folder and you get:
 
 - **AI chat** with full tool use — Claude can read, write, and execute code in your project
+- **Auto Build** — intelligent model routing that picks the right model and harness (Claude, Codex, Cursor, Gemini) for each task stage: plan, build, verify, refine
 - **Integrated terminal** — see exactly what Claude is running
-- **Live browser preview** — watch your app update as Claude makes changes, with a DOM inspector for pointing at elements
+- **Live browser preview** — watch your app update as Claude makes changes, with a DOM inspector and CDP automation
 - **Code editor** — Monaco-based editor with quick search and multi-file tabs
 - **Git UI** — branches, diffs, commit history, push/pull
+- **SSH remote sessions** — connect to remote servers and run AI-assisted development over SSH
 - **Session management** — multiple projects open at once, each with their own context
+- **Semantic search** — QMD-powered codebase search for intelligent code navigation
+- **MCP integration** — connect Model Context Protocol servers for extended tool capabilities
 - **Voice input/output** — talk to Claude and hear responses (optional, requires OpenAI/ElevenLabs keys)
 
 ## Quick Start
@@ -32,32 +35,38 @@ Grep Build wraps Claude's agent capabilities in a native desktop app. Point it a
 3. Open a project folder
 4. Start building
 
+## Auto Build
+
+Auto Build is an intelligent orchestration mode that routes your tasks across multiple AI models and harnesses:
+
+- **Plan** — uses a lead model to understand and plan the task
+- **Build** — delegates execution to the best-fit harness (Claude, Codex, Cursor, or Gemini)
+- **Verify** — validates the output
+- **Refine** — iterates on feedback
+
+Select "Auto Build" from the model picker to enable it. You can also select individual models directly.
+
+## Models
+
+| Model | ID |
+|-------|-----|
+| Auto Build | Orchestrated multi-model routing |
+| Opus 4.7 | Latest and most capable |
+| Opus 4.6 | Highly capable |
+| Sonnet 4.6 | Latest Sonnet — excellent balance of speed and capability |
+| Sonnet 4 | Fast and capable |
+| Haiku 3.5 | Fastest, lightweight tasks |
+
+Custom models are supported via API proxy configuration (e.g. non-Anthropic models via compatible endpoints). Anthropic Foundry (Azure) deployment is also supported.
+
 ## Voice Mode (Optional)
 
-Voice mode enables hands-free speech-to-speech conversations with Claude. It requires an ElevenLabs account and an OpenAI account.
+Voice mode enables hands-free speech-to-speech conversations with Claude. Requires ElevenLabs and OpenAI API keys.
 
-### Setup
-
-1. Create an account at [elevenlabs.io](https://elevenlabs.io)
-2. Get your API key from [Settings > API Keys](https://elevenlabs.io/app/settings/api-keys)
-3. Create a Conversational AI agent in the [ElevenLabs dashboard](https://elevenlabs.io/app/conversational-ai)
-4. Copy the agent ID (starts with `agent_`)
-5. In Grep Build, go to **Settings > API Keys** and enter your ElevenLabs API Key and Agent ID
-6. You will also need an [OpenAI API key](https://platform.openai.com/api-keys) for speech-to-text (Whisper) -- enter it in the same Settings tab
-
-Once configured, click the microphone icon in the chat input to start a voice session.
-
-## Using with Claude Code
-
-Grep Build includes a `CLAUDE.md` with built-in skills that Claude Code can use directly. If you develop on Grep Build using Claude Code, these slash commands are available out of the box:
-
-| Command | What it does |
-|---------|-------------|
-| `/dev` | Starts the development server via `./scripts/dev.sh` with hot reload |
-| `/build` | Builds the production app — bumps version, runs QA, packages the binary, creates a git tag |
-| `/build force` | Skips QA and builds immediately |
-
-The `CLAUDE.md` also gives Claude full context on the architecture, IPC patterns, service structure, and file conventions — so it can navigate and modify the codebase effectively from the start.
+1. Get API keys from [ElevenLabs](https://elevenlabs.io/app/settings/api-keys) and [OpenAI](https://platform.openai.com/api-keys)
+2. Create a Conversational AI agent in the [ElevenLabs dashboard](https://elevenlabs.io/app/conversational-ai) and copy the agent ID
+3. Enter all keys in **Settings > API Keys**
+4. Click the microphone icon in the chat input
 
 ## Claude Integration
 
@@ -65,12 +74,11 @@ Grep Build uses the [Claude Agent SDK](https://github.com/anthropic/claude-agent
 
 | Feature | Details |
 |---------|---------|
-| **Models** | Opus 4.5, Sonnet 4.5, Sonnet 4, Haiku 3.5 |
 | **Thinking** | Off, thinking (10k tokens), ultrathink (100k tokens) |
 | **Permissions** | Accept edits, require approval, bypass all, plan only |
 | **Tools** | File read/write, terminal, browser, git — same as Claude Code CLI |
 | **File mentions** | `@filename` to add files to context |
-| **Slash commands** | `/commit`, `/agent`, `/skill` and more |
+| **MCP servers** | Connect custom tool servers via Model Context Protocol |
 
 ## Development
 
@@ -90,8 +98,6 @@ npm run lint
 npm run make
 ```
 
-The dev server uses a separate data directory (`/tmp/grep-build-dev`) so it won't interfere with your production install.
-
 ## Architecture
 
 Electron app with a React renderer and Node.js main process:
@@ -99,11 +105,12 @@ Electron app with a React renderer and Node.js main process:
 ```
 src/
 ├── main/              # Main process — services, IPC handlers, terminal, git
+│   └── services/      # Claude, auto-router, SSH, browser, codex, cursor, git, etc.
 ├── renderer/          # React UI — Zustand stores, components
 └── shared/            # Types and IPC channel constants
 ```
 
-Key technologies: Electron 39, React 18, TypeScript, Zustand, Tailwind CSS, Monaco Editor, xterm.js, node-pty, Claude Agent SDK.
+Key technologies: Electron 38, React 18, TypeScript, Zustand, Tailwind CSS, Monaco Editor, xterm.js, node-pty, Claude Agent SDK.
 
 ## License
 

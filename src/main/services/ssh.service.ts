@@ -166,6 +166,11 @@ export class SSHService {
     sessionId: string;
   }>();
   private readonly SSH_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+  private remoteCliCapabilitiesCache = new Map<string, {
+    capabilities: RemoteCliCapabilities;
+    fetchedAt: number;
+  }>();
+  private readonly REMOTE_CLI_CAPABILITIES_TTL = 5 * 60 * 1000; // 5 minutes
   private remoteBridgeReady = new Map<string, Promise<RemoteBridgeInstall>>();
   private activeTunnels: Set<string> = new Set();
 
@@ -1076,10 +1081,21 @@ detect_cli gemini gemini
       .map((harness) => REMOTE_CLI_SETUP_COMMANDS[harness]);
   }
 
+  private getRemoteCliCapabilitiesCacheKey(config: SSHConfig): string {
+    return `${config.username}@${config.host}:${config.port || 22}`;
+  }
+
   async detectRemoteCliCapabilities(
     sessionId: string,
-    config: SSHConfig
+    config: SSHConfig,
+    options?: { force?: boolean },
   ): Promise<RemoteCliCapabilities> {
+    const cacheKey = this.getRemoteCliCapabilitiesCacheKey(config);
+    const cached = this.remoteCliCapabilitiesCache.get(cacheKey);
+    if (!options?.force && cached && Date.now() - cached.fetchedAt < this.REMOTE_CLI_CAPABILITIES_TTL) {
+      return cached.capabilities;
+    }
+
     let capabilities: RemoteCliCapabilities = {
       claude: false,
       codex: false,
@@ -1094,9 +1110,16 @@ detect_cli gemini gemini
         await this.execCommand(client, this.buildRemoteCliDetectionCommand(config))
       );
 
+      this.remoteCliCapabilitiesCache.set(cacheKey, {
+        capabilities,
+        fetchedAt: Date.now(),
+      });
       console.log('[SSH Service] Remote CLI capabilities:', capabilities);
     } catch (error) {
       console.warn('[SSH Service] Failed to detect remote CLI capabilities:', error);
+      if (cached) {
+        return cached.capabilities;
+      }
     }
 
     return capabilities;

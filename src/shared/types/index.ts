@@ -288,6 +288,7 @@ export interface Attachment {
   type: 'file' | 'image' | 'dom_element';
   name: string;
   content: string;
+  screenshot?: string;
   metadata?: Record<string, unknown>;
 }
 

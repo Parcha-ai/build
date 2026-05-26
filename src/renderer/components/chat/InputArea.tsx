@@ -238,6 +238,7 @@ interface Attachment {
   type: 'file' | 'image' | 'dom_element' | 'mention';
   name: string;
   content: string;
+  screenshot?: string;
   path?: string;
   subType?: 'file' | 'folder' | 'symbol'; // For mentions: preserves the original type
 }

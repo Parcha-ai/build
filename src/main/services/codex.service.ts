@@ -866,8 +866,35 @@ class CodexServiceImpl {
     }
   }
 
+  private normalizeBase64ImageData(data: string): string {
+    const match = data.match(/^data:image\/[^;]+;base64,(.*)$/i);
+    return match ? match[1] : data;
+  }
+
+  private getImageAttachmentsForCodex(attachments: Attachment[]): Array<{ name: string; content: string }> {
+    const images: Array<{ name: string; content: string }> = [];
+    for (const attachment of attachments) {
+      if (attachment.type === 'image' && attachment.content) {
+        images.push({
+          name: attachment.name,
+          content: this.normalizeBase64ImageData(attachment.content),
+        });
+        continue;
+      }
+
+      if (attachment.type === 'dom_element' && attachment.screenshot) {
+        images.push({
+          name: `${attachment.name || 'selected-element'}-screenshot.png`,
+          content: this.normalizeBase64ImageData(attachment.screenshot),
+        });
+      }
+    }
+
+    return images;
+  }
+
   private async prepareLocalImageFiles(sessionId: string, attachments: Attachment[]): Promise<PreparedCodexAssets> {
-    const imageAttachments = attachments.filter((attachment) => attachment.type === 'image');
+    const imageAttachments = this.getImageAttachmentsForCodex(attachments);
     if (imageAttachments.length === 0) {
       return { imagePaths: [], cleanup: async () => undefined };
     }
@@ -878,7 +905,7 @@ class CodexServiceImpl {
     try {
       for (const [index, attachment] of imageAttachments.entries()) {
         const imagePath = path.join(tempDir, `image-${index}${this.getImageFileExtension(attachment.name)}`);
-        await fs.promises.writeFile(imagePath, attachment.content, 'base64');
+        await fs.promises.writeFile(imagePath, this.normalizeBase64ImageData(attachment.content), 'base64');
         imagePaths.push(imagePath);
       }
     } catch (error) {
@@ -985,7 +1012,7 @@ class CodexServiceImpl {
   }
 
   private async prepareCodexAssets(sessionId: string, attachments: Attachment[], sshConfig?: SSHConfig): Promise<PreparedCodexAssets> {
-    if (!attachments.some((attachment) => attachment.type === 'image')) {
+    if (this.getImageAttachmentsForCodex(attachments).length === 0) {
       return { imagePaths: [], cleanup: async () => undefined };
     }
 

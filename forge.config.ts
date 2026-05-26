@@ -119,22 +119,54 @@ const config: ForgeConfig = {
 
         if (fs.existsSync(qmdSourceDir)) {
           await fs.copy(qmdSourceDir, qmdDestDir);
+          // Remove Bun cache symlinks and macOS archive artifacts — they break code signing
+          for (const junk of ['.bun-cache', '__MACOSX']) {
+            const junkPath = path.join(qmdDestDir, junk);
+            if (fs.existsSync(junkPath)) {
+              await fs.remove(junkPath);
+              console.log(`[Packaging] Removed ${junk} from QMD bundle`);
+            }
+          }
           console.log(`[Packaging] Copied QMD for ${platformKey} to ${qmdDestDir}`);
         } else {
           console.log(`[Packaging] Warning: QMD not found for ${platformKey}. Run 'npx ts-node scripts/setup-qmd.ts ${platformKey}' to set up.`);
         }
 
-        // Sign the app with adhoc signature after all modifications
-        // This must happen after copying dependencies to ensure valid signature
         if (options.platform === 'darwin') {
-          const { execSync } = require('child_process');
           const appPath = path.join(outputPath, 'Build.app');
-          console.log(`[Packaging] Signing app with adhoc signature: ${appPath}`);
-          try {
-            execSync(`codesign --force --sign - "${appPath}"`, { stdio: 'inherit' });
-            console.log('[Packaging] App signed successfully');
-          } catch (err) {
-            console.error('[Packaging] Warning: Failed to sign app:', err);
+
+          // Sign with Developer ID certificate (after all file copies)
+          if (process.env.APPLE_ID && process.env.APPLE_PASSWORD && process.env.APPLE_TEAM_ID) {
+            const { signAsync } = require('@electron/osx-sign');
+            const { notarize } = require('@electron/notarize');
+
+            console.log('[Packaging] Signing app with Developer ID certificate...');
+            await signAsync({
+              app: appPath,
+              identity: `Developer ID Application: Ajmal Asver (${process.env.APPLE_TEAM_ID})`,
+              platform: 'darwin',
+              hardenedRuntime: true,
+              entitlements: path.join(__dirname, 'entitlements.plist'),
+              'entitlements-inherit': path.join(__dirname, 'entitlements.plist'),
+            });
+            console.log('[Packaging] App signed with Developer ID');
+
+            console.log('[Packaging] Submitting for Apple notarization (this may take several minutes)...');
+            await notarize({
+              appPath,
+              appleId: process.env.APPLE_ID,
+              appleIdPassword: process.env.APPLE_PASSWORD,
+              teamId: process.env.APPLE_TEAM_ID,
+            });
+            console.log('[Packaging] App notarized and stapled successfully');
+          } else {
+            const { execSync } = require('child_process');
+            console.log('[Packaging] No Apple credentials — falling back to adhoc signature');
+            try {
+              execSync(`codesign --force --sign - "${appPath}"`, { stdio: 'inherit' });
+            } catch (err) {
+              console.error('[Packaging] Warning: Failed to sign app:', err);
+            }
           }
 
           // Copy to /Applications

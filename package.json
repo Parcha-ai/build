@@ -1,7 +1,7 @@
 {
   "name": "build",
   "productName": "Build",
-  "version": "0.5.7",
+  "version": "0.5.8",
   "description": "AI-powered development environment with intelligent code search, multi-session support, and live browser preview",
   "main": ".webpack/main",
   "scripts": {
@@ -99,6 +99,7 @@
     "monaco-editor": "^0.55.1",
     "node-pty": "^1.0.0",
     "openai": "^4.104.0",
+    "posthog-node": "^5.35.1",
     "pptxgenjs": "^4.0.1",
     "qrcode.react": "^4.2.0",
     "react": "^18.3.1",

@@ -44,6 +44,9 @@ interface HarnessContextLimits {
   maxFinalChars?: number;
 }
 
+/** Recent transcript slice used for Auto Build routing and harness context (not full history). */
+const ROUTING_TRANSCRIPT_LIMIT = 40;
+
 const CLI_HARNESS_CONTEXT_LIMITS: Partial<Record<Harness, HarnessContextLimits>> = {
   cursor: {
     maxConversationChars: 60000,
@@ -158,6 +161,11 @@ export class ClaudeService {
     fileHash: string;
   }>();
   private transcriptPathCache = new Map<string, string>();
+  private remoteProjectContextCache = new Map<string, {
+    context: string;
+    loadedAt: number;
+  }>();
+  private readonly REMOTE_PROJECT_CONTEXT_TTL = 3 * 60 * 1000;
 
   constructor() {
     this.store = new Store({ name: 'claudette-settings' });
@@ -970,6 +978,9 @@ Read or source that file if you need the actual values. Do not print secret valu
   ): void {
     if (!model || model === 'auto') return;
     const harness = this.getHarnessFromModel(model);
+    if (success) {
+      this.rememberLastAssistantHarness(sessionId, harness);
+    }
     const usage = event?.usage;
     const inputTokens = usage?.inputTokens ?? Math.max(0, (usage?.totalTokens || 0) - (usage?.outputTokens || 0));
     const outputTokens = usage?.outputTokens || 0;
@@ -1031,14 +1042,23 @@ Read or source that file if you need the actual values. Do not print secret valu
     if (!session.sshConfig) return '';
 
     const remoteWorkdir = session.worktreePath || session.sshConfig.remoteWorkdir || projectPath;
+    const cacheKey = `${sessionId}:${remoteWorkdir}`;
+    const cached = this.remoteProjectContextCache.get(cacheKey);
+    if (cached && Date.now() - cached.loadedAt < this.REMOTE_PROJECT_CONTEXT_TTL) {
+      return cached.context;
+    }
+
     try {
       const files = await sshService.scanRemoteHarnessContextFiles(sessionId, session.sshConfig, remoteWorkdir);
-      return formatProjectInstructionContextFiles(files, {
+      const context = formatProjectInstructionContextFiles(files, {
         maxChars: contextLimits?.maxProjectContextChars,
         maxFiles: contextLimits?.maxProjectContextFiles,
       });
+      this.remoteProjectContextCache.set(cacheKey, { context, loadedAt: Date.now() });
+      return context;
     } catch (error) {
       console.warn('[Claude Service] Could not collect remote project instruction context:', error);
+      if (cached) return cached.context;
       return '';
     }
   }
@@ -1061,8 +1081,10 @@ Read or source that file if you need the actual values. Do not print secret valu
     normalizedSupplementalMessages: ChatMessage[],
     projectPath: string,
     autoOrchestrationContext: string,
+    prefetchedTranscriptMessages?: ChatMessage[],
   ): Promise<string> {
-    const transcriptMessages = await this.getMessages(sessionId);
+    const transcriptMessages = prefetchedTranscriptMessages
+      ?? await this.getMessages(sessionId, ROUTING_TRANSCRIPT_LIMIT);
     const mergedMessages = mergeConversationMessages(transcriptMessages, normalizedSupplementalMessages);
     const memoryProjectPath = this.getMemoryProjectPath(session, projectPath);
     const memoriesContext = memoryProjectPath
@@ -1098,6 +1120,43 @@ Read or source that file if you need the actual values. Do not print secret valu
     }
 
     return context;
+  }
+
+  private rememberLastAssistantHarness(sessionId: string, harness: Harness): void {
+    this.sessionStore.set(`harnessState.${sessionId}.lastAssistantHarness`, harness);
+  }
+
+  private getLastAssistantHarness(
+    supplementalMessages: ChatMessage[],
+    transcriptMessages: ChatMessage[] = [],
+  ): Harness | undefined {
+    const merged = mergeConversationMessages(transcriptMessages, supplementalMessages);
+    const lastAssistant = [...merged].reverse().find((message) => message.role === 'assistant' && message.harness);
+    return lastAssistant?.harness;
+  }
+
+  private async resolveLastAssistantHarness(
+    sessionId: string,
+    supplementalMessages: ChatMessage[],
+    prefetchedTranscriptMessages?: ChatMessage[],
+  ): Promise<Harness | undefined> {
+    const stored = this.sessionStore.get(`harnessState.${sessionId}.lastAssistantHarness`) as Harness | undefined;
+    if (stored) return stored;
+
+    const fromSupplemental = this.getLastAssistantHarness(supplementalMessages);
+    if (fromSupplemental) return fromSupplemental;
+
+    if (prefetchedTranscriptMessages) {
+      return this.getLastAssistantHarness(supplementalMessages, prefetchedTranscriptMessages);
+    }
+
+    try {
+      const transcriptPeek = await this.getMessages(sessionId, ROUTING_TRANSCRIPT_LIMIT);
+      return this.getLastAssistantHarness(supplementalMessages, transcriptPeek);
+    } catch (error) {
+      console.warn('[Claude Service] Could not peek transcript for last assistant harness:', error);
+      return undefined;
+    }
   }
 
   private canAutoBuildStageEdit(stage: OrchestrationStage, sdkPermissionMode?: string): boolean {
@@ -3534,6 +3593,7 @@ ${leadContent.slice(0, 60000)}
       codexService.cancel(sessionId);
       openclawService.cancel(sessionId);
       getCursorService().cancel(sessionId);
+      getCursorCliService().cancel(sessionId);
       getGeminiService().cancel(sessionId);
       getOpenCodeService().cancel(sessionId);
 
@@ -3655,12 +3715,14 @@ ${leadContent.slice(0, 60000)}
       }
 
       // Auto Build mode — resolve 'auto' to a concrete model via the router
+      let prefetchedRoutingMessages: ChatMessage[] | undefined;
       if (selectedModel === 'auto') {
         try {
           let recentRoutingMessages = normalizedSupplementalMessages;
           try {
-            const transcriptMessages = await this.getMessages(sessionId);
+            const transcriptMessages = await this.getMessages(sessionId, ROUTING_TRANSCRIPT_LIMIT);
             recentRoutingMessages = mergeConversationMessages(transcriptMessages, normalizedSupplementalMessages);
+            prefetchedRoutingMessages = recentRoutingMessages;
           } catch (error) {
             console.warn('[Claude Service] Auto Build: Could not load recent messages for routing phase inference:', error);
           }
@@ -3818,6 +3880,7 @@ ${leadContent.slice(0, 60000)}
             normalizedSupplementalMessages,
             projectPath,
             autoOrchestrationContext,
+            prefetchedRoutingMessages,
           );
           if (conversationContext) {
             console.log(`[Claude Service] Codex unified harness context: ${conversationContext.length} chars`);
@@ -3866,18 +3929,16 @@ ${leadContent.slice(0, 60000)}
         let needsFreshChat = !chatId;
 
         if (chatId) {
-          try {
-            const transcriptMessages = await this.getMessages(sessionId);
-            const allMessages = mergeConversationMessages(transcriptMessages, normalizedSupplementalMessages);
-            const lastAssistant = [...allMessages].reverse().find(m => m.role === 'assistant');
-            if (lastAssistant && lastAssistant.harness && lastAssistant.harness !== 'cursor') {
-              console.log(`[Claude Service] Last turn was ${lastAssistant.harness}, not Cursor — starting fresh chat with context`);
-              cursorCliService.clearChatId(sessionId);
-              chatId = null;
-              needsFreshChat = true;
-            }
-          } catch (e) {
-            console.warn('[Claude Service] Could not check last harness for Cursor:', e);
+          const lastHarness = await this.resolveLastAssistantHarness(
+            sessionId,
+            normalizedSupplementalMessages,
+            prefetchedRoutingMessages,
+          );
+          if (lastHarness && lastHarness !== 'cursor') {
+            console.log(`[Claude Service] Last turn was ${lastHarness}, not Cursor — starting fresh chat with context`);
+            cursorCliService.clearChatId(sessionId);
+            chatId = null;
+            needsFreshChat = true;
           }
         }
 
@@ -3905,6 +3966,7 @@ ${leadContent.slice(0, 60000)}
               normalizedSupplementalMessages,
               workDir,
               autoOrchestrationContext,
+              prefetchedRoutingMessages,
             );
             if (cursorContext) {
               console.log(`[Claude Service] Cursor unified harness context: ${cursorContext.length} chars`);
@@ -4009,6 +4071,7 @@ ${leadContent.slice(0, 60000)}
             normalizedSupplementalMessages,
             workDir,
             autoOrchestrationContext,
+            prefetchedRoutingMessages,
           );
           if (geminiContext) {
             console.log(`[Claude Service] Gemini unified harness context: ${geminiContext.length} chars`);
@@ -4058,6 +4121,7 @@ ${leadContent.slice(0, 60000)}
             normalizedSupplementalMessages,
             workDir,
             autoOrchestrationContext,
+            prefetchedRoutingMessages,
           );
           if (openCodeContext) {
             console.log(`[Claude Service] OpenCode unified harness context: ${openCodeContext.length} chars`);
@@ -4156,7 +4220,7 @@ ${leadContent.slice(0, 60000)}
       }
 
       // Build prompt with attachments
-      const imageAttachments = attachments?.filter(a => a.type === 'image') || [];
+      const imageAttachments = this.getImageAttachmentsForHarness(attachments);
       const domElementAttachments = attachments?.filter(a => a.type === 'dom_element') || [];
       const hasImages = imageAttachments.length > 0;
       const hasDomElements = domElementAttachments.length > 0;
@@ -4204,6 +4268,7 @@ ${leadContent.slice(0, 60000)}
       // Create async generator for prompt with images
       // Capture `this` for use inside the generator function
       const resizeImage = this.resizeImageIfNeeded.bind(this);
+      const normalizeBase64ImageData = this.normalizeBase64ImageData.bind(this);
       async function* createPromptWithImages(): AsyncIterable<SDKUserMessage> {
         const content: (TextBlockParam | ImageBlockParam)[] = [
           { type: 'text', text: fullTextMessage }
@@ -4218,7 +4283,7 @@ ${leadContent.slice(0, 60000)}
             : 'image/png';
 
           // Resize image if needed to stay under Anthropic's dimension limits
-          const resizedData = await resizeImage(attachment.content, mediaType);
+          const resizedData = await resizeImage(normalizeBase64ImageData(attachment.content), mediaType);
 
           content.push({
             type: 'image',
@@ -6687,6 +6752,35 @@ Begin by creating the task structure now.
     return projectPath.replace(/\//g, '-');
   }
 
+  private normalizeBase64ImageData(data: string): string {
+    const match = data.match(/^data:image\/[^;]+;base64,(.*)$/i);
+    return match ? match[1] : data;
+  }
+
+  private getImageAttachmentsForHarness(attachments?: Attachment[]): Array<{ name: string; content: string }> {
+    if (!attachments || attachments.length === 0) return [];
+
+    const images: Array<{ name: string; content: string }> = [];
+    for (const attachment of attachments) {
+      if (attachment.type === 'image' && attachment.content) {
+        images.push({
+          name: attachment.name,
+          content: this.normalizeBase64ImageData(attachment.content),
+        });
+        continue;
+      }
+
+      if (attachment.type === 'dom_element' && attachment.screenshot) {
+        images.push({
+          name: `${attachment.name || 'selected-element'}-screenshot.png`,
+          content: this.normalizeBase64ImageData(attachment.screenshot),
+        });
+      }
+    }
+
+    return images;
+  }
+
   /**
    * Prepare attachments for CLI-based harnesses (Cursor, Gemini, etc.) that take
    * a plain-text prompt. DOM elements are embedded as XML text blocks. Images are
@@ -6714,14 +6808,14 @@ Begin by creating the task structure now.
       result = `${domContext}\n\n${result}`;
     }
 
-    const images = attachments.filter(a => a.type === 'image');
+    const images = this.getImageAttachmentsForHarness(attachments);
     if (images.length > 0) {
       const localTempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), `build-cli-${sessionId}-`));
       const localPaths: string[] = [];
       for (const [idx, img] of images.entries()) {
         const ext = img.name.match(/\.(jpe?g)$/i) ? '.jpg' : '.png';
         const imgPath = path.join(localTempDir, `screenshot-${idx}${ext}`);
-        await fs.promises.writeFile(imgPath, img.content, 'base64');
+        await fs.promises.writeFile(imgPath, this.normalizeBase64ImageData(img.content), 'base64');
         localPaths.push(imgPath);
       }
 
@@ -6767,13 +6861,13 @@ Begin by creating the task structure now.
 
       const remotePaths: string[] = [];
       try {
-        for (const [idx, localPath] of localPaths.entries()) {
+        const uploaded = await Promise.all(localPaths.map((localPath, idx) => {
           const remotePath = `${remoteDir}/screenshot-${idx}${path.extname(localPath) || '.png'}`;
-          await new Promise<void>((resolve, reject) => {
-            sftp.fastPut(localPath, remotePath, (err) => err ? reject(err) : resolve());
+          return new Promise<string>((resolve, reject) => {
+            sftp.fastPut(localPath, remotePath, (err) => err ? reject(err) : resolve(remotePath));
           });
-          remotePaths.push(remotePath);
-        }
+        }));
+        remotePaths.push(...uploaded);
       } finally {
         try { sftp.end(); } catch { /* ignore */ }
         await fs.promises.rm(localTempDir, { recursive: true, force: true }).catch(() => {});
