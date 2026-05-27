@@ -153,51 +153,6 @@ export default function CostBadge() {
             </>
           )}
 
-          {tierConfig && (
-            <>
-              <div className="border-t border-claude-border my-2" />
-              <div className="font-bold text-claude-text mb-2" style={{ letterSpacing: '0.05em' }}>
-                MONTHLY USAGE ({tierConfig.planName})
-              </div>
-              <div className="space-y-1">
-                <div className="flex justify-between">
-                  <span className="text-claude-text-secondary">Month total:</span>
-                  <span className="text-claude-text">{formatCost(monthCost)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-claude-text-secondary">Included:</span>
-                  <span className="text-claude-text">{formatCost(tierConfig.monthlyIncludedUsd)}</span>
-                </div>
-
-                {/* Usage bar */}
-                <div className="mt-1">
-                  <div className="w-full h-1.5 bg-claude-bg">
-                    <div
-                      className={`h-full transition-all ${
-                        isOverLimit ? 'bg-red-500' : isNearLimit ? 'bg-amber-500' : 'bg-green-500'
-                      }`}
-                      style={{ width: `${Math.min(100, tierUsedPercent)}%` }}
-                    />
-                  </div>
-                  <div className="flex justify-between mt-0.5">
-                    <span className="text-[9px] text-claude-text-secondary">
-                      {tierUsedPercent.toFixed(0)}% used
-                    </span>
-                    <span className="text-[9px] text-claude-text-secondary">
-                      {formatCost(remainingIncluded)} left
-                    </span>
-                  </div>
-                </div>
-
-                {extraUsage > 0 && (
-                  <div className="flex justify-between text-red-400">
-                    <span>Extra usage:</span>
-                    <span>{formatCost(extraUsage)}</span>
-                  </div>
-                )}
-              </div>
-            </>
-          )}
         </div>
       )}
     </div>
