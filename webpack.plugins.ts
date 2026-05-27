@@ -26,5 +26,6 @@ export const plugins = [
   new webpack.DefinePlugin({
     'process.env.EMBEDDED_OPENAI_API_KEY': JSON.stringify(env.EMBEDDED_OPENAI_API_KEY || ''),
     'process.env.EMBEDDED_CEREBRAS_API_KEY': JSON.stringify(env.EMBEDDED_CEREBRAS_API_KEY || ''),
+    'process.env.EMBEDDED_ELEVENLABS_API_KEY': JSON.stringify(env.EMBEDDED_ELEVENLABS_API_KEY || ''),
   }),
 ];

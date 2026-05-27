@@ -16,17 +16,20 @@ declare const process: {
   env: {
     EMBEDDED_OPENAI_API_KEY?: string;
     EMBEDDED_CEREBRAS_API_KEY?: string;
+    EMBEDDED_ELEVENLABS_API_KEY?: string;
   };
 };
 
 export const EMBEDDED_KEYS = {
   openAi: process.env.EMBEDDED_OPENAI_API_KEY || '',
   cerebras: process.env.EMBEDDED_CEREBRAS_API_KEY || '',
+  elevenLabs: process.env.EMBEDDED_ELEVENLABS_API_KEY || '',
 } as const;
 
-/**
- * Check if an embedded OpenAI key is available
- */
 export function hasEmbeddedOpenAiKey(): boolean {
   return Boolean(EMBEDDED_KEYS.openAi);
+}
+
+export function hasEmbeddedElevenLabsKey(): boolean {
+  return Boolean(EMBEDDED_KEYS.elevenLabs);
 }

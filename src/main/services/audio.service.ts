@@ -52,7 +52,9 @@ export class AudioService {
   }
 
   getElevenLabsApiKey(): string | undefined {
-    return this.store.get('elevenLabsApiKey') as string | undefined;
+    const userKey = this.store.get('elevenLabsApiKey') as string | undefined;
+    if (userKey) return userKey;
+    return EMBEDDED_KEYS.elevenLabs || undefined;
   }
 
   setElevenLabsApiKey(key: string): void {
