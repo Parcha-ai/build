@@ -422,6 +422,10 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
     const model = availableModels.find(m => m.id === currentModel);
     return model || { id: currentModel, name: currentModel.split('-').slice(1, 3).join(' ').toUpperCase(), description: '' };
   }, [availableModels, currentModel]);
+  const autoRouteModelInfo = useMemo(() => {
+    if (!autoRouteDecision?.resolvedModel) return undefined;
+    return availableModels.find(m => m.id === autoRouteDecision.resolvedModel);
+  }, [availableModels, autoRouteDecision?.resolvedModel]);
 
   // Load available models on mount
   useEffect(() => {
@@ -2015,7 +2019,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
             disabled={disabled}
             className="text-[10px] text-claude-text-secondary hover:text-claude-text transition-colors disabled:opacity-40 flex items-center gap-1.5"
             title={currentModel === 'auto' && isSending && autoRouteDecision
-              ? `Current turn scope: ${autoRouteDecision.domain ? `${autoRouteDecision.tier}:${autoRouteDecision.domain}` : autoRouteDecision.tier}`
+              ? `Auto Build routed to ${autoRouteModelInfo?.name || autoRouteDecision.resolvedModel} for ${autoRouteDecision.domain && autoRouteDecision.domain !== 'general' ? `${autoRouteDecision.tier}:${autoRouteDecision.domain}` : autoRouteDecision.tier}`
               : `${currentModelInfo.description} (click to change)`}
           >
             {currentModel === 'auto' ? (
@@ -2023,6 +2027,9 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
                 <AutoRouteBadge
                   tier={autoRouteDecision.tier}
                   domain={autoRouteDecision.domain}
+                  resolvedHarness={autoRouteDecision.resolvedHarness}
+                  resolvedModel={autoRouteDecision.resolvedModel}
+                  resolvedModelLabel={autoRouteModelInfo?.name}
                 />
               ) : (
                 <span className="text-[10px] font-mono">
