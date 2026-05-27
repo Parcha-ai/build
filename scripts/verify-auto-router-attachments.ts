@@ -23,8 +23,13 @@ class MockStore {
   }
 }
 
-const originalLoad = (Module as unknown as { _load: typeof Module._load })._load;
-(Module as unknown as { _load: typeof Module._load })._load = function patchedLoad(request, parent, isMain) {
+type ModuleWithLoad = typeof Module & {
+  _load: (request: string, parent: unknown, isMain: boolean) => unknown;
+};
+
+const moduleWithLoad = Module as unknown as ModuleWithLoad;
+const originalLoad = moduleWithLoad._load;
+moduleWithLoad._load = function patchedLoad(this: unknown, request: string, parent: unknown, isMain: boolean): unknown {
   if (request === 'electron-store') {
     return { __esModule: true, default: MockStore };
   }
@@ -59,7 +64,7 @@ async function main(): Promise<void> {
       remoteCliCapabilities: cliCapabilities,
       attachmentCount: 3,
       attachmentTypes: ['dom_element', 'dom_element', 'image'],
-      skipLlmClassifier: true,
+      skipMetaController: true,
     },
   );
 
@@ -75,7 +80,7 @@ async function main(): Promise<void> {
       remoteCliCapabilities: cliCapabilities,
       attachmentCount: 1,
       attachmentTypes: ['dom_element'],
-      skipLlmClassifier: true,
+      skipMetaController: true,
     },
   );
 
@@ -91,7 +96,7 @@ async function main(): Promise<void> {
       remoteCliCapabilities: cliCapabilities,
       attachmentCount: 1,
       attachmentTypes: ['image'],
-      skipLlmClassifier: true,
+      skipMetaController: true,
     },
   );
 

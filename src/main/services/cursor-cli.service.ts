@@ -1,13 +1,13 @@
 import Store from 'electron-store';
-import { spawn, execSync, execFileSync, ChildProcess } from 'child_process';
+import { spawn, execFileSync, ChildProcess } from 'child_process';
 import * as readline from 'readline';
-import * as fs from 'fs';
 import * as os from 'os';
 import type { CursorStreamEvent } from './cursor.service';
 import { terminateProcessTree } from '../utils/process-tree';
 import { mcpService } from './mcp.service';
 import { sshService } from './ssh.service';
 import type { SSHConfig } from '../../shared/types';
+import { findUsableLocalExecutable } from '../utils/local-executable';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 interface ToolCallData {
@@ -78,31 +78,12 @@ class CursorCliService {
       '/opt/homebrew/bin/agent',
     ];
 
-    for (const candidate of candidates) {
-      if (fs.existsSync(candidate)) {
-        console.log(`[Cursor CLI] Found agent binary: ${candidate}`);
-        this.agentBinaryCache = candidate;
-        return candidate;
-      }
+    const result = findUsableLocalExecutable(['cursor-agent', 'agent'], candidates);
+    if (result) {
+      console.log(`[Cursor CLI] Found usable agent binary: ${result}`);
+      this.agentBinaryCache = result;
+      return result;
     }
-
-    try {
-      const result = execSync('which cursor-agent', { encoding: 'utf8' }).trim();
-      if (result) {
-        console.log(`[Cursor CLI] Found cursor-agent via which: ${result}`);
-        this.agentBinaryCache = result;
-        return result;
-      }
-    } catch { /* not in PATH */ }
-
-    try {
-      const result = execSync('which agent', { encoding: 'utf8' }).trim();
-      if (result) {
-        console.log(`[Cursor CLI] Found agent via which: ${result}`);
-        this.agentBinaryCache = result;
-        return result;
-      }
-    } catch { /* not in PATH */ }
 
     console.log('[Cursor CLI] agent binary not found locally');
     this.agentBinaryCache = false;
@@ -165,7 +146,7 @@ class CursorCliService {
     if (!agentBin) return null;
 
     try {
-      const chatId = execSync(`"${agentBin}" create-chat`, {
+      const chatId = execFileSync(agentBin, ['create-chat'], {
         encoding: 'utf8',
         cwd: workDir,
         timeout: 10000,

@@ -11,42 +11,35 @@ import fsSync from 'fs';
 import path from 'path';
 import os from 'os';
 import crypto from 'crypto';
-import { exec, spawn } from 'child_process';
+import { exec, execFile, spawn } from 'child_process';
 import { promisify } from 'util';
+import { findUsableLocalExecutable } from '../utils/local-executable';
 
 const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 /**
  * Check if Claude Code CLI is installed
  */
 async function checkClaudeCli(): Promise<{ installed: boolean; path: string | null; version: string | null }> {
+  const home = os.homedir();
+  const cliPath = findUsableLocalExecutable(['claude'], [
+    '/opt/homebrew/bin/claude',
+    '/usr/local/bin/claude',
+    path.join(home, '.local', 'bin', 'claude'),
+    path.join(home, '.npm-global', 'bin', 'claude'),
+  ]);
+  if (!cliPath) {
+    return { installed: false, path: null, version: null };
+  }
+
   try {
-    // Try to get the version - this is the most reliable check
-    // We use shell: true so that aliases and PATH are properly resolved
-    const { stdout: versionOutput } = await execAsync('claude --version', { shell: '/bin/zsh' });
-    const version = versionOutput.trim();
-
-    if (!version) {
-      return { installed: false, path: null, version: null };
-    }
-
-    // Try to get the path using 'type' which works better with aliases
-    let cliPath = null;
-    try {
-      const { stdout: typeOutput } = await execAsync('type -p claude || which claude', { shell: '/bin/zsh' });
-      cliPath = typeOutput.trim().split('\n').pop() || null;
-      // Clean up zsh output like "claude: aliased to claude"
-      if (cliPath && cliPath.includes('aliased')) {
-        cliPath = 'alias';
-      }
-    } catch {
-      cliPath = 'resolved via shell';
-    }
-
+    const { stdout, stderr } = await execFileAsync(cliPath, ['--version'], { timeout: 5000 });
+    const version = (stdout || stderr).trim().split('\n')[0] || null;
     return { installed: true, path: cliPath, version };
   } catch (error) {
-    console.log('[CLI Check] Claude CLI not found:', error);
-    return { installed: false, path: null, version: null };
+    console.log('[CLI Check] Claude CLI found but version check failed:', error);
+    return { installed: true, path: cliPath, version: null };
   }
 }
 
@@ -549,7 +542,7 @@ export function registerDevHandlers(ipcMain: IpcMain): void {
         // Format: claude --teleport <session-id> -p "prompt"
         // The -p flag requires a prompt argument for non-interactive mode
         // Note: Don't use shell: true to avoid quoting issues
-        const teleportProcess = spawn('claude', ['--teleport', remoteSessionId, '-p', 'status update'], {
+        const teleportProcess = spawn(cliCheck.path || 'claude', ['--teleport', remoteSessionId, '-p', 'status update'], {
           cwd: workingDir,
           shell: false,
           stdio: ['pipe', 'pipe', 'pipe'],

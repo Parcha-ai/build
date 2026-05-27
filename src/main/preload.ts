@@ -303,7 +303,7 @@ const electronAPI = {
     respondToPlanApproval: (response: { requestId: string; approved: boolean }): Promise<void> =>
       ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_PLAN_APPROVAL_RESPONSE, response),
     // Auto Build routing decision listener
-    onAutoRouteDecision: (callback: (data: { sessionId: string; decision: { tier: string; domain?: string; resolvedModel: string; resolvedHarness?: string; confidence: number; reason: string; method: string; enableGoals?: boolean; orchestration?: { mode: string; leadHarness: string; leadModel: string; stages: Array<{ tier: string; harness: string; model: string; purpose: string; fallbackModels?: string[] }> } } }) => void) => {
+    onAutoRouteDecision: (callback: (data: { sessionId: string; decision: { tier: string; domain?: string; resolvedModel: string; resolvedHarness?: string; confidence: number; reason: string; method: string; enableGoals?: boolean; goal?: { objective: string; source: 'slash-command' | 'ralph-loop' }; orchestration?: { mode: string; leadHarness: string; leadModel: string; stages: Array<{ tier: string; harness: string; model: string; purpose: string; fallbackModels?: string[]; required?: boolean; trigger?: string }> } } }) => void) => {
       const handler = (_: IpcRendererEvent, data: any) => callback(data);
       ipcRenderer.on(IPC_CHANNELS.CLAUDE_AUTO_ROUTE_DECISION, handler);
       return () => ipcRenderer.removeListener(IPC_CHANNELS.CLAUDE_AUTO_ROUTE_DECISION, handler);
@@ -1133,7 +1133,7 @@ const electronAPI = {
       ipcRenderer.invoke(IPC_CHANNELS.ANALYTICS_GET_HARNESS_INSIGHTS),
     refreshHistoricalUsage: (options?: { includeSubagents?: boolean; maxFiles?: number }): Promise<any> =>
       ipcRenderer.invoke(IPC_CHANNELS.ANALYTICS_REFRESH_HISTORICAL_USAGE, options),
-    runRouterEval: (options?: { limit?: number; includeSubagents?: boolean; useLlmClassifier?: boolean }): Promise<any> =>
+    runRouterEval: (options?: { limit?: number; includeSubagents?: boolean; useMetaController?: boolean }): Promise<any> =>
       ipcRenderer.invoke(IPC_CHANNELS.ANALYTICS_RUN_ROUTER_EVAL, options),
     recordHarnessSelection: (event: any): Promise<any> =>
       ipcRenderer.invoke(IPC_CHANNELS.ANALYTICS_RECORD_HARNESS_SELECTION, event),

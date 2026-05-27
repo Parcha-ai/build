@@ -14,7 +14,7 @@ const PROJECT_CONTEXT_MAX_CHARS = 120000;
 const PROJECT_CONTEXT_FILE_MAX_CHARS = 18000;
 const SKILL_CONTEXT_FILE_MAX_CHARS = 8000;
 const MAX_PROJECT_CONTEXT_FILES = 48;
-const AUTO_BUILD_SECTION_MARKER = '\n\n---\n\nAuto Build ';
+const AUTO_BUILD_SECTION_MARKERS = ['\n\n---\n\nFollow-up ', '\n\n---\n\nAuto Build '];
 
 export interface ProjectInstructionContextFile {
   label: string;
@@ -29,6 +29,7 @@ interface UnifiedHarnessContextOptions {
   projectPath?: string;
   additionalProjectContext?: string;
   orchestrationContext?: string;
+  handoffReferences?: string[];
   memoriesContext?: string;
   includeProjectContext?: boolean;
   maxConversationChars?: number;
@@ -91,7 +92,9 @@ function isCloseExactDuplicate(a: ChatMessage, b: ChatMessage): boolean {
 }
 
 function isAutoBuildAssistantMessage(message: ChatMessage): boolean {
-  return message.role === 'assistant' && (message.content || '').includes(AUTO_BUILD_SECTION_MARKER);
+  return message.role === 'assistant' && AUTO_BUILD_SECTION_MARKERS.some((marker) =>
+    (message.content || '').includes(marker)
+  );
 }
 
 function isAutoBuildSuperset(base: ChatMessage, candidate: ChatMessage): boolean {
@@ -556,13 +559,31 @@ ${formatted.join('\n')}
 </conversation_history>`;
 }
 
+function formatHandoffReferences(references: string[]): string {
+  const lines = Array.from(new Set(references.map((reference) => reference.trim()).filter(Boolean)));
+  if (lines.length === 0) return '';
+
+  return `<handoff_references>
+Context transfer between coding agents is expensive. Prefer these artifact
+references and focused search/read operations over asking for broad copied
+history.
+
+${lines.map((reference) => `- ${reference}`).join('\n')}
+</handoff_references>`;
+}
+
 export function buildUnifiedHarnessContext(options: UnifiedHarnessContextOptions): string {
   const blocks: string[] = [];
 
   if (options.orchestrationContext?.trim()) {
-    blocks.push(`<auto_build_orchestration>
+    blocks.push(`<turn_scope>
 ${options.orchestrationContext.trim()}
-</auto_build_orchestration>`);
+</turn_scope>`);
+  }
+
+  const handoffReferenceContext = formatHandoffReferences(options.handoffReferences || []);
+  if (handoffReferenceContext) {
+    blocks.push(handoffReferenceContext);
   }
 
   const conversationContext = buildCrossHarnessContext(

@@ -1,12 +1,12 @@
 import Store from 'electron-store';
-import { spawn, execSync, ChildProcess } from 'child_process';
-import * as fs from 'fs';
+import { spawn, ChildProcess } from 'child_process';
 import * as os from 'os';
 import * as readline from 'readline';
 import type { ChatMessage, SSHConfig } from '../../shared/types';
 import { terminateProcessTree } from '../utils/process-tree';
 import { mcpService } from './mcp.service';
 import { sshService } from './ssh.service';
+import { findUsableLocalExecutable } from '../utils/local-executable';
 
 export interface OpenCodeStreamEvent {
   type: 'text_delta' | 'thinking_delta' | 'tool_use' | 'tool_result' | 'message_complete' | 'error' | 'system';
@@ -32,39 +32,23 @@ interface OpenCodeCommand {
   label: string;
 }
 
-function findExecutable(binaryName: string): string | null {
-  try {
-    const result = execSync(`which ${binaryName}`, { encoding: 'utf8' }).trim();
-    if (result) return result;
-  } catch {
-    // Not in PATH.
-  }
-
-  return null;
-}
-
 function findOpenCodeCommand(): OpenCodeCommand {
-  const pathBinary = findExecutable('opencode');
-  if (pathBinary) {
-    return { command: pathBinary, prefixArgs: [], label: 'opencode' };
-  }
-
   const home = os.homedir();
-  const candidates = [
+  const pathBinary = findUsableLocalExecutable(['opencode'], [
     `${home}/.local/bin/opencode`,
     `${home}/.bun/bin/opencode`,
     `${home}/.npm-global/bin/opencode`,
     '/opt/homebrew/bin/opencode',
     '/usr/local/bin/opencode',
-  ];
-
-  for (const candidate of candidates) {
-    if (fs.existsSync(candidate)) {
-      return { command: candidate, prefixArgs: [], label: 'opencode' };
-    }
+  ]);
+  if (pathBinary) {
+    return { command: pathBinary, prefixArgs: [], label: 'opencode' };
   }
 
-  const npxBinary = findExecutable('npx');
+  const npxBinary = findUsableLocalExecutable(['npx'], [
+    '/opt/homebrew/bin/npx',
+    '/usr/local/bin/npx',
+  ]);
   if (npxBinary) {
     return { command: npxBinary, prefixArgs: ['-y', 'opencode-ai'], label: 'npx opencode-ai' };
   }

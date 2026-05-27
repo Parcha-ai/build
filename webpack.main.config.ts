@@ -23,6 +23,7 @@ export const mainConfig: Configuration = {
     '@anthropic-ai/claude-agent-sdk': 'commonjs @anthropic-ai/claude-agent-sdk',
     '@anthropic-ai/sdk': 'commonjs @anthropic-ai/sdk',
     '@cursor/sdk': 'commonjs @cursor/sdk',
+    'docx': 'commonjs docx',
     // codex-sdk not used — binary spawned directly by codex.service.ts
   },
 };

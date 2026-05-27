@@ -7,7 +7,7 @@ import ReleaseNotes from '../common/ReleaseNotes';
 import { getLatestRelease } from '../../../shared/config/release-notes';
 import { useSessionStore } from '../../stores/session.store';
 import type { ChatMessage, ToolCall } from '../../../shared/types';
-import { AGENT_COLORS, GSTACK_MODE_META } from '../../../shared/types';
+import { GSTACK_MODE_META } from '../../../shared/types';
 import type { StreamEvent } from '../../stores/session.store';
 
 interface QueuedMessage {
@@ -30,11 +30,21 @@ interface MessageListProps {
 }
 
 function getAgentDividerLabel(agentId?: string): string {
-  if (!agentId?.startsWith('autobuild:')) return 'TEAMMATE';
+  if (!agentId?.startsWith('autobuild:')) return 'FOLLOW-UP';
 
-  const [, tier, harness] = agentId.split(':');
-  const tierLabel = tier ? tier.toUpperCase() : 'HELPER';
-  return harness ? `AUTO BUILD ${tierLabel} ${harness.toUpperCase()}` : `AUTO BUILD ${tierLabel}`;
+  const [, tier] = agentId.split(':');
+  switch (tier) {
+    case 'plan':
+      return 'PLANNING FOLLOW-UP';
+    case 'build':
+      return 'IMPLEMENTATION FOLLOW-UP';
+    case 'verify':
+      return 'VERIFICATION FOLLOW-UP';
+    case 'refine':
+      return 'REFINEMENT FOLLOW-UP';
+    default:
+      return 'FOLLOW-UP';
+  }
 }
 
 export default function MessageList({
@@ -52,7 +62,6 @@ export default function MessageList({
   const rewindAndFork = useSessionStore((state) => state.rewindAndFork);
   const activeSessionId = useSessionStore((state) => state.activeSessionId);
   const getAgentColor = useSessionStore((state) => state.getAgentColor);
-  const agentColorMap = useSessionStore((state) => state.agentColorMap);
 
   // Create a map for quick lookup of current tool call state by ID
   const toolCallMap = React.useMemo(() => {
@@ -196,7 +205,7 @@ export default function MessageList({
             const prevEvent = idx > 0 ? streamEvents.slice(0, idx).filter(e => e.type !== 'thinking').pop() : null;
             const agentChanged = event.agentId !== prevEvent?.agentId;
             const isTeammate = !!event.agentId;
-            const agentColor = (isTeammate && activeSessionId) ? getAgentColor(activeSessionId, event.agentId!) : undefined;
+            const agentColor = (event.agentId && activeSessionId) ? getAgentColor(activeSessionId, event.agentId) : undefined;
             const agentDividerLabel = getAgentDividerLabel(event.agentId);
 
             // Agent badge for teammate events when agent changes
@@ -228,8 +237,9 @@ export default function MessageList({
             ) : null;
 
             if (event.type === 'tool') {
+              if (!event.toolCall) return null;
               // Use the live-updated tool call from currentToolCalls, fall back to snapshot
-              const liveToolCall = toolCallMap.get(event.toolCall!.id) || event.toolCall!;
+              const liveToolCall = toolCallMap.get(event.toolCall.id) || event.toolCall;
               return (
                 <React.Fragment key={event.id}>
                   {agentBadge}

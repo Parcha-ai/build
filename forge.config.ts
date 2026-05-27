@@ -105,6 +105,7 @@ const config: ForgeConfig = {
           '@anthropic-ai/sdk',
           '@cursor/sdk',
           '@cursor/sdk-darwin-arm64',
+          'docx',
           'monaco-editor',
         ];
 

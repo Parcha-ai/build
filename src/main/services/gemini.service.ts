@@ -1,5 +1,5 @@
 import Store from 'electron-store';
-import { spawn, execSync, ChildProcess } from 'child_process';
+import { spawn, ChildProcess } from 'child_process';
 import * as readline from 'readline';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -7,6 +7,7 @@ import { terminateProcessTree } from '../utils/process-tree';
 import type { ChatMessage, SSHConfig } from '../../shared/types';
 import { mcpService } from './mcp.service';
 import { sshService } from './ssh.service';
+import { findUsableLocalExecutable } from '../utils/local-executable';
 
 /**
  * Stream events emitted by GeminiService, aligned with the app's StreamEvent shape
@@ -85,19 +86,13 @@ const settingsStore = new Store({ name: 'claudette-settings' }) as any;
  * Find the system `node` binary (NOT Electron's process.execPath).
  */
 function findNodeBinary(): string {
-  try {
-    const result = execSync('which node', { encoding: 'utf8' }).trim();
-    if (result) return result;
-  } catch { /* not in PATH */ }
-
   const candidates = [
     '/opt/homebrew/bin/node',
     '/usr/local/bin/node',
     `${os.homedir()}/.nvm/versions/node/current/bin/node`,
   ];
-  for (const c of candidates) {
-    if (fs.existsSync(c)) return c;
-  }
+  const result = findUsableLocalExecutable(['node'], candidates);
+  if (result) return result;
   throw new Error('Unable to locate node binary');
 }
 
@@ -107,28 +102,13 @@ function findNodeBinary(): string {
  * avoiding shell: true (which corrupts arguments containing shell metacharacters).
  */
 function findGeminiBinary(): string {
-  let binPath: string | null = null;
-
-  try {
-    const result = execSync('which gemini', { encoding: 'utf8' }).trim();
-    if (result) binPath = result;
-  } catch { /* not in PATH */ }
-
-  if (!binPath) {
-    const homeDir = os.homedir();
-    const candidates = [
-      '/usr/local/bin/gemini',
-      `${homeDir}/.local/bin/gemini`,
-      `${homeDir}/.npm-global/bin/gemini`,
-      '/opt/homebrew/bin/gemini',
-    ];
-    for (const candidate of candidates) {
-      if (fs.existsSync(candidate)) {
-        binPath = candidate;
-        break;
-      }
-    }
-  }
+  const homeDir = os.homedir();
+  const binPath = findUsableLocalExecutable(['gemini'], [
+    '/usr/local/bin/gemini',
+    `${homeDir}/.local/bin/gemini`,
+    `${homeDir}/.npm-global/bin/gemini`,
+    '/opt/homebrew/bin/gemini',
+  ]);
 
   if (!binPath) {
     throw new Error(

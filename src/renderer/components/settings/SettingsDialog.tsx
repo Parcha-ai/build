@@ -13,6 +13,58 @@ interface TabConfig {
   icon: React.ReactNode;
 }
 
+type AutoBuildModelKey = 'plan' | 'build' | 'verify' | 'refine' | 'fallback';
+
+type AutoBuildModelSettings = Record<AutoBuildModelKey, string>;
+
+const AUTO_BUILD_MODEL_DEFAULTS: AutoBuildModelSettings = {
+  plan: 'claude-sonnet-4-6',
+  build: 'codex:gpt-5.5',
+  verify: 'codex:gpt-5.5',
+  refine: 'cursor:composer-2.5',
+  fallback: 'claude-sonnet-4-6',
+};
+
+const AUTO_BUILD_MODEL_ROWS: Array<{ id: AutoBuildModelKey; label: string; detail: string }> = [
+  { id: 'plan', label: 'Planning', detail: 'Architecture, reviews, tradeoffs' },
+  { id: 'build', label: 'Execution', detail: 'Code and file changes' },
+  { id: 'verify', label: 'Verification', detail: 'Tests, QA, debugging' },
+  { id: 'refine', label: 'Refinement', detail: 'Small focused edits' },
+  { id: 'fallback', label: 'Fallback', detail: 'Safe default when a harness is unavailable' },
+];
+
+function autoBuildConfigFromState(models: AutoBuildModelSettings, costAware: boolean) {
+  return {
+    planModel: models.plan,
+    buildModel: models.build,
+    verifyModel: models.verify,
+    refineModel: models.refine,
+    fallbackModel: models.fallback,
+    costAware,
+  };
+}
+
+function migrateAutoBuildModels(savedAutoConfig: any): AutoBuildModelSettings {
+  const models: AutoBuildModelSettings = { ...AUTO_BUILD_MODEL_DEFAULTS };
+
+  if (Array.isArray(savedAutoConfig?.categories)) {
+    for (const category of savedAutoConfig.categories) {
+      if (category?.id === 'plan' && typeof category.model === 'string') models.plan = category.model;
+      if (category?.id === 'build' && typeof category.model === 'string') models.build = category.model;
+      if (category?.id === 'verify' && typeof category.model === 'string') models.verify = category.model;
+      if (category?.id === 'refine' && typeof category.model === 'string') models.refine = category.model;
+    }
+  }
+
+  if (typeof savedAutoConfig?.planModel === 'string') models.plan = savedAutoConfig.planModel;
+  if (typeof savedAutoConfig?.buildModel === 'string') models.build = savedAutoConfig.buildModel;
+  if (typeof savedAutoConfig?.verifyModel === 'string') models.verify = savedAutoConfig.verifyModel;
+  if (typeof savedAutoConfig?.refineModel === 'string') models.refine = savedAutoConfig.refineModel;
+  if (typeof savedAutoConfig?.fallbackModel === 'string') models.fallback = savedAutoConfig.fallbackModel;
+
+  return models;
+}
+
 // Extracted to module level to prevent recreation on every render (causes focus loss)
 const ApiKeyInputComponent = ({
   value,
@@ -125,14 +177,9 @@ export default function SettingsDialog() {
   // Custom models (Kimi, Gemini, etc via API proxy)
   const [customModels, setCustomModels] = useState<Array<{ id: string; name: string; modelId: string; baseUrl: string; apiKey: string; description?: string }>>([]);
 
-  // Auto Build model routing categories
+  // Auto Build fixed model routing tiers
   const availableModels = useSessionStore((s) => s.availableModels || []);
-  const [autoBuildCategories, setAutoBuildCategories] = useState<Array<{ id: string; label: string; model: string }>>([
-    { id: 'plan', label: 'Planning', model: 'claude-sonnet-4-6' },
-    { id: 'build', label: 'Execution', model: 'codex:gpt-5.5' },
-    { id: 'verify', label: 'Verification', model: 'codex:gpt-5.5' },
-    { id: 'refine', label: 'Refinement', model: 'cursor:composer-2.5' },
-  ]);
+  const [autoBuildModels, setAutoBuildModels] = useState<AutoBuildModelSettings>(AUTO_BUILD_MODEL_DEFAULTS);
   const [autoBuildCostAware, setAutoBuildCostAware] = useState(true);
 
   // QMD status
@@ -260,8 +307,8 @@ export default function SettingsDialog() {
           setGeminiApiKey((appSettings as any).geminiApiKey || '');
           // Auto Build config
           const savedAutoConfig = (appSettings as any).autoRouterConfig;
-          if (savedAutoConfig?.categories) {
-            setAutoBuildCategories(savedAutoConfig.categories);
+          if (savedAutoConfig) {
+            setAutoBuildModels(migrateAutoBuildModels(savedAutoConfig));
           }
           if (savedAutoConfig?.costAware !== undefined) {
             setAutoBuildCostAware(savedAutoConfig.costAware);
@@ -759,70 +806,69 @@ export default function SettingsDialog() {
       return '';
     };
 
-    const allModels = [
-      { id: 'auto', name: 'Auto (router decides)', harness: '' },
-      ...availableModels.filter(m => m.id !== 'auto').map(m => ({
-        ...m,
-        harness: getHarnessLabel(m.id),
-      })),
-    ];
+    const allModelsById = new Map<string, { id: string; name: string; harness: string }>();
+    availableModels
+      .filter(m => m.id !== 'auto')
+      .forEach(m => {
+        allModelsById.set(m.id, {
+          id: m.id,
+          name: m.name,
+          harness: getHarnessLabel(m.id),
+        });
+      });
+    Object.values(autoBuildModels)
+      .filter(modelId => modelId && modelId !== 'auto')
+      .forEach(modelId => {
+        if (!allModelsById.has(modelId)) {
+          allModelsById.set(modelId, {
+            id: modelId,
+            name: modelId,
+            harness: getHarnessLabel(modelId),
+          });
+        }
+      });
+    const allModels = Array.from(allModelsById.values());
 
-    const updateCategory = (index: number, field: 'label' | 'model', value: string) => {
-      const updated = [...autoBuildCategories];
-      updated[index] = { ...updated[index], [field]: value };
-      setAutoBuildCategories(updated);
-      autoSaveAppSettings({ autoRouterConfig: { categories: updated, costAware: autoBuildCostAware } } as any);
+    const saveAutoBuildConfig = (models: AutoBuildModelSettings, costAware = autoBuildCostAware) => {
+      autoSaveAppSettings({
+        autoRouterConfig: autoBuildConfigFromState(models, costAware),
+      } as any);
     };
 
-    const removeCategory = (index: number) => {
-      const updated = autoBuildCategories.filter((_, i) => i !== index);
-      setAutoBuildCategories(updated);
-      autoSaveAppSettings({ autoRouterConfig: { categories: updated, costAware: autoBuildCostAware } } as any);
-    };
-
-    const addCategory = () => {
-      const updated = [...autoBuildCategories, { id: `custom-${Date.now()}`, label: 'New Category', model: 'claude-sonnet-4-6' }];
-      setAutoBuildCategories(updated);
-      autoSaveAppSettings({ autoRouterConfig: { categories: updated, costAware: autoBuildCostAware } } as any);
+    const updateTierModel = (id: AutoBuildModelKey, model: string) => {
+      const updated = { ...autoBuildModels, [id]: model };
+      setAutoBuildModels(updated);
+      saveAutoBuildConfig(updated);
     };
 
     return (
       <div className="space-y-4 p-4 overflow-y-auto max-h-[460px]">
         <div>
-          <h3 className="text-sm font-medium text-claude-text mb-1">Auto Build Mode</h3>
+          <h3 className="text-sm font-medium text-claude-text mb-1">Auto Build Routing</h3>
           <p className="text-[10px] text-claude-text-secondary mb-4">
-            Configure the default model or harness for each task tier. When Auto Build is selected, the orchestrator picks a lead harness, injects shared project context, and plans helper handoffs automatically.
+            Pick the harness/model for each fixed task category. When Auto Build is selected, routing assigns the turn to one of these categories and delegates execution to the selected harness.
           </p>
         </div>
 
-        {/* Category → Model mapping */}
+        {/* Fixed tier -> model mapping */}
         <div className="space-y-2">
           <div className="flex items-center justify-between mb-2">
-            <label className="text-[10px] font-mono text-claude-text-secondary uppercase tracking-wider">Categories</label>
-            <button
-              onClick={addCategory}
-              className="text-[10px] font-mono text-claude-accent hover:text-claude-text transition-colors"
-            >
-              + Add category
-            </button>
+            <label className="text-[10px] font-mono text-claude-text-secondary uppercase tracking-wider">Fixed categories</label>
+            <span className="text-[10px] text-claude-text-secondary">Auto Build delegates only to these category choices</span>
           </div>
 
-          {autoBuildCategories.map((cat, index) => (
-            <div key={cat.id} className="flex items-center gap-2 group">
-              {/* Category label — editable */}
-              <input
-                type="text"
-                value={cat.label}
-                onChange={(e) => updateCategory(index, 'label', e.target.value)}
-                className="w-32 bg-claude-bg border border-claude-border px-2 py-1.5 text-xs font-mono text-claude-text focus:outline-none focus:border-claude-accent"
-              />
+          {AUTO_BUILD_MODEL_ROWS.map((row) => (
+            <div key={row.id} className="grid grid-cols-[130px_14px_1fr] items-center gap-2">
+              <div>
+                <div className="text-xs font-mono text-claude-text">{row.label}</div>
+                <div className="text-[9px] text-claude-text-secondary truncate">{row.detail}</div>
+              </div>
 
               <span className="text-claude-text-secondary text-[10px]">→</span>
 
-              {/* Model selector */}
               <select
-                value={cat.model}
-                onChange={(e) => updateCategory(index, 'model', e.target.value)}
+                value={autoBuildModels[row.id]}
+                onChange={(e) => updateTierModel(row.id, e.target.value)}
                 className="flex-1 bg-claude-bg border border-claude-border px-2 py-1.5 text-xs font-mono text-claude-text focus:outline-none focus:border-claude-accent appearance-none cursor-pointer"
               >
                 {allModels.map(m => (
@@ -831,17 +877,6 @@ export default function SettingsDialog() {
                   </option>
                 ))}
               </select>
-
-              {/* Remove button — hidden for default categories, shown on hover for custom */}
-              <button
-                onClick={() => removeCategory(index)}
-                className={`text-claude-text-secondary hover:text-red-400 transition-colors opacity-0 group-hover:opacity-100 ${
-                  ['plan', 'build', 'verify', 'refine'].includes(cat.id) ? 'invisible' : ''
-                }`}
-                title="Remove category"
-              >
-                <X size={12} />
-              </button>
             </div>
           ))}
         </div>
@@ -857,7 +892,7 @@ export default function SettingsDialog() {
               onClick={() => {
                 const next = !autoBuildCostAware;
                 setAutoBuildCostAware(next);
-                autoSaveAppSettings({ autoRouterConfig: { categories: autoBuildCategories, costAware: next } } as any);
+                saveAutoBuildConfig(autoBuildModels, next);
               }}
               className={`w-8 h-4 rounded-full transition-colors relative ${autoBuildCostAware ? 'bg-claude-accent' : 'bg-claude-border'}`}
             >
@@ -869,7 +904,7 @@ export default function SettingsDialog() {
         {/* Info section */}
         <div className="border-t border-claude-border/30 pt-4">
           <p className="text-[10px] text-claude-text-secondary">
-            Select <span className="text-purple-400 font-bold">Auto Build</span> from the model picker in any session to enable orchestration. Build injects transcripts, project instructions, agents, and skills into CLI harnesses where possible.
+            Select <span className="text-purple-400 font-bold">Auto Build</span> from the model picker in any session. Build injects transcripts, project instructions, agents, and skills into CLI harnesses where possible.
           </p>
         </div>
       </div>

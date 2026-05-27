@@ -10,6 +10,7 @@ import type { Attachment, ChatMessage, SSHConfig } from '../../shared/types';
 import { terminateProcessTree } from '../utils/process-tree';
 import { truncateMiddlePreservingTail } from '../../shared/utils/prompt-truncation';
 import { mcpService } from './mcp.service';
+import { findUsableLocalExecutable, isUsableLocalExecutable } from '../utils/local-executable';
 
 // Stream event types for Codex (parallel to Claude's StreamEvent but separate)
 export interface CodexStreamEvent {
@@ -38,10 +39,6 @@ export interface CodexToolResult {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const settingsStore = new Store({ name: 'claudette-settings' }) as any;
 
-/**
- * Find the codex CLI binary — checks node_modules platform packages first,
- * then falls back to PATH.
- */
 function findCodexBinary(): string {
   // Platform binary from @openai/codex-<platform> package
   const platform = process.platform;
@@ -54,39 +51,38 @@ function findCodexBinary(): string {
 
   if (targetTriple) {
     const platformPkg = path.join('@openai', `codex-${platform}-${arch}`);
-    const binaryRel = path.join('vendor', targetTriple, 'codex', platform === 'win32' ? 'codex.exe' : 'codex');
-    const candidates = [
-      // Packaged app: Resources/node_modules/ (outside app.asar)
-      path.join(process.resourcesPath, 'node_modules', platformPkg, binaryRel),
-      // Dev: project root node_modules
-      path.resolve(process.cwd(), 'node_modules', platformPkg, binaryRel),
-      // Dev fallback: relative to __dirname (webpack output)
-      path.resolve(__dirname, '..', '..', 'node_modules', platformPkg, binaryRel),
+    const binaryName = platform === 'win32' ? 'codex.exe' : 'codex';
+    const binaryRels = [
+      path.join('vendor', targetTriple, 'bin', binaryName),
+      path.join('vendor', targetTriple, 'codex', binaryName),
     ];
+    const candidateBases = [
+      // Packaged app: Resources/node_modules/ (outside app.asar)
+      path.join(process.resourcesPath, 'node_modules', platformPkg),
+      // Dev: project root node_modules
+      path.resolve(process.cwd(), 'node_modules', platformPkg),
+      // Dev fallback: relative to __dirname (webpack output)
+      path.resolve(__dirname, '..', '..', 'node_modules', platformPkg),
+    ];
+    const candidates = candidateBases.flatMap((base) => binaryRels.map((binaryRel) => path.join(base, binaryRel)));
 
     for (const candidate of candidates) {
       console.log(`[Codex Service] Checking binary path: ${candidate}`);
-      if (fs.existsSync(candidate)) {
+      if (isUsableLocalExecutable(candidate)) {
         console.log(`[Codex Service] Found binary at: ${candidate}`);
         return candidate;
       }
     }
   }
 
-  // Fallback: check PATH
-  const { execSync } = require('child_process');
-  try {
-    const result = execSync('which codex', { encoding: 'utf8' }).trim();
-    if (result) {
-      console.log(`[Codex Service] Found binary in PATH: ${result}`);
-      return result;
-    }
-  } catch {
-    // not in PATH
+  const pathResult = findUsableLocalExecutable(['codex']);
+  if (pathResult) {
+    console.log(`[Codex Service] Found binary in PATH: ${pathResult}`);
+    return pathResult;
   }
 
   console.error(`[Codex Service] Binary not found. __dirname=${__dirname}, resourcesPath=${process.resourcesPath}, cwd=${process.cwd()}`);
-  throw new Error('Unable to locate Codex CLI binary. Ensure @openai/codex is installed with optional dependencies.');
+  throw new Error('Unable to locate a usable Codex CLI binary. Ensure @openai/codex is installed and not quarantined by macOS.');
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -312,7 +308,7 @@ class CodexServiceImpl {
   /**
    * Run Codex for the MCP tool invocation (blocks until complete, returns structured result).
    */
-  async runForTool(sessionId: string, prompt: string, workingDir: string): Promise<CodexToolResult> {
+  async runForTool(sessionId: string, prompt: string, workingDir: string, sshConfig?: SSHConfig, codexModel?: string): Promise<CodexToolResult> {
     const apiKey = this.getOpenAiApiKey();
 
     const MAX_PROMPT_CHARS = 50000;
@@ -325,7 +321,11 @@ class CodexServiceImpl {
     const toolCalls: Array<{ type: string; detail: string }> = [];
 
     try {
-      for await (const event of this.spawnCodex(sessionId, safePrompt, workingDir, apiKey)) {
+      const events = sshConfig
+        ? this.spawnCodexSSH(sessionId, safePrompt, workingDir, apiKey, sshConfig, codexModel)
+        : this.spawnCodex(sessionId, safePrompt, workingDir, apiKey, codexModel);
+
+      for await (const event of events) {
         const item = event.item;
         if (!item) continue;
 
