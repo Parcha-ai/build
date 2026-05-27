@@ -1,10 +1,10 @@
-# Grep Build
+# Build
 
 One IDE for every coding agent. Claude Code, Cursor, Codex, Gemini, OpenCode — same chat, same terminal, same preview, same git. Hot-swap harness mid-session without re-pasting context.
 
 ## Download
 
-Download the latest macOS build from [GitHub Releases](https://github.com/Parcha-ai/grep-build/releases).
+Download the latest macOS build from [GitHub Releases](https://github.com/Parcha-ai/build/releases).
 
 Signed and notarized by Apple — opens without security warnings.
 
@@ -28,7 +28,7 @@ Build is a desktop IDE that orchestrates your coding agents. Point it at any pro
 
 ## Quick Start
 
-1. Download from [Releases](https://github.com/Parcha-ai/grep-build/releases) and drag to Applications
+1. Download from [Releases](https://github.com/Parcha-ai/build/releases) and drag to Applications
 2. Open any project folder
 3. Bring your own API key — Anthropic, OpenAI, or OpenRouter
 4. Start building
@@ -82,8 +82,8 @@ Build never proxies your API calls. Bring your own keys — Anthropic, OpenAI, O
 
 ```bash
 # Clone and install
-git clone https://github.com/Parcha-ai/grep-build.git
-cd grep-build
+git clone https://github.com/Parcha-ai/build.git
+cd g-build
 npm install
 
 # Run in development mode
