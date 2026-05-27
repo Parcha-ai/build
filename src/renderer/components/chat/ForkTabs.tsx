@@ -388,45 +388,57 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
             const currentSession = sessions.find(s => s.id === sessionId);
             const rootSession = sessions.find(s => s.id === rootId);
             const session = rootSession?.sshConfig ? rootSession : currentSession;
-            if (session?.sshConfig) {
-              try {
-                // Strip worktreeScript so it doesn't re-run setup — we're
-                // connecting to the SAME directory, not creating a new worktree.
-                const { worktreeScript: _, ...cleanConfig } = session.sshConfig as any;
-                // Pre-update root's childSessionIds so the new session is in the
-                // fork group BEFORE it gets broadcast via SESSION_LIST_UPDATED.
-                const root = forkSiblings.find(f => f.id === rootId);
+            try {
+              const root = forkSiblings.find(f => f.id === rootId);
+              let newSession: any;
 
-                const newSession = await window.electronAPI.ssh.createSession({
+              if (session?.sshConfig) {
+                const { worktreeScript: _, ...cleanConfig } = session.sshConfig as any;
+                newSession = await window.electronAPI.ssh.createSession({
                   name: `${session.name} (new)`,
                   sshConfig: { ...cleanConfig, syncSettings: false },
                   parentSessionId: rootId,
                 });
-                if (newSession) {
-                  // Optimistic update — add to store immediately
-                  useSessionStore.setState((state) => ({
-                    sessions: [
-                      ...state.sessions.map(s => {
-                        if (s.id === rootId) {
-                          const children = [...(s.childSessionIds || [])];
-                          if (!children.includes(newSession.id)) children.push(newSession.id);
-                          return { ...s, childSessionIds: children, isRoot: true } as typeof s;
-                        }
-                        return s;
-                      }),
-                      { ...newSession, parentSessionId: rootId } as any,
-                    ],
-                  }));
-                  setActiveSession(newSession.id);
-                  // Persist in background
-                  window.electronAPI.sessions.update(rootId, {
-                    childSessionIds: [...(root?.childSessionIds || []), newSession.id],
-                    isRoot: true,
-                  } as any).catch(() => {});
+              } else {
+                const repoPath = session?.worktreePath || session?.repoPath || '';
+                const branch = session?.branch || 'main';
+                if (repoPath) {
+                  newSession = await window.electronAPI.dev.createSession({
+                    name: `${session?.name || 'Session'} (new)`,
+                    repoPath,
+                    branch,
+                  });
+                  if (newSession) {
+                    await window.electronAPI.sessions.update(newSession.id, {
+                      parentSessionId: rootId,
+                    } as any);
+                    newSession.parentSessionId = rootId;
+                  }
                 }
-              } catch (err) {
-                console.error('[ForkTabs] Failed to create new tab:', err);
               }
+
+              if (newSession) {
+                useSessionStore.setState((state) => ({
+                  sessions: [
+                    ...state.sessions.map(s => {
+                      if (s.id === rootId) {
+                        const children = [...(s.childSessionIds || [])];
+                        if (!children.includes(newSession.id)) children.push(newSession.id);
+                        return { ...s, childSessionIds: children, isRoot: true } as typeof s;
+                      }
+                      return s;
+                    }),
+                    { ...newSession, parentSessionId: rootId } as any,
+                  ],
+                }));
+                setActiveSession(newSession.id);
+                window.electronAPI.sessions.update(rootId, {
+                  childSessionIds: [...(root?.childSessionIds || []), newSession.id],
+                  isRoot: true,
+                } as any).catch(() => {});
+              }
+            } catch (err) {
+              console.error('[ForkTabs] Failed to create new tab:', err);
             }
           }}
           className="flex items-center justify-center px-2 py-1 border-l border-claude-border/30 text-claude-text-secondary hover:text-claude-accent transition-colors"
