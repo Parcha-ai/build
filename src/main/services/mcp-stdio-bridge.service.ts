@@ -13,7 +13,7 @@
  */
 
 import { spawn, ChildProcess } from 'child_process';
-import * as http from 'http';
+import * as http from 'node:http';
 import { terminateProcessTree } from '../utils/process-tree';
 
 /** Internal state for a single stdio bridge instance. */
@@ -23,7 +23,7 @@ interface BridgeInstance {
   /** The spawned stdio MCP process. */
   child: ChildProcess;
   /** HTTP server proxying to/from the child. */
-  server: http.Server;
+  server: ReturnType<typeof http.createServer>;
   /** The port the HTTP server is listening on. */
   port: number;
   /** Session IDs currently using this bridge (reference counting). */
@@ -219,7 +219,8 @@ class McpStdioBridgeService {
     });
 
     // Create the HTTP server
-    const server = http.createServer((req, res) => {
+    const server = http.createServer();
+    server.on('request', (req: http.IncomingMessage, res: http.ServerResponse) => {
       this.handleHttpRequest(newBridge, serverId, req, res);
     });
 
@@ -241,7 +242,7 @@ class McpStdioBridgeService {
         }
       });
 
-      server.on('error', (err) => {
+      server.on('error', (err: Error) => {
         clearTimeout(timeout);
         reject(err);
       });
