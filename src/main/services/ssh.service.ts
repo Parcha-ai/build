@@ -881,6 +881,15 @@ export class SSHService {
         // Stop health checks for this connection
         this.stopHealthCheck(sessionId);
 
+        // Clean up MCP stdio bridges for this session
+        import('./mcp-stdio-bridge.service').then(({ mcpStdioBridgeService }) => {
+          mcpStdioBridgeService.stopBridgesForSession(sessionId).catch((err) => {
+            console.warn('[SSH Service] Error stopping MCP bridges on close:', err);
+          });
+        }).catch(() => {
+          // Module not available, ignore
+        });
+
         // Notify renderer of connection loss for immediate UI feedback
         try {
           const { BrowserWindow } = require('electron');
@@ -2279,6 +2288,15 @@ detect_cli gemini gemini
       this.connections.delete(sessionId);
       this.clearActiveTunnels(sessionId);
     }
+
+    // Clean up MCP stdio bridges for this session
+    import('./mcp-stdio-bridge.service').then(({ mcpStdioBridgeService }) => {
+      mcpStdioBridgeService.stopBridgesForSession(sessionId).catch((err) => {
+        console.warn('[SSH Service] Error stopping MCP bridges for session:', err);
+      });
+    }).catch(() => {
+      // Module not available, ignore
+    });
   }
 
   /**
@@ -2590,9 +2608,23 @@ detect_cli gemini gemini
         }
       }
 
-      await this.syncBuildMcpServersInternal(client);
+      // Start stdio-to-HTTP bridges for native MCP servers before syncing configs
+      let bridgePorts: Map<string, number> | undefined;
+      try {
+        const { mcpStdioBridgeService } = await import('./mcp-stdio-bridge.service');
+        const { mcpService: mcpSvc } = await import('./mcp.service');
+        const nativeStdio = mcpSvc.getNativeStdioServers();
+        if (Object.keys(nativeStdio).length > 0) {
+          bridgePorts = await mcpStdioBridgeService.startBridgesForSession(sessionId, nativeStdio);
+          console.log('[SSH Service] MCP bridges started:', [...(bridgePorts || [])].map(([id, p]) => `${id}:${p}`).join(', '));
+        }
+      } catch (err) {
+        console.warn('[SSH Service] Could not start MCP stdio bridges:', err);
+      }
+
+      await this.syncBuildMcpServersInternal(client, false, bridgePorts);
       await this.syncMcpAuthInternal(client);
-      await this.syncHarnessMcpConfigsInternal(client);
+      await this.syncHarnessMcpConfigsInternal(client, false, bridgePorts);
       await this.setupMcpReverseTunnelsForSession(sessionId, config);
 
       // Clean up temp file
@@ -3591,10 +3623,12 @@ done
     }
   }
 
-  private async syncBuildMcpServersInternal(client: Client, strict = false): Promise<void> {
+  private async syncBuildMcpServersInternal(client: Client, strict = false, bridgePorts?: Map<string, number>): Promise<void> {
     try {
       const { mcpService } = await import('./mcp.service');
-      const { servers, serverIds, removeServerIds } = mcpService.getClaudeMcpSyncData();
+      const { servers, serverIds, removeServerIds } = bridgePorts && bridgePorts.size > 0
+        ? mcpService.getClaudeMcpSyncDataForSSH(bridgePorts)
+        : mcpService.getClaudeMcpSyncData();
 
       console.log('[SSH Service] Syncing Claude MCP servers to remote:', serverIds);
 
@@ -3741,10 +3775,12 @@ ${content}
 ${marker}`);
   }
 
-  private async syncHarnessMcpConfigsInternal(client: Client, strict = false): Promise<void> {
+  private async syncHarnessMcpConfigsInternal(client: Client, strict = false, bridgePorts?: Map<string, number>): Promise<void> {
     try {
       const { mcpService } = await import('./mcp.service');
-      const { servers, serverIds, removeServerIds } = mcpService.getHarnessMcpSyncData();
+      const { servers, serverIds, removeServerIds } = bridgePorts && bridgePorts.size > 0
+        ? mcpService.getHarnessMcpSyncDataForSSH(bridgePorts)
+        : mcpService.getHarnessMcpSyncData();
 
       if (serverIds.length === 0 && removeServerIds.length === 0) {
         console.log('[SSH Service] No harness MCP configs to sync');
@@ -3798,11 +3834,23 @@ ${marker}`);
     try {
       const { mcpService } = await import('./mcp.service');
       const localhostPorts = mcpService.getLocalhostMcpPorts();
-      if (localhostPorts.length === 0) return;
 
       for (const { serverId, port, url } of localhostPorts) {
         await this.setupReverseTunnel(sessionId, config, port);
         console.log(`[SSH Service] Reverse tunnel for ${serverId} MCP (${url}): remote:${port} -> local:${port}`);
+      }
+
+      // Also tunnel stdio bridge ports (these are localhost HTTP servers
+      // wrapping native stdio MCP processes for remote consumption)
+      try {
+        const { mcpStdioBridgeService } = await import('./mcp-stdio-bridge.service');
+        const bridgePorts = mcpStdioBridgeService.getBridgePorts();
+        for (const { serverId, port } of bridgePorts) {
+          await this.setupReverseTunnel(sessionId, config, port);
+          console.log(`[SSH Service] Reverse tunnel for ${serverId} MCP bridge: remote:${port} -> local:${port}`);
+        }
+      } catch (err) {
+        console.warn('[SSH Service] Could not set up MCP bridge reverse tunnels:', err);
       }
     } catch (err) {
       console.warn('[SSH Service] Could not set up MCP reverse tunnels:', err);
@@ -3883,9 +3931,22 @@ SETTINGS_EOF`);
       const client = connection.client;
       console.log('[SSH Service] Syncing MCP servers/auth to session:', sessionId);
 
-      await this.syncBuildMcpServersInternal(client, true);
+      // Start/reconcile stdio bridges
+      let bridgePorts: Map<string, number> | undefined;
+      try {
+        const { mcpStdioBridgeService } = await import('./mcp-stdio-bridge.service');
+        const { mcpService: mcpSvc } = await import('./mcp.service');
+        const nativeStdio = mcpSvc.getNativeStdioServers();
+        if (Object.keys(nativeStdio).length > 0) {
+          bridgePorts = await mcpStdioBridgeService.startBridgesForSession(sessionId, nativeStdio);
+        }
+      } catch (err) {
+        console.warn('[SSH Service] Could not start MCP stdio bridges for session sync:', err);
+      }
+
+      await this.syncBuildMcpServersInternal(client, true, bridgePorts);
       await this.syncMcpAuthInternal(client, true);
-      await this.syncHarnessMcpConfigsInternal(client, true);
+      await this.syncHarnessMcpConfigsInternal(client, true, bridgePorts);
       await this.setupMcpReverseTunnelsForSession(sessionId, connection.config, true);
       console.log('[SSH Service] MCP servers synced to remote for session:', sessionId);
       return { success: true };
@@ -3903,9 +3964,22 @@ SETTINGS_EOF`);
       const client = await this.getConnection(sessionId, config);
       console.log('[SSH Service] Syncing MCP configs to remote:', sessionId);
 
-      await this.syncBuildMcpServersInternal(client, true);
+      // Start/reconcile stdio bridges before syncing configs
+      let bridgePorts: Map<string, number> | undefined;
+      try {
+        const { mcpStdioBridgeService } = await import('./mcp-stdio-bridge.service');
+        const { mcpService: mcpSvc } = await import('./mcp.service');
+        const nativeStdio = mcpSvc.getNativeStdioServers();
+        if (Object.keys(nativeStdio).length > 0) {
+          bridgePorts = await mcpStdioBridgeService.startBridgesForSession(sessionId, nativeStdio);
+        }
+      } catch (err) {
+        console.warn('[SSH Service] Could not start MCP stdio bridges for sync:', err);
+      }
+
+      await this.syncBuildMcpServersInternal(client, true, bridgePorts);
       await this.syncMcpAuthInternal(client, true);
-      await this.syncHarnessMcpConfigsInternal(client, true);
+      await this.syncHarnessMcpConfigsInternal(client, true, bridgePorts);
       await this.setupMcpReverseTunnelsForSession(sessionId, config, true);
 
       return { success: true };

@@ -4373,7 +4373,16 @@ ${leadContent.slice(0, 60000)}
       // Load user-installed MCP servers from Claudette's electron-store
       // This runs on EVERY message, so new MCP servers are picked up automatically
       try {
-        const userMcpServers = mcpService.getClaudeMcpServersConfig();
+        let userMcpServers: Record<string, any>;
+
+        if (session.sshConfig) {
+          // SSH session: replace native stdio MCP servers with HTTP bridge URLs
+          const { mcpStdioBridgeService } = await import('./mcp-stdio-bridge.service');
+          const bridgePorts = mcpStdioBridgeService.getSessionBridgePorts(sessionId);
+          userMcpServers = mcpService.getClaudeMcpServersConfigForSSH(bridgePorts);
+        } else {
+          userMcpServers = mcpService.getClaudeMcpServersConfig();
+        }
 
         // For SSH sessions, remove chrome-devtools stdio config (can't run npx on remote)
         // The PreToolUse hook will intercept all chrome-devtools calls and run them locally

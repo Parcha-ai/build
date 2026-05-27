@@ -107,6 +107,19 @@ function isMcpRemotePackageArg(arg: string): boolean {
   return arg === 'mcp-remote' || /^mcp-remote@/.test(arg);
 }
 
+/**
+ * Returns true if the config describes a native stdio MCP server — i.e. one
+ * that spawns a local binary (command + args) and is NOT an mcp-remote wrapper
+ * around an HTTP/SSE endpoint.  These are the servers that cannot run on a
+ * remote SSH host and need the stdio-to-HTTP bridge.
+ */
+export function isNativeStdioServer(config: MCPServerConfig): boolean {
+  if (config.url) return false;
+  if (!config.command) return false;
+  if (config.args?.some(isMcpRemotePackageArg)) return false;
+  return true;
+}
+
 function pinMcpRemotePackageArg(args: string[]): string[] {
   let replaced = false;
   return args.map((arg) => {
@@ -710,6 +723,110 @@ class MCPService {
 
   getHarnessMcpSyncData(): { servers: Record<string, MCPServerConfig>; serverIds: string[]; removeServerIds: string[] } {
     const servers = this.getHarnessMcpServersConfig();
+    const serverIds = Object.keys(servers);
+    const removeServerIds = [...new Set([
+      ...this.getHarnessManagedServerIds(),
+      ...this.getHarnessRemovedServerIds(),
+      ...serverIds,
+    ])].sort();
+    return { servers, serverIds, removeServerIds };
+  }
+
+  /**
+   * Get all native stdio MCP servers (those that spawn a local binary).
+   * These are the ones that need the stdio-to-HTTP bridge for SSH sessions.
+   */
+  getNativeStdioServers(): Record<string, MCPServerConfig> {
+    const configs = this.getUserMcpServersConfig();
+    const native: Record<string, MCPServerConfig> = {};
+    for (const [name, config] of Object.entries(configs)) {
+      if (isNativeStdioServer(config)) {
+        native[name] = config;
+      }
+    }
+    return native;
+  }
+
+  /**
+   * Get Claude MCP configs for SSH sessions, replacing native stdio entries
+   * with HTTP bridge URLs pointing at the locally-running bridge servers.
+   */
+  getClaudeMcpServersConfigForSSH(
+    bridgePorts: Map<string, number>,
+    options: ClaudeMcpOptions = {}
+  ): Record<string, MCPServerConfig> {
+    const configs = this.getUserMcpServersConfig();
+    const normalized: Record<string, MCPServerConfig> = {};
+
+    for (const [name, config] of Object.entries(configs)) {
+      if (bridgePorts.has(name)) {
+        // Replace native stdio with HTTP pointing at the bridge
+        normalized[name] = {
+          type: 'http',
+          url: `http://127.0.0.1:${bridgePorts.get(name)}/mcp`,
+        };
+        if (config.alwaysLoad !== undefined) {
+          normalized[name].alwaysLoad = config.alwaysLoad;
+        }
+        if (config.tools) {
+          normalized[name].tools = config.tools.map((tool) => ({ ...tool }));
+        }
+      } else {
+        normalized[name] = normalizeMcpServerForClaude(config, options, name);
+      }
+    }
+
+    return normalized;
+  }
+
+  /**
+   * Get harness MCP sync data for SSH sessions, replacing native stdio entries
+   * with HTTP bridge URLs.
+   */
+  getHarnessMcpSyncDataForSSH(
+    bridgePorts: Map<string, number>
+  ): { servers: Record<string, MCPServerConfig>; serverIds: string[]; removeServerIds: string[] } {
+    const configs = this.getUserMcpServersConfig();
+    const servers: Record<string, MCPServerConfig> = {};
+
+    for (const [name, config] of Object.entries(configs)) {
+      if (bridgePorts.has(name)) {
+        servers[name] = {
+          type: 'http',
+          url: `http://127.0.0.1:${bridgePorts.get(name)}/mcp`,
+        };
+        if (config.alwaysLoad !== undefined) {
+          servers[name].alwaysLoad = config.alwaysLoad;
+        }
+        if (config.tools) {
+          servers[name].tools = config.tools.map((tool) => ({ ...tool }));
+        }
+      } else {
+        const harnessConfig = sanitizeHarnessConfig(config, name);
+        if (harnessConfig) {
+          servers[name] = harnessConfig;
+        }
+      }
+    }
+
+    const serverIds = Object.keys(servers);
+    const removeServerIds = [...new Set([
+      ...this.getHarnessManagedServerIds(),
+      ...this.getHarnessRemovedServerIds(),
+      ...serverIds,
+    ])].sort();
+
+    return { servers, serverIds, removeServerIds };
+  }
+
+  /**
+   * Get Claude MCP sync data for SSH sessions.
+   */
+  getClaudeMcpSyncDataForSSH(
+    bridgePorts: Map<string, number>,
+    options: ClaudeMcpOptions = {}
+  ): { servers: Record<string, MCPServerConfig>; serverIds: string[]; removeServerIds: string[] } {
+    const servers = this.getClaudeMcpServersConfigForSSH(bridgePorts, options);
     const serverIds = Object.keys(servers);
     const removeServerIds = [...new Set([
       ...this.getHarnessManagedServerIds(),
