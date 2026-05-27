@@ -10,7 +10,7 @@ import { MessageQueuePanel } from './MessageQueuePanel';
 import { VoiceModeErrorBoundary } from './VoiceModeErrorBoundary';
 import SecureInput from './SecureInput';
 import CompactionSwitchNotice from './CompactionSwitchNotice';
-import { AutoRouteBadge } from './AutoRouteBadge';
+import { AutoRouteBadge, formatHarnessModelLabel, inferHarnessFromModel } from './AutoRouteBadge';
 import { GSTACK_MODE_META } from '../../../shared/types';
 
 // Permission mode config for UI - using terminal-style prompts
@@ -330,6 +330,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
   const activeGStackMode = useSessionStore(useCallback((s) => s.gstackMode[sessionId] || null, [sessionId]));
   const queuedMessages = useSessionStore(useCallback((s) => s.messageQueue[sessionId] || EMPTY_QUEUE, [sessionId]));
   const currentModel = useSessionStore(useCallback((s) => s.selectedModel[sessionId] || 'auto', [sessionId]));
+  const activeStreamModel = useSessionStore(useCallback((s) => s.activeStreamModel[sessionId], [sessionId]));
   const autoRouteDecision = useSessionStore(useCallback((s) => s.autoRouteDecision[sessionId] || null, [sessionId]));
   const compactionSwitch = useSessionStore(useCallback((s) => s.compactionSwitch[sessionId] || null, [sessionId]));
   const availableModels = useSessionStore((s) => s.availableModels || EMPTY_MODELS);
@@ -426,6 +427,31 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
     if (!autoRouteDecision?.resolvedModel) return undefined;
     return availableModels.find(m => m.id === autoRouteDecision.resolvedModel);
   }, [availableModels, autoRouteDecision?.resolvedModel]);
+  const actualActiveModel = useMemo(() => {
+    if (!isSending) return currentModel === 'auto' ? undefined : currentModel;
+    if (activeStreamModel && activeStreamModel !== 'auto') return activeStreamModel;
+    if (autoRouteDecision?.resolvedModel) return autoRouteDecision.resolvedModel;
+    if (systemInfo?.model && systemInfo.model !== 'auto') return systemInfo.model;
+    return currentModel === 'auto' ? undefined : currentModel;
+  }, [activeStreamModel, autoRouteDecision?.resolvedModel, currentModel, isSending, systemInfo?.model]);
+  const actualActiveModelInfo = useMemo(() => {
+    if (!actualActiveModel) return undefined;
+    return availableModels.find(m => m.id === actualActiveModel);
+  }, [actualActiveModel, availableModels]);
+  const actualActiveHarness = autoRouteDecision?.resolvedModel === actualActiveModel && autoRouteDecision?.resolvedHarness
+    ? autoRouteDecision.resolvedHarness
+    : inferHarnessFromModel(actualActiveModel);
+  const actualActiveModelLabel = formatHarnessModelLabel(
+    actualActiveHarness,
+    actualActiveModel,
+    actualActiveModelInfo?.name,
+  );
+  const selectedModelLabel = currentModel === 'auto'
+    ? 'AUTO'
+    : formatHarnessModelLabel(inferHarnessFromModel(currentModel), currentModel, currentModelInfo.name) || currentModelInfo.name;
+  const modelButtonTitle = isSending && actualActiveModelLabel
+    ? `Using ${actualActiveModelLabel}${autoRouteDecision ? `. Auto Build scope: ${autoRouteDecision.domain && autoRouteDecision.domain !== 'general' ? `${autoRouteDecision.tier}:${autoRouteDecision.domain}` : autoRouteDecision.tier}` : ''}`
+    : `${currentModelInfo.description || selectedModelLabel} (click to change)`;
 
   // Load available models on mount
   useEffect(() => {
@@ -2018,18 +2044,16 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
             onClick={() => setShowModelDropdown(!showModelDropdown)}
             disabled={disabled}
             className="text-[10px] text-claude-text-secondary hover:text-claude-text transition-colors disabled:opacity-40 flex items-center gap-1.5"
-            title={currentModel === 'auto' && isSending && autoRouteDecision
-              ? `Auto Build routed to ${autoRouteModelInfo?.name || autoRouteDecision.resolvedModel} for ${autoRouteDecision.domain && autoRouteDecision.domain !== 'general' ? `${autoRouteDecision.tier}:${autoRouteDecision.domain}` : autoRouteDecision.tier}`
-              : `${currentModelInfo.description} (click to change)`}
+            title={modelButtonTitle}
           >
             {currentModel === 'auto' ? (
               isSending && autoRouteDecision ? (
                 <AutoRouteBadge
                   tier={autoRouteDecision.tier}
                   domain={autoRouteDecision.domain}
-                  resolvedHarness={autoRouteDecision.resolvedHarness}
-                  resolvedModel={autoRouteDecision.resolvedModel}
-                  resolvedModelLabel={autoRouteModelInfo?.name}
+                  resolvedHarness={actualActiveHarness || autoRouteDecision.resolvedHarness}
+                  resolvedModel={actualActiveModel || autoRouteDecision.resolvedModel}
+                  resolvedModelLabel={actualActiveModelInfo?.name || autoRouteModelInfo?.name}
                 />
               ) : (
                 <span className="text-[10px] font-mono">
@@ -2037,7 +2061,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
                 </span>
               )
             ) : (
-              isStreamingProp && systemInfo ? (systemInfo.model || currentModelInfo.name) : currentModelInfo.name
+              <span className="font-mono">{isSending && actualActiveModelLabel ? actualActiveModelLabel : selectedModelLabel}</span>
             )}
           </button>
           {showModelDropdown && (() => {

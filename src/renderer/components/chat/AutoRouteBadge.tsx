@@ -16,7 +16,7 @@ const TIER_COLORS: Record<string, { bg: string; text: string; border: string }> 
   refine: { bg: 'bg-green-500/15',  text: 'text-green-400',  border: 'border-green-500/30' },
 };
 
-const HARNESS_LABELS: Record<string, string> = {
+export const HARNESS_LABELS: Record<string, string> = {
   claude: 'Claude',
   cursor: 'Cursor',
   codex: 'Codex',
@@ -25,7 +25,17 @@ const HARNESS_LABELS: Record<string, string> = {
   custom: 'Custom',
 };
 
-function formatModelId(model?: string): string | undefined {
+export function inferHarnessFromModel(model?: string): string | undefined {
+  if (!model || model === 'auto') return undefined;
+  if (model.startsWith('codex:')) return 'codex';
+  if (model.startsWith('cursor:')) return 'cursor';
+  if (model.startsWith('gemini:')) return 'gemini';
+  if (model.startsWith('opencode:')) return 'opencode';
+  if (model.startsWith('custom:')) return 'custom';
+  return 'claude';
+}
+
+export function formatModelId(model?: string): string | undefined {
   if (!model) return undefined;
   const raw = model.includes(':') ? model.split(':').slice(1).join(':') : model;
   return raw
@@ -38,20 +48,28 @@ function formatModelId(model?: string): string | undefined {
     .join(' ');
 }
 
+function normalizeModelLabel(label?: string): string | undefined {
+  return label
+    ?.replace(/ \((Claude|Cursor|Codex|Gemini|OpenCode|Custom)\)$/i, '')
+    .trim();
+}
+
+export function formatHarnessModelLabel(harness?: string, model?: string, modelLabel?: string): string | undefined {
+  const resolvedHarness = harness || inferHarnessFromModel(model);
+  const harnessLabel = resolvedHarness ? HARNESS_LABELS[resolvedHarness] || resolvedHarness : undefined;
+  const displayModel = normalizeModelLabel(modelLabel) || formatModelId(model);
+  return [harnessLabel, displayModel].filter(Boolean).join(' ') || undefined;
+}
+
 function formatRouteTitle(tier: string, domain?: string, harness?: string, model?: string, modelLabel?: string): string {
   const scope = domain && domain !== 'general' ? `${tier}:${domain}` : tier;
-  const agent = [
-    harness ? HARNESS_LABELS[harness] || harness : undefined,
-    modelLabel || formatModelId(model),
-  ].filter(Boolean).join(' ');
-  return agent ? `Auto Build routed to ${agent} for ${scope}` : `Current turn scope: ${scope}`;
+  const agent = formatHarnessModelLabel(harness, model, modelLabel);
+  return agent ? `Using ${agent}. Auto Build scope: ${scope}` : `Current turn scope: ${scope}`;
 }
 
 export const AutoRouteBadge: React.FC<AutoRouteBadgeProps> = ({ tier, domain, resolvedHarness, resolvedModel, resolvedModelLabel, compact }) => {
   const colors = TIER_COLORS[tier] || TIER_COLORS.build;
-  const harnessLabel = resolvedHarness ? HARNESS_LABELS[resolvedHarness] || resolvedHarness : undefined;
-  const modelLabel = resolvedModelLabel || formatModelId(resolvedModel);
-  const agentLabel = [harnessLabel, modelLabel].filter(Boolean).join(' ');
+  const agentLabel = formatHarnessModelLabel(resolvedHarness, resolvedModel, resolvedModelLabel);
   const scopeLabel = domain && domain !== 'general' ? `${tier}:${domain}` : tier;
   const title = formatRouteTitle(tier, domain, resolvedHarness, resolvedModel, resolvedModelLabel);
 
@@ -72,7 +90,7 @@ export const AutoRouteBadge: React.FC<AutoRouteBadgeProps> = ({ tier, domain, re
       title={title}
     >
       <span className="uppercase font-bold tracking-wider">{agentLabel || tier}</span>
-      <span className="opacity-70 uppercase">{scopeLabel}</span>
+      {!agentLabel && <span className="opacity-70 uppercase">{scopeLabel}</span>}
     </span>
   );
 };
