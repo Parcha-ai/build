@@ -1903,7 +1903,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
 
     const { addMessage, setStreaming, permissionMode, thinkingMode, selectedModel, gstackMode } = state;
-    const model = selectedModel[sessionId]; // undefined = use default
+    const model = selectedModel[sessionId] || 'auto';
     const mode = normalizePermissionModeForModel(model, permissionMode[sessionId]);
     // Apply migration to handle old thinking mode values, default to 'high' (full capability)
     const thinking = migrateThinkingMode(thinkingMode[sessionId] || 'high');
