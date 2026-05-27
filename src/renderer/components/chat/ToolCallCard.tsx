@@ -608,40 +608,42 @@ function ExpandedContent({ toolCall, priority = false }: { toolCall: ToolCall; p
               </div>
             ) : (
               typeof result === 'object' ? (() => {
-                const r = result as Record<string, unknown>;
-                let imgSrc: string | null = null;
-                if (r.type === 'image' && typeof r.source === 'object' && r.source !== null) {
-                  const s = r.source as Record<string, unknown>;
-                  if (s.type === 'base64' && typeof s.data === 'string') {
-                    imgSrc = `data:${(s.media_type as string) || 'image/png'};base64,${s.data}`;
-                  }
-                }
-                if (!imgSrc && Array.isArray(r)) {
-                  const imgBlock = (r as unknown[]).find((b: unknown) => {
-                    const bl = b as Record<string, unknown>;
-                    return bl?.type === 'image' && typeof bl.source === 'object';
-                  }) as Record<string, unknown> | undefined;
-                  if (imgBlock) {
-                    const s = imgBlock.source as Record<string, unknown>;
-                    if (s?.type === 'base64' && typeof s.data === 'string') {
+                try {
+                  const r = result as Record<string, unknown>;
+                  let imgSrc: string | null = null;
+                  if (r.type === 'image' && typeof r.source === 'object' && r.source !== null) {
+                    const s = r.source as Record<string, unknown>;
+                    if (s.type === 'base64' && typeof s.data === 'string') {
                       imgSrc = `data:${(s.media_type as string) || 'image/png'};base64,${s.data}`;
                     }
                   }
-                }
-                if (!imgSrc && Array.isArray((r as any).content)) {
-                  const imgBlock = ((r as any).content as unknown[]).find((b: unknown) => {
-                    const bl = b as Record<string, unknown>;
-                    return bl?.type === 'image' && typeof bl.source === 'object';
-                  }) as Record<string, unknown> | undefined;
-                  if (imgBlock) {
-                    const s = imgBlock.source as Record<string, unknown>;
-                    if (s?.type === 'base64' && typeof s.data === 'string') {
-                      imgSrc = `data:${(s.media_type as string) || 'image/png'};base64,${s.data}`;
+                  if (!imgSrc && Array.isArray(result)) {
+                    for (const b of result as unknown[]) {
+                      if (b && typeof b === 'object' && (b as any).type === 'image' && typeof (b as any).source === 'object') {
+                        const s = (b as any).source;
+                        if (s?.type === 'base64' && typeof s.data === 'string') {
+                          imgSrc = `data:${s.media_type || 'image/png'};base64,${s.data}`;
+                          break;
+                        }
+                      }
                     }
                   }
-                }
-                if (imgSrc) {
-                  return <MediaPreview src={imgSrc} type="image" alt={filePath.split('/').pop()} />;
+                  if (!imgSrc && Array.isArray(r.content)) {
+                    for (const b of r.content as unknown[]) {
+                      if (b && typeof b === 'object' && (b as any).type === 'image' && typeof (b as any).source === 'object') {
+                        const s = (b as any).source;
+                        if (s?.type === 'base64' && typeof s.data === 'string') {
+                          imgSrc = `data:${s.media_type || 'image/png'};base64,${s.data}`;
+                          break;
+                        }
+                      }
+                    }
+                  }
+                  if (imgSrc) {
+                    return <MediaPreview src={imgSrc} type="image" alt={filePath.split('/').pop()} />;
+                  }
+                } catch {
+                  // Fall through to JSON viewer on any error
                 }
                 return <JSONResultViewer data={result} toolCallId={toolCall.id} priority={priority} />;
               })() : (
