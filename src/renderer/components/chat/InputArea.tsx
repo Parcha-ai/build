@@ -405,6 +405,11 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
   // Model selector state
   const [showModelDropdown, setShowModelDropdown] = useState(false);
   const [hoverHarness, setHoverHarness] = useState<string | null>(null);
+  const hoverHarnessTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const setHoverHarnessDebounced = useCallback((key: string) => {
+    if (hoverHarnessTimer.current) clearTimeout(hoverHarnessTimer.current);
+    hoverHarnessTimer.current = setTimeout(() => setHoverHarness(key), 120);
+  }, []);
   const modelDropdownRef = useRef<HTMLDivElement>(null);
 
   // Effort level selector state
@@ -455,6 +460,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
     const handleClickOutside = (event: MouseEvent) => {
       if (modelDropdownRef.current && !modelDropdownRef.current.contains(event.target as Node)) {
         setShowModelDropdown(false);
+        if (hoverHarnessTimer.current) clearTimeout(hoverHarnessTimer.current);
       }
     };
     if (showModelDropdown) {
@@ -2122,8 +2128,8 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
                     return (
                       <button
                         key={key}
-                        onMouseEnter={() => setHoverHarness(key)}
-                        onClick={() => setHoverHarness(key)}
+                        onMouseEnter={() => setHoverHarnessDebounced(key)}
+                        onClick={() => { if (hoverHarnessTimer.current) clearTimeout(hoverHarnessTimer.current); setHoverHarness(key); }}
                         className={`w-full text-left px-3 py-1.5 flex items-center justify-between transition-colors ${
                           isActive ? 'bg-claude-bg text-claude-text' : 'text-claude-text-secondary hover:bg-claude-bg/50'
                         }`}
