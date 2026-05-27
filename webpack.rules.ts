@@ -1,6 +1,6 @@
 import type { ModuleOptions } from 'webpack';
 
-export const rules: Required<ModuleOptions>['rules'] = [
+const nativeModuleRules: Required<ModuleOptions>['rules'] = [
   // Add support for native node modules
   {
     // We're specifying native_modules in the test because the asset relocator loader generates a
@@ -20,6 +20,9 @@ export const rules: Required<ModuleOptions>['rules'] = [
       },
     },
   },
+];
+
+const appRules: Required<ModuleOptions>['rules'] = [
   {
     test: /\.tsx?$/,
     exclude: /(node_modules|\.webpack)/,
@@ -71,3 +74,10 @@ export const rules: Required<ModuleOptions>['rules'] = [
     type: 'asset/resource',
   },
 ];
+
+export const rules: Required<ModuleOptions>['rules'] = [
+  ...nativeModuleRules,
+  ...appRules,
+];
+
+export const rendererRules: Required<ModuleOptions>['rules'] = appRules;

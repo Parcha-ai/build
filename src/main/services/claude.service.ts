@@ -34,6 +34,7 @@ import { formatConversationContext, mergeConversationMessages, buildCrossHarness
 import { secureKeysService } from './secure-keys.service';
 import { analyticsService, estimateBaselineCost, estimateCost } from './analytics.service';
 import { truncateMiddlePreservingTail } from '../../shared/utils/prompt-truncation';
+import { findUsableLocalExecutable } from '../utils/local-executable';
 
 const STREAM_DEBUG = process.env.GREP_DEBUG_STREAMING === '1';
 
@@ -141,6 +142,7 @@ export class ClaudeService {
   private pendingPermissions: Map<string, PendingPermission> = new Map();
   private pendingPlanApprovals: Map<string, PendingPlanApproval> = new Map();
   private sessionPlanFiles: Map<string, { content: string; filePath: string }> = new Map(); // Cache plan content per session
+  private sessionApprovedPlanFiles: Map<string, { content: string; filePath: string }> = new Map(); // Last approved plan artifact per session
   private lastPlanFeedback: Map<string, string> = new Map(); // Stores feedback from last plan rejection per session
   private mainWindow: BrowserWindow | null = null;
   private onSessionNameChanged: (() => void) | null = null;
@@ -614,7 +616,7 @@ You are intelligent enough to determine what URLs to test based on the project s
     if (autoOrchestrationContext && autoOrchestrationContext.trim()) {
       append += `
 
-## Auto Build Ultra Orchestration
+## Turn Scope
 
 ${autoOrchestrationContext}
 `;
@@ -1054,6 +1056,43 @@ Read or source that file if you need the actual values. Do not print secret valu
     return session.worktreePath || session.repoPath || fallbackPath;
   }
 
+  private getResolvedSdkSessionId(sessionId: string): string | undefined {
+    const rawSdkSessionId = this.sessionStore.get(`sdkSessionMappings.${sessionId}`) as string | undefined
+      || this.sessionStore.get(`sessions.${sessionId}.sdkSessionId`) as string | undefined;
+    return rawSdkSessionId && rawSdkSessionId !== 'new' ? rawSdkSessionId : undefined;
+  }
+
+  private buildAutoBuildHandoffReferences(
+    sessionId: string,
+    session: Session,
+    projectPath: string,
+  ): string[] {
+    const references: string[] = [];
+    const planFile = this.sessionPlanFiles.get(sessionId) || this.sessionApprovedPlanFiles.get(sessionId);
+    if (planFile?.filePath) {
+      references.push(`Plan file path: ${planFile.filePath}`);
+    }
+
+    const sdkSessionId = this.getResolvedSdkSessionId(sessionId);
+    if (sdkSessionId) {
+      if (session.sshConfig) {
+        const remoteWorkdir = session.worktreePath || session.sshConfig.remoteWorkdir || projectPath;
+        const escapedPath = remoteWorkdir.replace(/\//g, '-').replace(/^-/, '-');
+        references.push(`Claude transcript file on remote: ~/.claude/projects/${escapedPath}/${sdkSessionId}.jsonl`);
+        references.push(`Fallback transcript search on remote: ~/.claude/projects/*/${sdkSessionId}.jsonl`);
+      } else {
+        const transcriptPath = this.findTranscriptPath(sessionId, sdkSessionId);
+        references.push(transcriptPath
+          ? `Claude transcript file: ${transcriptPath}`
+          : `Claude transcript file search: ~/.claude/projects/*/${sdkSessionId}.jsonl`);
+      }
+    } else {
+      references.push(`Session transcript reference: current session ${sessionId}; resolve the concrete transcript path before broad context requests.`);
+    }
+
+    return references;
+  }
+
   private async buildUnifiedContextForHarness(
     sessionId: string,
     session: Session,
@@ -1073,6 +1112,10 @@ Read or source that file if you need the actual values. Do not print secret valu
       : '';
     const contextLimits = CLI_HARNESS_CONTEXT_LIMITS[currentHarness];
     const remoteProjectContext = await this.buildRemoteProjectInstructionContext(sessionId, session, projectPath, contextLimits);
+    const handoffReferences = this.buildAutoBuildHandoffReferences(sessionId, session, projectPath);
+    const maxConversationChars = handoffReferences.length > 0
+      ? Math.min(contextLimits?.maxConversationChars ?? 24000, 24000)
+      : contextLimits?.maxConversationChars;
 
     let context = buildUnifiedHarnessContext({
       messages: mergedMessages,
@@ -1080,9 +1123,10 @@ Read or source that file if you need the actual values. Do not print secret valu
       projectPath,
       additionalProjectContext: remoteProjectContext,
       orchestrationContext: autoOrchestrationContext,
+      handoffReferences,
       memoriesContext,
       includeProjectContext: session.sshConfig ? false : true,
-      maxConversationChars: contextLimits?.maxConversationChars,
+      maxConversationChars,
       maxProjectContextChars: contextLimits?.maxProjectContextChars,
       maxProjectContextFiles: contextLimits?.maxProjectContextFiles,
     });
@@ -1146,27 +1190,76 @@ Read or source that file if you need the actual values. Do not print secret valu
     }
   }
 
+  private parseGoalCommand(message: string): { objective: string; source: 'slash-command' } | undefined {
+    const match = message.match(/^\/goal(?:\s+([\s\S]*))?$/i);
+    const objective = match?.[1]?.trim();
+    return objective ? { objective, source: 'slash-command' } : undefined;
+  }
+
+  private ensureCodexGoalsEnabled(context: string): void {
+    try {
+      const configPath = path.join(os.homedir(), '.codex', 'config.toml');
+      const configContent = fs.existsSync(configPath) ? fs.readFileSync(configPath, 'utf-8') : '';
+      if (!configContent.includes('goals = true')) {
+        const goalsSection = configContent.includes('[features]')
+          ? configContent.replace('[features]', '[features]\ngoals = true')
+          : configContent + '\n\n[features]\ngoals = true\n';
+        fs.writeFileSync(configPath, goalsSection);
+        console.log(`[Claude Service] Enabled Codex goals for ${context}`);
+      }
+    } catch (error) {
+      console.warn(`[Claude Service] Could not enable Codex goals for ${context}:`, error);
+    }
+  }
+
+  private getAutoBuildStageDisplayTitle(stage: OrchestrationStage): string {
+    switch (stage.tier) {
+      case 'plan':
+        return 'Planning follow-up';
+      case 'build':
+        return 'Implementation follow-up';
+      case 'verify':
+        return 'Verification follow-up';
+      case 'refine':
+        return 'Refinement follow-up';
+    }
+  }
+
+  private formatAutoBuildStageFailure(): string {
+    return 'Follow-up step could not complete.\n';
+  }
+
+  private formatAutoBuildStageSkipped(): string {
+    return 'Follow-up step skipped: this step is not available yet.\n';
+  }
+
+  private isAutoBuildStageFailureText(content: string): boolean {
+    return /(?:Follow-up step|Auto Build helper) (?:could not complete|skipped)/i.test(content);
+  }
+
   private buildAutoBuildStagePrompt(stage: OrchestrationStage, userMessage: string, leadContent: string, canEdit: boolean): string {
     const stageInstruction = !canEdit || stage.tier === 'verify' || stage.tier === 'plan'
       ? 'Do not modify files. Inspect, test, reason, and report findings only.'
       : stage.tier === 'build'
         ? 'Modify files as needed to implement this build stage. Keep edits scoped to the original request and the lead plan.'
         : 'Modify files only if needed to apply the requested refinement. Keep edits minimal and verify the result when practical.';
+    const leadContextLimit = stage.trigger === 'after-plan' ? 12000 : 24000;
 
-    return `You are an Auto Build helper stage running under the Build orchestrator.
+    return `You are continuing a Build agent turn for a scoped ${stage.tier} follow-up.
 
-Stage: ${stage.tier.toUpperCase()}
+Scope: ${stage.tier.toUpperCase()}
 Purpose: ${stage.purpose}
-Model: ${stage.model}
 
 ${stageInstruction}
+Use any transcript file reference or plan file path in the handoff context before asking for copied history. Keep this handoff focused; context switching is expensive.
+Do not mention internal coordination, routing, model selection, or this scope note unless the user explicitly asks.
 Keep the response concise and directly useful to the lead result. If you run checks, say exactly what passed or failed. If you find an issue, include the file/path or command evidence needed to fix it.
 
 Original user request:
 ${userMessage}
 
-Lead result so far:
-${leadContent.slice(0, 60000)}
+Lead result excerpt:
+${leadContent.slice(0, leadContextLimit)}
 `;
   }
 
@@ -1209,7 +1302,7 @@ ${leadContent.slice(0, 60000)}
     const stageHarness = this.getHarnessFromModel(stage.model);
     const stageLabel = `${stage.tier.toUpperCase()} via ${stageHarness}:${stage.model}`;
     const stageAgentId = `autobuild:${stage.tier}:${stageHarness}`;
-    const stageAgentName = `Auto Build ${stage.tier.toUpperCase()} (${stageHarness})`;
+    const stageAgentName = this.getAutoBuildStageDisplayTitle(stage);
     const withStageSource = (event: StreamEvent): StreamEvent => {
       if (event.type === 'text_delta' || event.type === 'thinking_delta' || event.type === 'tool_use' || event.type === 'tool_result') {
         const sourcedEvent: StreamEvent = {
@@ -1226,7 +1319,7 @@ ${leadContent.slice(0, 60000)}
     };
 
     if (this.isQueryCancelled(sessionId, abortSignal)) return;
-    yield withStageSource({ type: 'text_delta', content: `\n\n---\n\nAuto Build ${stageLabel}\n\n` });
+    yield withStageSource({ type: 'text_delta', content: `\n\n---\n\n${this.getAutoBuildStageDisplayTitle(stage)}\n\n` });
 
     let stageContext = '';
     try {
@@ -1276,7 +1369,7 @@ ${leadContent.slice(0, 60000)}
           }
           if (event.type === 'error') {
             this.recordHarnessCompletion(sessionId, session, stage.model, undefined, false, event.error, stage.tier, taskDomain);
-            yield withStageSource({ type: 'text_delta', content: `Auto Build helper could not complete: ${event.error}\n` });
+            yield withStageSource({ type: 'text_delta', content: this.formatAutoBuildStageFailure() });
             return;
           }
           yield withStageSource(event as StreamEvent);
@@ -1303,7 +1396,7 @@ ${leadContent.slice(0, 60000)}
           }
           if (event.type === 'error') {
             this.recordHarnessCompletion(sessionId, session, stage.model, undefined, false, event.error, stage.tier, taskDomain);
-            yield withStageSource({ type: 'text_delta', content: `Auto Build helper could not complete: ${event.error}\n` });
+            yield withStageSource({ type: 'text_delta', content: this.formatAutoBuildStageFailure() });
             return;
           }
           yield withStageSource(event as StreamEvent);
@@ -1330,7 +1423,7 @@ ${leadContent.slice(0, 60000)}
           }
           if (event.type === 'error') {
             this.recordHarnessCompletion(sessionId, session, stage.model, undefined, false, event.error, stage.tier, taskDomain);
-            yield withStageSource({ type: 'text_delta', content: `Auto Build helper could not complete: ${event.error}\n` });
+            yield withStageSource({ type: 'text_delta', content: this.formatAutoBuildStageFailure() });
             return;
           }
           yield withStageSource(event as StreamEvent);
@@ -1357,7 +1450,7 @@ ${leadContent.slice(0, 60000)}
           }
           if (event.type === 'error') {
             this.recordHarnessCompletion(sessionId, session, stage.model, undefined, false, event.error, stage.tier, taskDomain);
-            yield withStageSource({ type: 'text_delta', content: `Auto Build helper could not complete: ${event.error}\n` });
+            yield withStageSource({ type: 'text_delta', content: this.formatAutoBuildStageFailure() });
             return;
           }
           yield withStageSource(event as StreamEvent);
@@ -1366,12 +1459,12 @@ ${leadContent.slice(0, 60000)}
       }
 
       this.recordHarnessCompletion(sessionId, session, stage.model, undefined, false, `${stageHarness} helper stages are not executable yet`, stage.tier, taskDomain);
-      yield withStageSource({ type: 'text_delta', content: `Auto Build helper skipped: ${stageHarness} helper stages are not executable yet.\n` });
+      yield withStageSource({ type: 'text_delta', content: this.formatAutoBuildStageSkipped() });
     } catch (error) {
       if (this.isQueryCancelled(sessionId, abortSignal)) return;
       const errorMessage = error instanceof Error ? error.message : String(error);
       this.recordHarnessCompletion(sessionId, session, stage.model, undefined, false, errorMessage, stage.tier, taskDomain);
-      yield withStageSource({ type: 'text_delta', content: `Auto Build helper could not complete: ${errorMessage}\n` });
+      yield withStageSource({ type: 'text_delta', content: this.formatAutoBuildStageFailure() });
     }
   }
 
@@ -1402,7 +1495,7 @@ ${leadContent.slice(0, 60000)}
         model,
         harness: this.getHarnessFromModel(model),
         fallbackModels: undefined,
-        purpose: `${stage.purpose} (fallback)`,
+        purpose: stage.purpose,
       }));
       const attempts = [stage, ...fallbackStages];
       let stageSucceeded = false;
@@ -1411,12 +1504,6 @@ ${leadContent.slice(0, 60000)}
       for (let attemptIndex = 0; attemptIndex < attempts.length; attemptIndex++) {
         if (this.isQueryCancelled(sessionId, abortSignal)) return;
         const attempt = attempts[attemptIndex];
-        if (attemptIndex > 0) {
-          yield {
-            type: 'text_delta',
-            content: `\nAuto Build retrying ${stage.tier.toUpperCase()} with ${attempt.harness}:${attempt.model}.\n`,
-          };
-        }
 
         console.log(`[Claude Service] Auto Build stage starting: ${attempt.tier} via ${attempt.model}`);
         let stageContent = '';
@@ -1439,7 +1526,7 @@ ${leadContent.slice(0, 60000)}
           if (event.type === 'text_delta') {
             const content = event.content || '';
             stageContent += content;
-            if (/Auto Build helper (could not complete|skipped)/i.test(content)) {
+            if (this.isAutoBuildStageFailureText(content)) {
               stageFailed = true;
             }
           }
@@ -1453,13 +1540,12 @@ ${leadContent.slice(0, 60000)}
           } catch (error) {
             console.warn(`[Claude Service] Could not record Auto Build ${attempt.harness} failure:`, error);
           }
-          accumulatedStageContext += `\n\nAuto Build ${attempt.tier.toUpperCase()} failed (${attempt.harness}:${attempt.model}):\n${stageContent}`;
+          accumulatedStageContext += `\n\n${attempt.tier.toUpperCase()} follow-up failed:\n${stageContent}`;
           continue;
         }
 
         if (stageContent.trim()) {
-          const resultLabel = attemptIndex === 0 ? 'result' : `fallback ${attemptIndex} result`;
-          stageOutputs += `\n\nAuto Build ${attempt.tier.toUpperCase()} ${resultLabel} (${attempt.harness}:${attempt.model}):\n${stageContent}`;
+          stageOutputs += `\n\n${attempt.tier.toUpperCase()} follow-up result:\n${stageContent}`;
         }
 
         try {
@@ -1479,7 +1565,7 @@ ${leadContent.slice(0, 60000)}
 
       if (!stageSucceeded && stage.required) {
         if (this.isQueryCancelled(sessionId, abortSignal)) return;
-        yield { type: 'text_delta', content: '\nRequired Auto Build stage failed after available fallback attempts; skipping dependent helper stages.\n' };
+        yield { type: 'text_delta', content: '\nRequired follow-up step could not complete; skipping dependent follow-up work.\n' };
         break;
       }
     }
@@ -2685,8 +2771,11 @@ ${leadContent.slice(0, 60000)}
             ? `Context: ${args.context}\n\nTask: ${args.prompt}`
             : args.prompt;
 
-          const cwd = getFilesystemProjectPath() || process.cwd();
-          const result = await codexService.runForTool(sessionId, fullPrompt, cwd);
+          const session = this.sessionStore.get(`sessions.${sessionId}`) as Session | undefined;
+          const cwd = session?.sshConfig
+            ? session.worktreePath || session.sshConfig.remoteWorkdir || getFilesystemProjectPath() || process.cwd()
+            : getFilesystemProjectPath() || process.cwd();
+          const result = await codexService.runForTool(sessionId, fullPrompt, cwd, session?.sshConfig);
 
           let responseText = result.summary;
           if (result.toolCalls.length > 0) {
@@ -3226,14 +3315,25 @@ ${leadContent.slice(0, 60000)}
     }
 
     const cwd = session?.repoPath || process.cwd();
-    const { spawn } = require('child_process') as typeof import('child_process');
+    const claudeCli = findUsableLocalExecutable(['claude'], [
+      '/opt/homebrew/bin/claude',
+      '/usr/local/bin/claude',
+      path.join(os.homedir(), '.local', 'bin', 'claude'),
+      path.join(os.homedir(), '.npm-global', 'bin', 'claude'),
+    ]);
+    if (!claudeCli) {
+      const message = 'Claude Code CLI is not installed or is blocked by macOS quarantine.';
+      console.error('[Claude Service] Cannot start remote control:', message);
+      this.mainWindow?.webContents.send(IPC_CHANNELS.CLAUDE_RC_STOPPED, { sessionId });
+      throw new Error(message);
+    }
 
     // Remote control is now a standalone subcommand (no longer combinable with --resume).
     // It creates a persistent server that accepts sessions from claude.ai/code.
     console.log('[Claude Service] Starting remote-control server for session:', sessionId, 'name:', sessionName);
-    const child = spawn('claude', ['remote-control', '--name', sessionName], {
+    const child = spawn(claudeCli, ['remote-control', '--name', sessionName], {
       cwd,
-      shell: true,
+      shell: false,
       env: { ...process.env, CLAUDECODE: '' },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -3418,7 +3518,6 @@ ${leadContent.slice(0, 60000)}
       || (this.sessionStore.get(`discoveredSessions.${sessionId}`) as Session | undefined);
 
     try {
-      const { spawn } = require('child_process') as typeof import('child_process');
       const cliArgs = ['-p', question, '--bare', '--no-session-persistence'];
       let child: import('child_process').ChildProcess;
 
@@ -3435,9 +3534,18 @@ ${leadContent.slice(0, 60000)}
         child = remoteProcess as unknown as import('child_process').ChildProcess;
       } else {
         const cwd = session?.repoPath || process.cwd();
-        child = spawn('claude', cliArgs, {
+        const claudeCli = findUsableLocalExecutable(['claude'], [
+          '/opt/homebrew/bin/claude',
+          '/usr/local/bin/claude',
+          path.join(os.homedir(), '.local', 'bin', 'claude'),
+          path.join(os.homedir(), '.npm-global', 'bin', 'claude'),
+        ]);
+        if (!claudeCli) {
+          throw new Error('Claude Code CLI is not installed or is blocked by macOS quarantine.');
+        }
+        child = spawn(claudeCli, cliArgs, {
           cwd,
-          shell: true,
+          shell: false,
           env: { ...process.env, CLAUDECODE: '' },
           stdio: ['pipe', 'pipe', 'pipe'],
         });
@@ -3571,6 +3679,14 @@ ${leadContent.slice(0, 60000)}
     let autoRoutedDomain: TaskDomain | undefined;
     let routingDecisionForAnalytics: RoutingDecision | undefined;
     const normalizedSupplementalMessages = this.normalizeConversationMessages(supplementalMessages);
+    const explicitGoalCommand = this.parseGoalCommand(userMessage);
+    let goalOrchestration: { objective: string; source: 'slash-command' | 'ralph-loop' } | undefined = explicitGoalCommand;
+    if (explicitGoalCommand) {
+      userMessage = explicitGoalCommand.objective;
+      selectedModel = 'auto';
+      selectionMode = 'auto';
+      selectionSource = 'request';
+    }
 
     try {
       // Validate and cast permission mode to SDK type
@@ -3579,6 +3695,14 @@ ${leadContent.slice(0, 60000)}
       const sdkPermissionMode: SDKPermissionMode = validModes.includes(permissionMode as SDKPermissionMode)
         ? (permissionMode as SDKPermissionMode)
         : 'acceptEdits';
+      let autoBuildLeadPermissionMode: SDKPermissionMode = sdkPermissionMode;
+      const audioSettingsForGoals = this.store.get('audioSettings') as Record<string, unknown> | undefined;
+      if (!goalOrchestration && selectedModel === 'auto' && audioSettingsForGoals?.ralphLoopEnabled && sdkPermissionMode === 'bypassPermissions') {
+        goalOrchestration = {
+          objective: userMessage.trim(),
+          source: 'ralph-loop',
+        };
+      }
 
       // Store the initial permission mode for this session (can be updated mid-stream via GREP IT!)
       this.sessionPermissionModes.set(sessionId, sdkPermissionMode);
@@ -3588,9 +3712,6 @@ ${leadContent.slice(0, 60000)}
         this.prePlanPermissionModes.set(sessionId, 'acceptEdits');
         console.log(`[Claude Service] Starting in plan mode, stored default pre-plan mode: acceptEdits`);
       }
-
-      // Check if bypassPermissions mode requires the danger flag
-      const requiresDangerFlag = sdkPermissionMode === 'bypassPermissions';
 
       if (session.sshConfig) {
         const syncResult = await sshService.syncMcpConfigsToRemote(sessionId, session.sshConfig);
@@ -3678,6 +3799,8 @@ ${leadContent.slice(0, 60000)}
             attachmentCount: attachments?.length || 0,
             attachmentTypes: attachments?.map((attachment) => attachment.type) || [],
             recentMessages: recentRoutingMessages,
+            goalObjective: goalOrchestration?.objective,
+            goalSource: goalOrchestration?.source,
           });
           const routedModel = routingDecision.resolvedModel;
           selectedModel = routedModel;
@@ -3686,6 +3809,13 @@ ${leadContent.slice(0, 60000)}
           autoOrchestrationPlan = routingDecision.orchestration;
           autoRoutedTier = routingDecision.tier;
           autoRoutedDomain = routingDecision.domain;
+          if (routingDecision.tier === 'plan') {
+            autoBuildLeadPermissionMode = 'plan';
+            this.sessionPermissionModes.set(sessionId, 'plan');
+            if (sdkPermissionMode !== 'plan' && !this.prePlanPermissionModes.has(sessionId)) {
+              this.prePlanPermissionModes.set(sessionId, sdkPermissionMode === 'dontAsk' ? 'acceptEdits' : sdkPermissionMode);
+            }
+          }
           console.log(`[Claude Service] Auto Build resolved: ${routingDecision.tier.toUpperCase()} → ${selectedModel}`);
 
           // Emit routing decision to renderer for UI display
@@ -3701,21 +3831,9 @@ ${leadContent.slice(0, 60000)}
             resolvedModel: selectedModel,
           };
 
-          // Enable Codex goals for Verify tier
+          // Enable Codex goals for routes that delegate native goal tracking to Codex.
           if (routingDecision.enableGoals && routedModel.startsWith('codex:')) {
-            try {
-              const configPath = path.join(os.homedir(), '.codex', 'config.toml');
-              const configContent = fs.existsSync(configPath) ? fs.readFileSync(configPath, 'utf-8') : '';
-              if (!configContent.includes('goals = true')) {
-                const goalsSection = configContent.includes('[features]')
-                  ? configContent.replace('[features]', '[features]\ngoals = true')
-                  : configContent + '\n\n[features]\ngoals = true\n';
-                fs.writeFileSync(configPath, goalsSection);
-                console.log('[Claude Service] Auto Build: Enabled Codex goals for Verify tier');
-              }
-            } catch (e) {
-              console.warn('[Claude Service] Auto Build: Could not enable Codex goals:', e);
-            }
+            this.ensureCodexGoalsEnabled('Auto Build route');
           }
         } catch (e) {
           console.warn('[Claude Service] Auto Build router failed, falling back to Sonnet:', e);
@@ -3788,25 +3906,10 @@ ${leadContent.slice(0, 60000)}
         console.log(`[Claude Service] Routing to Codex model=${codexModel} ssh=${!!session.sshConfig}`);
         const projectPath = session.worktreePath || session.repoPath || session.sshConfig?.remoteWorkdir || process.cwd();
 
-        // Enable Codex goals when Ralph Loop is on
-        const audioSettings = this.store.get('audioSettings') as Record<string, unknown> | undefined;
-        if (audioSettings?.ralphLoopEnabled) {
-          try {
-            const fs = require('fs');
-            const os = require('os');
-            const path = require('path');
-            const configPath = path.join(os.homedir(), '.codex', 'config.toml');
-            const configContent = fs.existsSync(configPath) ? fs.readFileSync(configPath, 'utf-8') : '';
-            if (!configContent.includes('goals = true')) {
-              const goalsSection = configContent.includes('[features]')
-                ? configContent.replace('[features]', '[features]\ngoals = true')
-                : configContent + '\n\n[features]\ngoals = true\n';
-              fs.writeFileSync(configPath, goalsSection);
-              console.log('[Claude Service] Enabled Codex goals for Ralph Loop');
-            }
-          } catch (e) {
-            console.warn('[Claude Service] Could not enable Codex goals:', e);
-          }
+        const ralphWithGoals = !routingDecisionForAnalytics?.goal && audioSettingsForGoals?.ralphLoopEnabled && autoBuildLeadPermissionMode === 'bypassPermissions';
+        const nativeCodexGoalObjective = ralphWithGoals ? userMessage.trim() : undefined;
+        if (nativeCodexGoalObjective) {
+          this.ensureCodexGoalsEnabled('Ralph Loop');
         }
 
         let conversationContext = '';
@@ -3828,11 +3931,9 @@ ${leadContent.slice(0, 60000)}
 
         const codexContext = [secureEnvContext, conversationContext].filter(Boolean).join('\n\n');
 
-        // When Ralph Loop is on, prepend /goal so Codex sets up goal tracking
-        const ralphWithGoals = audioSettings?.ralphLoopEnabled && permissionMode === 'bypassPermissions';
-        const codexPrompt = ralphWithGoals ? `/goal ${userMessage}` : userMessage;
+        const codexPrompt = nativeCodexGoalObjective ? `/goal ${nativeCodexGoalObjective}` : userMessage;
 
-        const codexEvents = codexService.streamAsChat(sessionId, codexPrompt, projectPath, session.sshConfig, codexContext, codexModel, attachments, sdkPermissionMode) as AsyncIterable<StreamEvent>;
+        const codexEvents = codexService.streamAsChat(sessionId, codexPrompt, projectPath, session.sshConfig, codexContext, codexModel, attachments, autoBuildLeadPermissionMode) as AsyncIterable<StreamEvent>;
         for await (const event of this.streamLeadWithAutoBuildStages(
           codexEvents,
           sessionId,
@@ -3843,8 +3944,8 @@ ${leadContent.slice(0, 60000)}
           normalizedSupplementalMessages,
           autoOrchestrationContext,
           sdkPermissionMode,
-	          secureEnvContext,
-	          selectedModel,
+          secureEnvContext,
+          selectedModel,
           abortController.signal,
           autoRoutedDomain,
         )) {
@@ -4070,7 +4171,7 @@ ${leadContent.slice(0, 60000)}
         const baseOpenCodeMessage = openCodeHandoffContext ? `${openCodeHandoffContext}\n\n${userMessage}` : userMessage;
         const { message: fullMessage, cleanup: openCodeCleanup } = await this.prepareCliAttachments(sessionId, baseOpenCodeMessage, attachments, session.sshConfig);
         try {
-          const openCodeEvents = openCodeService.streamMessage(sessionId, fullMessage, workDir, selectedModel, session.sshConfig, sdkPermissionMode) as AsyncIterable<StreamEvent>;
+          const openCodeEvents = openCodeService.streamMessage(sessionId, fullMessage, workDir, selectedModel, session.sshConfig, autoBuildLeadPermissionMode) as AsyncIterable<StreamEvent>;
           for await (const event of this.streamLeadWithAutoBuildStages(
             openCodeEvents,
             sessionId,
@@ -4447,7 +4548,7 @@ ${leadContent.slice(0, 60000)}
       const maxRalphIterations = audioSettings?.maxRalphIterations ?? 50;
       const maxComputerUseIterations = audioSettings?.maxComputerUseIterations ?? 20;
 
-      if (permissionMode === 'bypassPermissions' && (ralphLoopEnabled || computerUseEnabled)) {
+      if (autoBuildLeadPermissionMode === 'bypassPermissions' && (ralphLoopEnabled || computerUseEnabled)) {
         let iterationCount = 0;
         const maxIterations = computerUseEnabled ? maxComputerUseIterations : maxRalphIterations;
         const loopName = computerUseEnabled ? 'Computer Use' : 'Ralph Loop';
@@ -4608,12 +4709,13 @@ Begin by creating the task structure now.
         console.warn('[Claude Service] Could not sync showClearContextOnPlanAccept:', e);
       }
 
+      const requiresDangerFlag = autoBuildLeadPermissionMode === 'bypassPermissions';
       const messages = query({
         prompt,
         options: {
           cwd: projectPath,
           abortController,
-          permissionMode: sdkPermissionMode,
+          permissionMode: autoBuildLeadPermissionMode,
           ...(requiresDangerFlag ? { allowDangerouslySkipPermissions: true } : {}),
           includePartialMessages: true,
           // Use computed model — resolve custom:* IDs to actual API model names
@@ -4680,7 +4782,7 @@ Begin by creating the task structure now.
           },
           // Handle tool permission requests
           canUseTool: async (toolName: string, input: Record<string, unknown>, _options: any) => {
-            console.log(`[Claude Service] canUseTool called for: ${toolName}, mode: ${sdkPermissionMode}`);
+            console.log(`[Claude Service] canUseTool called for: ${toolName}, mode: ${autoBuildLeadPermissionMode}`);
 
             // Handle AskUserQuestion tool
             if (toolName === 'AskUserQuestion' && input.questions) {
@@ -4824,6 +4926,9 @@ Begin by creating the task structure now.
 
                 if (approved) {
                   console.log('[Claude Service] Plan approved by user');
+                  if (planFilePath) {
+                    this.sessionApprovedPlanFiles.set(sessionId, { content: planContent, filePath: planFilePath });
+                  }
                   // Clean up cached plan content
                   this.sessionPlanFiles.delete(sessionId);
 
@@ -4845,6 +4950,7 @@ Begin by creating the task structure now.
                   console.log('[Claude Service] Plan rejected by user');
                   // Clean up cached plan content
                   this.sessionPlanFiles.delete(sessionId);
+                  this.sessionApprovedPlanFiles.delete(sessionId);
 
                   // Use custom feedback if provided, otherwise use default message
                   const planFeedback = this.lastPlanFeedback.get(sessionId);
@@ -4870,8 +4976,8 @@ Begin by creating the task structure now.
             }
 
             // Check the CURRENT permission mode (may have changed via GREP IT! button)
-            const currentPermissionMode = this.getSessionPermissionMode(sessionId) || sdkPermissionMode;
-            console.log(`[Claude Service] Permission check - initial mode: ${sdkPermissionMode}, current mode: ${currentPermissionMode}`);
+            const currentPermissionMode = this.getSessionPermissionMode(sessionId) || autoBuildLeadPermissionMode;
+            console.log(`[Claude Service] Permission check - initial mode: ${autoBuildLeadPermissionMode}, current mode: ${currentPermissionMode}`);
 
             // In plan mode, deny write operations
             if (currentPermissionMode === 'plan') {
@@ -5490,6 +5596,7 @@ Begin by creating the task structure now.
 
                           // Cache the plan content for this session (for later ExitPlanMode use)
                           this.sessionPlanFiles.set(sessionId, { content: planContent, filePath });
+                          this.sessionApprovedPlanFiles.delete(sessionId);
 
                           // Emit to renderer via IPC
                           if (this.mainWindow) {

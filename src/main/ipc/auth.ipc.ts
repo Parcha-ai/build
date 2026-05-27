@@ -7,6 +7,7 @@ import { promises as fs } from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import Store from 'electron-store';
+import { findUsableLocalExecutable, isUsableLocalExecutable } from '../utils/local-executable';
 
 const execFileAsync = promisify(execFile);
 const authService = new AuthService();
@@ -100,18 +101,23 @@ function getCodexCliCandidates(): string[] {
   if (!targetTriple) return [];
 
   const platformPkg = path.join('@openai', `codex-${platform}-${arch}`);
-  const binaryRel = path.join('vendor', targetTriple, 'codex', platform === 'win32' ? 'codex.exe' : 'codex');
-  return [
-    path.join(process.resourcesPath || '', 'node_modules', platformPkg, binaryRel),
-    path.resolve(process.cwd(), 'node_modules', platformPkg, binaryRel),
-    path.resolve(__dirname, '..', '..', 'node_modules', platformPkg, binaryRel),
+  const binaryName = platform === 'win32' ? 'codex.exe' : 'codex';
+  const binaryRels = [
+    path.join('vendor', targetTriple, 'bin', binaryName),
+    path.join('vendor', targetTriple, 'codex', binaryName),
   ];
+  const candidateBases = [
+    path.join(process.resourcesPath || '', 'node_modules', platformPkg),
+    path.resolve(process.cwd(), 'node_modules', platformPkg),
+    path.resolve(__dirname, '..', '..', 'node_modules', platformPkg),
+  ];
+  return candidateBases.flatMap((base) => binaryRels.map((binaryRel) => path.join(base, binaryRel)));
 }
 
 async function resolveCli(binaryNames: string[], extraCandidates: string[] = []): Promise<{ installed: boolean; path: string | null; version: string | null }> {
   for (const candidate of extraCandidates) {
+    if (!isUsableLocalExecutable(candidate)) continue;
     try {
-      await fs.access(candidate);
       let version: string | null = null;
       try {
         const versionResult = await execFileAsync(candidate, ['--version'], { timeout: 5000 });
@@ -125,11 +131,9 @@ async function resolveCli(binaryNames: string[], extraCandidates: string[] = [])
     }
   }
 
-  for (const binary of binaryNames) {
+  const cliPath = findUsableLocalExecutable(binaryNames);
+  if (cliPath) {
     try {
-      const { stdout } = await execFileAsync('/usr/bin/env', ['which', binary], { timeout: 3000 });
-      const cliPath = stdout.trim().split('\n')[0];
-      if (!cliPath) continue;
       let version: string | null = null;
       try {
         const versionResult = await execFileAsync(cliPath, ['--version'], { timeout: 5000 });
@@ -139,7 +143,7 @@ async function resolveCli(binaryNames: string[], extraCandidates: string[] = [])
       }
       return { installed: true, path: cliPath, version };
     } catch {
-      // Try next candidate.
+      // Fall through to "not installed".
     }
   }
   return { installed: false, path: null, version: null };

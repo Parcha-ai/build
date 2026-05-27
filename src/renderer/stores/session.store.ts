@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { Session, ChatMessage, ToolCall, ContentBlock, PermissionRequest, PermissionResponse, QuestionRequest, QuestionResponse, SetupProgressEvent, CompactionStatus, PlanApprovalRequest, PlanApprovalResponse, GStackMode, Harness } from '../../shared/types';
+import type { Session, ChatMessage, ToolCall, ContentBlock, PermissionRequest, PermissionResponse, QuestionRequest, QuestionResponse, SetupProgressEvent, CompactionStatus, PlanApprovalRequest, PlanApprovalResponse, GStackMode, Harness, TaskTier } from '../../shared/types';
 import { AGENT_COLORS } from '../../shared/types';
 import { normalizeToolCall } from '../../shared/utils/tool-call-transformer';
 import { contentBlockSignature, isCloseContentDuplicate, isCloseTimelineDuplicate, isInterruptedSafetyNetDuplicate, toolSignature } from '../../shared/utils/message-recovery';
@@ -46,9 +46,9 @@ const CODEX_PERMISSION_MODES: PermissionMode[] = ALL_PERMISSION_MODES.filter(
   (mode): mode is PermissionMode => mode === 'auto' || mode === 'acceptEdits' || mode === 'bypassPermissions' || mode === 'plan',
 );
 const SUPPLEMENTAL_MESSAGES_STORAGE_PREFIX = 'grep-supplemental-messages-';
-const AUTO_BUILD_SECTION_MARKER = '\n\n---\n\nAuto Build ';
+const AUTO_BUILD_SECTION_MARKERS = ['\n\n---\n\nFollow-up ', '\n\n---\n\nAuto Build '];
 const queueDrainSuppressedUntil: Record<string, number> = {};
-type HarnessSelectionTrigger = 'model-picker' | 'plan-nudge' | 'api' | 'other';
+type HarnessSelectionTrigger = 'model-picker' | 'plan-nudge' | 'compaction-handoff' | 'api' | 'other';
 
 type AutoRouteDecisionState = {
   tier: string;
@@ -58,14 +58,28 @@ type AutoRouteDecisionState = {
   confidence: number;
   reason: string;
   method: string;
+  goal?: {
+    objective: string;
+    source: 'slash-command' | 'ralph-loop';
+  };
   orchestration?: {
     mode: string;
     leadHarness: string;
     leadModel: string;
-    stages: Array<{ tier: string; harness: string; model: string; purpose: string; fallbackModels?: string[] }>;
+    stages: Array<{ tier: string; harness: string; model: string; purpose: string; fallbackModels?: string[]; required?: boolean; trigger?: string }>;
   };
 };
 
+type MetaGoalState = {
+  objective: string;
+  source: 'slash-command' | 'ralph-loop';
+  status: 'active' | 'complete' | 'blocked';
+  iterations: number;
+  maxIterations: number;
+  updatedAt: number;
+};
+
+const META_GOAL_MAX_ITERATIONS = 20;
 const suppressQueueDrain = (sessionId: string, ms = 3000) => {
   queueDrainSuppressedUntil[sessionId] = Date.now() + ms;
 };
@@ -73,6 +87,25 @@ const suppressQueueDrain = (sessionId: string, ms = 3000) => {
 const isQueueDrainSuppressed = (sessionId: string) => {
   return Date.now() < (queueDrainSuppressedUntil[sessionId] || 0);
 };
+
+function parseGoalSlashCommand(message: string): string | undefined {
+  const match = message.match(/^\/goal(?:\s+([\s\S]*))?$/i);
+  return match?.[1]?.trim() || undefined;
+}
+
+function goalCompletionStatus(content: string): 'complete' | 'blocked' | undefined {
+  if (/<goal>\s*COMPLETE\s*<\/goal>|<promise>\s*COMPLETE\s*<\/promise>|goal completed|objective completed/i.test(content)) {
+    return 'complete';
+  }
+  if (/<goal>\s*BLOCKED\s*<\/goal>|goal blocked|objective blocked|cannot make meaningful progress/i.test(content)) {
+    return 'blocked';
+  }
+  return undefined;
+}
+
+function buildMetaGoalContinuationPrompt(goal: MetaGoalState): string {
+  return `/goal ${goal.objective}`;
+}
 
 // Effort levels: maps to Claude API's effort parameter
 // low = fast/efficient, medium = balanced, high = full capability (default), max = maximum (Opus only)
@@ -126,7 +159,10 @@ export interface CompactionSwitchState {
   status: 'compacting' | 'complete';
   originalModel: string;
   fallbackModel?: string;
+  recommendedModel?: string;
   autoSwitched: boolean;
+  handoffSelected?: boolean;
+  handoffModel?: string;
   startedAt: number;
   completedAt?: number;
   preTokens?: number;
@@ -189,6 +225,7 @@ interface SessionState {
     message: string;
     attachments?: unknown[];
     timestamp: number;
+    suppressUserMessage?: boolean;
   }>>;
   backgroundTasks: Record<string, BackgroundTask[]>;
   // Secure keys tracking - API keys/tokens detected and secured
@@ -199,6 +236,7 @@ interface SessionState {
   gstackMode: Record<string, GStackMode | null>;
   // Auto Build routing decisions per session
   autoRouteDecision: Record<string, AutoRouteDecisionState | null>;
+  activeMetaGoals: Record<string, MetaGoalState | null>;
 
   // Codex (second opinion) state
   codexStreaming: Record<string, boolean>;
@@ -254,7 +292,7 @@ interface SessionState {
   cycleHtmlRenderMode: (sessionId: string) => void;
   setSelectedModel: (sessionId: string, model: string, trigger?: HarnessSelectionTrigger) => void;
   loadAvailableModels: () => Promise<void>;
-  sendMessage: (sessionId: string, message: string, attachments?: unknown[], opts?: { existingMessageId?: string }) => Promise<void>;
+  sendMessage: (sessionId: string, message: string, attachments?: unknown[], opts?: { existingMessageId?: string; suppressUserMessage?: boolean }) => Promise<void>;
   loadMessages: (sessionId: string, options?: LoadMessagesOptions) => Promise<void>;
   subscribeToClaude: () => () => void;
   // Permission handling
@@ -288,6 +326,7 @@ interface SessionState {
   // Compaction status (Smart Compact feature)
   setCompactionStatus: (sessionId: string, status: CompactionStatus | null) => void;
   dismissCompactionSwitch: (sessionId: string) => void;
+  handoffCompactionModel: (sessionId: string, model: string) => void;
   restoreCompactionModel: (sessionId: string) => void;
   subscribeToCompaction: () => () => void;
   // Auto-resume for Build It mode
@@ -481,7 +520,10 @@ function startRemoteProcessMonitor(
                 },
               }));
               setTimeout(() => {
-                getState().sendMessage(sessionId, nextMsg.message, nextMsg.attachments, { existingMessageId: nextMsg.id });
+                getState().sendMessage(sessionId, nextMsg.message, nextMsg.attachments, {
+                  existingMessageId: nextMsg.id,
+                  suppressUserMessage: nextMsg.suppressUserMessage,
+                });
               }, 100);
             }
             break;
@@ -674,7 +716,9 @@ function isCloseReloadDuplicate(a: ChatMessage, b: ChatMessage): boolean {
 }
 
 function isAutoBuildAssistantMessage(message: ChatMessage): boolean {
-  return message.role === 'assistant' && (message.content || '').includes(AUTO_BUILD_SECTION_MARKER);
+  return message.role === 'assistant' && AUTO_BUILD_SECTION_MARKERS.some((marker) =>
+    (message.content || '').includes(marker)
+  );
 }
 
 function isAutoBuildSuperset(base: ChatMessage, candidate: ChatMessage): boolean {
@@ -729,9 +773,80 @@ function mergeTimelineMessages(primary: ChatMessage[], supplemental: ChatMessage
 }
 
 function extractAutoBuildHelperContent(content: string): string {
-  const markerIndex = content.indexOf(AUTO_BUILD_SECTION_MARKER);
-  if (markerIndex === -1) return '';
+  const markerIndex = AUTO_BUILD_SECTION_MARKERS
+    .map((marker) => content.indexOf(marker))
+    .filter((index) => index !== -1)
+    .sort((a, b) => a - b)[0];
+  if (markerIndex === undefined) return '';
   return content.slice(markerIndex).trim();
+}
+
+function autoBuildStageTitle(tier: string): string {
+  switch (tier) {
+    case 'plan':
+      return 'Planning follow-up';
+    case 'build':
+      return 'Implementation follow-up';
+    case 'verify':
+      return 'Verification follow-up';
+    case 'refine':
+      return 'Refinement follow-up';
+    default:
+      return 'Follow-up';
+  }
+}
+
+function extractAutoBuildSection(content: string, title: string): string {
+  const marker = `\n\n---\n\n${title}`;
+  const start = content.indexOf(marker);
+  if (start === -1) return '';
+
+  const next = content.indexOf('\n\n---\n\n', start + marker.length);
+  return next === -1 ? content.slice(start) : content.slice(start, next);
+}
+
+type WorkflowFailuresMetadata = NonNullable<NonNullable<ChatMessage['metadata']>['workflowFailures']>;
+
+function isHarnessValue(value: unknown): value is Harness {
+  return value === 'claude' || value === 'codex' || value === 'cursor' || value === 'gemini' || value === 'opencode' || value === 'custom';
+}
+
+function isTaskTierValue(value: unknown): value is TaskTier {
+  return value === 'plan' || value === 'build' || value === 'verify' || value === 'refine';
+}
+
+function buildWorkflowFailureMetadata(
+  decision: AutoRouteDecisionState | null | undefined,
+  helperContent: string,
+  leadError?: string,
+): WorkflowFailuresMetadata {
+  const failures: WorkflowFailuresMetadata = [];
+  if (!decision) return failures;
+
+  const resolvedHarness = isHarnessValue(decision.resolvedHarness) ? decision.resolvedHarness : undefined;
+  if (leadError && resolvedHarness && decision.resolvedModel) {
+    failures.push({
+      harness: resolvedHarness,
+      model: decision.resolvedModel,
+      error: leadError.slice(0, 500),
+    });
+  }
+
+  for (const stage of decision.orchestration?.stages || []) {
+    if (stage.trigger === 'now') continue;
+    const section = extractAutoBuildSection(helperContent, autoBuildStageTitle(stage.tier));
+    const failureMatch = section.match(/Follow-up step (?:could not complete|skipped)(?:[:.]\s*)?([^\n]*)/i);
+    if (!failureMatch) continue;
+    const error = (failureMatch[1] || '').trim().replace(/^\.$/, '').slice(0, 500) || undefined;
+    if (!isHarnessValue(stage.harness)) continue;
+    failures.push({
+      harness: stage.harness,
+      model: stage.model,
+      error,
+    });
+  }
+
+  return failures;
 }
 
 function buildAutoBuildContextMessage(
@@ -743,32 +858,35 @@ function buildAutoBuildContextMessage(
   const stages = decision?.orchestration?.stages || [];
   const stageSummary = stages.length > 0
     ? stages.map((stage, index) => {
-      const fallbackSummary = stage.fallbackModels?.length ? ` (fallbacks: ${stage.fallbackModels.join(', ')})` : '';
-      return `${index + 1}. planned ${stage.tier}: ${stage.harness}:${stage.model}${fallbackSummary} - ${stage.purpose}`;
+      const fallbackSummary = stage.fallbackModels?.length ? ' with fallback available' : '';
+      return `${index + 1}. planned ${stage.tier}${fallbackSummary} - ${stage.purpose}`;
     }).join('\n')
     : 'No stage plan was recorded.';
-  const leadHarness = decision?.resolvedHarness || decision?.orchestration?.leadHarness || 'unknown';
-  const leadModel = decision?.resolvedModel || decision?.orchestration?.leadModel || 'unknown';
   const helperSummary = helperContent || (leadError
-    ? 'No delegate output was recorded because the lead stage failed.'
-    : 'No delegate output was recorded. The visible assistant response is the lead stage result for this Auto Build turn.');
+    ? 'No follow-up output was recorded because the lead step failed.'
+    : 'No delegate output was recorded. The visible assistant response is the lead stage result for this turn.');
+  const workflowFailures = buildWorkflowFailureMetadata(decision, helperContent, leadError);
+  const decisionTier = decision?.tier;
+  const workflowCompletedScope = !leadError && isTaskTierValue(decisionTier) ? decisionTier : undefined;
 
   return {
     id: `autobuild-context-${baseMessage.id}`,
     role: 'system',
-    content: `<auto_build_turn_result>
-Resolved lead: ${leadHarness}:${leadModel}
-Completed lead tier: ${leadError ? 'none' : decision?.tier || 'unknown'}
+    content: `<workflow_turn_result>
+Completed scope: ${leadError ? 'none' : decision?.tier || 'unknown'}
 Task domain: ${decision?.domain || 'unknown'}
-Lead error: ${leadError ? `${leadHarness}:${leadModel} - ${leadError}` : 'none'}
-Routing reason: ${decision?.reason || 'not recorded'}
-Stages:
+Lead error: ${leadError || 'none'}
+Planned scope:
 ${stageSummary}
 
-Helper output:
+Follow-up output:
 ${helperSummary}
-</auto_build_turn_result>`,
+</workflow_turn_result>`,
     timestamp: new Date(normalizeChatMessageTimestamp(baseMessage).timestamp.getTime() + 1),
+    metadata: {
+      workflowCompletedScope,
+      ...(workflowFailures.length > 0 ? { workflowFailures } : {}),
+    },
   };
 }
 
@@ -940,6 +1058,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   agentColorMap: {},
   gstackMode: {},
   autoRouteDecision: {},
+  activeMetaGoals: {},
   codexStreaming: {},
   codexContent: {},
   codexThinking: {},
@@ -1761,6 +1880,25 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   sendMessage: async (sessionId, message, attachments, opts) => {
     if (!hasElectronAPI) return;
     const state = get();
+    const suppressUserMessage = Boolean(opts?.suppressUserMessage);
+    const goalObjective = parseGoalSlashCommand(message);
+    if (!suppressUserMessage) {
+      set((state) => ({
+        activeMetaGoals: {
+          ...state.activeMetaGoals,
+          [sessionId]: goalObjective
+            ? {
+              objective: goalObjective,
+              source: 'slash-command',
+              status: 'active',
+              iterations: 0,
+              maxIterations: META_GOAL_MAX_ITERATIONS,
+              updatedAt: Date.now(),
+            }
+            : null,
+        },
+      }));
+    }
     const currentIsStreaming = state.isStreaming[sessionId];
     const currentQueueLength = (state.messageQueue[sessionId] || []).length;
 
@@ -1857,12 +1995,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         message,
         attachments,
         timestamp: Date.now(),
+        suppressUserMessage,
       };
       // Show the user message in chat IMMEDIATELY with a "queued" flag so the
       // user knows their input was received. Without this, the input clears
       // but nothing visible happens — users think the send silently failed
       // and re-type the same message.
-      const userMessage: ChatMessage = {
+      const userMessage: ChatMessage | undefined = suppressUserMessage ? undefined : {
         id: queuedMsg.id,
         role: 'user',
         content: message,
@@ -1870,10 +2009,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         harness: harnessFromModel(state.selectedModel[sessionId]),
       };
       set((state) => ({
-        messages: {
+        messages: userMessage ? {
           ...state.messages,
           [sessionId]: [...(state.messages[sessionId] || []), userMessage],
-        },
+        } : state.messages,
         messageQueue: {
           ...state.messageQueue,
           [sessionId]: [
@@ -1882,7 +2021,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           ],
         },
       }));
-      console.log('[SessionStore] Message queued + shown in chat. Queue length:', (state.messageQueue[sessionId] || []).length + 1);
+      console.log(`[SessionStore] Message queued${suppressUserMessage ? '' : ' + shown in chat'}. Queue length:`, (state.messageQueue[sessionId] || []).length + 1);
       console.log('[SessionStore] Queued message preview:', message.slice(0, 50));
       return;
     }
@@ -1941,10 +2080,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       timestamp: new Date(),
       harness: harnessFromModel(model),
     };
-    if (!alreadyInChat) {
+    if (!suppressUserMessage && !alreadyInChat) {
       addMessage(sessionId, userMessage);
     }
-    if (isNonClaudeHarness(model) || model === 'auto') {
+    if (!suppressUserMessage && (isNonClaudeHarness(model) || model === 'auto')) {
       persistSupplementalMessage(sessionId, userMessage);
     }
 
@@ -2371,7 +2510,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       const queue = currentState.messageQueue[sessionId] || [];
       if (queue.length > 0) {
         const activeStreamModel = currentState.activeStreamModel[sessionId];
-        if (isNonClaudeHarness(activeStreamModel)) {
+        if (isNonClaudeHarness(activeStreamModel) || queue[0]?.suppressUserMessage) {
           console.log('[SessionStore] Tool completed during non-Claude run - queued message will wait for stream end');
           return;
         }
@@ -2397,7 +2536,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
               ? state.messages
               : {
                   ...state.messages,
-                  [sessionId]: [...existing, userMessage],
+                  [sessionId]: nextMessage.suppressUserMessage ? existing : [...existing, userMessage],
                 },
             messageQueue: {
               ...state.messageQueue,
@@ -2438,7 +2577,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
                 },
               }));
               setTimeout(() => {
-                get().sendMessage(sessionId, nextMessage.message, nextMessage.attachments);
+                get().sendMessage(sessionId, nextMessage.message, nextMessage.attachments, {
+                  suppressUserMessage: nextMessage.suppressUserMessage,
+                });
               }, 0);
             }
           }
@@ -2464,7 +2605,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
               },
             }));
             setTimeout(() => {
-              get().sendMessage(sessionId, nextMessage.message, nextMessage.attachments);
+              get().sendMessage(sessionId, nextMessage.message, nextMessage.attachments, {
+                suppressUserMessage: nextMessage.suppressUserMessage,
+              });
             }, 0);
           }
         }
@@ -2484,9 +2627,24 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const unsubAutoRoute = window.electronAPI.claude.onAutoRouteDecision(({ sessionId, decision }) => {
       set((state) => ({
         autoRouteDecision: { ...state.autoRouteDecision, [sessionId]: decision },
-        activeStreamModel: state.selectedModel[sessionId] === 'auto' && decision.resolvedModel
+        activeStreamModel: decision.resolvedModel
           ? { ...state.activeStreamModel, [sessionId]: decision.resolvedModel }
           : state.activeStreamModel,
+        activeMetaGoals: decision.goal?.objective
+          ? {
+            ...state.activeMetaGoals,
+            [sessionId]: {
+              objective: decision.goal.objective,
+              source: decision.goal.source,
+              status: 'active',
+              iterations: state.activeMetaGoals[sessionId]?.objective === decision.goal.objective
+                ? state.activeMetaGoals[sessionId]?.iterations || 0
+                : 0,
+              maxIterations: state.activeMetaGoals[sessionId]?.maxIterations || META_GOAL_MAX_ITERATIONS,
+              updatedAt: Date.now(),
+            },
+          }
+          : state.activeMetaGoals,
       }));
     });
 
@@ -2543,7 +2701,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       const finalHarness = finalMessage.harness;
       const finalContent = finalMessage.content || '';
       const autoBuildHelperContent = extractAutoBuildHelperContent(finalContent);
-      const isAutoBuildTurn = currentState.selectedModel[sessionId] === 'auto' && Boolean(autoBuildDecision);
+      const isAutoBuildTurn = Boolean(autoBuildDecision);
       const hasFinalContent = finalContent.trim().length > 0;
       const hasVisibleOutput = hasFinalContent || finalToolCalls.length > 0 || Boolean(finalContentBlocks?.length);
       const alreadyRenderedFinal = !currentState.isStreaming[sessionId]
@@ -2655,8 +2813,65 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           set((state) => ({
             isProcessingQueue: { ...state.isProcessingQueue, [sessionId]: false },
           }));
-          latestState.sendMessage(sessionId, nextMsg.message, nextMsg.attachments, { existingMessageId: nextMsg.id });
+          latestState.sendMessage(sessionId, nextMsg.message, nextMsg.attachments, {
+            existingMessageId: nextMsg.id,
+            suppressUserMessage: nextMsg.suppressUserMessage,
+          });
         }, 100);
+        return;
+      }
+
+      const activeGoal = get().activeMetaGoals[sessionId];
+      if (activeGoal?.status === 'active') {
+        const completion = goalCompletionStatus(finalContent);
+        if (completion) {
+          set((state) => ({
+            activeMetaGoals: {
+              ...state.activeMetaGoals,
+              [sessionId]: {
+                ...activeGoal,
+                status: completion,
+                updatedAt: Date.now(),
+              },
+            },
+          }));
+          console.log(`[SessionStore] Meta-goal ${completion} for ${sessionId}`);
+          return;
+        }
+
+        if (activeGoal.iterations >= activeGoal.maxIterations) {
+          set((state) => ({
+            activeMetaGoals: {
+              ...state.activeMetaGoals,
+              [sessionId]: {
+                ...activeGoal,
+                status: 'blocked',
+                updatedAt: Date.now(),
+              },
+            },
+          }));
+          console.log(`[SessionStore] Meta-goal reached iteration cap for ${sessionId}`);
+          return;
+        }
+
+        const nextGoal = {
+          ...activeGoal,
+          iterations: activeGoal.iterations + 1,
+          updatedAt: Date.now(),
+        };
+        set((state) => ({
+          activeMetaGoals: {
+            ...state.activeMetaGoals,
+            [sessionId]: nextGoal,
+          },
+        }));
+        setTimeout(() => {
+          const latestState = get();
+          if (latestState.isStreaming[sessionId] || (latestState.messageQueue[sessionId] || []).length > 0) return;
+          latestState.sendMessage(sessionId, buildMetaGoalContinuationPrompt(nextGoal), undefined, {
+            suppressUserMessage: true,
+          });
+        }, 250);
       }
     });
 
@@ -2736,7 +2951,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         timestamp: new Date(),
         harness: harnessFromModel(resolvedStreamModel),
       };
-      const isAutoBuildTurn = currentState.selectedModel[sessionId] === 'auto' && Boolean(autoBuildDecision);
+      const isAutoBuildTurn = Boolean(autoBuildDecision);
       persistSupplementalMessage(sessionId, errorMessage);
       if (isAutoBuildTurn) {
         persistSupplementalMessage(
@@ -2773,7 +2988,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         }));
         setTimeout(() => {
           const { sendMessage } = get();
-          sendMessage(sessionId, nextMsg.message, nextMsg.attachments, { existingMessageId: nextMsg.id });
+          sendMessage(sessionId, nextMsg.message, nextMsg.attachments, {
+            existingMessageId: nextMsg.id,
+            suppressUserMessage: nextMsg.suppressUserMessage,
+          });
         }, 500);
       }
     });
@@ -3573,10 +3791,58 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }));
   },
 
+  handoffCompactionModel: (sessionId, model) => {
+    const currentState = get();
+    const currentNotice = currentState.compactionSwitch[sessionId];
+    if (!currentNotice) {
+      return;
+    }
+
+    const previousModel = getSessionModel(currentState, sessionId);
+    const normalizedPermissionMode = normalizePermissionModeForModel(
+      model,
+      currentState.permissionMode[sessionId],
+    );
+
+    set((state) => ({
+      selectedModel: {
+        ...state.selectedModel,
+        [sessionId]: model,
+      },
+      permissionMode: {
+        ...state.permissionMode,
+        [sessionId]: normalizedPermissionMode,
+      },
+      compactionSwitch: {
+        ...state.compactionSwitch,
+        [sessionId]: {
+          ...currentNotice,
+          handoffSelected: true,
+          handoffModel: model,
+          autoSwitched: true,
+        },
+      },
+    }));
+
+    persistModelSelection(sessionId, model, normalizedPermissionMode);
+    if (hasElectronAPI && previousModel !== model) {
+      window.electronAPI.analytics.recordHarnessSelection?.({
+        sessionId,
+        timestamp: Date.now(),
+        fromModel: previousModel,
+        toModel: model,
+        trigger: 'compaction-handoff',
+        isManualSelection: model !== 'auto',
+      }).catch((err: Error) => {
+        console.warn('[SessionStore] Failed to record compaction handoff selection:', err);
+      });
+    }
+  },
+
   restoreCompactionModel: (sessionId) => {
     const currentState = get();
     const currentNotice = currentState.compactionSwitch[sessionId];
-    if (!currentNotice?.autoSwitched) {
+    if (!currentNotice) {
       return;
     }
 
@@ -3617,29 +3883,24 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         const sourceModel = currentState.activeStreamModel[status.sessionId]
           || getSessionModel(currentState, status.sessionId)
           || 'claude-opus-4-6';
-        // Disabled: auto-switching to Codex during compaction broke SSH sessions
-        // and confused users when model changed unexpectedly
-        const fallbackModel = undefined;
-        const normalizedPermissionMode = currentState.permissionMode[status.sessionId];
-        const shouldAutoSwitch = false;
+        const fallbackModel = getPreferredCompactionFallbackModel(currentState.availableModels, sourceModel);
+        const hasAutoModel = currentState.availableModels.some((model) => model.id === 'auto');
+        const recommendedModel = hasAutoModel ? 'auto' : fallbackModel;
 
         set((state) => {
           const existingNotice = state.compactionSwitch[status.sessionId];
 
           return {
-            selectedModel: shouldAutoSwitch && fallbackModel
-              ? { ...state.selectedModel, [status.sessionId]: fallbackModel }
-              : state.selectedModel,
-            permissionMode: shouldAutoSwitch
-              ? { ...state.permissionMode, [status.sessionId]: normalizedPermissionMode }
-              : state.permissionMode,
             compactionSwitch: {
               ...state.compactionSwitch,
               [status.sessionId]: {
                 status: 'compacting',
                 originalModel: existingNotice?.originalModel || sourceModel,
                 fallbackModel: fallbackModel || existingNotice?.fallbackModel,
-                autoSwitched: existingNotice?.autoSwitched || shouldAutoSwitch,
+                recommendedModel: recommendedModel || existingNotice?.recommendedModel,
+                autoSwitched: existingNotice?.autoSwitched || false,
+                handoffSelected: existingNotice?.handoffSelected,
+                handoffModel: existingNotice?.handoffModel,
                 startedAt: existingNotice?.status === 'compacting' ? existingNotice.startedAt : Date.now(),
                 preTokens: status.preTokens ?? existingNotice?.preTokens,
                 postTokens: existingNotice?.postTokens,
@@ -3647,10 +3908,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             },
           };
         });
-
-        if (shouldAutoSwitch && fallbackModel) {
-          persistModelSelection(status.sessionId, fallbackModel, normalizedPermissionMode);
-        }
       }
 
       setCompactionStatus(status.sessionId, status as CompactionStatus);

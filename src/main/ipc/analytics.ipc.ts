@@ -3,15 +3,16 @@ import { IPC_CHANNELS } from '../../shared/constants/channels';
 import { analyticsService, estimateBaselineCost, estimateCost } from '../services/analytics.service';
 import type { HarnessSelectionEvent, HistoricalRoutingCase, UsageTierConfig } from '../services/analytics.service';
 import { autoRouterService } from '../services/auto-router.service';
-import type { ChatMessage, Harness, TaskTier } from '../../shared/types';
+import type { ChatMessage, Harness, OrchestrationStage, RoutingDecision, TaskTier } from '../../shared/types';
 
 type RouterEvalOptions = {
   limit?: number;
   includeSubagents?: boolean;
-  useLlmClassifier?: boolean;
+  useMetaController?: boolean;
 };
 
 const TIERS: TaskTier[] = ['plan', 'build', 'verify', 'refine'];
+const CEREBRAS_GPT_OSS_120B_PRICING_PER_MILLION = { input: 0.35, output: 0.75 };
 
 type RouterEvalCase = Omit<HistoricalRoutingCase, 'source'> & {
   source: HistoricalRoutingCase['source'] | 'regression';
@@ -143,6 +144,68 @@ function topModel(map: Record<string, number>, fallback: string): string {
   return Object.entries(map).sort((a, b) => b[1] - a[1])[0]?.[0] || fallback;
 }
 
+function percentile(values: number[], p: number): number {
+  if (values.length === 0) return 0;
+  const sorted = values.slice().sort((a, b) => a - b);
+  const index = Math.min(sorted.length - 1, Math.ceil((p / 100) * sorted.length) - 1);
+  return sorted[index];
+}
+
+function estimateFlueControllerCost(message: string, recentMessages: ChatMessage[]): number {
+  const messageTokens = Math.ceil(Math.min(message.length, 1800) / 4);
+  const recentTokens = recentMessages
+    .slice(-5)
+    .reduce((sum, recent) => sum + Math.ceil(Math.min((recent.content || '').length, 360) / 4), 0);
+  const inputTokens = 850 + messageTokens + recentTokens;
+  const outputTokens = 220;
+  return (
+    (inputTokens / 1_000_000) * CEREBRAS_GPT_OSS_120B_PRICING_PER_MILLION.input +
+    (outputTokens / 1_000_000) * CEREBRAS_GPT_OSS_120B_PRICING_PER_MILLION.output
+  );
+}
+
+function stageTokenScale(stage: Pick<OrchestrationStage, 'tier' | 'trigger'>): { input: number; output: number } {
+  if (stage.trigger === 'now') return { input: 1, output: 1 };
+  switch (stage.tier) {
+    case 'build':
+      return { input: 0.95, output: 0.9 };
+    case 'verify':
+      return { input: 0.7, output: 0.45 };
+    case 'refine':
+      return { input: 0.55, output: 0.45 };
+    case 'plan':
+      return { input: 0.85, output: 0.75 };
+  }
+}
+
+function uniqueCostedStages(decision: RoutingDecision): Array<Pick<OrchestrationStage, 'tier' | 'model' | 'trigger'>> {
+  const stages = decision.orchestration?.stages || [];
+  if (stages.length === 0) {
+    return [{ tier: decision.tier, model: decision.resolvedModel, trigger: 'now' }];
+  }
+
+  const seen = new Set<string>();
+  return stages.filter((stage) => {
+    const key = `${stage.tier}:${stage.model}:${stage.trigger}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function estimateDecisionExecutionCost(decision: RoutingDecision, evalCase: RouterEvalCase): number {
+  return uniqueCostedStages(decision).reduce((sum, stage) => {
+    const scale = stageTokenScale(stage);
+    return sum + estimateCost(
+      stage.model,
+      Math.ceil(evalCase.inputTokens * scale.input),
+      Math.ceil(evalCase.outputTokens * scale.output),
+      Math.ceil(evalCase.cacheReadTokens * scale.input),
+      Math.ceil(evalCase.cacheWriteTokens * scale.input),
+    );
+  }, 0);
+}
+
 async function runRouterEval(options?: RouterEvalOptions) {
   const historicalCases = await analyticsService.getHistoricalRoutingDataset({
     limit: Math.min(Math.max(1, options?.limit || 120), 300),
@@ -156,6 +219,7 @@ async function runRouterEval(options?: RouterEvalOptions) {
   const syntheticSessionIds = new Set<string>();
   const byTier = emptyTierStats();
   const byHarness: Record<string, number> = {};
+  const byMethod: Record<string, number> = {};
   const selectedByTier: Record<TaskTier, Record<string, number>> = {
     plan: {},
     build: {},
@@ -194,27 +258,36 @@ async function runRouterEval(options?: RouterEvalOptions) {
   let harnessExpectations = 0;
   let harnessMatches = 0;
   let projectedCost = 0;
+  let projectedLeadOnlyCost = 0;
+  let projectedControllerCost = 0;
   let historicalCost = 0;
   let baselineCost = 0;
+  const routeLatenciesMs: number[] = [];
 
   for (const evalCase of cases) {
     const evalSessionId = `router-eval:${evalCase.sessionId}`;
     syntheticSessionIds.add(evalSessionId);
     const recentMessages = recentBySession.get(evalSessionId) || [];
+    const routeStartedAt = Date.now();
     const decision = await autoRouterService.classifyAndRoute(evalSessionId, evalCase.message, {
       recentMessages,
       attachmentCount: 0,
       attachmentTypes: [],
-      skipLlmClassifier: options?.useLlmClassifier !== true,
+      skipMetaController: options?.useMetaController !== true,
     });
+    routeLatenciesMs.push(Date.now() - routeStartedAt);
 
-    const caseProjectedCost = estimateCost(
+    const caseProjectedCost = estimateDecisionExecutionCost(decision, evalCase);
+    const caseLeadOnlyCost = estimateCost(
       decision.resolvedModel,
       evalCase.inputTokens,
       evalCase.outputTokens,
       evalCase.cacheReadTokens,
       evalCase.cacheWriteTokens,
     );
+    const caseControllerCost = decision.method === 'controller'
+      ? estimateFlueControllerCost(evalCase.message, recentMessages)
+      : 0;
     const caseHistoricalCost = evalCase.actualCostUsd ?? estimateCost(
       evalCase.actualModel || 'claude-opus-4-7',
       evalCase.inputTokens,
@@ -275,18 +348,21 @@ async function runRouterEval(options?: RouterEvalOptions) {
     }
 
     projectedCost += caseProjectedCost;
+    projectedLeadOnlyCost += caseLeadOnlyCost;
+    projectedControllerCost += caseControllerCost;
     historicalCost += caseHistoricalCost;
     baselineCost += caseBaselineCost;
     addModelCount(byHarness, decision.resolvedHarness || 'claude');
+    addModelCount(byMethod, decision.method);
     addModelCount(selectedByTier[evalCase.expectedTier], decision.resolvedModel);
 
     const tierStat = byTier[evalCase.expectedTier];
     tierStat.total += 1;
     tierStat.matches += didMatch ? 1 : 0;
-    tierStat.projectedCost += caseProjectedCost;
+    tierStat.projectedCost += caseProjectedCost + caseControllerCost;
     tierStat.historicalCost += caseHistoricalCost;
-    tierStat.savingsVsHistorical += Math.max(0, caseHistoricalCost - caseProjectedCost);
-    tierStat.savingsVsBaseline += Math.max(0, caseBaselineCost - caseProjectedCost);
+    tierStat.savingsVsHistorical += Math.max(0, caseHistoricalCost - caseProjectedCost - caseControllerCost);
+    tierStat.savingsVsBaseline += Math.max(0, caseBaselineCost - caseProjectedCost - caseControllerCost);
 
     const userMessage: ChatMessage = {
       id: `${evalCase.caseId}:user`,
@@ -297,7 +373,7 @@ async function runRouterEval(options?: RouterEvalOptions) {
     const assistantMessage: ChatMessage = {
       id: `${evalCase.caseId}:assistant`,
       role: 'assistant',
-      content: `<auto_build_turn_result>\nCompleted lead tier: ${decision.tier}\n</auto_build_turn_result>`,
+      content: `<workflow_turn_result>\nCompleted scope: ${decision.tier}\n</workflow_turn_result>`,
       timestamp: new Date(evalCase.timestamp + 1),
       harness: decision.resolvedHarness,
     };
@@ -331,12 +407,22 @@ async function runRouterEval(options?: RouterEvalOptions) {
     harnessAccuracy: harnessExpectations > 0 ? harnessMatches / harnessExpectations : 0,
     harnessMatches,
     projectedCost,
+    projectedLeadOnlyCost,
+    projectedHelperCost: Math.max(0, projectedCost - projectedLeadOnlyCost),
+    projectedControllerCost,
+    projectedTotalCost: projectedCost + projectedControllerCost,
     historicalCost,
     baselineCost,
-    projectedSavingsVsHistorical: Math.max(0, historicalCost - projectedCost),
-    projectedSavingsVsBaseline: Math.max(0, baselineCost - projectedCost),
+    projectedSavingsVsHistorical: Math.max(0, historicalCost - projectedCost - projectedControllerCost),
+    projectedSavingsVsBaseline: Math.max(0, baselineCost - projectedCost - projectedControllerCost),
+    meanRouteLatencyMs: routeLatenciesMs.length > 0
+      ? routeLatenciesMs.reduce((sum, value) => sum + value, 0) / routeLatenciesMs.length
+      : 0,
+    p50RouteLatencyMs: percentile(routeLatenciesMs, 50),
+    p95RouteLatencyMs: percentile(routeLatenciesMs, 95),
     byTier,
     byHarness,
+    byMethod,
     selectedByTier,
     recommendedConfig,
     mismatches,

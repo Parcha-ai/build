@@ -134,12 +134,21 @@ export interface OrchestrationPlan {
   stages: OrchestrationStage[];
   contextPolicy: {
     includeTranscript: boolean;
+    includeTranscriptReferences: boolean;
+    includePlanFileReference: boolean;
+    avoidBulkContextOnHandoff: boolean;
+    maxHandoffConversationChars: number;
     includeProjectInstructions: boolean;
     includeSkills: boolean;
     includeAgents: boolean;
     includeMemories: boolean;
   };
   handoffPrompt: string;
+}
+
+export interface GoalOrchestration {
+  objective: string;
+  source: 'slash-command' | 'ralph-loop';
 }
 
 export interface RoutingDecision {
@@ -149,9 +158,20 @@ export interface RoutingDecision {
   resolvedHarness?: Harness;
   confidence: number;
   reason: string;
-  method: 'heuristic' | 'llm';
+  method: 'heuristic' | 'controller';
   enableGoals?: boolean;
+  goal?: GoalOrchestration;
   orchestration?: OrchestrationPlan;
+}
+
+export interface AutoRouterCategoryConfig {
+  id: string;
+  label?: string;
+  description?: string;
+  model: string;
+  tier?: TaskTier;
+  keywords?: string[];
+  domains?: TaskDomain[];
 }
 
 export interface AutoRouterConfig {
@@ -161,10 +181,9 @@ export interface AutoRouterConfig {
   verifyModel: string;
   refineModel: string;
   fallbackModel: string;
+  categories?: AutoRouterCategoryConfig[];
   costAware: boolean;
   costThresholdPercent: number;
-  useLlmClassifier: boolean;
-  llmConfidenceThreshold: number;
 }
 
 export interface SessionPhase {
@@ -282,6 +301,15 @@ export interface ChatMessage {
   timestamp: Date;
   interrupted?: boolean; // True if message was interrupted before completion
   harness?: Harness; // Which AI harness produced/received this message
+  metadata?: {
+    workflowCompletedScope?: TaskTier;
+    workflowFailures?: Array<{
+      harness: Harness;
+      model?: string;
+      error?: string;
+    }>;
+    [key: string]: unknown;
+  };
 }
 
 export interface Attachment {
@@ -372,6 +400,7 @@ export interface AppSettings {
   dailyReviewTime?: string;
   bedtimeTaskReviewEnabled?: boolean;
   showClearContextOnPlanAccept?: boolean;
+  autoRouterConfig?: AutoRouterConfig;
   // Product analytics / routing fine-tuning
   posthogApiKey?: string;
   posthogHost?: string;
@@ -461,7 +490,7 @@ export interface BrowserSnapshot {
   timestamp: Date;
 }
 
-// Smart Compact types - context compaction with automatic model switching
+// Smart Compact types - context compaction with optional handoff
 export interface CompactionStatus {
   sessionId: string;
   isCompacting: boolean;

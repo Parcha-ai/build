@@ -348,6 +348,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
   const cycleHtmlRenderMode = useSessionStore((s) => s.cycleHtmlRenderMode);
   const setSelectedModel = useSessionStore((s) => s.setSelectedModel);
   const dismissCompactionSwitch = useSessionStore((s) => s.dismissCompactionSwitch);
+  const handoffCompactionModel = useSessionStore((s) => s.handoffCompactionModel);
   const restoreCompactionModel = useSessionStore((s) => s.restoreCompactionModel);
   const loadAvailableModels = useSessionStore((s) => s.loadAvailableModels);
 
@@ -1456,7 +1457,15 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
         ref={containerRef}
         className="px-4 py-2 relative font-mono border-t border-claude-border"
       >
-        {/* Compaction switch notice disabled — too disruptive */}
+        {compactionSwitch && (
+          <CompactionSwitchNotice
+            notice={compactionSwitch}
+            availableModels={availableModels}
+            onDismiss={() => dismissCompactionSwitch(sessionId)}
+            onHandoff={(model) => handoffCompactionModel(sessionId, model)}
+            onSwitchBack={() => restoreCompactionModel(sessionId)}
+          />
+        )}
 
         {/* Mention Autocomplete */}
         {showMentions && (
@@ -1987,7 +1996,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
             disabled={disabled}
             className="text-claude-text-secondary hover:text-claude-text transition-colors disabled:opacity-40 flex items-center gap-1.5"
             title={currentModel === 'auto' && isSending && autoRouteDecision
-              ? `Auto Build: ${autoRouteDecision.tier.toUpperCase()}${autoRouteDecision.domain ? ` / ${autoRouteDecision.domain}` : ''} → ${autoRouteDecision.resolvedModel} (${Math.round(autoRouteDecision.confidence * 100)}% confidence${autoRouteDecision.orchestration ? `, ${autoRouteDecision.orchestration.mode}` : ''})`
+              ? `Current turn scope: ${autoRouteDecision.domain ? `${autoRouteDecision.tier}:${autoRouteDecision.domain}` : autoRouteDecision.tier}`
               : `${currentModelInfo.description} (click to change)`}
           >
             {currentModel === 'auto' ? (
@@ -1995,9 +2004,6 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
                 <AutoRouteBadge
                   tier={autoRouteDecision.tier}
                   domain={autoRouteDecision.domain}
-                  resolvedModel={autoRouteDecision.resolvedModel}
-                  confidence={autoRouteDecision.confidence}
-                  orchestration={autoRouteDecision.orchestration}
                 />
               ) : (
                 <span className="text-[10px] font-mono">

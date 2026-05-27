@@ -1,11 +1,13 @@
 import type { TaskTier, TaskDomain, RoutingDecision, AutoRouterConfig, SessionPhase, Harness, OrchestrationPlan, OrchestrationStage, ChatMessage } from '../../shared/types';
 import { EMBEDDED_KEYS } from '../../shared/config/embedded-keys';
 import { analyticsService } from './analytics.service';
+import { flueMetaRouterService } from './flue-meta-router.service';
+import type { FlueMetaRouteDecision, FlueMetaStageDecision } from './flue-meta-router.service';
 import Store from 'electron-store';
 import { execFileSync } from 'child_process';
-import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { findUsableLocalExecutable, hasUsableLocalExecutable } from '../utils/local-executable';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const settingsStore = new Store({ name: 'claudette-settings' }) as any;
@@ -25,9 +27,8 @@ const DEFAULT_CONFIG: AutoRouterConfig = {
   fallbackModel: 'claude-sonnet-4-6',
   costAware: true,
   costThresholdPercent: 80,
-  useLlmClassifier: true,
-  llmConfidenceThreshold: 0.7,
 };
+const META_MIN_CONFIDENCE = 0.55;
 
 interface FailureCooldown {
   count: number;
@@ -49,26 +50,32 @@ const PLAN_SIGNALS = [
   'review this', "what's the best approach", 'trade-offs', 'tradeoffs',
   'strategy', 'code review', 'review the', 'what do you think',
   'should we', 'pros and cons', 'evaluate', 'compare',
+  'risk', 'risks', 'rollout path', 'safe rollout', 'before editing',
+  'before changing', 'decide if', 'map the',
 ];
 
 const BUILD_SIGNALS = [
   'implement', 'create', 'build', 'add feature', 'scaffold',
   'from the plan', 'execute the plan', 'write the code',
-  'set up', 'integrate', 'develop', 'code this',
+  'set up', 'integrate', 'develop', 'code this', 'wire',
+  'api', 'endpoint',
   'make a', 'make the', 'make it', 'add a new', 'add the',
   'improve', 'enhance', 'strengthen', 'tune', 'upgrade',
+  'fix', 'finish',
 ];
 
 const VERIFY_SIGNALS = [
   'test', 'verify', 'qa', 'check', 'debug', 'why is this',
   'investigate', 'fix this bug', 'broken', 'failing',
   'not working', 'error', 'regression', 'diagnose',
-  'what went wrong', 'stack trace',
+  'what went wrong', 'stack trace', 'reproduce', 'isolate',
+  'flaky', 'intermittent', 'intermittently', 'root cause', 'exact cause',
+  'checks', 'lint', 'typecheck',
 ];
 
 const CAPABILITY_ESCALATION_SIGNALS = [
   'look harder', 'think harder', 'try harder', 'dig deeper',
-  'go deeper', 'harder look', 'closer look', 'look closer',
+  'go deeper', 'look closer',
   'think deeper', 'reason harder', 'reason deeper',
   'more careful', 'more carefully', 'think carefully',
   'use a stronger model',
@@ -85,6 +92,18 @@ const REFINE_SIGNALS = [
   'button text', 'label', 'shorter', 'longer',
   'swap', 'replace the', 'quick fix', 'minor',
 ];
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function matchesSignal(lowerMessage: string, signal: string): boolean {
+  const normalizedSignal = signal.toLowerCase();
+  if (/^[a-z0-9]+$/.test(normalizedSignal)) {
+    return new RegExp(`\\b${escapeRegExp(normalizedSignal)}\\b`).test(lowerMessage);
+  }
+  return lowerMessage.includes(normalizedSignal);
+}
 
 // GStack modes that imply specific tiers
 const GSTACK_PLAN_MODES = ['plan-ceo-review', 'plan-eng-review', 'autoplan', 'plan-design-review'];
@@ -123,6 +142,22 @@ interface ModelChoice {
   reason: string;
 }
 
+interface AutoRouterCategoryConfig {
+  id: string;
+  label?: string;
+  description?: string;
+  model?: string;
+  tier?: TaskTier | 'fallback';
+  keywords?: string[] | string;
+  domains?: TaskDomain[];
+}
+
+type ResolvedAutoRouterCategory = AutoRouterCategoryConfig & {
+  tier: TaskTier;
+  model: string;
+  keywords: string[];
+};
+
 interface RemoteCliCapabilities {
   claude?: boolean;
   codex?: boolean;
@@ -143,14 +178,16 @@ interface RouteOptions extends ModelAvailabilityOptions {
   attachmentCount?: number;
   attachmentTypes?: string[];
   recentMessages?: ChatMessage[];
-  skipLlmClassifier?: boolean;
+  skipMetaController?: boolean;
+  goalObjective?: string;
+  goalSource?: 'slash-command' | 'ralph-loop';
 }
 
 function scoreSignals(message: string, signals: string[]): number {
   const lower = message.toLowerCase();
   let hits = 0;
   for (const signal of signals) {
-    if (lower.includes(signal)) hits++;
+    if (matchesSignal(lower, signal)) hits++;
   }
   return Math.min(1.0, hits * 0.25);
 }
@@ -189,20 +226,144 @@ function extractTaskSignals(message: string, attachmentCount = 0, attachmentType
     short: message.trim().length < 120,
     large: message.length > 900 || /\b(full|entire|end[- ]to[- ]end|orchestr|multiplex|across all|everything|architecture|system)\b/.test(lower),
     needsBrowser: hasImageAttachments || hasDomAttachments || /\b(browser|visual|screenshot|dom|frontend|ui|playwright|stagehand|webview|localhost)\b/.test(lower),
-    hasErrorLog: /\b(error|stack trace|exception|failed|failing|regression|crash|timeout|lint|typecheck|test failure)\b/.test(lower),
+    hasErrorLog: /\b(error|stack trace|exception|failed|failing|regression|crash|timeout|lint|typecheck|test failure|flaky|intermittent|intermittently|root cause|exact cause)\b/.test(lower),
     hasAttachments: attachmentCount > 0,
     hasImageAttachments,
     hasDomAttachments,
-    asksForImplementation: /\b(implement|create|build|add|write|wire|integrate|ship|make|improve|enhance|strengthen|tune|upgrade)\b/.test(lower),
-    asksForVerification: /\b(test|verify|qa|check|validate|prove|confirm|audit)\b/.test(lower),
-    asksForReview: /\b(review|critique|second opinion|risk|regression)\b/.test(lower),
+    asksForImplementation: /\b(implement|create|build|add|write|wire|integrate|ship|make|improve|enhance|strengthen|tune|upgrade|fix|finish|update|repair)\b/.test(lower),
+    asksForVerification: /\b(test|tests|verify|verification|qa|check|checks|validate|validation|prove|confirm|audit|reproduce|isolate|diagnose|root cause|exact cause)\b/.test(lower),
+    asksForReview: /\b(review|critique|second opinion|compare|risks?|regression)\b/.test(lower),
     asksForArchitecture: /\b(plan|design|architect|approach|trade[- ]?off|strategy|proposal)\b/.test(lower),
-    asksForMultiHarness: /\b(harness|model|multiplex|orchestrat|delegate|agents|codex|cursor|gemini|claude)\b/.test(lower),
+    asksForMultiHarness: /\b(harness|multiplex|orchestrat|delegate|agents|codex|cursor|gemini|claude)\b|\b(?:ai|llm|language)\s+models?\b|\bmodels?\s+(?:available|choice|selection|routing|harness)\b/.test(lower),
     asksForCapabilityEscalation,
     asksForCopy,
     asksForFrontend,
     asksForBackend,
     likelyNeedsProjectContext: /\b(project|repo|codebase|session|transcript|claude\.md|agents?\.md|skills?|settings|mcp)\b/.test(lower),
+  };
+}
+
+function isComposerFriendlyBugFix(message: string, signals: TaskSignals): boolean {
+  const lower = message.toLowerCase();
+  const localizedBugFix = /\b(fix|repair|correct|patch|resolve|address)\b.{0,120}\b(bug|broken|wrong|missing|misaligned|overflow|clipped|truncated|stuck|glitch|not showing|doesn'?t show|does not show|isn'?t showing|is not showing|off by|janky)\b|\b(bug|broken|wrong|missing|misaligned|overflow|clipped|truncated|stuck|glitch|not showing|doesn'?t show|does not show|isn'?t showing|is not showing|off by|janky)\b.{0,120}\b(fix|repair|correct|patch|resolve|address)\b/.test(lower);
+  if (!localizedBugFix) return false;
+
+  const composerSurface = signals.asksForFrontend
+    || signals.asksForCopy
+    || signals.domain === 'docs'
+    || /\b(ui|ux|frontend|front-end|visual|layout|css|style|button|modal|dialog|popover|screen|page|component|form|copy|text|label|wording|docs|readme|markdown|dom|screenshot|spacing|alignment|responsive|mobile)\b|\.(tsx|jsx|css|scss|html|md|mdx)\b/.test(lower);
+  if (!composerSurface) return false;
+
+  const heavyBugFix = /\b(failing tests?|tests?\s+(?:are\s+)?failing|ci|stack trace|traceback|exception|crash|migration|database|schema|backend|server|api|auth|worker|queue|resolver|sql|postgres|redis|root cause|diagnose|investigate|reproduce|flaky|intermittent|race condition)\b/.test(lower);
+  if (heavyBugFix) return false;
+
+  return signals.short || signals.hasAttachments || message.trim().length < 260;
+}
+
+function isTaskTier(value: unknown): value is TaskTier {
+  return value === 'plan' || value === 'build' || value === 'verify' || value === 'refine';
+}
+
+function isFixedAutoRouterCategoryId(value: string): boolean {
+  return value === 'plan' || value === 'build' || value === 'verify' || value === 'refine' || value === 'fallback';
+}
+
+function isCurrentCustomAutoRouterCategory(category: AutoRouterCategoryConfig): boolean {
+  if (isFixedAutoRouterCategoryId(category.id)) return false;
+  if (isTaskTier(category.tier)) return true;
+  if (typeof category.description === 'string' && category.description.trim()) return true;
+  if (Array.isArray(category.keywords) && category.keywords.some((keyword) => typeof keyword === 'string' && keyword.trim())) return true;
+  if (typeof category.keywords === 'string' && category.keywords.trim()) return true;
+  return /^custom-\d{10,}$/.test(category.id);
+}
+
+function normalizeCategoryText(value: string): string {
+  return value
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/[_-]+/g, ' ')
+    .toLowerCase();
+}
+
+function inferCategoryTier(category: AutoRouterCategoryConfig): TaskTier | undefined {
+  if (isTaskTier(category.tier)) return category.tier;
+  if (isTaskTier(category.id)) return category.id;
+
+  const text = normalizeCategoryText([
+    category.id,
+    category.label || '',
+    category.description || '',
+    Array.isArray(category.keywords) ? category.keywords.join(' ') : category.keywords || '',
+    category.model || '',
+  ].join(' '));
+
+  if (/\b(plan|planning|architect|architecture|design|strategy|review|risk|tradeoffs?)\b/.test(text)) return 'plan';
+  if (/\b(verify|verification|test|tests|qa|check|debug|diagnose|investigate|reproduce)\b/.test(text)) return 'verify';
+  if (/\b(refine|refinement|tweak|polish|copy|docs|readme|ui|ux|visual|style|css|frontend|front end|composer)\b/.test(text)) return 'refine';
+  if (/\b(build|execute|execution|implement|code|coding|fix|bug|agent|codex)\b/.test(text)) return 'build';
+
+  const model = category.model || '';
+  if (model.startsWith('cursor:')) return 'refine';
+  if (model.startsWith('gemini:')) return 'verify';
+  if (model.startsWith('codex:')) return 'build';
+  if (model.startsWith('claude-')) return 'plan';
+  return undefined;
+}
+
+function categoryKeywords(category: AutoRouterCategoryConfig): string[] {
+  const explicitKeywords = Array.isArray(category.keywords)
+    ? category.keywords
+    : typeof category.keywords === 'string'
+      ? category.keywords.split(/[,;\n]/)
+      : [];
+  const baseText = [
+    category.id,
+    category.label || '',
+    category.description || '',
+    ...explicitKeywords,
+  ].map(normalizeCategoryText).join(' ');
+  const phrases = explicitKeywords
+    .map((keyword) => normalizeCategoryText(keyword).trim())
+    .filter((keyword) => keyword.length >= 3);
+  const stopWords = new Set([
+    'the', 'and', 'for', 'with', 'from', 'this', 'that', 'work', 'task',
+    'category', 'custom', 'auto', 'build', 'settings', 'route', 'routing',
+  ]);
+  const tokens = baseText
+    .split(/[^a-z0-9.]+/)
+    .map((token) => token.trim())
+    .filter((token) => token.length >= 3 && !stopWords.has(token));
+  return Array.from(new Set([...phrases, ...tokens]));
+}
+
+function customCategoriesForController(options?: ModelAvailabilityOptions): ResolvedAutoRouterCategory[] {
+  return getConfiguredAutoRouterCategories()
+    .filter(isCurrentCustomAutoRouterCategory)
+    .reduce<ResolvedAutoRouterCategory[]>((acc, category) => {
+      const tier = inferCategoryTier(category);
+      if (!tier || !category.model || !hasConfiguredCredentialForModel(category.model, options)) return acc;
+      acc.push({
+        ...category,
+        tier,
+        model: category.model,
+        keywords: categoryKeywords(category).slice(0, 12),
+      });
+      return acc;
+    }, []);
+}
+
+function matchedCustomCategoryLead(
+  matchedCategoryId: string | undefined,
+  leadTier: TaskTier,
+  categories: ResolvedAutoRouterCategory[],
+): ModelChoice | undefined {
+  if (!matchedCategoryId) return undefined;
+  const category = categories.find((candidate) => candidate.id === matchedCategoryId);
+  if (!category || category.tier !== leadTier) return undefined;
+  const categoryName = category.label || category.id;
+  return {
+    model: category.model,
+    harness: harnessFromModel(category.model),
+    reason: `Custom settings category "${categoryName}" selected ${category.model}`,
   };
 }
 
@@ -259,31 +420,23 @@ function customModelCandidatesForTier(tier: TaskTier): string[] {
     .map((model) => `custom:${model.id}`);
 }
 
-function binaryExistsInPath(binaryNames: string[], extraCandidates: string[]): boolean {
-  for (const candidate of extraCandidates) {
-    try {
-      if (fs.existsSync(candidate)) return true;
-    } catch {
-      // Ignore invalid paths.
-    }
-  }
-
-  for (const dir of (process.env.PATH || '').split(pathDelimiterSafe())) {
-    if (!dir) continue;
-    for (const binaryName of binaryNames) {
-      try {
-        if (fs.existsSync(`${dir}/${binaryName}`)) return true;
-      } catch {
-        // Ignore invalid PATH entries.
-      }
-    }
-  }
-
-  return false;
+function getConfiguredAutoRouterCategories(): AutoRouterCategoryConfig[] {
+  const settings = getSettingsObject();
+  const autoRouterConfig = settings.autoRouterConfig as Record<string, unknown> | undefined;
+  const categories = autoRouterConfig?.categories;
+  if (!Array.isArray(categories)) return [];
+  return categories.filter((category): category is AutoRouterCategoryConfig =>
+    !!(
+      category &&
+      typeof category === 'object' &&
+      typeof (category as AutoRouterCategoryConfig).id === 'string' &&
+      typeof (category as AutoRouterCategoryConfig).model === 'string'
+    )
+  );
 }
 
-function pathDelimiterSafe(): string {
-  return process.platform === 'win32' ? ';' : ':';
+function binaryExistsInPath(binaryNames: string[], extraCandidates: string[]): boolean {
+  return hasUsableLocalExecutable(binaryNames, extraCandidates);
 }
 
 function getCodexPackageCandidates(): string[] {
@@ -297,12 +450,18 @@ function getCodexPackageCandidates(): string[] {
   if (!targetTriple) return [];
 
   const platformPkg = path.join('@openai', `codex-${platform}-${arch}`);
-  const binaryRel = path.join('vendor', targetTriple, 'codex', platform === 'win32' ? 'codex.exe' : 'codex');
-  return [
-    path.join(process.resourcesPath || '', 'node_modules', platformPkg, binaryRel),
-    path.resolve(process.cwd(), 'node_modules', platformPkg, binaryRel),
-    path.resolve(__dirname, '..', '..', 'node_modules', platformPkg, binaryRel),
+  const binaryName = platform === 'win32' ? 'codex.exe' : 'codex';
+  const binaryRels = [
+    path.join('vendor', targetTriple, 'bin', binaryName),
+    path.join('vendor', targetTriple, 'codex', binaryName),
   ];
+  const resourcesPath = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath || '';
+  const candidateBases = [
+    path.join(resourcesPath, 'node_modules', platformPkg),
+    path.resolve(process.cwd(), 'node_modules', platformPkg),
+    path.resolve(__dirname, '..', '..', 'node_modules', platformPkg),
+  ];
+  return candidateBases.flatMap((base) => binaryRels.map((binaryRel) => path.join(base, binaryRel)));
 }
 
 function hasCodexCli(): boolean {
@@ -332,7 +491,9 @@ function hasCursorCli(): boolean {
 
 function findCursorCliBinary(): string | null {
   const home = os.homedir();
-  const candidates = [
+  return findUsableLocalExecutable(
+    ['cursor-agent', 'agent'],
+    [
     `${home}/.local/bin/cursor-agent`,
     `${home}/.cursor/bin/cursor-agent`,
     '/usr/local/bin/cursor-agent',
@@ -341,27 +502,8 @@ function findCursorCliBinary(): string | null {
     `${home}/.cursor/bin/agent`,
     '/usr/local/bin/agent',
     '/opt/homebrew/bin/agent',
-  ];
-  for (const candidate of candidates) {
-    try {
-      if (fs.existsSync(candidate)) return candidate;
-    } catch {
-      // Ignore invalid paths.
-    }
-  }
-
-  for (const dir of (process.env.PATH || '').split(pathDelimiterSafe())) {
-    if (!dir) continue;
-    for (const binaryName of ['cursor-agent', 'agent']) {
-      const candidate = path.join(dir, binaryName);
-      try {
-        if (fs.existsSync(candidate)) return candidate;
-      } catch {
-        // Ignore invalid PATH entries.
-      }
-    }
-  }
-  return null;
+    ],
+  );
 }
 
 function isCursorAuthFailure(error?: string): boolean {
@@ -396,16 +538,22 @@ function isCursorCliLoggedIn(): boolean {
 }
 
 function clearRecoveredCursorAuthCooldown(sessionId: string | undefined): void {
-  if (!sessionId || !isCursorCliLoggedIn()) return;
+  if (!sessionId) return;
 
   const harnessFailures = sessionHarnessFailures.get(sessionId);
   const harnessFailure = harnessFailures?.get('cursor');
+  const modelFailures = sessionModelFailures.get(sessionId);
+  const hasCursorAuthCooldown = !!(harnessFailure && isCursorAuthFailure(harnessFailure.lastError))
+    || !!Array.from(modelFailures?.entries() || []).some(([model, failure]) =>
+      model.startsWith('cursor:') && isCursorAuthFailure(failure.lastError)
+    );
+  if (!hasCursorAuthCooldown || !isCursorCliLoggedIn()) return;
+
   if (harnessFailure && isCursorAuthFailure(harnessFailure.lastError)) {
     harnessFailures?.delete('cursor');
     if (harnessFailures?.size === 0) sessionHarnessFailures.delete(sessionId);
   }
 
-  const modelFailures = sessionModelFailures.get(sessionId);
   if (!modelFailures) return;
   for (const [model, failure] of modelFailures) {
     if (model.startsWith('cursor:') && isCursorAuthFailure(failure.lastError)) {
@@ -571,12 +719,60 @@ function classifyHeuristic(
   const verifyScore = scoreSignals(message, VERIFY_SIGNALS);
   const refineScore = scoreSignals(message, REFINE_SIGNALS);
   const capabilityEscalationScore = scoreSignals(message, CAPABILITY_ESCALATION_SIGNALS);
+  const lower = message.toLowerCase();
+  const asksBeforeMutation = /\bbefore\s+(?:editing|changing|touching|modifying|writing|implementing)\b|\bbefore\s+(?:we|you)\s+(?:edit|change|touch|modify|write|implement)\b/.test(lower);
+  const asksForRootCause = /\b(reproduce|isolate|diagnose|investigate|exact cause|root cause|what went wrong|why)\b|\bflaky\b|\bintermittent(?:ly)?\b/.test(lower);
+  const asksForRiskDecision = /\b(map|assess|evaluate|review|decide|determine|compare)\b.{0,80}\b(risks?|race condition|schema|approach|strategy|rollout|trade[- ]?offs?)\b|\b(risks?|race condition|schema|rollout path|safe rollout)\b.{0,80}\b(before|decide|determine|map|assess|evaluate)\b/.test(lower);
+  const asksToFixFailure = /\b(fix|repair|update|make|turn|push)\b.{0,100}\b(fail(?:ing|ed)?|tests?|ci|red|pass|green|code updates?)\b|\b(fail(?:ing|ed)?|tests?|ci|red)\b.{0,100}\b(fix|repair|update|pass|green|code updates?|push)\b/.test(lower);
+  const asksToCompleteKnownWork = /\b(finish|complete)\b.{0,80}\b(todos?|implementation|feature|flow|task|work)\b|\b(todos?)\b.{0,80}\b(finish|complete)\b/.test(lower);
+  const explicitMutationVerb = /\b(implement|create|build|add|write|wire|integrate|ship|make|fix|finish|update|repair)\b/.test(lower);
+  const asksForCarefulMigration = /\bmigration\b.{0,140}\b(affects|touches|spans|across|impacts)\b.{0,180}\b(auth|billing|audit|logs?|careful|carefully|risk|rollout)\b|\b(careful|carefully|risk|rollout)\b.{0,180}\bmigration\b/.test(lower);
 
   if (capabilityEscalationScore > 0) {
     return {
       tier: 'plan',
       confidence: Math.min(0.95, 0.75 + capabilityEscalationScore * 0.2),
       reason: 'User asked for deeper reasoning or a stronger model',
+    };
+  }
+
+  if (asksBeforeMutation && asksForRootCause && verifyScore > 0) {
+    return {
+      tier: 'verify',
+      confidence: Math.max(0.82, verifyScore),
+      reason: 'User asked for root-cause investigation before changing files',
+    };
+  }
+
+  if ((asksBeforeMutation && asksForRiskDecision) || (asksForRiskDecision && planScore > 0)) {
+    return {
+      tier: 'plan',
+      confidence: Math.max(0.82, planScore),
+      reason: 'User asked for risk/decision planning before edits',
+    };
+  }
+
+  if (asksForCarefulMigration && !explicitMutationVerb) {
+    return {
+      tier: 'plan',
+      confidence: Math.max(0.82, planScore),
+      reason: 'Risk-sensitive migration should be planned before execution',
+    };
+  }
+
+  if (asksToFixFailure && !asksBeforeMutation && !/\b(why|diagnose|investigate|root cause|exact cause|figure out)\b/.test(lower)) {
+    return {
+      tier: 'build',
+      confidence: Math.max(0.82, buildScore, verifyScore),
+      reason: 'User asked to fix failing code or CI, not just investigate it',
+    };
+  }
+
+  if (asksToCompleteKnownWork) {
+    return {
+      tier: 'build',
+      confidence: Math.max(0.82, buildScore),
+      reason: 'User asked to complete known implementation work',
     };
   }
 
@@ -642,6 +838,7 @@ function applyWorkflowAwareness(
   const referencesExistingPlan = /\b(from|based on|using|execute|implement|build|ship)\b.{0,60}\b(the\s+)?plan\b|\b(the\s+)?plan\b.{0,60}\b(go ahead|do it|build it|implement it|execute it)\b/.test(lower);
   const asksToDiagnoseExistingFailure = signals.hasErrorLog
     || /\b(why|what happened|went wrong|figure out|diagnose|investigate|debug|broken|not working|reproduce)\b/.test(lower);
+  const asksToFixExistingFailure = /\b(fix|repair|update|make|turn|push)\b.{0,100}\b(fail(?:ing|ed)?|tests?|ci|red|pass|green|code updates?)\b|\b(fail(?:ing|ed)?|tests?|ci|red)\b.{0,100}\b(fix|repair|update|pass|green|code updates?|push)\b/.test(lower);
   const copyStrategyRequest = signals.asksForCopy
     && (signals.large || signals.asksForArchitecture || /\b(research|strategy|positioning|website|landing page|pitch|value prop|messaging|plan)\b/.test(lower));
 
@@ -653,8 +850,22 @@ function applyWorkflowAwareness(
     };
   }
 
-  // Build without prior plan → route to Plan first
-  if (heuristic.tier === 'build' && !phase.hasPlanContext && !referencesExistingPlan && (heuristic.confidence >= 0.6 || signals.large)) {
+  if (isComposerFriendlyBugFix(message, signals)) {
+    return {
+      tier: 'refine',
+      confidence: Math.max(0.82, heuristic.confidence),
+      reason: 'Localized UI/copy/docs bug fix fits refinement',
+    };
+  }
+
+  // Complex build without prior plan → route to Plan first. Direct, bounded
+  // implementation requests can start with the configured build harness.
+  if (
+    heuristic.tier === 'build' &&
+    !phase.hasPlanContext &&
+    !referencesExistingPlan &&
+    (signals.large || signals.asksForArchitecture || signals.asksForMultiHarness)
+  ) {
     return {
       tier: 'plan',
       confidence: heuristic.confidence * 0.85,
@@ -672,6 +883,14 @@ function applyWorkflowAwareness(
     };
   }
 
+  if (heuristic.tier === 'verify' && signals.asksForImplementation && asksToFixExistingFailure && !/\b(before editing|before changing|why|diagnose|investigate|root cause|exact cause|figure out)\b/.test(lower)) {
+    return {
+      tier: 'build',
+      confidence: Math.max(0.8, heuristic.confidence),
+      reason: 'Failure fix requested — routing to Build tier with verification handoff when available',
+    };
+  }
+
   // "OK build it" / "go ahead" after a Plan turn
   if (phase.hasPlanContext && !phase.hasBuildContext && heuristic.tier !== 'plan' && (phase.lastTierUsed === 'plan' || isPlanContinuation || heuristic.confidence < 0.6)) {
     return {
@@ -684,6 +903,21 @@ function applyWorkflowAwareness(
   return heuristic;
 }
 
+function enforcePermissionMode(
+  result: HeuristicResult,
+  permissionMode?: string,
+): HeuristicResult {
+  if (canRunMutatingStages(permissionMode) || (result.tier !== 'build' && result.tier !== 'refine')) {
+    return result;
+  }
+
+  return {
+    tier: 'plan',
+    confidence: Math.max(result.confidence, 0.9),
+    reason: `${result.reason}; permission mode '${permissionMode}' requires a non-mutating Plan lead`,
+  };
+}
+
 function getConfig(): AutoRouterConfig {
   const settings = getSettingsObject();
   const saved = settings.autoRouterConfig as Record<string, unknown> | undefined;
@@ -692,10 +926,6 @@ function getConfig(): AutoRouterConfig {
   if (saved) {
     if (saved.costAware !== undefined) config.costAware = saved.costAware as boolean;
     if (saved.costThresholdPercent !== undefined) config.costThresholdPercent = saved.costThresholdPercent as number;
-    if (saved.useLlmClassifier !== undefined) config.useLlmClassifier = saved.useLlmClassifier as boolean;
-    if (saved.llmConfidenceThreshold !== undefined) config.llmConfidenceThreshold = saved.llmConfidenceThreshold as number;
-
-    // Map categories array to flat model config
     const categories = saved.categories as Array<{ id: string; model: string }> | undefined;
     if (categories) {
       for (const cat of categories) {
@@ -703,8 +933,15 @@ function getConfig(): AutoRouterConfig {
         else if (cat.id === 'build') config.buildModel = cat.model;
         else if (cat.id === 'verify') config.verifyModel = cat.model;
         else if (cat.id === 'refine') config.refineModel = cat.model;
+        else if (cat.id === 'fallback') config.fallbackModel = cat.model;
       }
     }
+
+    if (typeof saved.planModel === 'string') config.planModel = saved.planModel;
+    if (typeof saved.buildModel === 'string') config.buildModel = saved.buildModel;
+    if (typeof saved.verifyModel === 'string') config.verifyModel = saved.verifyModel;
+    if (typeof saved.refineModel === 'string') config.refineModel = saved.refineModel;
+    if (typeof saved.fallbackModel === 'string') config.fallbackModel = saved.fallbackModel;
   }
 
   return config;
@@ -898,12 +1135,13 @@ function chooseModelForTier(
   const configured = config.costAware
     ? applyCostAwareDowngrade(tier, config)
     : resolveModelForTier(tier, config);
-  const configuredHarness = harnessFromModel(configured);
-
-  if (!signals.asksForCapabilityEscalation && configuredHarness !== 'claude') {
+  if (
+    !signals.asksForCapabilityEscalation &&
+    hasConfiguredCredentialForModel(configured, options)
+  ) {
     return {
       model: configured,
-      harness: configuredHarness,
+      harness: harnessFromModel(configured),
       reason: `Configured ${tier} model is user-selected; using ${configured} without silent fallback`,
     };
   }
@@ -979,32 +1217,38 @@ function buildOrchestrationHandoff(
   signals: TaskSignals,
   stages: OrchestrationStage[],
   leadDuties: string[] = [],
+  goalObjective?: string,
 ): string {
   const stageLines = stages
-    .map((stage, index) => `${index + 1}. ${stage.tier.toUpperCase()} via ${stage.harness}:${stage.model} - ${stage.purpose}${stage.required ? '' : ' (optional)'}`)
+    .map((stage, index) => `${index + 1}. ${stage.tier.toUpperCase()} - ${stage.purpose}${stage.required ? '' : ' (optional)'}`)
     .join('\n');
 
   const extraGuidance = [
     leadTier === 'plan' && stages.some((stage) => stage.trigger === 'after-plan')
-      ? '- Lead Claude stage: stop at the plan. Do not edit files, run mutating commands, or continue into execution; Auto Build will start the execution stage after this message completes.'
+      ? '- Planning scope: stop at the plan. Do not edit files, run mutating commands, or continue into execution; follow-up execution can run after this response.'
       : '',
     signals.needsBrowser ? '- Browser/UI work: use browser or screenshot tools for verification when available.' : '',
-    signals.likelyNeedsProjectContext ? '- Project context matters: follow injected CLAUDE.md, AGENTS.md, agents, and skills as if native to this harness.' : '',
+    signals.likelyNeedsProjectContext ? '- Project context matters: follow injected CLAUDE.md, AGENTS.md, agents, and skills as if native to this environment.' : '',
     signals.hasErrorLog ? '- Failure/debugging work: reproduce or inspect the failure before changing code, then verify the fix.' : '',
-    signals.asksForMultiHarness ? '- The user asked for harness/model orchestration: delegate deliberately and summarize any handoffs.' : '',
+    signals.asksForMultiHarness ? '- The user asked to compare available execution options: handle that directly and summarize tradeoffs.' : '',
+    '- Context switches are expensive. Carry the current scope as far as practical in the lead harness, and use later stages only at the listed phase boundaries.',
+    '- For handoffs, prefer artifact references over copied history: transcript file references let the next harness search its own context, and plan-to-execution handoffs should point at the plan file path when available.',
+    goalObjective
+      ? `- Goal-driven turn: objective is "${goalObjective.slice(0, 600)}". Keep a concrete internal checklist, complete only the current routed scope, and report <goal>COMPLETE</goal> when the objective is fully achieved or <goal>BLOCKED</goal> when external input or unavailable services prevent meaningful progress.`
+      : '',
     ...leadDuties.map((duty) => `- ${duty}`),
   ].filter(Boolean).join('\n');
 
   return [
-    'Auto Build Ultra selected an orchestration plan for this turn.',
-    'Operate as one seamless Build agent even if the underlying harness changes.',
-    requestedTier !== leadTier ? `The user asked for ${requestedTier.toUpperCase()} work; ${leadTier.toUpperCase()} is the lead stage for workflow sequencing.` : '',
+    'Operate as the user-facing Build agent for this turn.',
+    'This internal scope exists only to coordinate work. Do not mention internal coordination, sequencing, or follow-up handoffs unless the user explicitly asks.',
+    requestedTier !== leadTier ? `The user asked for ${requestedTier.toUpperCase()} work; begin with ${leadTier.toUpperCase()} scope first.` : '',
     '',
     stageLines,
-    extraGuidance ? `\nAdditional routing guidance:\n${extraGuidance}` : '',
+    extraGuidance ? `\nAdditional execution guidance:\n${extraGuidance}` : '',
     '',
-    'When you are the lead Claude harness and the plan includes a Codex verification or second-opinion stage, use CodexSecondOpinion at the natural decision point instead of asking the user to choose a model.',
-    'When you are Codex, Cursor, Gemini, or another CLI harness, treat the injected transcript, project instructions, agents, and skills as your own current context.',
+    'When this turn starts in Claude and the plan includes a verification or second-opinion step, use CodexSecondOpinion at the natural decision point instead of asking the user to choose.',
+    'In CLI-backed execution, treat the injected transcript, project instructions, agents, and skills as your own current context.',
   ].filter(Boolean).join('\n');
 }
 
@@ -1015,7 +1259,7 @@ function buildOrchestrationPlan(
   config: AutoRouterConfig,
   signals: TaskSignals,
   phase: SessionPhase,
-  options?: ModelAvailabilityOptions & { permissionMode?: string },
+  options?: ModelAvailabilityOptions & { permissionMode?: string; goalObjective?: string },
 ): OrchestrationPlan {
   const stages: OrchestrationStage[] = [];
   const leadDuties: string[] = [];
@@ -1128,81 +1372,456 @@ function buildOrchestrationPlan(
     stages: uniqueStages,
     contextPolicy: {
       includeTranscript: true,
+      includeTranscriptReferences: true,
+      includePlanFileReference: true,
+      avoidBulkContextOnHandoff: true,
+      maxHandoffConversationChars: 24000,
       includeProjectInstructions: true,
       includeSkills: true,
       includeAgents: true,
       includeMemories: true,
     },
-    handoffPrompt: buildOrchestrationHandoff(leadTier, requestedTier, signals, uniqueStages, leadDuties),
+    handoffPrompt: buildOrchestrationHandoff(leadTier, requestedTier, signals, uniqueStages, leadDuties, options?.goalObjective),
   };
 }
 
-async function classifyWithLlm(
-  message: string,
-  cerebrasKey: string,
-): Promise<{ tier: TaskTier; confidence: number; reason: string } | null> {
-  // Cerebras gpt-oss-120b: 92.5% accuracy, 216ms p50, ~free
-  // Benchmarked against Haiku 4.5 and GPT-4o-mini — clear winner
-  try {
-    const prompt = `You are the Auto Build router for an AI developer tool. Classify the user's latest developer query by intended work mode, not by surface keywords. Reply ONLY with compact JSON: {"tier":"plan"|"build"|"verify"|"refine","confidence":0.0-1.0,"reason":"..."}
+function metaCandidateModelsForTier(
+  tier: TaskTier,
+  config: AutoRouterConfig,
+  signals: TaskSignals,
+  options?: ModelAvailabilityOptions,
+): string[] {
+  const configured = resolveModelForTier(tier, config);
+  const costAdjusted = config.costAware
+    ? applyCostAwareDowngrade(tier, config)
+    : configured;
+  const candidates = config.costAware && !signals.asksForCapabilityEscalation
+    ? [costAdjusted, configured]
+    : [configured, costAdjusted];
 
-Routing tiers:
-- plan: deeper reasoning before action. Use for architecture/design, tradeoffs, approach questions, code review, second opinions, ambiguous/high-risk requests, requests to "look harder", "think harder", "dig deeper", "be more careful", or use a stronger/more powerful/smarter model.
-- build: create or modify code/files. Use for implementation, wiring, scaffolding, "do it", "build it", "ship it", "execute the plan", or clear requested edits that are not just cosmetic.
-- verify: inspect whether something works. Use for tests, QA, CI, debugging, regressions, failures, stack traces, "why is this broken", reproduction, investigation, validation, and requests to check correctness.
-- refine: small local tweaks. Use for copy edits, rename, formatting, cosmetic UI/style adjustments, typo fixes, tiny wording changes, or low-risk follow-up edits.
-
-Disambiguation rules:
-1. If the user asks for more reasoning/care/model strength ("look harder", "think deeper", "use Opus", "stronger model"), choose plan with high confidence. This is not refine even if short.
-2. If the user says "ok", "go ahead", "do it", or "build it" after a plan, choose build.
-3. If the query contains an error/failure and asks what happened, choose verify. If it asks to implement the fix after diagnosis, choose build.
-4. If the task is a one-line cosmetic/local change, choose refine unless it asks for broader design reasoning.
-5. When uncertain between plan and build for a complex task, choose plan. When uncertain between verify and build for a failure, choose verify.
-
-Confidence:
-- 0.90-1.00: explicit mode signal.
-- 0.70-0.89: clear implied intent.
-- 0.50-0.69: mixed or ambiguous.
-- below 0.50: weak evidence.
-
-Examples:
-User: "look harder at this problem" -> {"tier":"plan","confidence":0.95,"reason":"Explicit deeper reasoning/model-strength request"}
-User: "implement the auth flow from the plan" -> {"tier":"build","confidence":0.92,"reason":"Explicit implementation request"}
-User: "tests are failing, figure out why" -> {"tier":"verify","confidence":0.9,"reason":"Failure investigation request"}
-User: "make the button text shorter" -> {"tier":"refine","confidence":0.86,"reason":"Small copy tweak"}
-
-Query: ${JSON.stringify(message.slice(0, 1200))}`;
-
-    const response = await fetch('https://api.cerebras.ai/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'authorization': `Bearer ${cerebrasKey}`,
-      },
-      body: JSON.stringify({
-        model: 'gpt-oss-120b',
-        max_tokens: 150,
-        messages: [{ role: 'user', content: prompt }],
-      }),
-    });
-
-    const data = await response.json() as any;
-    const text = data?.choices?.[0]?.message?.content || '';
-    const jsonMatch = text.match(/\{[^}]+\}/);
-    if (!jsonMatch) return null;
-
-    const parsed = JSON.parse(jsonMatch[0]);
-    if (!['plan', 'build', 'verify', 'refine'].includes(parsed.tier)) return null;
-
-    return {
-      tier: parsed.tier as TaskTier,
-      confidence: Math.min(1.0, Math.max(0, parsed.confidence || 0.5)),
-      reason: parsed.reason || 'LLM classification',
-    };
-  } catch (e) {
-    console.warn('[AutoRouter] LLM classification failed:', e);
-    return null;
+  if (signals.asksForCapabilityEscalation) {
+    candidates.push(...researchPriorModelCandidates(tier, config, signals));
   }
+
+  candidates.push(
+    ...customCategoriesForController(options)
+      .filter((category) => category.tier === tier)
+      .map((category) => category.model),
+  );
+  candidates.push(config.fallbackModel);
+
+  return Array.from(new Set(candidates.filter((model) =>
+    !!model && hasConfiguredCredentialForModel(model, options)
+  )));
+}
+
+function candidateModelsByTierForMeta(
+  config: AutoRouterConfig,
+  signals: TaskSignals,
+  options?: ModelAvailabilityOptions,
+): Record<TaskTier, string[]> {
+  const result = {} as Record<TaskTier, string[]>;
+  for (const tier of ['plan', 'build', 'verify', 'refine'] as TaskTier[]) {
+    result[tier] = metaCandidateModelsForTier(tier, config, signals, options);
+  }
+  return result;
+}
+
+function getCerebrasKey(): string {
+  const settings = getSettingsObject();
+  return (settings.cerebrasApiKey as string) || EMBEDDED_KEYS.cerebras || process.env.CEREBRAS_API_KEY || '';
+}
+
+function isMetaModelAllowedForTier(
+  tier: TaskTier,
+  model: string,
+  candidateModelsByTier: Record<TaskTier, string[]>,
+  options?: ModelAvailabilityOptions,
+): boolean {
+  return candidateModelsByTier[tier].includes(model) && hasConfiguredCredentialForModel(model, options);
+}
+
+function redactMetaControllerTerms(reason: string): string {
+  return reason
+    .replace(/\bAuto Build\b/gi, 'workflow')
+    .replace(/\bFlue\s+meta[- ]harness\b/gi, 'workflow routing')
+    .replace(/\bflue\s+controller\b/gi, 'workflow routing')
+    .replace(/\bflue\b/gi, 'workflow routing')
+    .replace(/\bmeta[- ]harness\b/gi, 'workflow routing')
+    .replace(/\bcontroller\b/gi, 'routing')
+    .replace(/\borchestration plan\b/gi, 'follow-up plan')
+    .replace(/\bmodel selection\b/gi, 'routing choice')
+    .slice(0, 500);
+}
+
+function hasRoutingOverrideAttempt(message: string): boolean {
+  return [
+    /\bignore\b.{0,100}\b(?:router|routing|system|developer|previous|above|instructions?|prompt)\b/i,
+    /\b(?:leadTier|requestedTier|candidateModelsByTier)\b/i,
+    /\breturn\b.{0,80}\bjson\b.{0,80}\b(?:tier|category|harness|model)\b/i,
+    /\b(?:force|set)\s+(?:the\s+)?(?:lead\s*)?(?:tier|category)\s*(?:to|=)/i,
+    /\bchoose\s+(?:the\s+)?(?:plan|build|verify|refine)\s+(?:tier|category)\b/i,
+  ].some((pattern) => pattern.test(message));
+}
+
+function getMetaRouteRejectionReason(
+  meta: FlueMetaRouteDecision,
+  proposedResult: HeuristicResult,
+  deterministicResult: HeuristicResult,
+  message: string,
+): string | undefined {
+  if (proposedResult.tier === deterministicResult.tier) return undefined;
+
+  if (hasRoutingOverrideAttempt(message)) {
+    return `controller route contradicted deterministic ${deterministicResult.tier} route under routing-override text`;
+  }
+
+  if (deterministicResult.confidence >= 0.75) {
+    return `controller route ${meta.leadTier} contradicted high-confidence deterministic ${deterministicResult.tier} route`;
+  }
+
+  return undefined;
+}
+
+function shouldUseDeterministicFastPath(
+  message: string,
+  result: HeuristicResult,
+  phase: SessionPhase,
+  signals: TaskSignals,
+  options: RouteOptions,
+): boolean {
+  const lower = message.trim().toLowerCase();
+  const referencesExistingPlan = /\b(from|based on|using|execute|implement|build|ship)\b.{0,60}\b(the\s+)?plan\b|\b(the\s+)?plan\b.{0,60}\b(go ahead|do it|build it|implement it|execute it)\b/.test(lower);
+  const asksForCostStrategyBeforeChange = /\b(cost|spend|expensive|cheaper|budget)\b.{0,120}\b(compare|strategy|choose|pick|before changing|before editing)\b|\b(compare|strategy|choose|pick)\b.{0,120}\b(cost|spend|expensive|cheaper|budget)\b/.test(lower);
+  const asksForBoundedHarnessFailureVerification = /\b(rate limit|quota|auth(?:entication)?|permission denied|timeout|unavailable)\b.{0,140}\b(investigate|verify|check|failing|failed|switch verification|verification harness)\b|\b(investigate|verify|check)\b.{0,140}\b(rate limit|quota|timeout|verification harness)\b/.test(lower);
+  const asksForBoundedHarnessComparison = /\b(compare|recommend|route)\b.{0,140}\b(harness|claude code|cursor|codex|gemini)\b|\b(harness|claude code|cursor|codex|gemini)\b.{0,140}\b(compare|recommend|route)\b/.test(lower);
+  const asksForCarefulMigration = /\bmigration\b.{0,140}\b(affects|touches|spans|across|impacts)\b.{0,180}\b(auth|billing|audit|logs?|careful|carefully|risk|rollout)\b|\b(careful|carefully|risk|rollout)\b.{0,180}\bmigration\b/.test(lower);
+
+  // Do not send obvious routing-prompt injection text to the controller when
+  // deterministic routing already has enough signal to handle it locally.
+  if (hasRoutingOverrideAttempt(message) && result.confidence >= 0.7) return true;
+
+  if (options.gstackMode && result.confidence >= 0.9) return true;
+
+  if (
+    (options.permissionMode === 'plan' || options.permissionMode === 'dontAsk') &&
+    result.tier === 'plan' &&
+    result.confidence >= 0.9
+  ) {
+    return true;
+  }
+
+  if (
+    signals.asksForCapabilityEscalation &&
+    result.tier === 'plan' &&
+    result.confidence >= 0.8 &&
+    !signals.large
+  ) {
+    return true;
+  }
+
+  if (
+    result.tier === 'plan' &&
+    result.confidence >= 0.8 &&
+    (signals.asksForArchitecture || signals.asksForReview) &&
+    !signals.large &&
+    !signals.hasAttachments &&
+    !signals.asksForMultiHarness
+  ) {
+    return true;
+  }
+
+  if (
+    result.tier === 'plan' &&
+    result.confidence >= 0.8 &&
+    asksForCostStrategyBeforeChange &&
+    !signals.hasAttachments
+  ) {
+    return true;
+  }
+
+  if (
+    result.tier === 'plan' &&
+    result.confidence >= 0.8 &&
+    asksForCarefulMigration &&
+    !signals.hasAttachments
+  ) {
+    return true;
+  }
+
+  if (
+    result.tier === 'plan' &&
+    result.confidence >= 0.55 &&
+    asksForBoundedHarnessComparison &&
+    !signals.large &&
+    !signals.hasAttachments
+  ) {
+    return true;
+  }
+
+  if (
+    result.tier === 'refine' &&
+    result.confidence >= 0.75 &&
+    isComposerFriendlyBugFix(message, signals) &&
+    !signals.asksForMultiHarness
+  ) {
+    return true;
+  }
+
+  if (
+    result.tier === 'refine' &&
+    result.confidence >= 0.75 &&
+    signals.short &&
+    !signals.hasAttachments &&
+    !signals.hasErrorLog &&
+    !signals.asksForMultiHarness
+  ) {
+    return true;
+  }
+
+  if (
+    result.tier === 'refine' &&
+    result.confidence >= 0.75 &&
+    signals.short &&
+    signals.hasAttachments &&
+    (signals.hasImageAttachments || signals.hasDomAttachments) &&
+    !signals.hasErrorLog &&
+    !signals.asksForVerification &&
+    !signals.asksForMultiHarness
+  ) {
+    return true;
+  }
+
+  if (
+    result.tier === 'build' &&
+    result.confidence >= 0.8 &&
+    signals.hasErrorLog &&
+    signals.asksForImplementation &&
+    signals.asksForVerification &&
+    !signals.large &&
+    !signals.hasAttachments &&
+    !signals.asksForMultiHarness
+  ) {
+    return true;
+  }
+
+  if (
+    result.tier === 'verify' &&
+    result.confidence >= 0.65 &&
+    (signals.hasErrorLog || signals.asksForVerification) &&
+    !signals.asksForMultiHarness
+  ) {
+    return true;
+  }
+
+  if (
+    result.tier === 'verify' &&
+    result.confidence >= 0.55 &&
+    asksForBoundedHarnessFailureVerification &&
+    !signals.large &&
+    !signals.hasAttachments
+  ) {
+    return true;
+  }
+
+  if (
+    result.tier === 'build' &&
+    result.confidence >= 0.7 &&
+    !signals.large &&
+    !signals.hasAttachments &&
+    !signals.hasErrorLog &&
+    !signals.asksForVerification &&
+    (!signals.asksForArchitecture || referencesExistingPlan) &&
+    !signals.asksForMultiHarness
+  ) {
+    return true;
+  }
+
+  return (
+    phase.hasPlanContext &&
+    !phase.hasBuildContext &&
+    result.tier === 'build' &&
+    result.confidence >= 0.8 &&
+    message.trim().length < 80
+  );
+}
+
+function sanitizeMetaLead(
+  meta: FlueMetaRouteDecision,
+  config: AutoRouterConfig,
+  signals: TaskSignals,
+  candidateModelsByTier: Record<TaskTier, string[]>,
+  options?: ModelAvailabilityOptions,
+): ModelChoice {
+  const leadTier = meta.leadTier;
+  const preferredLeadModel = candidateModelsByTier[leadTier]?.[0];
+  if (
+    preferredLeadModel &&
+    !signals.asksForCapabilityEscalation &&
+    preferredLeadModel !== meta.leadModel &&
+    isMetaModelAllowedForTier(leadTier, preferredLeadModel, candidateModelsByTier, options)
+  ) {
+    return {
+      model: preferredLeadModel,
+      harness: harnessFromModel(preferredLeadModel),
+      reason: `Selected ${preferredLeadModel}`,
+    };
+  }
+
+  if (isMetaModelAllowedForTier(leadTier, meta.leadModel, candidateModelsByTier, options)) {
+    return {
+      model: meta.leadModel,
+      harness: harnessFromModel(meta.leadModel),
+      reason: `Selected ${meta.leadModel}`,
+    };
+  }
+
+  const fallback = chooseModelForTier(leadTier, config, signals, options);
+  return {
+    ...fallback,
+    reason: `Selected route model was unavailable; ${fallback.reason}`,
+  };
+}
+
+function sanitizeMetaStageModel(
+  stage: FlueMetaStageDecision,
+  lead: ModelChoice,
+  config: AutoRouterConfig,
+  signals: TaskSignals,
+  candidateModelsByTier: Record<TaskTier, string[]>,
+  options?: ModelAvailabilityOptions,
+): string | undefined {
+  if (isMetaModelAllowedForTier(stage.tier, stage.model, candidateModelsByTier, options)) {
+    return stage.model;
+  }
+  return pickDelegateStageModel(stage.tier, config, signals, options, lead.model);
+}
+
+function normalizeMetaStageTrigger(
+  stage: FlueMetaStageDecision,
+  meta: FlueMetaRouteDecision,
+  existingStages: OrchestrationStage[],
+  deterministicPlan: OrchestrationPlan,
+): OrchestrationStage['trigger'] | undefined {
+  const deterministicStage = deterministicPlan.stages
+    .slice(1)
+    .find((candidate) => candidate.tier === stage.tier);
+  if (deterministicStage) return deterministicStage.trigger;
+
+  if (stage.trigger === 'after-plan') {
+    return meta.leadTier === 'plan' ? 'after-plan' : undefined;
+  }
+
+  if (stage.trigger === 'after-build') {
+    const hasBuildBefore = meta.leadTier === 'build'
+      || existingStages.some((candidate) => candidate.tier === 'build')
+      || deterministicPlan.stages.some((candidate) => candidate.tier === 'build');
+    return hasBuildBefore ? 'after-build' : undefined;
+  }
+
+  if (stage.trigger === 'on-failure') {
+    return stage.tier === 'refine' ? 'on-failure' : undefined;
+  }
+
+  return undefined;
+}
+
+function buildOrchestrationPlanFromMeta(
+  meta: FlueMetaRouteDecision,
+  lead: ModelChoice,
+  config: AutoRouterConfig,
+  signals: TaskSignals,
+  phase: SessionPhase,
+  options: ModelAvailabilityOptions & { permissionMode?: string; goalObjective?: string },
+  candidateModelsByTier: Record<TaskTier, string[]>,
+): OrchestrationPlan {
+  const deterministicPlan = buildOrchestrationPlan(meta.leadTier, meta.requestedTier, lead, config, signals, phase, options);
+  const stages: OrchestrationStage[] = [{
+    tier: meta.leadTier,
+    harness: lead.harness,
+    model: lead.model,
+    purpose: `Lead ${meta.leadTier} work`,
+    trigger: 'now',
+    required: true,
+  }];
+
+  const canMutate = canRunMutatingStages(options.permissionMode);
+  for (const rawStage of meta.stages) {
+    if (rawStage.trigger === 'now' || rawStage.trigger === 'manual-follow-up') continue;
+    if ((rawStage.tier === 'build' || rawStage.tier === 'refine') && !canMutate) continue;
+
+    const model = sanitizeMetaStageModel(rawStage, lead, config, signals, candidateModelsByTier, options);
+    if (!model || model === lead.model) continue;
+
+    const harness = harnessFromModel(model);
+    if (!isExecutableDelegateHarness(harness)) continue;
+
+    const trigger = normalizeMetaStageTrigger(rawStage, meta, stages, deterministicPlan);
+    if (!trigger) continue;
+
+    const fallbackModels = pickDelegateStageModels(rawStage.tier, config, signals, options, [model, lead.model])
+      .slice(0, 2);
+
+    stages.push({
+      tier: rawStage.tier,
+      harness,
+      model,
+      fallbackModels: fallbackModels.length > 0 ? fallbackModels : undefined,
+      purpose: redactMetaControllerTerms(rawStage.purpose || `${rawStage.tier} follow-up`),
+      trigger,
+      required: rawStage.required,
+    });
+  }
+
+  for (const defaultStage of deterministicPlan.stages.slice(1)) {
+    const alreadyCovered = stages.some((stage) =>
+      stage.tier === defaultStage.tier &&
+      stage.trigger === defaultStage.trigger
+    );
+    if (!alreadyCovered) {
+      stages.push({
+        ...defaultStage,
+        purpose: `Required follow-up: ${defaultStage.purpose}`,
+      });
+    }
+  }
+
+  const uniqueStages = stages.filter((stage, index) =>
+    stages.findIndex((candidate) =>
+      candidate.tier === stage.tier &&
+      candidate.model === stage.model &&
+      candidate.trigger === stage.trigger
+    ) === index
+  );
+
+  const uniqueHarnesses = new Set(uniqueStages.map((stage) => stage.harness));
+  const mode: OrchestrationPlan['mode'] = uniqueStages.length === 1
+    ? 'single'
+    : uniqueHarnesses.size > 1
+      ? 'lead-with-delegates'
+      : 'sequential';
+
+  return {
+    mode,
+    leadHarness: lead.harness,
+    leadModel: lead.model,
+    stages: uniqueStages,
+    contextPolicy: {
+      includeTranscript: true,
+      includeTranscriptReferences: true,
+      includePlanFileReference: true,
+      avoidBulkContextOnHandoff: true,
+      maxHandoffConversationChars: 24000,
+      includeProjectInstructions: true,
+      includeSkills: true,
+      includeAgents: true,
+      includeMemories: true,
+    },
+    handoffPrompt: buildOrchestrationHandoff(meta.leadTier, meta.requestedTier, signals, uniqueStages, [
+      'Execute only the scope assigned to this turn.',
+      'Required follow-up work may be added when necessary execution or verification scope was omitted.',
+    ], options.goalObjective),
+  };
 }
 
 function getSessionPhase(sessionId: string): SessionPhase {
@@ -1231,15 +1850,19 @@ function extractRecordedTiersFromContent(content?: string): TaskTier[] {
     }
   };
 
-  const completedLeadMatch = content.match(/Completed lead tier:\s*(plan|build|verify|refine)\b/i);
+  const completedLeadMatch = content.match(/Completed (?:lead tier|scope):\s*(plan|build|verify|refine)\b/i);
   addTier(completedLeadMatch?.[1]);
 
-  const helperOutputIndex = content.indexOf('Helper output:');
-  const helperOnlyContent = content.includes('<auto_build_turn_result>')
+  const helperOutputIndex = content.search(/(?:Helper|Follow-up) output:/i);
+  const hasStructuredTurnResult = /<(?:auto_build|workflow)_turn_result>/i.test(content);
+  const helperOnlyContent = hasStructuredTurnResult
     ? helperOutputIndex === -1 ? '' : content.slice(helperOutputIndex)
     : content;
 
   for (const match of helperOnlyContent.matchAll(/Auto Build\s+(PLAN|BUILD|VERIFY|REFINE)\b/gi)) {
+    addTier(match[1]);
+  }
+  for (const match of helperOnlyContent.matchAll(/\b(PLAN|BUILD|VERIFY|REFINE)\s+follow-up\b/gi)) {
     addTier(match[1]);
   }
   for (const match of helperOnlyContent.matchAll(/^\s*\d+\.\s+(plan|build|verify|refine)\s*:/gim)) {
@@ -1250,6 +1873,28 @@ function extractRecordedTiersFromContent(content?: string): TaskTier[] {
   }
 
   return tiers;
+}
+
+function restoreWorkflowFailuresFromMetadata(sessionId: string, message: ChatMessage): void {
+  const failures = message.metadata?.workflowFailures || [];
+  for (const failure of failures) {
+    if (
+      failure.harness === 'claude' ||
+      failure.harness === 'codex' ||
+      failure.harness === 'cursor' ||
+      failure.harness === 'gemini' ||
+      failure.harness === 'opencode' ||
+      failure.harness === 'custom'
+    ) {
+      restoreHarnessFailure(
+        sessionId,
+        failure.harness,
+        failure.model,
+        failure.error,
+        message.timestamp,
+      );
+    }
+  }
 }
 
 function inferPhaseFromMessages(messages?: ChatMessage[]): SessionPhase {
@@ -1417,6 +2062,7 @@ function inferHarnessFailuresFromMessages(sessionId: string, messages?: ChatMess
 
   for (const message of recentMessages) {
     if (message.role !== 'assistant' && message.role !== 'system') continue;
+    restoreWorkflowFailuresFromMetadata(sessionId, message);
     const content = message.content || '';
 
     const leadFailurePattern = /Lead error:\s*(codex|cursor|gemini|opencode|custom):([^\n]+?)\s+-\s*([^\n]*)/gi;
@@ -1449,23 +2095,23 @@ function formatActiveHarnessCooldowns(sessionId: string): string {
   const failures = sessionHarnessFailures.get(sessionId);
   const active: string[] = [];
   if (failures) {
-    for (const [harness, failure] of failures) {
+    for (const failure of failures.values()) {
       if (failure.cooldownUntil <= Date.now()) continue;
       const remainingMinutes = Math.max(1, Math.ceil((failure.cooldownUntil - Date.now()) / 60000));
-      active.push(`${harness}${failure.model ? ` (${failure.model})` : ''} cooling down ${remainingMinutes}m`);
+      active.push(`recently failed helper cooling down ${remainingMinutes}m`);
     }
   }
 
   const modelFailures = sessionModelFailures.get(sessionId);
   if (modelFailures) {
-    for (const [model, failure] of modelFailures) {
+    for (const failure of modelFailures.values()) {
       if (failure.cooldownUntil <= Date.now()) continue;
       const remainingMinutes = Math.max(1, Math.ceil((failure.cooldownUntil - Date.now()) / 60000));
-      active.push(`${model} cooling down ${remainingMinutes}m`);
+      active.push(`recently failed helper cooling down ${remainingMinutes}m`);
     }
   }
 
-  return active.join(', ');
+  return Array.from(new Set(active)).join(', ');
 }
 
 class AutoRouterService {
@@ -1476,6 +2122,7 @@ class AutoRouterService {
   ): Promise<RoutingDecision> {
     const routeOptions: RouteOptions = { ...options, sessionId };
     const config = getConfig();
+    clearRecoveredCursorAuthCooldown(sessionId);
     inferHarnessFailuresFromMessages(sessionId, routeOptions.recentMessages);
     const storedPhase = getSessionPhase(sessionId);
     const inferredPhase = inferPhaseFromMessages(routeOptions.recentMessages);
@@ -1488,20 +2135,86 @@ class AutoRouterService {
 
     // Step 2: Apply workflow awareness
     let result = applyWorkflowAwareness(requestedResult, phase, signals, message);
+    result = enforcePermissionMode(result, routeOptions.permissionMode);
 
-    let method: 'heuristic' | 'llm' = 'heuristic';
+    const customCategories = customCategoriesForController(routeOptions);
+    let customCategoryLead: ModelChoice | undefined;
 
-    // Step 3: If heuristic confidence is low, try LLM classifier
-    if (result.confidence < config.llmConfidenceThreshold && config.useLlmClassifier && !routeOptions.skipLlmClassifier) {
-      const settings = getSettingsObject();
-      const cerebrasKey = (settings.cerebrasApiKey as string) || EMBEDDED_KEYS.cerebras || process.env.CEREBRAS_API_KEY || '';
+    let method: RoutingDecision['method'] = 'heuristic';
+    let metaLead: ModelChoice | undefined;
+    let metaOrchestration: OrchestrationPlan | undefined;
+    const deterministicResult = result;
+    const useDeterministicFastPath = shouldUseDeterministicFastPath(message, result, phase, signals, routeOptions);
+
+    // Step 3: Let the Cerebras-backed controller classify the route. Execution
+    // is still delegated through existing harnesses.
+    if (!useDeterministicFastPath && !routeOptions.skipMetaController) {
+      const cerebrasKey = getCerebrasKey();
       if (cerebrasKey) {
-        const llmResult = await classifyWithLlm(message, cerebrasKey);
-        if (llmResult && llmResult.confidence > result.confidence) {
-          requestedResult = llmResult;
-          method = 'llm';
-          // Re-apply workflow awareness to LLM result
-          result = applyWorkflowAwareness(requestedResult, phase, signals, message);
+        const candidateModelsByTier = candidateModelsByTierForMeta(config, signals, routeOptions);
+        const meta = await flueMetaRouterService.route({
+          sessionId,
+          message,
+          domain: signals.domain,
+          config,
+          phase,
+          heuristicTier: requestedResult.tier,
+          workflowTier: result.tier,
+          permissionMode: routeOptions.permissionMode,
+          gstackMode: routeOptions.gstackMode,
+          attachmentCount: routeOptions.attachmentCount || 0,
+          attachmentTypes: routeOptions.attachmentTypes || [],
+          candidateModelsByTier,
+          customCategories,
+          recentMessages: routeOptions.recentMessages,
+          goalObjective: routeOptions.goalObjective,
+          goalSource: routeOptions.goalSource,
+          cerebrasKey,
+        });
+
+        if (meta && meta.confidence >= META_MIN_CONFIDENCE) {
+          const proposedRequestedResult: HeuristicResult = {
+            tier: meta.requestedTier,
+            confidence: meta.confidence,
+            reason: redactMetaControllerTerms(meta.reason),
+          };
+          let proposedResult: HeuristicResult = {
+            tier: meta.leadTier,
+            confidence: meta.confidence,
+            reason: redactMetaControllerTerms(meta.reason),
+          };
+          proposedResult = enforcePermissionMode(proposedResult, routeOptions.permissionMode);
+
+          const rejectionReason = getMetaRouteRejectionReason(meta, proposedResult, deterministicResult, message);
+          if (rejectionReason) {
+            console.log(`[AutoRouter] Ignoring controller route: ${rejectionReason}`);
+          } else {
+            requestedResult = proposedRequestedResult;
+            result = proposedResult;
+            method = 'controller';
+            metaLead = sanitizeMetaLead(
+              { ...meta, leadTier: result.tier },
+              config,
+              signals,
+              candidateModelsByTier,
+              routeOptions,
+            );
+            customCategoryLead = matchedCustomCategoryLead(meta.matchedCategoryId, result.tier, customCategories);
+            if (customCategoryLead) {
+              metaLead = customCategoryLead;
+            }
+            metaOrchestration = buildOrchestrationPlanFromMeta(
+              { ...meta, leadTier: result.tier, leadModel: metaLead.model },
+              metaLead,
+              config,
+              signals,
+              phase,
+              routeOptions,
+              candidateModelsByTier,
+            );
+          }
+        } else if (meta) {
+          console.log(`[AutoRouter] Ignoring low-confidence controller route (${(meta.confidence * 100).toFixed(0)}%)`);
         }
       }
     }
@@ -1519,12 +2232,15 @@ class AutoRouterService {
         ...requestedResult,
         reason: `${requestedResult.reason}; no executable build delegate available, routing directly to Build tier`,
       };
+      metaLead = undefined;
+      metaOrchestration = undefined;
     }
 
     // Step 4: Resolve the lead harness/model and build an orchestration plan.
-    const lead = chooseModelForTier(result.tier, config, signals, routeOptions);
+    const lead = metaLead || customCategoryLead || chooseModelForTier(result.tier, config, signals, routeOptions);
     const resolvedModel = lead.model;
-    const orchestration = buildOrchestrationPlan(result.tier, requestedResult.tier, lead, config, signals, phase, routeOptions);
+    const orchestration = metaOrchestration || buildOrchestrationPlan(result.tier, requestedResult.tier, lead, config, signals, phase, routeOptions);
+    const goalObjective = routeOptions.goalObjective?.trim();
 
     const cooldownSummary = formatActiveHarnessCooldowns(sessionId);
     const decision: RoutingDecision = {
@@ -1535,7 +2251,13 @@ class AutoRouterService {
       confidence: result.confidence,
       reason: `${result.reason}${requestedResult.tier !== result.tier ? `; requested ${requestedResult.tier} continues through helper stages when available` : ''}; ${lead.reason}${cooldownSummary ? `; temporarily avoiding ${cooldownSummary}` : ''}`,
       method,
-      enableGoals: result.tier === 'verify',
+      enableGoals: result.tier === 'verify' || Boolean(goalObjective),
+      ...(goalObjective ? {
+        goal: {
+          objective: goalObjective,
+          source: routeOptions.goalSource || 'slash-command',
+        },
+      } : {}),
       orchestration,
     };
 

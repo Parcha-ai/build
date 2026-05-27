@@ -5,18 +5,19 @@
  * Uses `claude plugin` CLI commands for management
  */
 
-import { exec, spawn } from 'child_process';
+import { execFile, spawn } from 'child_process';
 import { promisify } from 'util';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { findUsableLocalExecutable } from '../utils/local-executable';
 import type {
   PluginMarketplace,
   InstalledPlugin,
   MarketplacePlugin,
 } from '../../shared/types';
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 const readFileAsync = promisify(fs.readFile);
 const readdirAsync = promisify(fs.readdir);
 const statAsync = promisify(fs.stat);
@@ -26,6 +27,19 @@ const CLAUDE_DIR = path.join(os.homedir(), '.claude');
 const PLUGINS_DIR = path.join(CLAUDE_DIR, 'plugins');
 const MARKETPLACES_DIR = path.join(PLUGINS_DIR, 'marketplaces');
 const KNOWN_MARKETPLACES_FILE = path.join(PLUGINS_DIR, 'known_marketplaces.json');
+
+function resolveClaudeCli(): string {
+  const cli = findUsableLocalExecutable(['claude'], [
+    '/opt/homebrew/bin/claude',
+    '/usr/local/bin/claude',
+    path.join(os.homedir(), '.local', 'bin', 'claude'),
+    path.join(os.homedir(), '.npm-global', 'bin', 'claude'),
+  ]);
+  if (!cli) {
+    throw new Error('Claude Code CLI is not installed or is blocked by macOS quarantine.');
+  }
+  return cli;
+}
 
 // Popular plugin marketplaces for discovery
 export const POPULAR_MARKETPLACES = [
@@ -122,7 +136,7 @@ class PluginService {
    */
   async getInstalledPlugins(): Promise<InstalledPlugin[]> {
     try {
-      const { stdout } = await execAsync('claude plugin list', {
+      const { stdout } = await execFileAsync(resolveClaudeCli(), ['plugin', 'list'], {
         timeout: 15000,
       });
 
@@ -329,10 +343,11 @@ class PluginService {
       if (options?.scope) {
         args.push('--scope', options.scope);
       }
+      const claudeCli = resolveClaudeCli();
 
       return new Promise((resolve) => {
-        const child = spawn('claude', args, {
-          shell: true,
+        const child = spawn(claudeCli, args, {
+          shell: false,
           env: { ...process.env },
         });
 
@@ -375,10 +390,11 @@ class PluginService {
     try {
       const pluginSpec = `${pluginId}@${marketplace}`;
       console.log('[Plugin Service] Uninstalling plugin:', pluginSpec);
+      const claudeCli = resolveClaudeCli();
 
       return new Promise((resolve) => {
-        const child = spawn('claude', ['plugin', 'uninstall', pluginSpec], {
-          shell: true,
+        const child = spawn(claudeCli, ['plugin', 'uninstall', pluginSpec], {
+          shell: false,
           env: { ...process.env },
         });
 
@@ -421,10 +437,11 @@ class PluginService {
     try {
       const pluginSpec = `${pluginId}@${marketplace}`;
       console.log('[Plugin Service] Enabling plugin:', pluginSpec);
+      const claudeCli = resolveClaudeCli();
 
       return new Promise((resolve) => {
-        const child = spawn('claude', ['plugin', 'enable', pluginSpec], {
-          shell: true,
+        const child = spawn(claudeCli, ['plugin', 'enable', pluginSpec], {
+          shell: false,
           env: { ...process.env },
         });
 
@@ -463,10 +480,11 @@ class PluginService {
     try {
       const pluginSpec = `${pluginId}@${marketplace}`;
       console.log('[Plugin Service] Disabling plugin:', pluginSpec);
+      const claudeCli = resolveClaudeCli();
 
       return new Promise((resolve) => {
-        const child = spawn('claude', ['plugin', 'disable', pluginSpec], {
-          shell: true,
+        const child = spawn(claudeCli, ['plugin', 'disable', pluginSpec], {
+          shell: false,
           env: { ...process.env },
         });
 
@@ -504,10 +522,11 @@ class PluginService {
   async addMarketplace(source: string): Promise<{ success: boolean; error?: string }> {
     try {
       console.log('[Plugin Service] Adding marketplace:', source);
+      const claudeCli = resolveClaudeCli();
 
       return new Promise((resolve) => {
-        const child = spawn('claude', ['plugin', 'marketplace', 'add', source], {
-          shell: true,
+        const child = spawn(claudeCli, ['plugin', 'marketplace', 'add', source], {
+          shell: false,
           env: { ...process.env },
         });
 
@@ -545,10 +564,11 @@ class PluginService {
   async removeMarketplace(name: string): Promise<{ success: boolean; error?: string }> {
     try {
       console.log('[Plugin Service] Removing marketplace:', name);
+      const claudeCli = resolveClaudeCli();
 
       return new Promise((resolve) => {
-        const child = spawn('claude', ['plugin', 'marketplace', 'remove', name], {
-          shell: true,
+        const child = spawn(claudeCli, ['plugin', 'marketplace', 'remove', name], {
+          shell: false,
           env: { ...process.env },
         });
 
@@ -591,10 +611,11 @@ class PluginService {
       if (name) {
         args.push(name);
       }
+      const claudeCli = resolveClaudeCli();
 
       return new Promise((resolve) => {
-        const child = spawn('claude', args, {
-          shell: true,
+        const child = spawn(claudeCli, args, {
+          shell: false,
           env: { ...process.env },
         });
 
