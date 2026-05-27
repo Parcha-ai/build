@@ -1,5 +1,6 @@
 import { BrowserWindow, IpcMain } from 'electron';
 import Store from 'electron-store';
+import { randomUUID } from 'crypto';
 import { IPC_CHANNELS } from '../../shared/constants/channels';
 import { ClaudeService } from '../services/claude.service';
 import { getMainWindow } from '../index';
@@ -9,9 +10,11 @@ import {
   mergeRecoveredStreamMessages,
   normalizeCompletedStreamMessage,
   serializeCompletedStreamMessage,
+  harnessFromModel,
   type PersistedChatMessage,
 } from '../../shared/utils/message-recovery';
 import { buildCompletedStreamMessage } from '../../shared/utils/stream-finalization';
+import { transcriptService, type TranscriptEntry } from '../services/transcript.service';
 import { sessionService } from './session.ipc';
 import { DEFAULT_AUDIO_SETTINGS } from '../../shared/types/audio';
 
@@ -64,6 +67,42 @@ function recordCompletedStreamMessage(sessionId: string, message: ChatMessage): 
 
 function mergeCompletedStreamMessages(transcriptMessages: ChatMessage[], sessionId: string, limit?: number): ChatMessage[] {
   return mergeRecoveredStreamMessages(transcriptMessages, loadCompletedStreamMessages(sessionId), limit);
+}
+
+/** Serialize accumulated tool calls to the compact transcript format. */
+function serializeToolCallsForTranscript(toolCalls?: ToolCall[]): TranscriptEntry['toolCalls'] | undefined {
+  if (!toolCalls?.length) return undefined;
+  return toolCalls.map(tc => ({
+    id: tc.id,
+    name: tc.name,
+    input: tc.input ? JSON.stringify(tc.input) : undefined,
+    result: tc.result != null ? JSON.stringify(tc.result) : undefined,
+  }));
+}
+
+/** Write the completed assistant message to the canonical transcript store. */
+function writeAssistantToTranscript(
+  sessionId: string,
+  finalMessage: ChatMessage,
+  opts: {
+    accumulatedThinking?: string;
+    model?: string | null;
+    resolvedModel?: string | null;
+  } = {},
+): void {
+  const harness = finalMessage.harness || harnessFromModel(opts.model || opts.resolvedModel);
+  transcriptService.appendMessage(sessionId, {
+    id: finalMessage.id || randomUUID(),
+    role: 'assistant',
+    content: finalMessage.content || '',
+    timestamp: (finalMessage.timestamp instanceof Date ? finalMessage.timestamp : new Date()).toISOString(),
+    harness,
+    model: opts.resolvedModel || opts.model || undefined,
+    toolCalls: serializeToolCallsForTranscript(finalMessage.toolCalls),
+    thinking: opts.accumulatedThinking || undefined,
+    interrupted: finalMessage.interrupted || undefined,
+    contentBlocks: finalMessage.contentBlocks,
+  });
 }
 
 // Batching helper to reduce IPC overhead
@@ -179,7 +218,17 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
         (content) => sendToSender(IPC_CHANNELS.CLAUDE_THINKING_CHUNK, { sessionId, content })
       );
 
+      // Write the user message to the canonical transcript
+      transcriptService.appendMessage(sessionId, {
+        id: randomUUID(),
+        role: 'user',
+        content: message,
+        timestamp: new Date().toISOString(),
+        harness: harnessFromModel(model),
+      });
+
       let fullMessageContent = '';
+      let accumulatedThinking = '';
       let hadError = false;
       let sentStreamEnd = false;
       let needsCompactionRetry = false;
@@ -233,6 +282,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
 
               case 'thinking_delta':
                 batcher.addThinking(event.content || '');
+                accumulatedThinking += event.content || '';
                 break;
 
 	              case 'tool_use':
@@ -319,6 +369,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
                           break;
 	                        case 'thinking_delta':
 	                          batcher.addThinking(retryEvent.content || '');
+	                          accumulatedThinking += retryEvent.content || '';
 	                          break;
 	                        case 'tool_use':
 	                          upsertAccumulatedToolCall(retryEvent.toolCall as ToolCall | undefined);
@@ -364,6 +415,11 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
 	                            resolvedModel: retryEvent.resolvedModel || latestResolvedModel,
 	                          });
                           recordCompletedStreamMessage(sessionId, finalRetryMessage);
+                          writeAssistantToTranscript(sessionId, finalRetryMessage, {
+                            accumulatedThinking,
+                            model,
+                            resolvedModel: retryEvent.resolvedModel || latestResolvedModel,
+                          });
                           sentStreamEnd = true;
                           sendToSender(IPC_CHANNELS.CLAUDE_STREAM_END, {
                             sessionId,
@@ -406,6 +462,11 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
                   resolvedModel: event.resolvedModel || latestResolvedModel,
                 });
                 recordCompletedStreamMessage(sessionId, finalMessage);
+                writeAssistantToTranscript(sessionId, finalMessage, {
+                  accumulatedThinking,
+                  model,
+                  resolvedModel: event.resolvedModel || latestResolvedModel,
+                });
                 sentStreamEnd = true;
                 sendToSender(IPC_CHANNELS.CLAUDE_STREAM_END, {
                   sessionId,
@@ -474,6 +535,11 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
               finalMessage.interrupted = true;
             }
             recordCompletedStreamMessage(sessionId, finalMessage);
+            writeAssistantToTranscript(sessionId, finalMessage, {
+              accumulatedThinking,
+              model,
+              resolvedModel: latestResolvedModel,
+            });
             sendToSender(IPC_CHANNELS.CLAUDE_STREAM_END, {
               sessionId,
               message: finalMessage,
@@ -514,6 +580,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
       );
 
       let fullMessageContent = '';
+      let accumulatedThinkingResume = '';
       let hadError = false;
       let sentStreamEnd = false;
       let latestResolvedModel: string | undefined = model;
@@ -558,6 +625,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
 
             case 'thinking_delta':
               batcher.addThinking(streamEvent.content || '');
+              accumulatedThinkingResume += streamEvent.content || '';
               break;
 
             case 'tool_use':
@@ -616,6 +684,11 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
                 resolvedModel: streamEvent.resolvedModel || latestResolvedModel,
               });
               recordCompletedStreamMessage(sessionId, finalMessage);
+              writeAssistantToTranscript(sessionId, finalMessage, {
+                accumulatedThinking: accumulatedThinkingResume,
+                model,
+                resolvedModel: streamEvent.resolvedModel || latestResolvedModel,
+              });
               sentStreamEnd = true;
               sendToSender(IPC_CHANNELS.CLAUDE_STREAM_END, {
                 sessionId,
@@ -655,6 +728,11 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
             finalMessage.interrupted = true;
           }
           recordCompletedStreamMessage(sessionId, finalMessage);
+          writeAssistantToTranscript(sessionId, finalMessage, {
+            accumulatedThinking: accumulatedThinkingResume,
+            model,
+            resolvedModel: latestResolvedModel,
+          });
           sendToSender(IPC_CHANNELS.CLAUDE_STREAM_END, {
             sessionId,
             message: finalMessage,
@@ -675,6 +753,32 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
   });
 
   ipcMain.handle(IPC_CHANNELS.CLAUDE_GET_MESSAGES, async (_, sessionId: string, limit?: number) => {
+    // Prefer Build's canonical per-session transcript if it exists.
+    // This covers messages from ALL harnesses, not just Claude.
+    if (transcriptService.hasTranscript(sessionId)) {
+      const entries = transcriptService.loadMessages(sessionId, limit);
+      const mapped: ChatMessage[] = entries.map(entry => ({
+        id: entry.id,
+        role: entry.role,
+        content: entry.content,
+        timestamp: new Date(entry.timestamp),
+        harness: (entry.harness as ChatMessage['harness']) || undefined,
+        toolCalls: entry.toolCalls?.map(tc => ({
+          id: tc.id,
+          name: tc.name,
+          input: tc.input ? JSON.parse(tc.input) : {},
+          status: 'completed' as const,
+          result: tc.result ? JSON.parse(tc.result) : undefined,
+        })),
+        interrupted: entry.interrupted,
+        contentBlocks: entry.contentBlocks as ContentBlock[] | undefined,
+      }));
+      // Still merge with the completed-stream buffer -- it may contain messages
+      // from the current in-flight stream that haven't been flushed to disk yet.
+      return mergeCompletedStreamMessages(mapped, sessionId, limit);
+    }
+
+    // Fallback: existing Claude-transcript loading for legacy sessions
     const transcriptMessages = await claudeService.getMessages(sessionId, limit);
     return mergeCompletedStreamMessages(transcriptMessages, sessionId, limit);
   });
