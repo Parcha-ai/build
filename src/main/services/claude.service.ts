@@ -4260,6 +4260,19 @@ ${leadContent.slice(0, leadContextLimit)}
         return;
       }
 
+      // If the last turn was handled by a different harness (Codex, Cursor, etc.),
+      // don't resume the stale Claude SDK session — start fresh so the model
+      // processes the new prompt instead of continuing interrupted old work.
+      let effectiveSdkSessionId = sdkSessionId;
+      if (sdkSessionId && selectedModel !== 'auto') {
+        const lastHarness = await this.resolveLastAssistantHarness(
+          sessionId, normalizedSupplementalMessages, prefetchedRoutingMessages);
+        if (lastHarness && lastHarness !== 'claude') {
+          console.log(`[Claude Service] Last turn was ${lastHarness}, not Claude — skipping SDK resume to avoid stale context`);
+          effectiveSdkSessionId = undefined;
+        }
+      }
+
       // Build cross-harness context so Claude sees messages from Cursor/Codex turns
       let supplementalConversationContext = '';
       try {
@@ -4404,7 +4417,7 @@ ${leadContent.slice(0, leadContextLimit)}
             content,
           },
           parent_tool_use_id: null,
-          session_id: sdkSessionId || '',
+          session_id: effectiveSdkSessionId || '',
         } as SDKUserMessage;
       }
 
@@ -4838,7 +4851,7 @@ Begin by creating the task structure now.
           // Resume previous conversation if we have an SDK session ID.
           // For SSH forks: resume from the parent's SDK session + forkSession: true
           // so the remote transcript gets forked on the first query.
-          ...(sdkSessionId ? { resume: sdkSessionId } : {}),
+          ...(effectiveSdkSessionId ? { resume: effectiveSdkSessionId } : {}),
           ...((session as any)?.forkFromSdkSessionId ? { resume: (session as any).forkFromSdkSessionId, forkSession: true } : {}),
           // Add MCP servers (browser tools + QMD semantic search if available)
           mcpServers: mcpServersConfig,
