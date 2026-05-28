@@ -964,14 +964,33 @@ function configuredModelsForTier(tier: TaskTier, config: AutoRouterConfig): stri
   ].filter(Boolean)));
 }
 
+/**
+ * Returns true when the user has explicitly set a model for the given tier
+ * in the Auto Build settings UI (as opposed to relying on the default config).
+ * Checks both the `categories` array and the direct `{tier}Model` fields.
+ */
+function isUserConfiguredModel(tier: TaskTier): boolean {
+  const settings = getSettingsObject();
+  const saved = settings.autoRouterConfig as Record<string, unknown> | undefined;
+  if (!saved) return false;
+
+  const categories = saved.categories as Array<{ id: string; model: string }> | undefined;
+  if (categories?.some(cat => cat.id === tier && cat.model)) return true;
+
+  const key = `${tier}Model`;
+  return typeof saved[key] === 'string';
+}
+
 function applyCostAwareDowngrade(
   tier: TaskTier,
   config: AutoRouterConfig,
 ): string {
   const configured = resolveModelForTier(tier, config);
   // Planning turns are frequent and usually do not need Opus. Keep the same
-  // Claude harness, but use Sonnet when cost-aware routing is enabled.
+  // Claude harness, but use Sonnet when cost-aware routing is enabled —
+  // unless the user has explicitly chosen Opus for this tier.
   if (tier === 'plan' && /^claude-opus/i.test(configured)) {
+    if (isUserConfiguredModel('plan')) return configured;
     return 'claude-sonnet-4-6';
   }
   return configured;
@@ -1466,174 +1485,22 @@ function getMetaRouteRejectionReason(
     return `controller route contradicted deterministic ${deterministicResult.tier} route under routing-override text`;
   }
 
-  if (deterministicResult.confidence >= 0.75) {
-    return `controller route ${meta.leadTier} contradicted high-confidence deterministic ${deterministicResult.tier} route`;
-  }
-
   return undefined;
 }
 
 function shouldUseDeterministicFastPath(
-  message: string,
-  result: HeuristicResult,
-  phase: SessionPhase,
-  signals: TaskSignals,
-  options: RouteOptions,
+  _message: string,
+  _result: HeuristicResult,
+  _phase: SessionPhase,
+  _signals: TaskSignals,
+  _options: RouteOptions,
 ): boolean {
-  const lower = message.trim().toLowerCase();
-  const referencesExistingPlan = /\b(from|based on|using|execute|implement|build|ship)\b.{0,60}\b(the\s+)?plan\b|\b(the\s+)?plan\b.{0,60}\b(go ahead|do it|build it|implement it|execute it)\b/.test(lower);
-  const asksForCostStrategyBeforeChange = /\b(cost|spend|expensive|cheaper|budget)\b.{0,120}\b(compare|strategy|choose|pick|before changing|before editing)\b|\b(compare|strategy|choose|pick)\b.{0,120}\b(cost|spend|expensive|cheaper|budget)\b/.test(lower);
-  const asksForBoundedHarnessFailureVerification = /\b(rate limit|quota|auth(?:entication)?|permission denied|timeout|unavailable)\b.{0,140}\b(investigate|verify|check|failing|failed|switch verification|verification harness)\b|\b(investigate|verify|check)\b.{0,140}\b(rate limit|quota|timeout|verification harness)\b/.test(lower);
-  const asksForBoundedHarnessComparison = /\b(compare|recommend|route)\b.{0,140}\b(harness|claude code|cursor|codex|gemini)\b|\b(harness|claude code|cursor|codex|gemini)\b.{0,140}\b(compare|recommend|route)\b/.test(lower);
-  const asksForCarefulMigration = /\bmigration\b.{0,140}\b(affects|touches|spans|across|impacts)\b.{0,180}\b(auth|billing|audit|logs?|careful|carefully|risk|rollout)\b|\b(careful|carefully|risk|rollout)\b.{0,180}\bmigration\b/.test(lower);
-
-  // Do not send obvious routing-prompt injection text to the controller when
-  // deterministic routing already has enough signal to handle it locally.
-  if (hasRoutingOverrideAttempt(message) && result.confidence >= 0.7) return true;
-
-  if (options.gstackMode && result.confidence >= 0.9) return true;
-
-  if (
-    (options.permissionMode === 'plan' || options.permissionMode === 'dontAsk') &&
-    result.tier === 'plan' &&
-    result.confidence >= 0.9
-  ) {
-    return true;
-  }
-
-  if (
-    signals.asksForCapabilityEscalation &&
-    result.tier === 'plan' &&
-    result.confidence >= 0.8 &&
-    !signals.large
-  ) {
-    return true;
-  }
-
-  if (
-    result.tier === 'plan' &&
-    result.confidence >= 0.8 &&
-    (signals.asksForArchitecture || signals.asksForReview) &&
-    !signals.large &&
-    !signals.hasAttachments &&
-    !signals.asksForMultiHarness
-  ) {
-    return true;
-  }
-
-  if (
-    result.tier === 'plan' &&
-    result.confidence >= 0.8 &&
-    asksForCostStrategyBeforeChange &&
-    !signals.hasAttachments
-  ) {
-    return true;
-  }
-
-  if (
-    result.tier === 'plan' &&
-    result.confidence >= 0.8 &&
-    asksForCarefulMigration &&
-    !signals.hasAttachments
-  ) {
-    return true;
-  }
-
-  if (
-    result.tier === 'plan' &&
-    result.confidence >= 0.55 &&
-    asksForBoundedHarnessComparison &&
-    !signals.large &&
-    !signals.hasAttachments
-  ) {
-    return true;
-  }
-
-  if (
-    result.tier === 'refine' &&
-    result.confidence >= 0.75 &&
-    isComposerFriendlyBugFix(message, signals) &&
-    !signals.asksForMultiHarness
-  ) {
-    return true;
-  }
-
-  if (
-    result.tier === 'refine' &&
-    result.confidence >= 0.75 &&
-    signals.short &&
-    !signals.hasAttachments &&
-    !signals.hasErrorLog &&
-    !signals.asksForMultiHarness
-  ) {
-    return true;
-  }
-
-  if (
-    result.tier === 'refine' &&
-    result.confidence >= 0.75 &&
-    signals.short &&
-    signals.hasAttachments &&
-    (signals.hasImageAttachments || signals.hasDomAttachments) &&
-    !signals.hasErrorLog &&
-    !signals.asksForVerification &&
-    !signals.asksForMultiHarness
-  ) {
-    return true;
-  }
-
-  if (
-    result.tier === 'build' &&
-    result.confidence >= 0.8 &&
-    signals.hasErrorLog &&
-    signals.asksForImplementation &&
-    signals.asksForVerification &&
-    !signals.large &&
-    !signals.hasAttachments &&
-    !signals.asksForMultiHarness
-  ) {
-    return true;
-  }
-
-  if (
-    result.tier === 'verify' &&
-    result.confidence >= 0.65 &&
-    (signals.hasErrorLog || signals.asksForVerification) &&
-    !signals.asksForMultiHarness
-  ) {
-    return true;
-  }
-
-  if (
-    result.tier === 'verify' &&
-    result.confidence >= 0.55 &&
-    asksForBoundedHarnessFailureVerification &&
-    !signals.large &&
-    !signals.hasAttachments
-  ) {
-    return true;
-  }
-
-  if (
-    result.tier === 'build' &&
-    result.confidence >= 0.7 &&
-    !signals.large &&
-    !signals.hasAttachments &&
-    !signals.hasErrorLog &&
-    !signals.asksForVerification &&
-    (!signals.asksForArchitecture || referencesExistingPlan) &&
-    !signals.asksForMultiHarness
-  ) {
-    return true;
-  }
-
-  return (
-    phase.hasPlanContext &&
-    !phase.hasBuildContext &&
-    result.tier === 'build' &&
-    result.confidence >= 0.8 &&
-    message.trim().length < 80
-  );
+  // Heuristics are now fallback-only. The Cerebras-backed meta-controller is
+  // the primary routing decision maker. Deterministic fast-path is disabled so
+  // that every request flows through the meta-controller first; the heuristic
+  // classifier is only consulted when the meta-controller is unavailable or
+  // returns an invalid result.
+  return false;
 }
 
 function sanitizeMetaLead(
