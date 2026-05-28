@@ -174,6 +174,12 @@ export class SSHService {
   private remoteBridgeReady = new Map<string, Promise<RemoteBridgeInstall>>();
   private activeTunnels: Set<string> = new Set();
 
+  // MCP sync caches — avoid re-uploading when nothing has changed
+  private mcpAuthSyncCache = new Map<string, { lastSyncedAt: number; localMtime: number }>();
+  private readonly MCP_AUTH_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+  private harnessMcpSyncCache = new Map<string, number>(); // host -> lastSyncedAt
+  private readonly HARNESS_MCP_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
   private getSafeSessionId(sessionId: string): string {
     return sessionId.replace(/[^a-zA-Z0-9_-]/g, '-');
   }
@@ -3721,9 +3727,21 @@ CONFIG_EOF`);
 
     try {
       const localMcpAuth = path.join(os.homedir(), '.mcp-auth');
-      const stats = await fsPromises.stat(localMcpAuth).catch(() => null);
-      if (!stats?.isDirectory()) {
+      const localStats = await fsPromises.stat(localMcpAuth).catch(() => null);
+      if (!localStats?.isDirectory()) {
         console.log('[SSH Service] No local ~/.mcp-auth directory, skipping MCP auth sync');
+        return;
+      }
+
+      // Cache check: skip if we've recently synced and the local dir hasn't changed
+      const cacheKey = `${(client as any).config?.host || (client as any)._host || 'default'}`;
+      const cached = this.mcpAuthSyncCache.get(cacheKey);
+      const localMtime = localStats.mtimeMs;
+
+      if (cached &&
+          Date.now() - cached.lastSyncedAt < this.MCP_AUTH_CACHE_TTL_MS &&
+          cached.localMtime === localMtime) {
+        console.log('[SSH Service] MCP auth tokens already synced (cached), skipping');
         return;
       }
 
@@ -3757,6 +3775,7 @@ CONFIG_EOF`);
       }
 
       console.log('[SSH Service] MCP auth tokens synced to remote');
+      this.mcpAuthSyncCache.set(cacheKey, { lastSyncedAt: Date.now(), localMtime });
     } catch (err) {
       console.warn('[SSH Service] Could not sync MCP auth tokens:', err);
       if (strict) throw err;
@@ -3777,6 +3796,14 @@ ${marker}`);
 
   private async syncHarnessMcpConfigsInternal(client: Client, strict = false, bridgePorts?: Map<string, number>): Promise<void> {
     try {
+      // Cache check: skip if we've recently synced to this host
+      const cacheKey = `${(client as any).config?.host || (client as any)._host || 'default'}`;
+      const lastSynced = this.harnessMcpSyncCache.get(cacheKey);
+      if (lastSynced && Date.now() - lastSynced < this.HARNESS_MCP_CACHE_TTL_MS) {
+        console.log('[SSH Service] Harness MCP configs already synced (cached), skipping');
+        return;
+      }
+
       const { mcpService } = await import('./mcp.service');
       const { servers, serverIds, removeServerIds } = bridgePorts && bridgePorts.size > 0
         ? mcpService.getHarnessMcpSyncDataForSSH(bridgePorts)
@@ -3824,6 +3851,7 @@ ${marker}`);
       await this.writeRemoteTextFile(client, opencodeBuildPath, opencodeJson);
 
       console.log('[SSH Service] Harness MCP configs synced to remote Cursor/Gemini/Codex/OpenCode:', serverIds);
+      this.harnessMcpSyncCache.set(cacheKey, Date.now());
     } catch (err) {
       console.warn('[SSH Service] Could not sync harness MCP configs to remote:', err);
       if (strict) throw err;

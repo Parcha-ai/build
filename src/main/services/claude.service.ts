@@ -3790,11 +3790,10 @@ ${leadContent.slice(0, leadContextLimit)}
       }
 
       if (session.sshConfig) {
-        const syncResult = await sshService.syncMcpConfigsToRemote(sessionId, session.sshConfig);
-        if (!syncResult.success) {
-          yield { type: 'error', error: `Failed to sync MCP config to remote: ${syncResult.error}` };
-          return;
-        }
+        // Fire-and-forget: MCP sync runs in background, never blocks the turn
+        sshService.syncMcpConfigsToRemote(sessionId, session.sshConfig).catch((err) => {
+          console.warn('[Claude Service] Background MCP sync failed (non-blocking):', err);
+        });
       }
 
       // Map thinking mode to effort levels (via maxThinkingTokens)
