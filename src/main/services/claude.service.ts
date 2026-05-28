@@ -3735,6 +3735,20 @@ ${leadContent.slice(0, leadContextLimit)}
     let selectedModel = model;
     let selectionMode: 'auto' | 'manual' | 'default' = model === 'auto' ? 'auto' : model ? 'manual' : 'default';
     let selectionSource: 'request' | 'session' | 'default' = model ? 'request' : 'default';
+
+    // Clear Auto Build's forced plan permission mode when user switches to a
+    // direct model. Without this, plan mode persists and blocks Bash/writes
+    // even after the user switches away from Auto Build.
+    if (model && model !== 'auto') {
+      const storedPlanMode = this.sessionPermissionModes.get(sessionId);
+      if (storedPlanMode === 'plan' && this.prePlanPermissionModes.has(sessionId)) {
+        const restored = this.prePlanPermissionModes.get(sessionId)!;
+        this.sessionPermissionModes.set(sessionId, restored);
+        this.prePlanPermissionModes.delete(sessionId);
+        console.log(`[Claude Service] Cleared Auto Build plan mode, restored to ${restored}`);
+      }
+    }
+
     let autoOrchestrationContext = '';
     let autoOrchestrationPlan: OrchestrationPlan | undefined;
     let autoRoutedTier: TaskTier | undefined;
@@ -4910,8 +4924,9 @@ Begin by creating the task structure now.
           canUseTool: async (toolName: string, input: Record<string, unknown>, _options: any) => {
             console.log(`[Claude Service] canUseTool called for: ${toolName}, mode: ${autoBuildLeadPermissionMode}`);
 
-            // Handle AskUserQuestion tool
-            if (toolName === 'AskUserQuestion' && input.questions) {
+            // Handle AskUserQuestion tool (name may vary across SDK versions)
+            const normalizedToolName = toolName.toLowerCase().replace(/[_-]/g, '');
+            if ((normalizedToolName === 'askuserquestion' || normalizedToolName === 'askquestion') && input.questions) {
               try {
                 const answers = await this.askUserQuestion(sessionId, input.questions as any);
                 return {
@@ -4931,7 +4946,7 @@ Begin by creating the task structure now.
             }
 
             // Handle ExitPlanMode - require user approval before proceeding
-            if (toolName === 'ExitPlanMode') {
+            if (normalizedToolName === 'exitplanmode') {
               try {
                 console.log('[Claude Service] ExitPlanMode called, requesting user approval');
 
