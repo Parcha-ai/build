@@ -52,7 +52,32 @@ const AUTO_BUILD_MODEL_ROWS: Array<{ id: AutoBuildModelKey; label: string; detai
   { id: 'fallback', label: 'Fallback', detail: 'Safe default when a harness is unavailable' },
 ];
 
-function autoBuildConfigFromState(models: AutoBuildModelSettings, costAware: boolean, effort?: AutoBuildEffortSettings) {
+interface CustomCategoryState {
+  id: string;
+  label: string;
+  description: string;
+  model: string;
+  effort: string;
+  keywords: string;
+}
+
+const FIXED_TIER_IDS = ['plan', 'build', 'verify', 'refine', 'fallback'];
+
+function autoBuildConfigFromState(
+  models: AutoBuildModelSettings,
+  costAware: boolean,
+  effort?: AutoBuildEffortSettings,
+  customCats?: CustomCategoryState[],
+) {
+  const categories = (customCats || []).map(c => ({
+    id: c.id,
+    label: c.label,
+    description: c.description,
+    model: c.model,
+    effort: c.effort || undefined,
+    keywords: c.keywords.split(',').map((k: string) => k.trim()).filter(Boolean),
+  }));
+
   return {
     planModel: models.plan,
     buildModel: models.build,
@@ -64,6 +89,7 @@ function autoBuildConfigFromState(models: AutoBuildModelSettings, costAware: boo
     ...(effort?.verify ? { verifyEffort: effort.verify } : {}),
     ...(effort?.refine ? { refineEffort: effort.refine } : {}),
     ...(effort?.fallback ? { fallbackEffort: effort.fallback } : {}),
+    categories,
     costAware,
   };
 }
@@ -206,6 +232,7 @@ export default function SettingsDialog() {
   const [autoBuildModels, setAutoBuildModels] = useState<AutoBuildModelSettings>(AUTO_BUILD_MODEL_DEFAULTS);
   const [autoBuildEffort, setAutoBuildEffort] = useState<AutoBuildEffortSettings>(AUTO_BUILD_EFFORT_DEFAULTS);
   const [autoBuildCostAware, setAutoBuildCostAware] = useState(true);
+  const [customCategories, setCustomCategories] = useState<CustomCategoryState[]>([]);
 
   // QMD status
   const [qmdStatus, setQmdStatus] = useState<{ installed: boolean; bundled: boolean } | null>(null);
@@ -346,6 +373,20 @@ export default function SettingsDialog() {
           if (savedAutoConfig?.refineEffort) savedEffort.refine = savedAutoConfig.refineEffort;
           if (savedAutoConfig?.fallbackEffort) savedEffort.fallback = savedAutoConfig.fallbackEffort;
           setAutoBuildEffort(savedEffort);
+          // Load custom categories
+          if (Array.isArray(savedAutoConfig?.categories)) {
+            const customs = savedAutoConfig.categories
+              .filter((c: any) => c && c.id && !FIXED_TIER_IDS.includes(c.id))
+              .map((c: any) => ({
+                id: c.id,
+                label: c.label || c.id,
+                description: c.description || '',
+                model: c.model || 'claude-sonnet-4-6',
+                effort: c.effort || '',
+                keywords: Array.isArray(c.keywords) ? c.keywords.join(', ') : (c.keywords || ''),
+              }));
+            setCustomCategories(customs);
+          }
           setIsLoading(false);
         })
         .catch((error) => {
@@ -849,6 +890,7 @@ export default function SettingsDialog() {
           harness: getHarnessLabel(m.id),
         });
       });
+    // Ensure saved fixed-tier models appear in the dropdown even if not in availableModels
     Object.values(autoBuildModels)
       .filter(modelId => modelId && modelId !== 'auto')
       .forEach(modelId => {
@@ -860,11 +902,21 @@ export default function SettingsDialog() {
           });
         }
       });
+    // Ensure saved custom-category models also appear in the dropdown
+    customCategories.forEach(cat => {
+      if (cat.model && !allModelsById.has(cat.model)) {
+        allModelsById.set(cat.model, {
+          id: cat.model,
+          name: cat.model,
+          harness: getHarnessLabel(cat.model),
+        });
+      }
+    });
     const allModels = Array.from(allModelsById.values());
 
-    const saveAutoBuildConfig = (models: AutoBuildModelSettings, costAware = autoBuildCostAware, effort = autoBuildEffort) => {
+    const saveAutoBuildConfig = (models: AutoBuildModelSettings, costAware = autoBuildCostAware, effort = autoBuildEffort, customs = customCategories) => {
       autoSaveAppSettings({
-        autoRouterConfig: autoBuildConfigFromState(models, costAware, effort),
+        autoRouterConfig: autoBuildConfigFromState(models, costAware, effort, customs),
       } as any);
     };
 
@@ -880,6 +932,32 @@ export default function SettingsDialog() {
       saveAutoBuildConfig(autoBuildModels, autoBuildCostAware, updated);
     };
 
+    const addCustomCategory = () => {
+      const id = `custom-${Date.now()}`;
+      const updated = [...customCategories, {
+        id,
+        label: 'New Category',
+        description: '',
+        model: 'claude-sonnet-4-6',
+        effort: '',
+        keywords: '',
+      }];
+      setCustomCategories(updated);
+      saveAutoBuildConfig(autoBuildModels, autoBuildCostAware, autoBuildEffort, updated);
+    };
+
+    const updateCustomCategory = (catId: string, field: string, value: string) => {
+      const updated = customCategories.map(c => c.id === catId ? { ...c, [field]: value } : c);
+      setCustomCategories(updated);
+      saveAutoBuildConfig(autoBuildModels, autoBuildCostAware, autoBuildEffort, updated);
+    };
+
+    const removeCustomCategory = (catId: string) => {
+      const updated = customCategories.filter(c => c.id !== catId);
+      setCustomCategories(updated);
+      saveAutoBuildConfig(autoBuildModels, autoBuildCostAware, autoBuildEffort, updated);
+    };
+
     return (
       <div className="space-y-4 p-4 overflow-y-auto max-h-[460px]">
         <div>
@@ -893,7 +971,7 @@ export default function SettingsDialog() {
         <div className="space-y-2">
           <div className="flex items-center justify-between mb-2">
             <label className="text-[10px] font-mono text-claude-text-secondary uppercase tracking-wider">Fixed categories</label>
-            <span className="text-[10px] text-claude-text-secondary">Auto Build delegates only to these category choices</span>
+            <span className="text-[10px] text-claude-text-secondary">Model assignments for the base task tiers</span>
           </div>
 
           {AUTO_BUILD_MODEL_ROWS.map((row) => (
@@ -927,6 +1005,79 @@ export default function SettingsDialog() {
                   <option key={opt.value} value={opt.value}>{opt.label}</option>
                 ))}
               </select>
+            </div>
+          ))}
+        </div>
+
+        {/* Custom categories */}
+        <div className="border-t border-claude-border/30 pt-4 space-y-2">
+          <div className="flex items-center justify-between mb-2">
+            <label className="text-[10px] font-mono text-claude-text-secondary uppercase tracking-wider">Custom categories</label>
+            <button
+              onClick={addCustomCategory}
+              className="text-[10px] text-claude-accent hover:text-claude-accent/80 font-mono"
+            >
+              + Add category
+            </button>
+          </div>
+
+          {customCategories.length === 0 && (
+            <p className="text-[9px] text-claude-text-secondary italic">
+              Add custom categories with keywords to route specific tasks to a preferred harness.
+            </p>
+          )}
+
+          {customCategories.map((cat) => (
+            <div key={cat.id} className="border border-claude-border/30 rounded px-3 py-2 space-y-2">
+              <div className="flex items-center gap-2">
+                <input
+                  value={cat.label}
+                  onChange={(e) => updateCustomCategory(cat.id, 'label', e.target.value)}
+                  className="flex-1 bg-transparent border-b border-claude-border/30 text-xs font-mono text-claude-text focus:outline-none focus:border-claude-accent px-0 py-0.5"
+                  placeholder="Category name"
+                />
+                <button
+                  onClick={() => removeCustomCategory(cat.id)}
+                  className="text-red-400/60 hover:text-red-400 text-[10px] font-mono"
+                  title="Remove category"
+                >
+                  ×
+                </button>
+              </div>
+              <input
+                value={cat.description}
+                onChange={(e) => updateCustomCategory(cat.id, 'description', e.target.value)}
+                className="w-full bg-transparent text-[9px] text-claude-text-secondary focus:outline-none focus:text-claude-text border-b border-transparent focus:border-claude-border/30 px-0 py-0.5"
+                placeholder="Description (shown to routing)"
+              />
+              <div className="grid grid-cols-[1fr_80px] gap-2">
+                <select
+                  value={cat.model}
+                  onChange={(e) => updateCustomCategory(cat.id, 'model', e.target.value)}
+                  className="bg-claude-bg border border-claude-border px-2 py-1 text-[10px] font-mono text-claude-text focus:outline-none focus:border-claude-accent appearance-none cursor-pointer"
+                >
+                  {allModels.map(m => (
+                    <option key={m.id} value={m.id}>
+                      {m.harness ? `${m.name.replace(/ \(Codex\)| \(Cursor\)/, '')} [${m.harness}]` : m.name}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  value={cat.effort}
+                  onChange={(e) => updateCustomCategory(cat.id, 'effort', e.target.value)}
+                  className="bg-claude-bg border border-claude-border px-1.5 py-1 text-[10px] font-mono text-claude-text focus:outline-none focus:border-claude-accent appearance-none cursor-pointer"
+                >
+                  {EFFORT_OPTIONS.map(opt => (
+                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                  ))}
+                </select>
+              </div>
+              <input
+                value={cat.keywords}
+                onChange={(e) => updateCustomCategory(cat.id, 'keywords', e.target.value)}
+                className="w-full bg-transparent text-[9px] text-claude-text-secondary font-mono focus:outline-none focus:text-claude-text border-b border-transparent focus:border-claude-border/30 px-0 py-0.5"
+                placeholder="Keywords (comma-separated, e.g. security, auth, oauth)"
+              />
             </div>
           ))}
         </div>
