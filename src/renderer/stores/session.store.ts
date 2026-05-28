@@ -1624,7 +1624,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       activeUserPrompt: isStreaming
         ? state.activeUserPrompt
         : { ...state.activeUserPrompt, [sessionId]: null },
-      autoRouteDecision: { ...state.autoRouteDecision, [sessionId]: null },
+      // Keep the last routing decision across stream transitions — a new
+      // decision will overwrite it when the next auto-route completes.
       // Clear stream state on BOTH transitions: starting (fresh slate) and
       // ending (content has been finalized into a message by onStreamEnd).
       // Without clearing on end, stale streamEvents linger and flash away

@@ -2047,13 +2047,14 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
             title={modelButtonTitle}
           >
             {currentModel === 'auto' ? (
-              isSending && autoRouteDecision ? (
+              autoRouteDecision ? (
                 <AutoRouteBadge
                   tier={autoRouteDecision.tier}
                   domain={autoRouteDecision.domain}
                   resolvedHarness={actualActiveHarness || autoRouteDecision.resolvedHarness}
                   resolvedModel={actualActiveModel || autoRouteDecision.resolvedModel}
                   resolvedModelLabel={actualActiveModelInfo?.name || autoRouteModelInfo?.name}
+                  compact={!isSending}
                 />
               ) : (
                 <span className="text-[10px] font-mono">
