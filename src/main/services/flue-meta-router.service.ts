@@ -330,6 +330,7 @@ function buildPrompt(request: FlueMetaRouterRequest): string {
     'Goal requests represent a persistent objective: choose the best lead and helper stages to complete it, but still never execute directly.',
     'Switch-cost: prefer one lead until plan, build-check, or failure boundary; use artifact/transcript refs over copied history.',
     'Rules: leadTier=first stage now; requestedTier=raw intent; first trigger is "now" and matches leadTier/leadModel; permissionMode plan/dontAsk forbids build/refine mutation stages.',
+    'When phase.hasPlanContext is true and phase.lastTierUsed is plan, the previous turn produced a plan. Short confirmatory or follow-up messages (approval, "go ahead", "looks good", "do it", or any non-planning request) MUST route to build, not plan. Only re-plan if the user explicitly asks to revise, rethink, or re-plan.',
     'If workflowTier is plan but heuristicTier/requested intent is build for a broad end-to-end migration, lead with plan and schedule build after-plan plus verify after-build when checks are requested.',
     'If the request directly says code/service/routing migration needs sanitization, wiring, persistence, or follow-up checks, lead with build unless it explicitly asks to design/assess risks before edits.',
     'Only choose model ids from candidateModelsByTier. Choose the first candidate for the chosen tier unless the latest request explicitly asks for stronger/deeper reasoning.',
