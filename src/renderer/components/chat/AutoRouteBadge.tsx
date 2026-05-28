@@ -79,7 +79,8 @@ export const AutoRouteBadge: React.FC<AutoRouteBadgeProps> = ({ tier, domain, re
         className={`inline-flex items-center gap-1 px-1.5 py-0.5 text-[9px] font-mono uppercase tracking-wider ${colors.bg} ${colors.text} border ${colors.border} rounded`}
         title={title}
       >
-        {agentLabel || scopeLabel}
+        <span className="font-bold">{scopeLabel}</span>
+        {agentLabel && <span className="opacity-70">→ {agentLabel}</span>}
       </span>
     );
   }
@@ -89,8 +90,8 @@ export const AutoRouteBadge: React.FC<AutoRouteBadgeProps> = ({ tier, domain, re
       className={`inline-flex items-center gap-1.5 px-2 py-0.5 text-[10px] font-mono ${colors.bg} ${colors.text} border ${colors.border} rounded`}
       title={title}
     >
-      <span className="uppercase font-bold tracking-wider">{agentLabel || tier}</span>
-      {!agentLabel && <span className="opacity-70 uppercase">{scopeLabel}</span>}
+      <span className="uppercase font-bold tracking-wider">{scopeLabel}</span>
+      {agentLabel && <span className="opacity-70">→ {agentLabel}</span>}
     </span>
   );
 };
