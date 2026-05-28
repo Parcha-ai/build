@@ -358,6 +358,33 @@ const electronAPI = {
       ipcRenderer.on(IPC_CHANNELS.CLAUDE_RC_STOPPED, handler);
       return () => ipcRenderer.removeListener(IPC_CHANNELS.CLAUDE_RC_STOPPED, handler);
     },
+    // Queue event listeners (main process -> renderer)
+    onQueueSendNext: (callback: (sessionId: string, msg: any) => void) => {
+      const handler = (_: IpcRendererEvent, sessionId: string, msg: any) => callback(sessionId, msg);
+      ipcRenderer.on('queue:send-next', handler);
+      return () => ipcRenderer.removeListener('queue:send-next', handler);
+    },
+    onQueueStateChanged: (callback: (sessionId: string, state: any) => void) => {
+      const handler = (_: IpcRendererEvent, sessionId: string, state: any) => callback(sessionId, state);
+      ipcRenderer.on('queue:state-changed', handler);
+      return () => ipcRenderer.removeListener('queue:state-changed', handler);
+    },
+  },
+
+  // Message Queue (main-process queue management)
+  queue: {
+    enqueue: (sessionId: string, text: string, attachments?: unknown[], opts?: { model?: string; suppressUserMessage?: boolean }) =>
+      ipcRenderer.invoke('queue:enqueue', sessionId, text, attachments, opts),
+    remove: (sessionId: string, messageId: string) =>
+      ipcRenderer.invoke('queue:remove', sessionId, messageId),
+    edit: (sessionId: string, messageId: string, newText: string) =>
+      ipcRenderer.invoke('queue:edit', sessionId, messageId, newText),
+    moveToFront: (sessionId: string, messageId: string) =>
+      ipcRenderer.invoke('queue:moveToFront', sessionId, messageId),
+    clear: (sessionId: string) =>
+      ipcRenderer.invoke('queue:clear', sessionId),
+    getState: (sessionId: string) =>
+      ipcRenderer.invoke('queue:getState', sessionId),
   },
 
   // Browser Preview

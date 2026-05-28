@@ -2038,6 +2038,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }));
       console.log(`[SessionStore] Message queued${suppressUserMessage ? '' : ' + shown in chat'}. Queue length:`, (state.messageQueue[sessionId] || []).length + 1);
       console.log('[SessionStore] Queued message preview:', message.slice(0, 50));
+
+      // Also enqueue in main process (source of truth for drain timing)
+      const model = state.selectedModel[sessionId] || 'auto';
+      window.electronAPI.queue?.enqueue(sessionId, message, attachments, { model, suppressUserMessage });
+
       return;
     }
 
@@ -2783,59 +2788,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         });
       }
 
-      // Process next queued message if any
-      const queue = get().messageQueue[sessionId] || [];
-      if (queue.length > 0) {
-        if (isQueueDrainSuppressed(sessionId)) {
-          console.log(`[SessionStore] Stream ended after cancel; clearing ${queue.length} queued message(s)`);
-          set((state) => ({
-            isProcessingQueue: { ...state.isProcessingQueue, [sessionId]: false },
-            messageQueue: {
-              ...state.messageQueue,
-              [sessionId]: [],
-            },
-          }));
-          return;
-        }
-
-        console.log(`[SessionStore] Stream ended, processing next queued message (${queue.length} in queue)`);
-        const nextMsg = queue[0];
-
-        set((state) => ({
-          isProcessingQueue: { ...state.isProcessingQueue, [sessionId]: true },
-          messageQueue: {
-            ...state.messageQueue,
-            [sessionId]: state.messageQueue[sessionId].slice(1),
-          },
-        }));
-
-        // Send the next message. Pass the queued message's ID so sendMessage
-        // knows the user bubble is already on screen (added when it was queued)
-        // and skips re-adding it — otherwise each dequeued message duplicates
-        // in the chat.
-        setTimeout(() => {
-          const latestState = get();
-          if (latestState.isStreaming[sessionId]) {
-            set((state) => ({
-              isProcessingQueue: { ...state.isProcessingQueue, [sessionId]: false },
-              messageQueue: {
-                ...state.messageQueue,
-                [sessionId]: [nextMsg, ...(state.messageQueue[sessionId] || [])],
-              },
-            }));
-            return;
-          }
-
-          set((state) => ({
-            isProcessingQueue: { ...state.isProcessingQueue, [sessionId]: false },
-          }));
-          latestState.sendMessage(sessionId, nextMsg.message, nextMsg.attachments, {
-            existingMessageId: nextMsg.id,
-            suppressUserMessage: nextMsg.suppressUserMessage,
-          });
-        }, 100);
-        return;
-      }
+      // Queue drain is now handled by the main-process MessageQueueService.
+      // It will emit 'queue:send-next' when the next message should be sent.
+      // Local queue state is synced via 'queue:state-changed' events.
 
       const activeGoal = get().activeMetaGoals[sessionId];
       if (activeGoal?.status === 'active') {
@@ -2977,39 +2932,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }
       addMessage(sessionId, errorMessage);
 
-      // On error, try to send the next queued message instead of clearing.
-      // The error was for the PREVIOUS query — queued messages are fresh user
-      // input that should still be sent. Only clear if the error is fatal.
-      const queue = currentState.messageQueue[sessionId] || [];
-      if (queue.length > 0) {
-        if (isQueueDrainSuppressed(sessionId)) {
-          console.log(`[SessionStore] Stream errored after cancel; clearing ${queue.length} queued message(s)`);
-          set((state) => ({
-            isProcessingQueue: { ...state.isProcessingQueue, [sessionId]: false },
-            messageQueue: {
-              ...state.messageQueue,
-              [sessionId]: [],
-            },
-          }));
-          return;
-        }
-
-        console.log(`[SessionStore] Stream error — retrying next queued message (${queue.length} in queue)`);
-        const nextMsg = queue[0];
-        set((state) => ({
-          messageQueue: {
-            ...state.messageQueue,
-            [sessionId]: state.messageQueue[sessionId].slice(1),
-          },
-        }));
-        setTimeout(() => {
-          const { sendMessage } = get();
-          sendMessage(sessionId, nextMsg.message, nextMsg.attachments, {
-            existingMessageId: nextMsg.id,
-            suppressUserMessage: nextMsg.suppressUserMessage,
-          });
-        }, 500);
-      }
+      // Queue drain on error is now handled by the main-process MessageQueueService.
+      // The onStreamEnd call in claude.ipc.ts finally block triggers drain timing.
     });
 
     // Subscribe to permission requests
@@ -3112,6 +3036,44 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       sendMessage(data.sessionId, data.prompt);
     }) || noop;
 
+    // Listen for queue:send-next from the main-process MessageQueueService.
+    // When the main process decides it's time to send the next queued message,
+    // remove it from the local queue display and send through the normal flow.
+    const unsubQueueSendNext = window.electronAPI.claude.onQueueSendNext((sessionId: string, msg: any) => {
+      console.log(`[SessionStore] queue:send-next received for ${sessionId}, message: "${(msg.text || '').slice(0, 50)}..."`);
+
+      // Remove from local queue display
+      set((state) => ({
+        messageQueue: {
+          ...state.messageQueue,
+          [sessionId]: (state.messageQueue[sessionId] || []).filter((m: any) => m.id !== msg.id),
+        },
+      }));
+
+      // Send the message through the normal flow
+      get().sendMessage(sessionId, msg.text, msg.attachments, {
+        existingMessageId: msg.id,
+        suppressUserMessage: msg.suppressUserMessage,
+      });
+    });
+
+    // Listen for queue:state-changed to keep the renderer in sync with the
+    // main-process queue (source of truth).
+    const unsubQueueStateChanged = window.electronAPI.claude.onQueueStateChanged((sessionId: string, state: any) => {
+      set((s) => ({
+        messageQueue: {
+          ...s.messageQueue,
+          [sessionId]: (state.messages || []).map((m: any) => ({
+            id: m.id,
+            message: m.text,
+            attachments: m.attachments,
+            timestamp: m.timestamp,
+            suppressUserMessage: m.suppressUserMessage,
+          })),
+        },
+      }));
+    });
+
     return () => {
       unsubChunk();
       unsubThinking();
@@ -3129,6 +3091,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       unsubPermissionModeChanged();
       unsubConnectionLost();
       unsubWakeup();
+      unsubQueueSendNext();
+      unsubQueueStateChanged();
     };
   },
 
@@ -3375,6 +3339,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // Cancel current streaming
     window.electronAPI.claude.cancel(sessionId);
 
+    // Clear the main-process queue
+    window.electronAPI.queue?.clear(sessionId);
+
     // Save partial content as an interrupted message before clearing
     const partialContent = state.currentStreamContent[sessionId] || '';
     const partialToolCalls = state.currentToolCalls[sessionId] || [];
@@ -3479,6 +3446,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       await new Promise((resolve) => setTimeout(resolve, 300));
       console.log(`[interruptAndSend] Drain complete, sending new message`);
     }
+
+    // Clear the main-process queue before sending the new message
+    window.electronAPI.queue?.clear(sessionId);
 
     // Send new message (use fresh state, not the stale closure from before cancel)
     get().sendMessage(sessionId, message, attachments);

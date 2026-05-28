@@ -81,6 +81,7 @@ import { registerPluginHandlers } from './ipc/plugin.ipc';
 import { registerCodexHandlers } from './ipc/codex.ipc';
 import { registerOpenClawHandlers } from './ipc/openclaw.ipc';
 import { registerAnalyticsHandlers } from './ipc/analytics.ipc';
+import { registerQueueHandlers } from './ipc/queue.ipc';
 import { getGStackModes, isGStackInstalled, installGStack, upgradeGStack } from './services/gstack.service';
 import { mcpService } from './services/mcp.service';
 import { IPC_CHANNELS } from '../shared/constants/channels';
@@ -605,6 +606,7 @@ function registerIPCHandlers(): void {
   registerCodexHandlers(ipcMain);
   registerOpenClawHandlers(ipcMain);
   registerAnalyticsHandlers(ipcMain);
+  registerQueueHandlers(ipcMain);
 
   // Wakeup scheduler — fires timers for ScheduleWakeup/CronCreate and sends
   // the prompt back to the renderer so it flows through the normal sendMessage path.

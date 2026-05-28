@@ -17,6 +17,7 @@ import { buildCompletedStreamMessage } from '../../shared/utils/stream-finalizat
 import { transcriptService, type TranscriptEntry } from '../services/transcript.service';
 import { sessionService } from './session.ipc';
 import { DEFAULT_AUDIO_SETTINGS } from '../../shared/types/audio';
+import { messageQueueService } from '../services/message-queue.service';
 
 // Settings store for Ralph Loop check
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -260,6 +261,9 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
       };
 
         try {
+          // Notify queue service that streaming has started
+          messageQueueService.onStreamStart(sessionId, harnessFromModel(model));
+
           // Stream the response (Stop hook handles Ralph Loop iteration)
           let eventCount = 0;
           let lastEventType = '';
@@ -545,6 +549,9 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
               message: finalMessage,
             });
           }
+
+          // Notify queue service that streaming has ended
+          messageQueueService.onStreamEnd(sessionId);
         }
 
     }
@@ -612,6 +619,9 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
       };
 
       try {
+        // Notify queue service that streaming has started (resume)
+        messageQueueService.onStreamStart(sessionId, harnessFromModel(model));
+
         console.log('[Claude IPC] resumeRemoteTurn received for:', sessionId, 'model:', model);
         for await (const streamEvent of claudeService.resumeRemoteTurn(sessionId, model)) {
           latestResolvedModel = streamEvent.resolvedModel || latestResolvedModel;
@@ -738,6 +748,9 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
             message: finalMessage,
           });
         }
+
+        // Notify queue service that streaming has ended (resume)
+        messageQueueService.onStreamEnd(sessionId);
       }
     }
   );
@@ -923,6 +936,20 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
       console.error('[Claude IPC] rewindExecute error:', error);
       return { canRewind: false, filesChanged: [], insertions: 0, deletions: 0, error: error.message || 'Unknown error' };
     }
+  });
+
+  // Handle drain-ready events from the message queue service.
+  // When the queue decides it's time to send the next message, dequeue it
+  // and forward to the renderer for sending through the normal flow.
+  messageQueueService.on('drain-ready', (sessionId: string) => {
+    const next = messageQueueService.dequeue(sessionId);
+    if (!next) return;
+
+    const mainWindow = getMainWindow();
+    if (!mainWindow) return;
+
+    // Tell the renderer to send this message through the normal flow
+    mainWindow.webContents.send('queue:send-next', sessionId, next);
   });
 }
 
