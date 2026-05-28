@@ -23,6 +23,11 @@ export interface CodexStreamEvent {
     status: 'running' | 'completed' | 'failed';
     result?: string;
   };
+  usage?: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens: number;
+  };
   error?: string;
 }
 
@@ -101,6 +106,11 @@ interface CodexJsonEvent {
     arguments?: Record<string, unknown>;
     result?: unknown;
     error?: { message: string };
+  };
+  usage?: {
+    input_tokens: number;
+    cached_input_tokens: number;
+    output_tokens: number;
   };
   error?: { message: string };
   message?: string;
@@ -292,7 +302,14 @@ class CodexServiceImpl {
       }
 
       case 'turn.completed':
-        return { type: 'complete' };
+        return {
+          type: 'complete',
+          usage: event.usage ? {
+            inputTokens: event.usage.input_tokens,
+            outputTokens: event.usage.output_tokens,
+            cacheReadTokens: event.usage.cached_input_tokens,
+          } : undefined,
+        };
 
       case 'turn.failed':
         return { type: 'error', error: event.error?.message || 'Turn failed' };
@@ -707,6 +724,7 @@ class CodexServiceImpl {
     error?: string;
     systemInfo?: { tools: string[]; model: string };
     message?: ChatMessage;
+    usage?: { inputTokens: number; outputTokens: number; cacheReadTokens?: number };
   }> {
     yield {
       type: 'system',
@@ -754,6 +772,7 @@ class CodexServiceImpl {
               timestamp: new Date(),
               harness: 'codex',
             } : undefined,
+            usage: event.usage,
           };
           break;
         case 'error':
