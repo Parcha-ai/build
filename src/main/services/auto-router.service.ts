@@ -938,6 +938,12 @@ function getConfig(): AutoRouterConfig {
     if (typeof saved.verifyModel === 'string') config.verifyModel = saved.verifyModel;
     if (typeof saved.refineModel === 'string') config.refineModel = saved.refineModel;
     if (typeof saved.fallbackModel === 'string') config.fallbackModel = saved.fallbackModel;
+
+    if (typeof saved.planEffort === 'string') config.planEffort = saved.planEffort;
+    if (typeof saved.buildEffort === 'string') config.buildEffort = saved.buildEffort;
+    if (typeof saved.verifyEffort === 'string') config.verifyEffort = saved.verifyEffort;
+    if (typeof saved.refineEffort === 'string') config.refineEffort = saved.refineEffort;
+    if (typeof saved.fallbackEffort === 'string') config.fallbackEffort = saved.fallbackEffort;
   }
 
   return config;
@@ -949,6 +955,16 @@ function resolveModelForTier(tier: TaskTier, config: AutoRouterConfig): string {
     case 'build': return config.buildModel;
     case 'verify': return config.verifyModel;
     case 'refine': return config.refineModel;
+  }
+}
+
+function resolveEffortForTier(tier: TaskTier, config: AutoRouterConfig): string | undefined {
+  switch (tier) {
+    case 'plan': return config.planEffort;
+    case 'build': return config.buildEffort;
+    case 'verify': return config.verifyEffort;
+    case 'refine': return config.refineEffort;
+    default: return config.fallbackEffort;
   }
 }
 
@@ -1025,7 +1041,7 @@ function researchPriorModelCandidates(
   signals: TaskSignals,
 ): string[] {
   const candidates: string[] = [];
-  const addFrontierClaude = () => candidates.push('claude-opus-4-7', 'claude-opus-4-6');
+  const addFrontierClaude = () => candidates.push('claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6');
 
   if (signals.asksForCapabilityEscalation) {
     addFrontierClaude();
@@ -1041,7 +1057,7 @@ function researchPriorModelCandidates(
     case 'build':
       candidates.push(config.buildModel, 'codex:gpt-5.5');
       if (signals.large || signals.asksForArchitecture || signals.asksForMultiHarness) {
-        candidates.push('claude-opus-4-7');
+        candidates.push('claude-opus-4-8', 'claude-opus-4-7');
       }
       break;
     case 'verify':
@@ -1164,7 +1180,7 @@ function chooseModelForTier(
   const candidates = candidateModelsForTier(tier, config, signals, options);
   const priorCandidates = researchPriorModelCandidates(tier, config, signals);
   if (signals.asksForCapabilityEscalation) {
-    candidates.unshift('claude-opus-4-7', 'claude-opus-4-6', config.planModel, config.fallbackModel);
+    candidates.unshift('claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6', config.planModel, config.fallbackModel);
   }
   if (signals.asksForMultiHarness && signals.large && tier !== 'refine') {
     candidates.unshift(...configuredModelsForTier(tier, config).filter((model) => harnessFromModel(model) === 'claude'));
@@ -1288,6 +1304,7 @@ function buildOrchestrationPlan(
       tier: stageTier,
       harness: harnessFromModel(model),
       model,
+      effort: resolveEffortForTier(stageTier, config),
       fallbackModels: fallbackModels.length > 0 ? fallbackModels : undefined,
       purpose,
       trigger,
@@ -1597,6 +1614,7 @@ function buildOrchestrationPlanFromMeta(
     tier: meta.leadTier,
     harness: lead.harness,
     model: lead.model,
+    effort: resolveEffortForTier(meta.leadTier, config),
     purpose: `Lead ${meta.leadTier} work`,
     trigger: 'now',
     required: true,
@@ -1623,6 +1641,7 @@ function buildOrchestrationPlanFromMeta(
       tier: rawStage.tier,
       harness,
       model,
+      effort: resolveEffortForTier(rawStage.tier, config),
       fallbackModels: fallbackModels.length > 0 ? fallbackModels : undefined,
       purpose: redactMetaControllerTerms(rawStage.purpose || `${rawStage.tier} follow-up`),
       trigger,
@@ -2105,6 +2124,7 @@ class AutoRouterService {
       domain: signals.domain,
       resolvedModel,
       resolvedHarness: lead.harness,
+      resolvedEffort: resolveEffortForTier(result.tier, config),
       confidence: result.confidence,
       reason: `${result.reason}${requestedResult.tier !== result.tier ? `; requested ${requestedResult.tier} continues through helper stages when available` : ''}; ${lead.reason}${cooldownSummary ? `; temporarily avoiding ${cooldownSummary}` : ''}`,
       method,

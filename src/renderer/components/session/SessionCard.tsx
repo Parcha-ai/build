@@ -285,7 +285,7 @@ export default function SessionCard({ session, isActive, onClick, isFork = false
                 className={`text-xs font-bold truncate ${isActive ? 'text-claude-text' : 'text-claude-text-secondary'} cursor-text`}
                 onDoubleClick={handleDoubleClick}
               >
-                {session.forkName || session.name}
+                {session.aiGeneratedName || session.forkName || session.name}
               </h4>
               {/* Activity indicator: green pulse = active/streaming, amber = waiting for input */}
               {activity === 'active' && (

@@ -466,7 +466,8 @@ export class ClaudeService {
     console.log('[Claude Service] Using default Anthropic model list');
     const models: Array<{ id: string; name: string; description: string }> = [
       { id: 'auto', name: 'Auto Build', description: 'Harness orchestration — picks the lead model, helper handoffs, and shared context per task' },
-      { id: 'claude-opus-4-7', name: 'Opus 4.7', description: 'Latest and most capable model - best for complex tasks' },
+      { id: 'claude-opus-4-8', name: 'Opus 4.8', description: 'Latest and most capable model - best for complex tasks' },
+      { id: 'claude-opus-4-7', name: 'Opus 4.7', description: 'Highly capable model' },
       { id: 'claude-opus-4-6', name: 'Opus 4.6', description: 'Highly capable model' },
       { id: 'claude-opus-4-5-20251101', name: 'Opus 4.5', description: 'Previous generation Opus' },
       { id: 'claude-sonnet-4-6', name: 'Sonnet 4.6', description: 'Latest Sonnet - excellent balance of speed and capability' },
@@ -3879,6 +3880,9 @@ ${leadContent.slice(0, leadContextLimit)}
               this.prePlanPermissionModes.set(sessionId, sdkPermissionMode === 'dontAsk' ? 'acceptEdits' : sdkPermissionMode);
             }
           }
+          if (routingDecision.resolvedEffort) {
+            thinkingMode = routingDecision.resolvedEffort;
+          }
           console.log(`[Claude Service] Auto Build resolved: ${routingDecision.tier.toUpperCase()} → ${selectedModel}`);
 
           // Emit routing decision to renderer for UI display
@@ -3897,6 +3901,28 @@ ${leadContent.slice(0, leadContextLimit)}
           // Enable Codex goals for routes that delegate native goal tracking to Codex.
           if (routingDecision.enableGoals && routedModel.startsWith('codex:')) {
             this.ensureCodexGoalsEnabled('Auto Build route');
+          }
+
+          // Auto-generate session name from task when in Auto Build mode
+          if (userMessage && userMessage.length > 10) {
+            try {
+              const currentSession = this.sessionStore.get(`sessions.${sessionId}`) as Session | undefined;
+              if (currentSession && !currentSession.aiGeneratedName) {
+                let tabName = userMessage
+                  .replace(/^(I want to|can you|please|could you|I need to|I need|let's|we need to|we should|I'd like to|I have a new task[^-]*-)\s*/i, '')
+                  .trim();
+                if (tabName.length > 60) {
+                  tabName = tabName.substring(0, 57).replace(/\s+\S*$/, '') + '…';
+                }
+                tabName = tabName.charAt(0).toUpperCase() + tabName.slice(1);
+                if (tabName.length > 5) {
+                  const updatedSession = { ...currentSession, aiGeneratedName: tabName };
+                  this.sessionStore.set(`sessions.${sessionId}`, updatedSession);
+                }
+              }
+            } catch (e) {
+              console.warn('[Claude Service] Could not auto-generate tab name:', e);
+            }
           }
         } catch (e) {
           console.warn('[Claude Service] Auto Build router failed, falling back to Sonnet:', e);
@@ -5875,7 +5901,7 @@ Begin by creating the task structure now.
                 + (successResult.usage.cache_read_input_tokens || 0);
               const outputTokens = successResult.usage.output_tokens || 0;
               const currentModel = successResult.model || selectedModel || 'claude-opus-4-6';
-              const hasLargeContext = currentModel.includes('opus-4-6') || currentModel.includes('sonnet-4-6') || currentModel.includes('sonnet-4-5');
+              const hasLargeContext = currentModel.includes('opus-4-8') || currentModel.includes('opus-4-7') || currentModel.includes('opus-4-6') || currentModel.includes('sonnet-4-6') || currentModel.includes('sonnet-4-5');
               const contextWindowSize = hasLargeContext ? 1000000 : 200000;
               const percentage = Math.round((inputTokens / contextWindowSize) * 100);
 
@@ -6512,7 +6538,7 @@ Begin by creating the task structure now.
                 + (resultMsg.usage.cache_read_input_tokens || 0);
               const outputTokens = resultMsg.usage.output_tokens || 0;
               const currentModel = resultMsg.model || selectedModel || 'claude-sonnet-4-6';
-              const hasLargeContext = currentModel.includes('opus-4-6') || currentModel.includes('sonnet-4-6') || currentModel.includes('sonnet-4-5');
+              const hasLargeContext = currentModel.includes('opus-4-8') || currentModel.includes('opus-4-7') || currentModel.includes('opus-4-6') || currentModel.includes('sonnet-4-6') || currentModel.includes('sonnet-4-5');
               const contextWindowSize = hasLargeContext ? 1000000 : 200000;
               const percentage = Math.round((inputTokens / contextWindowSize) * 100);
               const cacheReadTokens = resultMsg.usage.cache_read_input_tokens || 0;

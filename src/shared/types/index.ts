@@ -121,6 +121,7 @@ export interface OrchestrationStage {
   tier: TaskTier;
   harness: Harness;
   model: string;
+  effort?: string;
   fallbackModels?: string[];
   purpose: string;
   required: boolean;
@@ -156,6 +157,7 @@ export interface RoutingDecision {
   domain?: TaskDomain;
   resolvedModel: string;
   resolvedHarness?: Harness;
+  resolvedEffort?: string;
   confidence: number;
   reason: string;
   method: 'heuristic' | 'controller';
@@ -181,6 +183,11 @@ export interface AutoRouterConfig {
   verifyModel: string;
   refineModel: string;
   fallbackModel: string;
+  planEffort?: string;
+  buildEffort?: string;
+  verifyEffort?: string;
+  refineEffort?: string;
+  fallbackEffort?: string;
   categories?: AutoRouterCategoryConfig[];
   costAware: boolean;
   costThresholdPercent: number;

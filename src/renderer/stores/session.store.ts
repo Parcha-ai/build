@@ -406,6 +406,7 @@ const PREFERRED_CLAUDE_FALLBACK_MODELS = [
   'claude-sonnet-4-5-20250929',
   'claude-sonnet-4-20250514',
   'claude-haiku-4-5-20251001',
+  'claude-opus-4-8',
   'claude-opus-4-7',
   'claude-opus-4-6',
 ];

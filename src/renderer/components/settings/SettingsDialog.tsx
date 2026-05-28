@@ -17,6 +17,25 @@ type AutoBuildModelKey = 'plan' | 'build' | 'verify' | 'refine' | 'fallback';
 
 type AutoBuildModelSettings = Record<AutoBuildModelKey, string>;
 
+type AutoBuildEffortSettings = Record<AutoBuildModelKey, string>;
+
+const AUTO_BUILD_EFFORT_DEFAULTS: AutoBuildEffortSettings = {
+  plan: '',
+  build: '',
+  verify: '',
+  refine: '',
+  fallback: '',
+};
+
+const EFFORT_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: '', label: 'Default' },
+  { value: 'low', label: 'Low' },
+  { value: 'medium', label: 'Medium' },
+  { value: 'high', label: 'High' },
+  { value: 'xhigh', label: 'X-High' },
+  { value: 'max', label: 'Max' },
+];
+
 const AUTO_BUILD_MODEL_DEFAULTS: AutoBuildModelSettings = {
   plan: 'claude-sonnet-4-6',
   build: 'codex:gpt-5.5',
@@ -33,13 +52,18 @@ const AUTO_BUILD_MODEL_ROWS: Array<{ id: AutoBuildModelKey; label: string; detai
   { id: 'fallback', label: 'Fallback', detail: 'Safe default when a harness is unavailable' },
 ];
 
-function autoBuildConfigFromState(models: AutoBuildModelSettings, costAware: boolean) {
+function autoBuildConfigFromState(models: AutoBuildModelSettings, costAware: boolean, effort?: AutoBuildEffortSettings) {
   return {
     planModel: models.plan,
     buildModel: models.build,
     verifyModel: models.verify,
     refineModel: models.refine,
     fallbackModel: models.fallback,
+    ...(effort?.plan ? { planEffort: effort.plan } : {}),
+    ...(effort?.build ? { buildEffort: effort.build } : {}),
+    ...(effort?.verify ? { verifyEffort: effort.verify } : {}),
+    ...(effort?.refine ? { refineEffort: effort.refine } : {}),
+    ...(effort?.fallback ? { fallbackEffort: effort.fallback } : {}),
     costAware,
   };
 }
@@ -180,6 +204,7 @@ export default function SettingsDialog() {
   // Auto Build fixed model routing tiers
   const availableModels = useSessionStore((s) => s.availableModels || []);
   const [autoBuildModels, setAutoBuildModels] = useState<AutoBuildModelSettings>(AUTO_BUILD_MODEL_DEFAULTS);
+  const [autoBuildEffort, setAutoBuildEffort] = useState<AutoBuildEffortSettings>(AUTO_BUILD_EFFORT_DEFAULTS);
   const [autoBuildCostAware, setAutoBuildCostAware] = useState(true);
 
   // QMD status
@@ -313,6 +338,14 @@ export default function SettingsDialog() {
           if (savedAutoConfig?.costAware !== undefined) {
             setAutoBuildCostAware(savedAutoConfig.costAware);
           }
+          // Load effort settings
+          const savedEffort: AutoBuildEffortSettings = { ...AUTO_BUILD_EFFORT_DEFAULTS };
+          if (savedAutoConfig?.planEffort) savedEffort.plan = savedAutoConfig.planEffort;
+          if (savedAutoConfig?.buildEffort) savedEffort.build = savedAutoConfig.buildEffort;
+          if (savedAutoConfig?.verifyEffort) savedEffort.verify = savedAutoConfig.verifyEffort;
+          if (savedAutoConfig?.refineEffort) savedEffort.refine = savedAutoConfig.refineEffort;
+          if (savedAutoConfig?.fallbackEffort) savedEffort.fallback = savedAutoConfig.fallbackEffort;
+          setAutoBuildEffort(savedEffort);
           setIsLoading(false);
         })
         .catch((error) => {
@@ -829,9 +862,9 @@ export default function SettingsDialog() {
       });
     const allModels = Array.from(allModelsById.values());
 
-    const saveAutoBuildConfig = (models: AutoBuildModelSettings, costAware = autoBuildCostAware) => {
+    const saveAutoBuildConfig = (models: AutoBuildModelSettings, costAware = autoBuildCostAware, effort = autoBuildEffort) => {
       autoSaveAppSettings({
-        autoRouterConfig: autoBuildConfigFromState(models, costAware),
+        autoRouterConfig: autoBuildConfigFromState(models, costAware, effort),
       } as any);
     };
 
@@ -839,6 +872,12 @@ export default function SettingsDialog() {
       const updated = { ...autoBuildModels, [id]: model };
       setAutoBuildModels(updated);
       saveAutoBuildConfig(updated);
+    };
+
+    const updateTierEffort = (id: AutoBuildModelKey, effort: string) => {
+      const updated = { ...autoBuildEffort, [id]: effort };
+      setAutoBuildEffort(updated);
+      saveAutoBuildConfig(autoBuildModels, autoBuildCostAware, updated);
     };
 
     return (
@@ -858,7 +897,7 @@ export default function SettingsDialog() {
           </div>
 
           {AUTO_BUILD_MODEL_ROWS.map((row) => (
-            <div key={row.id} className="grid grid-cols-[130px_14px_1fr] items-center gap-2">
+            <div key={row.id} className="grid grid-cols-[130px_14px_1fr_80px] items-center gap-2">
               <div>
                 <div className="text-xs font-mono text-claude-text">{row.label}</div>
                 <div className="text-[9px] text-claude-text-secondary truncate">{row.detail}</div>
@@ -875,6 +914,17 @@ export default function SettingsDialog() {
                   <option key={m.id} value={m.id}>
                     {m.harness ? `${m.name.replace(/ \(Codex\)| \(Cursor\)/, '')} [${m.harness}]` : m.name}
                   </option>
+                ))}
+              </select>
+
+              <select
+                value={autoBuildEffort[row.id]}
+                onChange={(e) => updateTierEffort(row.id, e.target.value)}
+                className="bg-claude-bg border border-claude-border px-1.5 py-1.5 text-[10px] font-mono text-claude-text focus:outline-none focus:border-claude-accent appearance-none cursor-pointer"
+                title="Effort level for this category"
+              >
+                {EFFORT_OPTIONS.map(opt => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
                 ))}
               </select>
             </div>
