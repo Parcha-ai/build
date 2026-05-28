@@ -4299,6 +4299,17 @@ ${leadContent.slice(0, leadContextLimit)}
         }
       }
 
+      // When resuming the same Claude harness in Auto Build, skip the
+      // orchestration handoff for the lead stage — the model already has
+      // full context and will continue naturally. Re-injecting tier-scoped
+      // instructions causes it to redo completed work. Preserve the
+      // context for delegate stages (Codex/Cursor after-plan handoffs).
+      const delegateOrchestrationContext = autoOrchestrationContext;
+      if (effectiveSdkSessionId && model === 'auto' && autoOrchestrationContext) {
+        console.log('[Claude Service] Same Claude harness resuming — clearing lead orchestration context');
+        autoOrchestrationContext = '';
+      }
+
       // Build cross-harness context so Claude sees messages from Cursor/Codex turns
       let supplementalConversationContext = '';
       try {
@@ -6050,7 +6061,7 @@ Begin by creating the task structure now.
         fullContent,
         projectPathForStages,
         normalizedSupplementalMessages,
-        autoOrchestrationContext,
+        delegateOrchestrationContext,
         sdkPermissionMode,
         secureEnvContext,
         abortController.signal,
