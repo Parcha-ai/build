@@ -2197,11 +2197,24 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           // when content is empty.
           const existing = state.messages[sessionId] || [];
           if (existing.length > 0 && mergedMessages.length > 0) {
+            // Always preserve non-Claude harness messages from memory —
+            // they're never in the Claude transcript on disk, so the
+            // dedup check must not drop them.
+            const nonClaudeInMemory = existing.filter((message) =>
+              message.harness && message.harness !== 'claude'
+            );
             const extraInMemory = existing.filter((message) => (
               !mergedMessages.some((loadedMessage) => isCloseReloadDuplicate(loadedMessage, message))
             ));
-            const finalMessages = extraInMemory.length > 0
-              ? mergeTimelineMessages(mergedMessages, extraInMemory)
+            // Combine: always include non-Claude + any other non-duplicate in-memory messages
+            const allPreserved = [...extraInMemory];
+            for (const ncMsg of nonClaudeInMemory) {
+              if (!allPreserved.some((m) => m.id === ncMsg.id)) {
+                allPreserved.push(ncMsg);
+              }
+            }
+            const finalMessages = allPreserved.length > 0
+              ? mergeTimelineMessages(mergedMessages, allPreserved)
               : mergedMessages;
 
             return {
