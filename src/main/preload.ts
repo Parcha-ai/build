@@ -182,6 +182,8 @@ const electronAPI = {
       ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_RESUME_REMOTE_TURN, sessionId, model),
     getMessages: (sessionId: string, limit?: number): Promise<ChatMessage[]> =>
       ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_GET_MESSAGES, sessionId, limit),
+    hasBuildTranscript: (sessionId: string): Promise<boolean> =>
+      ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_HAS_BUILD_TRANSCRIPT, sessionId),
     getModels: (): Promise<Array<{ id: string; name: string; description: string }>> =>
       ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_GET_MODELS),
     cancel: (sessionId: string): Promise<void> =>
@@ -303,7 +305,7 @@ const electronAPI = {
     respondToPlanApproval: (response: { requestId: string; approved: boolean }): Promise<void> =>
       ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_PLAN_APPROVAL_RESPONSE, response),
     // Auto Build routing decision listener
-    onAutoRouteDecision: (callback: (data: { sessionId: string; decision: { tier: string; domain?: string; resolvedModel: string; resolvedHarness?: string; confidence: number; reason: string; method: string; enableGoals?: boolean; goal?: { objective: string; source: 'slash-command' | 'ralph-loop' }; orchestration?: { mode: string; leadHarness: string; leadModel: string; stages: Array<{ tier: string; harness: string; model: string; purpose: string; fallbackModels?: string[]; required?: boolean; trigger?: string }> } } }) => void) => {
+    onAutoRouteDecision: (callback: (data: { sessionId: string; decision: { tier: string; domain?: string; resolvedModel: string; resolvedHarness?: string; resolvedEffort?: string; resolvedSpeed?: string; workflow?: string; budgetUsd?: number; verification?: string; confidence: number; reason: string; method: string; enableGoals?: boolean; goal?: { objective: string; source: 'slash-command' | 'ralph-loop' }; orchestration?: { mode: string; leadHarness: string; leadModel: string; stages: Array<{ tier: string; harness: string; model: string; purpose: string; effort?: string; speed?: string; workflow?: string; budgetUsd?: number; verification?: string; fallbackModels?: string[]; required?: boolean; trigger?: string }> } } }) => void) => {
       const handler = (_: IpcRendererEvent, data: any) => callback(data);
       ipcRenderer.on(IPC_CHANNELS.CLAUDE_AUTO_ROUTE_DECISION, handler);
       return () => ipcRenderer.removeListener(IPC_CHANNELS.CLAUDE_AUTO_ROUTE_DECISION, handler);

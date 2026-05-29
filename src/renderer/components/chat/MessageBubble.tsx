@@ -9,9 +9,10 @@ import { useEditorStore } from '../../stores/editor.store';
 import { useUIStore } from '../../stores/ui.store';
 import { useSessionStore } from '../../stores/session.store';
 import { isHtmlResponse, extractHtml } from '../../utils/htmlDetector';
-import type { ChatMessage, ToolCall, Session } from '../../../shared/types';
+import type { ChatMessage, ToolCall } from '../../../shared/types';
 import { AGENT_COLORS } from '../../../shared/types';
 import { buildMissingToolCall, getMessageRenderArtifacts } from '../../../shared/utils/message-rendering';
+import { isTranscriptVisibleToolCall } from '../../../shared/utils/tool-call-transformer';
 
 // Regex to match file paths with optional line numbers
 // Matches: /path/to/file.ext or /path/to/file.ext:123
@@ -270,6 +271,11 @@ function MessageBubble({ message, isStreaming, streamingToolCalls, isLatestMessa
     isToolOnlyMessage,
     toolOnlySummary,
   } = getMessageRenderArtifacts(message, streamingToolCalls);
+  const hiddenToolCallIds = new Set(
+    (streamingToolCalls || message.toolCalls || [])
+      .filter((toolCall) => !isTranscriptVisibleToolCall(toolCall))
+      .map((toolCall) => toolCall.id),
+  );
 
   return (
     <div className="flex gap-2 min-w-0">
@@ -342,7 +348,13 @@ function MessageBubble({ message, isStreaming, streamingToolCalls, isLatestMessa
                     : undefined;
 
                   if (block.type === 'tool_use' && block.toolCallId) {
+                    if (hiddenToolCallIds.has(block.toolCallId)) {
+                      return null;
+                    }
                     const toolCall = toolCalls.find(tc => tc.id === block.toolCallId) || buildMissingToolCall(block.toolCallId, block.agentId);
+                    if (!isTranscriptVisibleToolCall(toolCall)) {
+                      return null;
+                    }
                     return (
                       <div key={toolCall.id} style={agentStyle}>
                         <ToolCallCard

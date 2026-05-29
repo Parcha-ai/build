@@ -495,23 +495,50 @@ Only return the title, nothing else.`
     storedSessions.forEach(s => sessionMap.set(s.id, this.attachSessionIds(s, sdkSessionMappings)));
 
     this.discoveredSessionsCache.forEach((s, id) => {
-      const existing = sessionMap.get(id);
+      const canonicalId = this.resolveBuildSessionIdForDiscoveredSession(id, s, sdkSessionMappings, sessionMap);
+      const relatedSessionIds = new Set(s.relatedSessionIds || []);
+      if (canonicalId !== id) {
+        relatedSessionIds.add(id);
+      }
+      if (s.sdkSessionId) {
+        relatedSessionIds.add(s.sdkSessionId);
+      }
+      const discoveredSession: Session = canonicalId === id
+        ? s
+        : {
+          ...s,
+          id: canonicalId,
+          sdkSessionId: s.sdkSessionId || id,
+          relatedSessionIds: Array.from(relatedSessionIds),
+        };
+      const existing = sessionMap.get(canonicalId);
       if (existing) {
+        const mergedRelatedSessionIds = new Set([
+          ...(existing.relatedSessionIds || []),
+          ...(discoveredSession.relatedSessionIds || []),
+        ]);
+        if (canonicalId !== id) {
+          mergedRelatedSessionIds.add(id);
+        }
+        if (discoveredSession.sdkSessionId) {
+          mergedRelatedSessionIds.add(discoveredSession.sdkSessionId);
+        }
+        mergedRelatedSessionIds.delete(canonicalId);
         // Merge: discovered session has latest transient state (branch, updatedAt),
         // stored session has all persistent metadata (names, fork relationships,
         // stars, hidden flags, model). Spread stored OVER discovered so nothing is lost.
-        sessionMap.set(id, this.attachSessionIds({
-          ...s,
+        sessionMap.set(canonicalId, this.attachSessionIds({
+          ...discoveredSession,
           ...existing,
           // Discovered session has the latest transient fields
-          branch: s.branch || existing.branch,
-          updatedAt: s.updatedAt || existing.updatedAt,
-          createdAt: existing.createdAt || s.createdAt,
-          sdkSessionId: existing.sdkSessionId || s.sdkSessionId || sdkSessionMappings[id],
-          relatedSessionIds: existing.relatedSessionIds || s.relatedSessionIds,
+          branch: discoveredSession.branch || existing.branch,
+          updatedAt: discoveredSession.updatedAt || existing.updatedAt,
+          createdAt: existing.createdAt || discoveredSession.createdAt,
+          sdkSessionId: existing.sdkSessionId || discoveredSession.sdkSessionId || sdkSessionMappings[canonicalId],
+          relatedSessionIds: Array.from(mergedRelatedSessionIds),
         }, sdkSessionMappings));
       } else {
-        sessionMap.set(id, this.attachSessionIds(s, sdkSessionMappings));
+        sessionMap.set(canonicalId, this.attachSessionIds(discoveredSession, sdkSessionMappings));
       }
     });
 
@@ -519,6 +546,53 @@ Only return the title, nothing else.`
     allSessions.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
     return allSessions;
+  }
+
+  private resolveBuildSessionIdForDiscoveredSession(
+    discoveredId: string,
+    discoveredSession: Session,
+    sdkSessionMappings: Record<string, string>,
+    sessionMap: Map<string, Session>
+  ): string {
+    if (sessionMap.has(discoveredId)) {
+      return discoveredId;
+    }
+
+    const discoveredIds = new Set<string>();
+    const add = (id: unknown): void => {
+      if (typeof id === 'string' && id.trim()) {
+        discoveredIds.add(id);
+      }
+    };
+    const collectSessionIds = (session: Session, target: Set<string>): void => {
+      [session.id, session.sdkSessionId, session.continuedFromSessionId, ...(session.relatedSessionIds || [])]
+        .forEach((id) => {
+          if (typeof id === 'string' && id.trim()) {
+            target.add(id);
+          }
+        });
+    };
+    add(discoveredId);
+    add(discoveredSession.id);
+    add(discoveredSession.sdkSessionId);
+    add(discoveredSession.continuedFromSessionId);
+    (discoveredSession.relatedSessionIds || []).forEach(add);
+
+    for (const [localSessionId, sdkSessionId] of Object.entries(sdkSessionMappings)) {
+      if (sessionMap.has(localSessionId) && (discoveredIds.has(localSessionId) || discoveredIds.has(sdkSessionId))) {
+        return localSessionId;
+      }
+    }
+
+    for (const [localSessionId, storedSession] of sessionMap.entries()) {
+      const storedIds = new Set<string>();
+      collectSessionIds(storedSession, storedIds);
+      if ([...discoveredIds].some((id) => storedIds.has(id))) {
+        return localSessionId;
+      }
+    }
+
+    return discoveredId;
   }
 
   private attachSessionIds(session: Session, sdkSessionMappings: Record<string, string>): Session {

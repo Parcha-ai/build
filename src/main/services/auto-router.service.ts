@@ -1,4 +1,4 @@
-import type { TaskTier, TaskDomain, RoutingDecision, AutoRouterConfig, SessionPhase, Harness, OrchestrationPlan, OrchestrationStage, ChatMessage } from '../../shared/types';
+import type { TaskTier, TaskDomain, RoutingDecision, AutoRouterConfig, SessionPhase, Harness, OrchestrationPlan, OrchestrationStage, ChatMessage, MetaHarnessPolicy, MetaHarnessSpeed, MetaWorkflowMode, MetaVerificationMode } from '../../shared/types';
 import { EMBEDDED_KEYS } from '../../shared/config/embedded-keys';
 import { analyticsService } from './analytics.service';
 import { flueMetaRouterService } from './flue-meta-router.service';
@@ -142,7 +142,7 @@ interface ModelChoice {
   reason: string;
 }
 
-interface AutoRouterCategoryConfig {
+interface AutoRouterCategoryConfig extends MetaHarnessPolicy {
   id: string;
   label?: string;
   description?: string;
@@ -264,6 +264,37 @@ function isTaskTier(value: unknown): value is TaskTier {
   return value === 'plan' || value === 'build' || value === 'verify' || value === 'refine';
 }
 
+function isMetaHarnessSpeed(value: unknown): value is MetaHarnessSpeed {
+  return value === 'auto' || value === 'standard' || value === 'fast';
+}
+
+function isMetaWorkflowMode(value: unknown): value is MetaWorkflowMode {
+  return value === 'auto' || value === 'single' || value === 'lead-with-delegates' || value === 'sequential' || value === 'dynamic';
+}
+
+function isMetaVerificationMode(value: unknown): value is MetaVerificationMode {
+  return value === 'auto' || value === 'none' || value === 'optional' || value === 'required';
+}
+
+function numberOrUndefined(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value) && value >= 0) return value;
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed) && parsed >= 0) return parsed;
+  }
+  return undefined;
+}
+
+function cleanPolicy(policy: MetaHarnessPolicy): MetaHarnessPolicy {
+  return {
+    ...(policy.effort ? { effort: policy.effort } : {}),
+    ...(isMetaHarnessSpeed(policy.speed) && policy.speed !== 'auto' ? { speed: policy.speed } : {}),
+    ...(isMetaWorkflowMode(policy.workflow) && policy.workflow !== 'auto' ? { workflow: policy.workflow } : {}),
+    ...(policy.budgetUsd !== undefined ? { budgetUsd: policy.budgetUsd } : {}),
+    ...(isMetaVerificationMode(policy.verification) && policy.verification !== 'auto' ? { verification: policy.verification } : {}),
+  };
+}
+
 function isFixedAutoRouterCategoryId(value: string): boolean {
   return value === 'plan' || value === 'build' || value === 'verify' || value === 'refine' || value === 'fallback';
 }
@@ -356,8 +387,7 @@ function matchedCustomCategoryLead(
   leadTier: TaskTier,
   categories: ResolvedAutoRouterCategory[],
 ): ModelChoice | undefined {
-  if (!matchedCategoryId) return undefined;
-  const category = categories.find((candidate) => candidate.id === matchedCategoryId);
+  const category = matchedCustomCategory(matchedCategoryId, leadTier, categories);
   if (!category || category.tier !== leadTier) return undefined;
   const categoryName = category.label || category.id;
   return {
@@ -365,6 +395,17 @@ function matchedCustomCategoryLead(
     harness: harnessFromModel(category.model),
     reason: `Custom settings category "${categoryName}" selected ${category.model}`,
   };
+}
+
+function matchedCustomCategory(
+  matchedCategoryId: string | undefined,
+  leadTier: TaskTier,
+  categories: ResolvedAutoRouterCategory[],
+): ResolvedAutoRouterCategory | undefined {
+  if (!matchedCategoryId) return undefined;
+  const category = categories.find((candidate) => candidate.id === matchedCategoryId);
+  if (!category || category.tier !== leadTier) return undefined;
+  return category;
 }
 
 function harnessFromModel(model: string): Harness {
@@ -425,14 +466,30 @@ function getConfiguredAutoRouterCategories(): AutoRouterCategoryConfig[] {
   const autoRouterConfig = settings.autoRouterConfig as Record<string, unknown> | undefined;
   const categories = autoRouterConfig?.categories;
   if (!Array.isArray(categories)) return [];
-  return categories.filter((category): category is AutoRouterCategoryConfig =>
-    !!(
-      category &&
-      typeof category === 'object' &&
-      typeof (category as AutoRouterCategoryConfig).id === 'string' &&
-      typeof (category as AutoRouterCategoryConfig).model === 'string'
-    )
-  );
+  return categories.reduce<AutoRouterCategoryConfig[]>((acc, rawCategory) => {
+    if (!rawCategory || typeof rawCategory !== 'object') return acc;
+    const category = rawCategory as Record<string, unknown>;
+    if (typeof category.id !== 'string' || typeof category.model !== 'string') return acc;
+
+    const tier = isTaskTier(category.tier) || category.tier === 'fallback'
+      ? category.tier
+      : undefined;
+    acc.push({
+      id: category.id,
+      ...(typeof category.label === 'string' ? { label: category.label } : {}),
+      ...(typeof category.description === 'string' ? { description: category.description } : {}),
+      model: category.model,
+      ...(tier ? { tier } : {}),
+      ...(Array.isArray(category.keywords) ? { keywords: category.keywords.filter((keyword): keyword is string => typeof keyword === 'string') } : {}),
+      ...(typeof category.keywords === 'string' ? { keywords: category.keywords } : {}),
+      ...(typeof category.effort === 'string' && category.effort ? { effort: category.effort } : {}),
+      ...(isMetaHarnessSpeed(category.speed) ? { speed: category.speed } : {}),
+      ...(isMetaWorkflowMode(category.workflow) ? { workflow: category.workflow } : {}),
+      ...(numberOrUndefined(category.budgetUsd) !== undefined ? { budgetUsd: numberOrUndefined(category.budgetUsd) } : {}),
+      ...(isMetaVerificationMode(category.verification) ? { verification: category.verification } : {}),
+    });
+    return acc;
+  }, []);
 }
 
 function binaryExistsInPath(binaryNames: string[], extraCandidates: string[]): boolean {
@@ -944,6 +1001,53 @@ function getConfig(): AutoRouterConfig {
     if (typeof saved.verifyEffort === 'string') config.verifyEffort = saved.verifyEffort;
     if (typeof saved.refineEffort === 'string') config.refineEffort = saved.refineEffort;
     if (typeof saved.fallbackEffort === 'string') config.fallbackEffort = saved.fallbackEffort;
+
+    if (isMetaHarnessSpeed(saved.planSpeed)) config.planSpeed = saved.planSpeed;
+    if (isMetaHarnessSpeed(saved.buildSpeed)) config.buildSpeed = saved.buildSpeed;
+    if (isMetaHarnessSpeed(saved.verifySpeed)) config.verifySpeed = saved.verifySpeed;
+    if (isMetaHarnessSpeed(saved.refineSpeed)) config.refineSpeed = saved.refineSpeed;
+    if (isMetaHarnessSpeed(saved.fallbackSpeed)) config.fallbackSpeed = saved.fallbackSpeed;
+
+    if (isMetaWorkflowMode(saved.planWorkflow)) config.planWorkflow = saved.planWorkflow;
+    if (isMetaWorkflowMode(saved.buildWorkflow)) config.buildWorkflow = saved.buildWorkflow;
+    if (isMetaWorkflowMode(saved.verifyWorkflow)) config.verifyWorkflow = saved.verifyWorkflow;
+    if (isMetaWorkflowMode(saved.refineWorkflow)) config.refineWorkflow = saved.refineWorkflow;
+    if (isMetaWorkflowMode(saved.fallbackWorkflow)) config.fallbackWorkflow = saved.fallbackWorkflow;
+
+    const planBudgetUsd = numberOrUndefined(saved.planBudgetUsd);
+    const buildBudgetUsd = numberOrUndefined(saved.buildBudgetUsd);
+    const verifyBudgetUsd = numberOrUndefined(saved.verifyBudgetUsd);
+    const refineBudgetUsd = numberOrUndefined(saved.refineBudgetUsd);
+    const fallbackBudgetUsd = numberOrUndefined(saved.fallbackBudgetUsd);
+    if (planBudgetUsd !== undefined) config.planBudgetUsd = planBudgetUsd;
+    if (buildBudgetUsd !== undefined) config.buildBudgetUsd = buildBudgetUsd;
+    if (verifyBudgetUsd !== undefined) config.verifyBudgetUsd = verifyBudgetUsd;
+    if (refineBudgetUsd !== undefined) config.refineBudgetUsd = refineBudgetUsd;
+    if (fallbackBudgetUsd !== undefined) config.fallbackBudgetUsd = fallbackBudgetUsd;
+
+    if (isMetaVerificationMode(saved.planVerification)) config.planVerification = saved.planVerification;
+    if (isMetaVerificationMode(saved.buildVerification)) config.buildVerification = saved.buildVerification;
+    if (isMetaVerificationMode(saved.verifyVerification)) config.verifyVerification = saved.verifyVerification;
+    if (isMetaVerificationMode(saved.refineVerification)) config.refineVerification = saved.refineVerification;
+    if (isMetaVerificationMode(saved.fallbackVerification)) config.fallbackVerification = saved.fallbackVerification;
+
+    const customCategories = getConfiguredAutoRouterCategories()
+      .filter(isCurrentCustomAutoRouterCategory)
+      .map((category) => {
+        const tier = inferCategoryTier(category);
+        return {
+          id: category.id,
+          ...(category.label ? { label: category.label } : {}),
+          ...(category.description ? { description: category.description } : {}),
+          model: category.model || resolveModelForTier(tier || 'build', config),
+          ...(tier ? { tier } : {}),
+          keywords: categoryKeywords(category),
+          ...categoryPolicy(category as ResolvedAutoRouterCategory),
+        };
+      });
+    if (customCategories.length > 0) {
+      config.categories = customCategories;
+    }
   }
 
   return config;
@@ -966,6 +1070,78 @@ function resolveEffortForTier(tier: TaskTier, config: AutoRouterConfig): string 
     case 'refine': return config.refineEffort;
     default: return config.fallbackEffort;
   }
+}
+
+function resolveSpeedForTier(tier: TaskTier, config: AutoRouterConfig): MetaHarnessSpeed | undefined {
+  switch (tier) {
+    case 'plan': return config.planSpeed;
+    case 'build': return config.buildSpeed;
+    case 'verify': return config.verifySpeed;
+    case 'refine': return config.refineSpeed;
+    default: return config.fallbackSpeed;
+  }
+}
+
+function resolveWorkflowForTier(tier: TaskTier, config: AutoRouterConfig): MetaWorkflowMode | undefined {
+  switch (tier) {
+    case 'plan': return config.planWorkflow;
+    case 'build': return config.buildWorkflow;
+    case 'verify': return config.verifyWorkflow;
+    case 'refine': return config.refineWorkflow;
+    default: return config.fallbackWorkflow;
+  }
+}
+
+function resolveBudgetForTier(tier: TaskTier, config: AutoRouterConfig): number | undefined {
+  switch (tier) {
+    case 'plan': return config.planBudgetUsd;
+    case 'build': return config.buildBudgetUsd;
+    case 'verify': return config.verifyBudgetUsd;
+    case 'refine': return config.refineBudgetUsd;
+    default: return config.fallbackBudgetUsd;
+  }
+}
+
+function resolveVerificationForTier(tier: TaskTier, config: AutoRouterConfig): MetaVerificationMode | undefined {
+  switch (tier) {
+    case 'plan': return config.planVerification;
+    case 'build': return config.buildVerification;
+    case 'verify': return config.verifyVerification;
+    case 'refine': return config.refineVerification;
+    default: return config.fallbackVerification;
+  }
+}
+
+function tierPolicy(tier: TaskTier, config: AutoRouterConfig): MetaHarnessPolicy {
+  return cleanPolicy({
+    effort: resolveEffortForTier(tier, config),
+    speed: resolveSpeedForTier(tier, config),
+    workflow: resolveWorkflowForTier(tier, config),
+    budgetUsd: resolveBudgetForTier(tier, config),
+    verification: resolveVerificationForTier(tier, config),
+  });
+}
+
+function categoryPolicy(category: ResolvedAutoRouterCategory | undefined): MetaHarnessPolicy {
+  if (!category) return {};
+  return cleanPolicy({
+    effort: category.effort,
+    speed: category.speed,
+    workflow: category.workflow,
+    budgetUsd: category.budgetUsd,
+    verification: category.verification,
+  });
+}
+
+function resolveRoutePolicy(
+  tier: TaskTier,
+  config: AutoRouterConfig,
+  matchedCategory?: ResolvedAutoRouterCategory,
+): MetaHarnessPolicy {
+  return cleanPolicy({
+    ...tierPolicy(tier, config),
+    ...categoryPolicy(matchedCategory),
+  });
 }
 
 function configuredModelsForTier(tier: TaskTier, config: AutoRouterConfig): string[] {
@@ -1304,7 +1480,7 @@ function buildOrchestrationPlan(
       tier: stageTier,
       harness: harnessFromModel(model),
       model,
-      effort: resolveEffortForTier(stageTier, config),
+      ...tierPolicy(stageTier, config),
       fallbackModels: fallbackModels.length > 0 ? fallbackModels : undefined,
       purpose,
       trigger,
@@ -1313,7 +1489,10 @@ function buildOrchestrationPlan(
   };
 
   const canMutate = canRunMutatingStages(options?.permissionMode);
-  const requestedVerification = requestedTier === 'verify' || signals.asksForVerification || signals.hasErrorLog;
+  const verificationPolicy = resolveVerificationForTier(leadTier, config);
+  const requestedVerification = verificationPolicy === 'required'
+    || (verificationPolicy !== 'none' && (requestedTier === 'verify' || signals.asksForVerification || signals.hasErrorLog));
+  const verificationRequired = verificationPolicy !== 'optional';
   addStage(leadTier, lead.model, `Lead ${leadTier} work`, 'now', true);
 
   const requestedBuildAfterLeadPlan = leadTier === 'plan' && requestedTier === 'build' && canMutate;
@@ -1325,7 +1504,7 @@ function buildOrchestrationPlan(
         const verifyDelegate = pickDelegateStageModel('verify', config, signals, options, buildDelegate)
           || pickDelegateStageModel('verify', config, signals, options, lead.model);
         if (verifyDelegate) {
-          addStage('verify', verifyDelegate, 'Run the requested checks after implementation', 'after-build', true);
+          addStage('verify', verifyDelegate, 'Run the requested checks after implementation', 'after-build', verificationRequired);
         }
       }
     }
@@ -1334,7 +1513,7 @@ function buildOrchestrationPlan(
   if (leadTier === 'plan' && requestedTier === 'verify') {
     const verifyDelegate = pickDelegateStageModel('verify', config, signals, options, lead.model);
     if (verifyDelegate) {
-      addStage('verify', verifyDelegate, 'Run the requested verification after the lead plan', 'after-plan', true);
+      addStage('verify', verifyDelegate, 'Run the requested verification after the lead plan', 'after-plan', verificationRequired);
     } else {
       leadDuties.push('No executable verification delegate is available; the lead stage must cover the requested verification itself.');
     }
@@ -1343,7 +1522,7 @@ function buildOrchestrationPlan(
   if (leadTier === 'plan' && !requestedBuildAfterLeadPlan && requestedVerification) {
     const verifyDelegate = pickDelegateStageModel('verify', config, signals, options, lead.model);
     if (verifyDelegate) {
-      addStage('verify', verifyDelegate, 'Run the requested verification after the lead plan', 'after-plan', true);
+      addStage('verify', verifyDelegate, 'Run the requested verification after the lead plan', 'after-plan', verificationRequired);
     } else {
       leadDuties.push('No executable verification delegate is available; the lead stage should cover the requested verification itself.');
     }
@@ -1352,7 +1531,7 @@ function buildOrchestrationPlan(
   if (leadTier === 'build' && requestedVerification) {
     const verifyDelegate = pickDelegateStageModel('verify', config, signals, options, lead.model);
     if (verifyDelegate) {
-      addStage('verify', verifyDelegate, 'Run the requested checks after the build', 'after-build', true);
+      addStage('verify', verifyDelegate, 'Run the requested checks after the build', 'after-build', verificationRequired);
     } else {
       leadDuties.push('No executable verification delegate is available; the lead stage should cover the requested checks itself.');
     }
@@ -1370,7 +1549,7 @@ function buildOrchestrationPlan(
   if (leadTier === 'refine' && requestedVerification) {
     const verifyDelegate = pickDelegateStageModel('verify', config, signals, options, lead.model);
     if (verifyDelegate) {
-      addStage('verify', verifyDelegate, 'Run the requested checks after refinement', 'after-build', true);
+      addStage('verify', verifyDelegate, 'Run the requested checks after refinement', 'after-build', verificationRequired);
     } else {
       leadDuties.push('No executable verification delegate is available; the lead refinement should cover the requested checks itself.');
     }
@@ -1614,7 +1793,7 @@ function buildOrchestrationPlanFromMeta(
     tier: meta.leadTier,
     harness: lead.harness,
     model: lead.model,
-    effort: resolveEffortForTier(meta.leadTier, config),
+    ...tierPolicy(meta.leadTier, config),
     purpose: `Lead ${meta.leadTier} work`,
     trigger: 'now',
     required: true,
@@ -1624,6 +1803,8 @@ function buildOrchestrationPlanFromMeta(
   for (const rawStage of meta.stages) {
     if (rawStage.trigger === 'now' || rawStage.trigger === 'manual-follow-up') continue;
     if ((rawStage.tier === 'build' || rawStage.tier === 'refine') && !canMutate) continue;
+    const rawStagePolicy = tierPolicy(rawStage.tier, config);
+    if (rawStage.tier === 'verify' && rawStagePolicy.verification === 'none') continue;
 
     const model = sanitizeMetaStageModel(rawStage, lead, config, signals, candidateModelsByTier, options);
     if (!model || model === lead.model) continue;
@@ -1641,11 +1822,11 @@ function buildOrchestrationPlanFromMeta(
       tier: rawStage.tier,
       harness,
       model,
-      effort: resolveEffortForTier(rawStage.tier, config),
+      ...rawStagePolicy,
       fallbackModels: fallbackModels.length > 0 ? fallbackModels : undefined,
       purpose: redactMetaControllerTerms(rawStage.purpose || `${rawStage.tier} follow-up`),
       trigger,
-      required: rawStage.required,
+      required: rawStagePolicy.verification === 'optional' && rawStage.tier === 'verify' ? false : rawStage.required,
     });
   }
 
@@ -2015,6 +2196,7 @@ class AutoRouterService {
 
     const customCategories = customCategoriesForController(routeOptions);
     let customCategoryLead: ModelChoice | undefined;
+    let customCategoryForPolicy: ResolvedAutoRouterCategory | undefined;
 
     let method: RoutingDecision['method'] = 'heuristic';
     let metaLead: ModelChoice | undefined;
@@ -2075,6 +2257,7 @@ class AutoRouterService {
               candidateModelsByTier,
               routeOptions,
             );
+            customCategoryForPolicy = matchedCustomCategory(meta.matchedCategoryId, result.tier, customCategories);
             customCategoryLead = matchedCustomCategoryLead(meta.matchedCategoryId, result.tier, customCategories);
             if (customCategoryLead) {
               metaLead = customCategoryLead;
@@ -2115,7 +2298,14 @@ class AutoRouterService {
     // Step 4: Resolve the lead harness/model and build an orchestration plan.
     const lead = metaLead || customCategoryLead || chooseModelForTier(result.tier, config, signals, routeOptions);
     const resolvedModel = lead.model;
+    const routePolicy = resolveRoutePolicy(result.tier, config, customCategoryForPolicy);
     const orchestration = metaOrchestration || buildOrchestrationPlan(result.tier, requestedResult.tier, lead, config, signals, phase, routeOptions);
+    if (orchestration.stages[0]) {
+      orchestration.stages[0] = {
+        ...orchestration.stages[0],
+        ...routePolicy,
+      };
+    }
     const goalObjective = routeOptions.goalObjective?.trim();
 
     const cooldownSummary = formatActiveHarnessCooldowns(sessionId);
@@ -2124,7 +2314,11 @@ class AutoRouterService {
       domain: signals.domain,
       resolvedModel,
       resolvedHarness: lead.harness,
-      resolvedEffort: resolveEffortForTier(result.tier, config),
+      resolvedEffort: routePolicy.effort,
+      resolvedSpeed: routePolicy.speed,
+      workflow: routePolicy.workflow || orchestration.mode,
+      budgetUsd: routePolicy.budgetUsd,
+      verification: routePolicy.verification,
       confidence: result.confidence,
       reason: `${result.reason}${requestedResult.tier !== result.tier ? `; requested ${requestedResult.tier} continues through helper stages when available` : ''}; ${lead.reason}${cooldownSummary ? `; temporarily avoiding ${cooldownSummary}` : ''}`,
       method,
@@ -2135,6 +2329,18 @@ class AutoRouterService {
           source: routeOptions.goalSource || 'slash-command',
         },
       } : {}),
+      missionControl: {
+        controllerHarness: 'meta',
+        requestedTier: requestedResult.tier,
+        leadTier: result.tier,
+        leadHarness: lead.harness,
+        leadModel: lead.model,
+        ...(customCategoryForPolicy ? {
+          categoryId: customCategoryForPolicy.id,
+          categoryLabel: customCategoryForPolicy.label || customCategoryForPolicy.id,
+        } : {}),
+        ...routePolicy,
+      },
       orchestration,
     };
 

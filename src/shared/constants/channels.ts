@@ -55,6 +55,7 @@ export const IPC_CHANNELS = {
   CLAUDE_SEND_MESSAGE: 'claude:send-message',
   CLAUDE_RESUME_REMOTE_TURN: 'claude:resume-remote-turn',
   CLAUDE_GET_MESSAGES: 'claude:get-messages',
+  CLAUDE_HAS_BUILD_TRANSCRIPT: 'claude:has-build-transcript',
   CLAUDE_GET_MODELS: 'claude:get-models',
   CLAUDE_STREAM_CHUNK: 'claude:stream-chunk',
   CLAUDE_THINKING_CHUNK: 'claude:thinking-chunk',

@@ -55,6 +55,11 @@ type AutoRouteDecisionState = {
   domain?: string;
   resolvedModel: string;
   resolvedHarness?: string;
+  resolvedEffort?: string;
+  resolvedSpeed?: string;
+  workflow?: string;
+  budgetUsd?: number;
+  verification?: string;
   confidence: number;
   reason: string;
   method: string;
@@ -66,7 +71,7 @@ type AutoRouteDecisionState = {
     mode: string;
     leadHarness: string;
     leadModel: string;
-    stages: Array<{ tier: string; harness: string; model: string; purpose: string; fallbackModels?: string[]; required?: boolean; trigger?: string }>;
+    stages: Array<{ tier: string; harness: string; model: string; purpose: string; effort?: string; speed?: string; workflow?: string; budgetUsd?: number; verification?: string; fallbackModels?: string[]; required?: boolean; trigger?: string }>;
   };
 };
 
@@ -101,6 +106,29 @@ function goalCompletionStatus(content: string): 'complete' | 'blocked' | undefin
     return 'blocked';
   }
   return undefined;
+}
+
+function isFatalMetaGoalTurnFailure(message: ChatMessage, content: string): boolean {
+  const trimmed = content.trim();
+  if (message.interrupted) return true;
+  return /^Error:/i.test(trimmed)
+    || /Remote Claude process exited unexpectedly|Claude Code process exited|process exited with code|process terminated|no stdout|authentication|api key|rate limit|quota/i.test(trimmed);
+}
+
+function blockMetaGoalState(
+  activeMetaGoals: Record<string, MetaGoalState | null>,
+  sessionId: string,
+): Record<string, MetaGoalState | null> {
+  const activeGoal = activeMetaGoals[sessionId];
+  if (activeGoal?.status !== 'active') return activeMetaGoals;
+  return {
+    ...activeMetaGoals,
+    [sessionId]: {
+      ...activeGoal,
+      status: 'blocked',
+      updatedAt: Date.now(),
+    },
+  };
 }
 
 function buildMetaGoalContinuationPrompt(goal: MetaGoalState): string {
@@ -207,6 +235,7 @@ interface SessionState {
     attachments?: unknown[];
     timestamp: number;
     model?: string;
+    suppressUserMessage?: boolean;
   } | null>;
   permissionMode: Record<string, PermissionMode>;
   thinkingMode: Record<string, ThinkingMode>;
@@ -936,6 +965,14 @@ function loadSupplementalMessages(sessionId: string): ChatMessage[] {
     console.warn('[SessionStore] Failed to load supplemental messages:', error);
     return [];
   }
+}
+
+async function hasBuildTranscriptForHydration(sessionId: string): Promise<boolean> {
+  if (!hasElectronAPI || !window.electronAPI.claude.hasBuildTranscript) {
+    return false;
+  }
+
+  return window.electronAPI.claude.hasBuildTranscript(sessionId).catch(() => false);
 }
 
 const SUPPLEMENTAL_MAX_MESSAGES = 500;
@@ -1934,10 +1971,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // restart the turn with both prompts together instead of making the second
     // prompt wait behind a doomed first draft.
     if (
+      !suppressUserMessage &&
       state.isStreaming[sessionId] &&
       !state.isProcessingQueue[sessionId] &&
       currentQueueLength === 0 &&
       state.activeUserPrompt[sessionId] &&
+      !state.activeUserPrompt[sessionId]?.suppressUserMessage &&
       !hasVisibleAssistantActivity(state, sessionId)
     ) {
       const activePrompt = state.activeUserPrompt[sessionId]!;
@@ -2085,7 +2124,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }));
     }
 
-    const supplementalMessagesForContext = loadSupplementalMessages(sessionId);
+    const hasAuthoritativeBuildTranscript = await hasBuildTranscriptForHydration(sessionId);
+    const supplementalMessagesForContext = hasAuthoritativeBuildTranscript ? [] : loadSupplementalMessages(sessionId);
 
     // Add user message (with keys replaced by placeholders).
     // If the caller passed `existingMessageId` (e.g. we're re-sending a queued
@@ -2133,6 +2173,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           attachments,
           timestamp: userMessage.timestamp.getTime(),
           model,
+          suppressUserMessage,
         },
       },
     }));
@@ -2176,12 +2217,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     const perfStart = performance.now();
     const RECENT_MESSAGE_LIMIT = 100;
+    const hasAuthoritativeBuildTranscript = await hasBuildTranscriptForHydration(sessionId);
 
     const applyLoadedMessages = (transcriptMessages: ChatMessage[]) => {
-      const supplementalMessages = loadSupplementalMessages(sessionId);
+      const supplementalMessages = hasAuthoritativeBuildTranscript ? [] : loadSupplementalMessages(sessionId);
       const mergedMessages = filterInternalPromptEchoes(mergeTimelineMessages(transcriptMessages || [], supplementalMessages))
         .filter((message) => message.role !== 'assistant' || hasRecoverableOutput(message));
-      console.log(`[Perf] Message load took ${performance.now() - perfStart}ms (${mergedMessages.length} merged messages)`);
+      console.log(`[Perf] Message load took ${performance.now() - perfStart}ms (${mergedMessages.length} ${hasAuthoritativeBuildTranscript ? 'Build transcript' : 'merged'} messages)`);
 
       if (mergedMessages.length > 0) {
         set((state) => {
@@ -2190,6 +2232,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           if (state.isStreaming[sessionId] && !options.replaceWhileStreaming) {
             console.log(`[SessionStore] loadMessages: Skipping replacement for ${sessionId} — currently streaming`);
             return { isLoadingMessages: { ...state.isLoadingMessages, [sessionId]: false } };
+          }
+
+          if (hasAuthoritativeBuildTranscript) {
+            return {
+              messages: { ...state.messages, [sessionId]: mergedMessages },
+              isLoadingMessages: { ...state.isLoadingMessages, [sessionId]: false },
+            };
           }
 
           // Merge: use transcript/supplemental as base but keep any in-memory
@@ -2828,6 +2877,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           return;
         }
 
+        if (isFatalMetaGoalTurnFailure(finalMessage, finalContent)) {
+          set((state) => ({
+            activeMetaGoals: blockMetaGoalState(state.activeMetaGoals, sessionId),
+          }));
+          console.log(`[SessionStore] Meta-goal blocked by fatal turn failure for ${sessionId}`);
+          return;
+        }
+
         if (activeGoal.iterations >= activeGoal.maxIterations) {
           set((state) => ({
             activeMetaGoals: {
@@ -2925,6 +2982,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         isStreaming: { ...state.isStreaming, [sessionId]: false },
         activeStreamModel: { ...state.activeStreamModel, [sessionId]: undefined },
         activeUserPrompt: { ...state.activeUserPrompt, [sessionId]: null },
+        activeMetaGoals: blockMetaGoalState(state.activeMetaGoals, sessionId),
         currentStreamContent: { ...state.currentStreamContent, [sessionId]: '' },
         currentThinkingContent: { ...state.currentThinkingContent, [sessionId]: '' },
         currentToolCalls: { ...state.currentToolCalls, [sessionId]: [] },

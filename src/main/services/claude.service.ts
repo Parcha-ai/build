@@ -9,7 +9,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { spawn } from 'child_process';
-import type { ChatMessage, ToolCall, Session, QuestionRequest, QuestionResponse, Attachment, ContentBlock, CompactionStatus, CompactionComplete, PlanApprovalRequest, PlanApprovalResponse, OrchestrationPlan, OrchestrationStage, Harness, TaskTier, TaskDomain, RoutingDecision } from '../../shared/types';
+import type { ChatMessage, ToolCall, Session, QuestionRequest, QuestionResponse, Attachment, ContentBlock, CompactionStatus, CompactionComplete, PlanApprovalRequest, PlanApprovalResponse, OrchestrationPlan, OrchestrationStage, Harness, TaskTier, TaskDomain, RoutingDecision, MetaHarnessPolicy } from '../../shared/types';
 import { powerService } from './power.service';
 import { BrowserWindow, nativeImage } from 'electron';
 import { IPC_CHANNELS } from '../../shared/constants/channels';
@@ -35,8 +35,9 @@ import { secureKeysService } from './secure-keys.service';
 import { analyticsService, estimateBaselineCost, estimateCost } from './analytics.service';
 import { truncateMiddlePreservingTail } from '../../shared/utils/prompt-truncation';
 import { findUsableLocalExecutable } from '../utils/local-executable';
-import { transcriptEntriesToChatMessages, transcriptService } from './transcript.service';
+import { transcriptEntriesToChatMessages, transcriptService, type TranscriptEntry } from './transcript.service';
 import { filterInternalPromptEchoes, hasRecoverableOutput, mergeRecoveredStreamMessages } from '../../shared/utils/message-recovery';
+import { translateHarnessPolicy } from './harness-policy.service';
 
 const STREAM_DEBUG = process.env.GREP_DEBUG_STREAMING === '1';
 
@@ -1369,6 +1370,12 @@ ${leadContent.slice(0, leadContextLimit)}
     const stageLabel = `${stage.tier.toUpperCase()} via ${stageHarness}:${stage.model}`;
     const stageAgentId = `autobuild:${stage.tier}:${stageHarness}`;
     const stageAgentName = this.getAutoBuildStageDisplayTitle(stage);
+    const stagePolicy = translateHarnessPolicy({
+      harness: stageHarness,
+      model: stage.model,
+      policy: stage,
+      permissionMode: sdkPermissionMode,
+    });
     const withStageSource = (event: StreamEvent): StreamEvent => {
       if (event.type === 'text_delta' || event.type === 'thinking_delta' || event.type === 'tool_use' || event.type === 'tool_result') {
         const sourcedEvent: StreamEvent = {
@@ -1420,7 +1427,13 @@ ${leadContent.slice(0, leadContextLimit)}
       if (stageHarness === 'codex') {
         const codexModel = stage.model.split(':')[1];
         const codexPermissionMode = this.getAutoBuildCodexPermissionMode(stage, sdkPermissionMode);
-        for await (const event of codexService.streamAsChat(sessionId, prompt, projectPath, session.sshConfig, context, codexModel, undefined, codexPermissionMode)) {
+        const codexPolicy = translateHarnessPolicy({
+          harness: stageHarness,
+          model: stage.model,
+          policy: stage,
+          permissionMode: codexPermissionMode,
+        });
+        for await (const event of codexService.streamAsChat(sessionId, prompt, projectPath, session.sshConfig, context, codexModel, undefined, codexPermissionMode, codexPolicy)) {
           if (this.isQueryCancelled(sessionId, abortSignal)) return;
           if (event.type === 'text_delta') {
             emittedStageContent += event.content || '';
@@ -1447,7 +1460,7 @@ ${leadContent.slice(0, leadContextLimit)}
         const cursorCliService = getCursorCliService();
         const fullPrompt = context ? `${context}\n\n${prompt}` : prompt;
         const workDir = session.worktreePath || session.repoPath || projectPath;
-        for await (const event of cursorCliService.streamMessage(sessionId, fullPrompt, workDir, stage.model, session.sshConfig)) {
+        for await (const event of cursorCliService.streamMessage(sessionId, fullPrompt, workDir, stage.model, session.sshConfig, undefined, stagePolicy)) {
           if (this.isQueryCancelled(sessionId, abortSignal)) return;
           if (event.type === 'text_delta') {
             emittedStageContent += event.content || '';
@@ -1474,7 +1487,7 @@ ${leadContent.slice(0, leadContextLimit)}
         const geminiService = getGeminiService();
         const fullPrompt = context ? `${context}\n\n${prompt}` : prompt;
         const workDir = session.worktreePath || session.repoPath || session.sshConfig?.remoteWorkdir || projectPath;
-        for await (const event of geminiService.streamMessage(sessionId, fullPrompt, workDir, stage.model, session.sshConfig)) {
+        for await (const event of geminiService.streamMessage(sessionId, fullPrompt, workDir, stage.model, session.sshConfig, stagePolicy)) {
           if (this.isQueryCancelled(sessionId, abortSignal)) return;
           if (event.type === 'text_delta') {
             emittedStageContent += event.content || '';
@@ -1501,7 +1514,7 @@ ${leadContent.slice(0, leadContextLimit)}
         const openCodeService = getOpenCodeService();
         const fullPrompt = context ? `${context}\n\n${prompt}` : prompt;
         const workDir = session.worktreePath || session.repoPath || projectPath;
-        for await (const event of openCodeService.streamMessage(sessionId, fullPrompt, workDir, stage.model, session.sshConfig, sdkPermissionMode)) {
+        for await (const event of openCodeService.streamMessage(sessionId, fullPrompt, workDir, stage.model, session.sshConfig, sdkPermissionMode, stagePolicy)) {
           if (this.isQueryCancelled(sessionId, abortSignal)) return;
           if (event.type === 'text_delta') {
             emittedStageContent += event.content || '';
@@ -3951,6 +3964,22 @@ ${leadContent.slice(0, leadContextLimit)}
         }
       }
       selectedModel = selectedModel || 'claude-sonnet-4-6';
+      const missionPolicy = routingDecisionForAnalytics?.missionControl;
+      const turnPolicy: MetaHarnessPolicy = {
+        ...(missionPolicy || {}),
+        ...(thinkingMode ? { effort: thinkingMode } : {}),
+        ...(fastMode ? { speed: 'fast' as const } : {}),
+      };
+      const leadHarnessPolicy = translateHarnessPolicy({
+        harness: this.getHarnessFromModel(selectedModel),
+        model: selectedModel,
+        policy: turnPolicy,
+        permissionMode: autoBuildLeadPermissionMode,
+      });
+      if (leadHarnessPolicy.effort) {
+        thinkingMode = leadHarnessPolicy.effort;
+      }
+      const effectiveFastMode = Boolean(fastMode || leadHarnessPolicy.claude?.fastMode);
 
       try {
         analyticsService.recordRoutingTrainingExample({
@@ -4049,7 +4078,7 @@ ${leadContent.slice(0, leadContextLimit)}
           ? `/goal ${nativeCodexGoalObjective}`
           : `${claudeMdInstruction}\n\n${userMessage}`;
 
-        const codexEvents = codexService.streamAsChat(sessionId, codexPrompt, projectPath, session.sshConfig, codexContext, codexModel, attachments, autoBuildLeadPermissionMode) as AsyncIterable<StreamEvent>;
+        const codexEvents = codexService.streamAsChat(sessionId, codexPrompt, projectPath, session.sshConfig, codexContext, codexModel, attachments, autoBuildLeadPermissionMode, leadHarnessPolicy) as AsyncIterable<StreamEvent>;
         for await (const event of this.streamLeadWithAutoBuildStages(
           codexEvents,
           sessionId,
@@ -4139,7 +4168,7 @@ ${leadContent.slice(0, leadContextLimit)}
           if (session.sshConfig) {
             const remoteDir = session.worktreePath || session.sshConfig.remoteWorkdir || '~';
             console.log(`[Claude Service] Cursor SSH → CLI on remote ${session.sshConfig.host}:${remoteDir}`);
-            const cursorEvents = cursorCliService.streamMessage(sessionId, fullMessage, remoteDir, selectedModel, session.sshConfig, chatId || undefined) as AsyncIterable<StreamEvent>;
+            const cursorEvents = cursorCliService.streamMessage(sessionId, fullMessage, remoteDir, selectedModel, session.sshConfig, chatId || undefined, leadHarnessPolicy) as AsyncIterable<StreamEvent>;
             for await (const event of this.streamLeadWithAutoBuildStages(
               cursorEvents,
               sessionId,
@@ -4164,7 +4193,7 @@ ${leadContent.slice(0, leadContextLimit)}
           if (cursorApiKey && !chatId) {
             const cursorService = getCursorService();
             const workDir = session.repoPath || process.cwd();
-            const cursorSdkEvents = cursorService.streamMessage(sessionId, fullMessage, workDir, selectedModel) as AsyncIterable<StreamEvent>;
+            const cursorSdkEvents = cursorService.streamMessage(sessionId, fullMessage, workDir, selectedModel, leadHarnessPolicy) as AsyncIterable<StreamEvent>;
             for await (const event of this.streamLeadWithAutoBuildStages(
               cursorSdkEvents,
               sessionId,
@@ -4185,7 +4214,7 @@ ${leadContent.slice(0, leadContextLimit)}
           } else {
             const workDir = session.repoPath || process.cwd();
             console.log(`[Claude Service] Cursor local → CLI${chatId ? ` (resume ${chatId})` : ' (new chat)'}`);
-            const cursorEvents = cursorCliService.streamMessage(sessionId, fullMessage, workDir, selectedModel, undefined, chatId || undefined) as AsyncIterable<StreamEvent>;
+            const cursorEvents = cursorCliService.streamMessage(sessionId, fullMessage, workDir, selectedModel, undefined, chatId || undefined, leadHarnessPolicy) as AsyncIterable<StreamEvent>;
             for await (const event of this.streamLeadWithAutoBuildStages(
               cursorEvents,
               sessionId,
@@ -4237,7 +4266,7 @@ ${leadContent.slice(0, leadContextLimit)}
         const baseGeminiMessage = geminiContext ? `${geminiContext}\n\n${userMessage}` : userMessage;
         const { message: fullMessage, cleanup: geminiCleanup } = await this.prepareCliAttachments(sessionId, baseGeminiMessage, attachments, session.sshConfig);
         try {
-          const geminiEvents = geminiService.streamMessage(sessionId, fullMessage, workDir, selectedModel, session.sshConfig) as AsyncIterable<StreamEvent>;
+          const geminiEvents = geminiService.streamMessage(sessionId, fullMessage, workDir, selectedModel, session.sshConfig, leadHarnessPolicy) as AsyncIterable<StreamEvent>;
           for await (const event of this.streamLeadWithAutoBuildStages(
             geminiEvents,
             sessionId,
@@ -4288,7 +4317,7 @@ ${leadContent.slice(0, leadContextLimit)}
         const baseOpenCodeMessage = openCodeHandoffContext ? `${openCodeHandoffContext}\n\n${userMessage}` : userMessage;
         const { message: fullMessage, cleanup: openCodeCleanup } = await this.prepareCliAttachments(sessionId, baseOpenCodeMessage, attachments, session.sshConfig);
         try {
-          const openCodeEvents = openCodeService.streamMessage(sessionId, fullMessage, workDir, selectedModel, session.sshConfig, autoBuildLeadPermissionMode) as AsyncIterable<StreamEvent>;
+          const openCodeEvents = openCodeService.streamMessage(sessionId, fullMessage, workDir, selectedModel, session.sshConfig, autoBuildLeadPermissionMode, leadHarnessPolicy) as AsyncIterable<StreamEvent>;
           for await (const event of this.streamLeadWithAutoBuildStages(
             openCodeEvents,
             sessionId,
@@ -4352,50 +4381,9 @@ ${leadContent.slice(0, leadContextLimit)}
         console.warn('[Claude Service] Could not load transcript messages for cross-harness context:', error);
       }
 
-      const isOpus = selectedModel.includes('opus');
-
-      // Effort level to thinking token mapping
-      // Maps new effort levels (low/medium/high/max) to maxThinkingTokens budgets
-      // Also handles legacy values (off/thinking/ultrathink) for backward compatibility
-      const effortToThinkingTokens = (effort: string): number | undefined => {
-        // Migrate legacy values first
-        let migratedEffort = effort;
-        if (effort === 'off') migratedEffort = 'low';
-        if (effort === 'thinking') migratedEffort = 'medium';
-        if (effort === 'ultrathink') migratedEffort = 'high';
-
-        switch (migratedEffort) {
-          case 'low':
-            return undefined; // No extended thinking - fast & efficient
-          case 'medium':
-            return 10000; // Balanced effort
-          case 'high':
-            return isOpus ? 60000 : 100000; // Full capability (default)
-          case 'xhigh':
-            if (!isOpus) {
-              console.warn('[Claude Service] ⚠️  xhigh effort only available on Opus, falling back to high');
-              return 100000;
-            }
-            return 100000; // Extended deep thinking
-          case 'max':
-            if (!isOpus) {
-              console.warn('[Claude Service] ⚠️  max effort only available on Opus, falling back to high');
-              return 100000;
-            }
-            return 128000; // Maximum
-          default:
-            console.warn(`[Claude Service] Unknown effort level: ${effort}, defaulting to medium`);
-            return 10000; // Default to medium if unknown
-        }
-      };
-
-      const maxThinkingTokens = effortToThinkingTokens(thinkingMode || 'high');
-
-      if (thinkingMode) {
-        console.log(`[Claude Service] Effort level: ${thinkingMode} -> maxThinkingTokens: ${maxThinkingTokens}`);
-        if (thinkingMode === 'max' && !isOpus) {
-          console.log(`[Claude Service] Note: max effort requested but model is not Opus, using high instead`);
-        }
+      const claudePolicy = leadHarnessPolicy.claude;
+      if (thinkingMode || claudePolicy?.effort) {
+        console.log(`[Claude Service] Effort level: ${thinkingMode || claudePolicy?.effort || 'default'} -> ${claudePolicy?.thinking?.type || (claudePolicy?.maxThinkingTokens ? `maxThinkingTokens:${claudePolicy.maxThinkingTokens}` : 'default')}`);
       }
 
       // Build prompt with attachments
@@ -4878,8 +4866,10 @@ Begin by creating the task structure now.
           ...(!settings.foundryEnabled && !selectedModel.includes('opus-4-6') && !selectedModel.includes('sonnet-4-6')
             ? { betas: ['context-1m-2025-08-07' as const] }
             : {}),
-          ...(maxThinkingTokens ? { maxThinkingTokens } : {}),
-          ...(fastMode ? { fastMode: true } : {}),
+          ...(claudePolicy?.thinking ? { thinking: claudePolicy.thinking } : {}),
+          ...(claudePolicy?.effort ? { effort: claudePolicy.effort } : {}),
+          ...(claudePolicy?.maxThinkingTokens ? { maxThinkingTokens: claudePolicy.maxThinkingTokens } : {}),
+          ...(effectiveFastMode ? { fastMode: true } : {}),
           // Ultra Plan Mode: Add hooks if enabled
           ...(hooks ? { hooks } : {}),
           // Use Claude Code's system prompt preset with Build agent context
@@ -7628,29 +7618,124 @@ Begin by creating the task structure now.
     }
   }
 
+  private getCanonicalTranscriptCandidateIds(sessionId: string): string[] {
+    const preferredIds = new Set<string>();
+    const candidateIds = new Set<string>();
+    const add = (id: unknown, target = candidateIds): void => {
+      if (typeof id === 'string' && id.trim()) {
+        target.add(id);
+      }
+    };
+    const prefer = (id: unknown): void => add(id, preferredIds);
+    const collectFromSession = (session: Session | undefined): void => {
+      if (!session) return;
+      add(session.id);
+      add(session.sdkSessionId);
+      add(session.continuedFromSessionId);
+      (session.relatedSessionIds || []).forEach((id) => add(id));
+    };
+
+    add(sessionId);
+
+    const sdkSessionMappings = (this.sessionStore.get('sdkSessionMappings') || {}) as Record<string, string>;
+    add(sdkSessionMappings[sessionId]);
+    Object.entries(sdkSessionMappings).forEach(([localSessionId, sdkSessionId]) => {
+      if (localSessionId === sessionId) {
+        prefer(localSessionId);
+        add(localSessionId);
+        add(sdkSessionId);
+      }
+      if (sdkSessionId === sessionId) {
+        prefer(localSessionId);
+        add(localSessionId);
+        add(sdkSessionId);
+      }
+    });
+
+    const storedSessions = (this.sessionStore.get('sessions') || {}) as Record<string, Session>;
+    const discoveredSessions = (this.sessionStore.get('discoveredSessions') || {}) as Record<string, Session>;
+    collectFromSession(storedSessions[sessionId]);
+    collectFromSession(discoveredSessions[sessionId]);
+    Object.values({ ...storedSessions, ...discoveredSessions }).forEach((session) => {
+      if (
+        session.id === sessionId
+        || session.sdkSessionId === sessionId
+        || session.continuedFromSessionId === sessionId
+        || (session.relatedSessionIds || []).includes(sessionId)
+      ) {
+        prefer(session.id);
+        collectFromSession(session);
+      }
+    });
+
+    return Array.from(new Set([...preferredIds, ...candidateIds]));
+  }
+
+  private loadBuildTranscriptForSession(sessionId: string): { sessionId: string; entries: TranscriptEntry[]; exists: boolean } {
+    const candidateIds = this.getCanonicalTranscriptCandidateIds(sessionId);
+    const fallbackId = candidateIds[0] || sessionId;
+    let firstExistingTranscript: { sessionId: string; entries: TranscriptEntry[]; exists: boolean } | null = null;
+
+    for (const candidateId of candidateIds) {
+      if (!transcriptService.hasTranscript(candidateId)) continue;
+      const entries = transcriptService.loadMessages(candidateId);
+      if (!firstExistingTranscript) {
+        firstExistingTranscript = { sessionId: candidateId, entries, exists: true };
+      }
+      const messages = transcriptEntriesToChatMessages(entries)
+        .filter((message) => message.role !== 'assistant' || hasRecoverableOutput(message));
+      if (messages.some((message) => message.role === 'assistant')) {
+        if (candidateId !== sessionId) {
+          console.log(`[Claude] Using Build transcript alias ${candidateId} for session ${sessionId}`);
+        }
+        return { sessionId: candidateId, entries, exists: true };
+      }
+    }
+
+    if (firstExistingTranscript) {
+      if (firstExistingTranscript.sessionId !== sessionId) {
+        console.log(`[Claude] Using Build transcript alias ${firstExistingTranscript.sessionId} for session ${sessionId}`);
+      }
+      return firstExistingTranscript;
+    }
+
+    return { sessionId: fallbackId, entries: [], exists: false };
+  }
+
+  hasBuildTranscriptForSession(sessionId: string): boolean {
+    return this.loadBuildTranscriptForSession(sessionId).exists;
+  }
+
   async getCanonicalMessages(sessionId: string, limit = 200): Promise<ChatMessage[]> {
+    const buildTranscript = this.loadBuildTranscriptForSession(sessionId);
+    const buildTranscriptEntries = buildTranscript.entries;
+    const buildMessages = transcriptEntriesToChatMessages(buildTranscriptEntries);
+    const usableBuildMessages = buildMessages
+      .filter((message) => message.role !== 'assistant' || hasRecoverableOutput(message));
+    if (buildTranscript.exists) {
+      return filterInternalPromptEchoes(limit && limit > 0
+        ? usableBuildMessages.slice(-limit)
+        : usableBuildMessages);
+    }
+
     const claudeMessages = await this.getMessages(sessionId, limit).catch((error) => {
       console.warn('[Claude] Could not load Claude transcript for canonical history:', error);
       return [] as ChatMessage[];
     });
-    const buildTranscriptEntries = transcriptService.hasTranscript(sessionId)
-      ? transcriptService.loadMessages(sessionId)
-      : [];
-    const buildMessages = transcriptEntriesToChatMessages(buildTranscriptEntries);
     const usableClaudeMessages = claudeMessages
       .filter((message) => message.role !== 'assistant' || hasRecoverableOutput(message));
 
     if (usableClaudeMessages.length > 0) {
-      const upsert = transcriptService.upsertMessages(sessionId, usableClaudeMessages, {
+      const upsert = transcriptService.upsertMessages(buildTranscript.sessionId, usableClaudeMessages, {
         existingEntries: buildTranscriptEntries,
       });
       if (upsert.changed) {
-        console.log(`[Claude] Backfilled Build transcript for ${sessionId} (${upsert.written} canonical entries)`);
+        console.log(`[Claude] Backfilled Build transcript for ${buildTranscript.sessionId} (${upsert.written} canonical entries)`);
       }
     }
 
     return filterInternalPromptEchoes(mergeRecoveredStreamMessages(
-      buildMessages,
+      usableBuildMessages,
       usableClaudeMessages,
       limit
     ));

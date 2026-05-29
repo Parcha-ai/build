@@ -30,6 +30,8 @@ const steps: VerificationStep[] = [
   tsNode('scripts/verify-auto-router-attachments.ts'),
   tsNode('scripts/verify-auto-router-plan-mode.ts'),
   tsNode('scripts/verify-harness-message-flow.ts'),
+  tsNode('scripts/verify-harness-policy-translation.ts'),
+  tsNode('scripts/verify-build-transcript-precedence.ts'),
   {
     label: 'focused-eslint',
     command: npxCommand,
@@ -42,6 +44,7 @@ const steps: VerificationStep[] = [
       process.cwd(),
       'src/main/services/auto-router.service.ts',
       'src/main/services/flue-meta-router.service.ts',
+      'src/main/services/harness-policy.service.ts',
       'src/main/ipc/analytics.ipc.ts',
       'src/shared/types/index.ts',
       'src/renderer/stores/session.store.ts',
@@ -57,6 +60,8 @@ const steps: VerificationStep[] = [
       'scripts/verify-auto-router-handoff-context.ts',
       'scripts/verify-auto-router-controller-confidence.ts',
       'scripts/verify-auto-router-meta-harness.ts',
+      'scripts/verify-harness-policy-translation.ts',
+      'scripts/verify-build-transcript-precedence.ts',
     ],
   },
   {

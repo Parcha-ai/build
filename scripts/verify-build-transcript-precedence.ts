@@ -1,0 +1,80 @@
+import assert from 'assert';
+import fs from 'fs';
+import path from 'path';
+import { transcriptEntriesToChatMessages, type TranscriptEntry } from '../src/main/services/transcript.service';
+
+const root = path.resolve(__dirname, '..');
+const claudeIpc = fs.readFileSync(path.join(root, 'src/main/ipc/claude.ipc.ts'), 'utf8');
+const claudeService = fs.readFileSync(path.join(root, 'src/main/services/claude.service.ts'), 'utf8');
+const sessionService = fs.readFileSync(path.join(root, 'src/main/services/session.service.ts'), 'utf8');
+const transcriptService = fs.readFileSync(path.join(root, 'src/main/services/transcript.service.ts'), 'utf8');
+const channels = fs.readFileSync(path.join(root, 'src/shared/constants/channels.ts'), 'utf8');
+const preload = fs.readFileSync(path.join(root, 'src/main/preload.ts'), 'utf8');
+const sessionStore = fs.readFileSync(path.join(root, 'src/renderer/stores/session.store.ts'), 'utf8');
+
+const getMessagesHandler = claudeIpc.match(/ipcMain\.handle\(IPC_CHANNELS\.CLAUDE_GET_MESSAGES[\s\S]*?\n {2}\}\);/)?.[0] || '';
+assert.match(getMessagesHandler, /claudeService\.getCanonicalMessages\(sessionId, limit\)/);
+assert.doesNotMatch(getMessagesHandler, /claudeService\.getMessages\(sessionId, limit\)/);
+assert.match(getMessagesHandler, /hasBuildTranscriptForSession\(sessionId\)/);
+assert.match(getMessagesHandler, /mergeCompletedStreamMessages\(canonicalMessages, sessionId, limit\)/);
+assert.match(getMessagesHandler, /\? canonicalMessages/);
+
+assert.match(channels, /CLAUDE_HAS_BUILD_TRANSCRIPT: 'claude:has-build-transcript'/);
+assert.match(preload, /hasBuildTranscript: \(sessionId: string\): Promise<boolean>/);
+assert.match(claudeIpc, /IPC_CHANNELS\.CLAUDE_HAS_BUILD_TRANSCRIPT/);
+assert.match(claudeIpc, /claudeService\.hasBuildTranscriptForSession\(sessionId\)/);
+assert.match(claudeIpc, /function recordCompletedStreamMessage\(sessionId: string, message: ChatMessage\): void \{\s*if \(claudeService\.hasBuildTranscriptForSession\(sessionId\)\) return;/);
+assert.match(sessionStore, /hasAuthoritativeBuildTranscript/);
+assert.match(sessionStore, /async function hasBuildTranscriptForHydration\(sessionId: string\): Promise<boolean>/);
+assert.match(sessionStore, /!window\.electronAPI\.claude\.hasBuildTranscript/);
+assert.match(sessionStore, /const supplementalMessagesForContext = hasAuthoritativeBuildTranscript \? \[\] : loadSupplementalMessages\(sessionId\)/);
+assert.match(sessionStore, /hasAuthoritativeBuildTranscript \? \[\] : loadSupplementalMessages\(sessionId\)/);
+assert.match(sessionStore, /if \(hasAuthoritativeBuildTranscript\) \{/);
+
+const canonicalMethod = claudeService.match(/async getCanonicalMessages\(sessionId: string, limit = 200\): Promise<ChatMessage\[]> \{[\s\S]*?\n {2}\}/)?.[0] || '';
+const buildLoadIndex = canonicalMethod.indexOf('this.loadBuildTranscriptForSession(sessionId)');
+const claudeLoadIndex = canonicalMethod.indexOf('const claudeMessages');
+assert.ok(buildLoadIndex >= 0, 'Canonical messages must load Build transcript entries');
+assert.ok(claudeLoadIndex >= 0, 'Canonical messages must retain Claude legacy backfill');
+assert.ok(buildLoadIndex < claudeLoadIndex, 'Build transcript must be considered before Claude transcript');
+assert.match(canonicalMethod, /if \(buildTranscript\.exists\)/);
+assert.match(canonicalMethod, /return filterInternalPromptEchoes\(limit && limit > 0/);
+assert.match(canonicalMethod, /transcriptService\.upsertMessages\(buildTranscript\.sessionId, usableClaudeMessages/);
+
+assert.match(claudeService, /private getCanonicalTranscriptCandidateIds\(sessionId: string\): string\[\]/);
+assert.match(claudeService, /sdkSessionMappings/);
+assert.match(claudeService, /continuedFromSessionId/);
+assert.match(claudeService, /relatedSessionIds/);
+assert.match(claudeService, /preferredIds/);
+assert.match(claudeService, /private loadBuildTranscriptForSession\(sessionId: string\)/);
+assert.match(claudeService, /firstExistingTranscript/);
+assert.match(claudeService, /hasBuildTranscriptForSession\(sessionId: string\): boolean/);
+assert.match(claudeService, /Using Build transcript alias/);
+
+assert.match(sessionService, /resolveBuildSessionIdForDiscoveredSession/);
+assert.match(sessionService, /const canonicalId = this\.resolveBuildSessionIdForDiscoveredSession/);
+assert.match(sessionService, /sessionMap\.set\(canonicalId/);
+assert.match(sessionService, /canonicalId !== id/);
+
+assert.match(transcriptService, /Persists ALL harness messages/);
+assert.match(transcriptService, /~\/\.build\/transcripts\/\{sessionId\}\.jsonl/);
+assert.match(transcriptService, /mergeRecoveredStreamMessages\(existingMessages, incomingMessages\)/);
+
+const recoveredEntries: TranscriptEntry[] = [
+  {
+    id: 'assistant-codex',
+    role: 'assistant',
+    content: 'Codex survived reload',
+    timestamp: '2026-05-29T12:00:00.000Z',
+    harness: 'codex',
+    model: 'codex:gpt-5.5',
+    toolCalls: [{ id: 'tool-1', name: 'Read', input: '{"file_path":"src/app.ts"}', result: 'plain text result' }],
+  },
+];
+const recoveredMessages = transcriptEntriesToChatMessages(recoveredEntries);
+assert.equal(recoveredMessages.length, 1);
+assert.equal(recoveredMessages[0].harness, 'codex');
+assert.equal(recoveredMessages[0].content, 'Codex survived reload');
+assert.equal(recoveredMessages[0].toolCalls?.[0]?.name, 'Read');
+
+console.log('build transcript precedence verifier passed');

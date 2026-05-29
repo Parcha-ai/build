@@ -56,7 +56,32 @@ assert.match(
   /if \(!suppressUserMessage\) \{[\s\S]*?activeMetaGoals:[\s\S]*?\[sessionId\]: goalObjective/s,
   'Hidden meta-goal continuations must preserve the active goal state instead of resetting it as a new user request',
 );
+assert.match(
+  sessionStore,
+  /activeUserPrompt: Record<string, \{[\s\S]*?suppressUserMessage\?: boolean;[\s\S]*?\} \| null>/s,
+  'Active prompts must retain whether they were hidden internal messages',
+);
+assert.match(
+  sessionStore,
+  /if \(\s*!suppressUserMessage[\s\S]*?!state\.activeUserPrompt\[sessionId\]\?\.suppressUserMessage[\s\S]*?hasVisibleAssistantActivity\(state, sessionId\)/s,
+  'Early follow-up coalescing must never merge visible user text into hidden meta-goal continuations',
+);
 assert.match(sessionStore, /latestState\.sendMessage\(sessionId, buildMetaGoalContinuationPrompt\(nextGoal\), undefined, \{\s*suppressUserMessage: true,/s);
+assert.match(
+  sessionStore,
+  /function isFatalMetaGoalTurnFailure\(message: ChatMessage, content: string\): boolean/,
+  'Meta-goal orchestration must detect fatal turn failures',
+);
+assert.match(
+  sessionStore,
+  /if \(isFatalMetaGoalTurnFailure\(finalMessage, finalContent\)\) \{[\s\S]*?activeMetaGoals: blockMetaGoalState\(state\.activeMetaGoals, sessionId\)[\s\S]*?return;/s,
+  'Meta-goals must stop retrying after fatal final turn output',
+);
+assert.match(
+  sessionStore,
+  /onStreamError[\s\S]*?activeMetaGoals: blockMetaGoalState\(state\.activeMetaGoals, sessionId\)/s,
+  'Meta-goals must stop retrying after stream errors',
+);
 assert.match(sessionStore, /activeStreamModel: decision\.resolvedModel/);
 assert.match(sessionStore, /const isAutoBuildTurn = Boolean\(autoBuildDecision\);/);
 

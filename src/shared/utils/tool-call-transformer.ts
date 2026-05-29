@@ -146,6 +146,14 @@ export function normalizeToolName(rawName: string | undefined): string {
   return TOOL_NAME_ALIASES[aliasKey] || TOOL_NAME_ALIASES[baseName] || baseName;
 }
 
+export function isTranscriptVisibleToolName(rawName: string | undefined): boolean {
+  return normalizeToolName(rawName) !== 'AskUserQuestion';
+}
+
+export function isTranscriptVisibleToolCall(toolCall: Pick<ToolCall, 'name'> | undefined): boolean {
+  return isTranscriptVisibleToolName(toolCall?.name);
+}
+
 function withOriginalToolMetadata(input: ToolInput, rawName: string | undefined, normalizedName: string): ToolInput {
   if (!rawName) return input;
   const { baseName, providerPrefix } = stripProviderPrefix(rawName);

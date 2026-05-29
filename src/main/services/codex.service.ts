@@ -11,6 +11,7 @@ import { terminateProcessTree } from '../utils/process-tree';
 import { truncateMiddlePreservingTail } from '../../shared/utils/prompt-truncation';
 import { mcpService } from './mcp.service';
 import { findUsableLocalExecutable, isUsableLocalExecutable } from '../utils/local-executable';
+import { prependPolicyPreamble, type HarnessPolicyTranslation, type CodexReasoningEffort } from './harness-policy.service';
 
 // Stream event types for Codex (parallel to Claude's StreamEvent but separate)
 export interface CodexStreamEvent {
@@ -129,6 +130,8 @@ interface CodexExecutionMode {
   sandboxMode?: CodexSandboxMode;
   useDangerouslyBypass: boolean;
   promptPreamble?: string;
+  modelReasoningEffort?: CodexReasoningEffort;
+  policy?: HarnessPolicyTranslation;
 }
 
 class CodexServiceImpl {
@@ -430,6 +433,7 @@ class CodexServiceImpl {
       env.CODEX_API_KEY = apiKey;
       env.OPENAI_API_KEY = env.OPENAI_API_KEY || apiKey;
     }
+    Object.assign(env, executionMode?.policy?.env || {});
     env.CODEX_SDK_ORIGINATOR = 'grep-build';
 
     this.cancel(sessionId);
@@ -548,7 +552,10 @@ class CodexServiceImpl {
       command: 'codex',
       args: codexArgs,
       cwd: workingDir,
-      env: apiKey ? { CODEX_API_KEY: apiKey, OPENAI_API_KEY: apiKey } : {},
+      env: {
+        ...(apiKey ? { CODEX_API_KEY: apiKey, OPENAI_API_KEY: apiKey } : {}),
+        ...(executionMode?.policy?.env || {}),
+      },
       closeStdinOnEnd: true,
     });
 
@@ -615,7 +622,7 @@ class CodexServiceImpl {
    * Stream Codex events for direct /codex invocation.
    */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  async *streamDirect(sessionId: string, prompt: string, workingDir: string, sshConfig?: any, codexModel?: string, attachments?: Attachment[], permissionMode?: string): AsyncGenerator<CodexStreamEvent> {
+  async *streamDirect(sessionId: string, prompt: string, workingDir: string, sshConfig?: any, codexModel?: string, attachments?: Attachment[], permissionMode?: string, policy?: HarnessPolicyTranslation): AsyncGenerator<CodexStreamEvent> {
     const apiKey = this.getOpenAiApiKey();
 
     if (sshConfig) {
@@ -632,7 +639,7 @@ class CodexServiceImpl {
       }
     }
 
-    const executionMode = this.getExecutionMode(permissionMode);
+    const executionMode = this.getExecutionMode(permissionMode, policy);
     const promptWithModeContext = this.buildPromptWithExecutionMode(prompt, executionMode);
     const MAX_PROMPT_CHARS = 50000;
     let safePrompt = prompt;
@@ -717,7 +724,7 @@ class CodexServiceImpl {
    * Stream Codex as Claude-compatible StreamEvents so it works in the existing chat pipeline.
    */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  async *streamAsChat(sessionId: string, prompt: string, workingDir: string, sshConfig?: any, conversationContext?: string, codexModel?: string, attachments?: Attachment[], permissionMode?: string): AsyncGenerator<{
+  async *streamAsChat(sessionId: string, prompt: string, workingDir: string, sshConfig?: any, conversationContext?: string, codexModel?: string, attachments?: Attachment[], permissionMode?: string, policy?: HarnessPolicyTranslation): AsyncGenerator<{
     type: string;
     content?: string;
     toolCall?: { id: string; name: string; input: Record<string, unknown>; status: string; result?: string };
@@ -736,7 +743,7 @@ class CodexServiceImpl {
     const fullPrompt = conversationContext ? `${conversationContext}\n\n${promptWithAttachmentContext}` : promptWithAttachmentContext;
     let outputContent = '';
 
-    for await (const event of this.streamDirect(sessionId, fullPrompt, workingDir, sshConfig, codexModel, attachments, permissionMode)) {
+    for await (const event of this.streamDirect(sessionId, fullPrompt, workingDir, sshConfig, codexModel, attachments, permissionMode, policy)) {
       switch (event.type) {
         case 'text_start':
           break;
@@ -801,10 +808,15 @@ class CodexServiceImpl {
     return value.replace(/'/g, "'\\''");
   }
 
-  private getExecutionMode(permissionMode?: string): CodexExecutionMode {
+  private getExecutionMode(permissionMode?: string, policy?: HarnessPolicyTranslation): CodexExecutionMode {
+    const policyFields = {
+      ...(policy?.codex?.modelReasoningEffort ? { modelReasoningEffort: policy.codex.modelReasoningEffort } : {}),
+      ...(policy ? { policy } : {}),
+    };
     switch (permissionMode) {
       case 'plan':
         return {
+          ...policyFields,
           approvalPolicy: 'never',
           sandboxMode: 'read-only',
           useDangerouslyBypass: false,
@@ -816,18 +828,21 @@ class CodexServiceImpl {
         };
       case 'acceptEdits':
         return {
+          ...policyFields,
           approvalPolicy: 'never',
           sandboxMode: 'workspace-write',
           useDangerouslyBypass: false,
         };
       case 'default':
         return {
+          ...policyFields,
           approvalPolicy: 'on-request',
           sandboxMode: 'workspace-write',
           useDangerouslyBypass: false,
         };
       case 'dontAsk':
         return {
+          ...policyFields,
           approvalPolicy: 'never',
           sandboxMode: 'read-only',
           useDangerouslyBypass: false,
@@ -835,6 +850,7 @@ class CodexServiceImpl {
       case 'bypassPermissions':
       default:
         return {
+          ...policyFields,
           useDangerouslyBypass: true,
         };
     }
@@ -843,19 +859,21 @@ class CodexServiceImpl {
   private appendExecutionModeArgs(args: string[], executionMode?: CodexExecutionMode): void {
     if (executionMode?.useDangerouslyBypass) {
       args.push('--dangerously-bypass-approvals-and-sandbox');
-      return;
+    } else {
+      args.push('--sandbox', executionMode?.sandboxMode || 'workspace-write');
+      args.push('--config', `approval_policy="${executionMode?.approvalPolicy || 'never'}"`);
     }
 
-    args.push('--sandbox', executionMode?.sandboxMode || 'workspace-write');
-    args.push('--config', `approval_policy="${executionMode?.approvalPolicy || 'never'}"`);
+    if (executionMode?.modelReasoningEffort) {
+      args.push('--config', `model_reasoning_effort="${executionMode.modelReasoningEffort}"`);
+    }
   }
 
   private buildPromptWithExecutionMode(prompt: string, executionMode: CodexExecutionMode): string {
-    if (!executionMode.promptPreamble) {
-      return prompt;
-    }
-
-    return `${executionMode.promptPreamble}\n\n${prompt}`;
+    const promptWithPermissionMode = executionMode.promptPreamble
+      ? `${executionMode.promptPreamble}\n\n${prompt}`
+      : prompt;
+    return prependPolicyPreamble(promptWithPermissionMode, executionMode.policy?.promptPreamble);
   }
 
   private buildPromptWithAttachmentContext(prompt: string, attachments?: Attachment[]): string {

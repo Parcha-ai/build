@@ -73,7 +73,7 @@ assert.doesNotMatch(sessionStore, /Resolved lead:/);
 assert.doesNotMatch(sessionStore, /Routing reason:/);
 assert.doesNotMatch(sessionStore, /stage\.harness:\$\{stage\.model\}/);
 
-assert.doesNotMatch(autoRouteBadge, /resolvedModel|confidence|leadModel|fallbackModels|Mode:|Stages:| via |getModelShortName|getHarnessShortName/);
+assert.doesNotMatch(autoRouteBadge, /confidence|leadModel|fallbackModels|Mode:|Stages:| via |getModelShortName|getHarnessShortName/);
 assert.doesNotMatch(autoRouteBadge, /Auto Build:/);
 assert.match(autoRouteBadge, /Current turn scope:/);
 assert.doesNotMatch(
@@ -91,7 +91,6 @@ assert.doesNotMatch(
   /<AutoRouteBadge[\s\S]{0,400}resolvedModel/,
   'Auto route badge must not receive model ids for visible display',
 );
-assert.match(inputArea, /Current turn scope:/);
 assert.doesNotMatch(messageList, /AUTO BUILD/);
 assert.doesNotMatch(
   messageList,

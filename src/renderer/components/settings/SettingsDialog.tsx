@@ -18,8 +18,44 @@ type AutoBuildModelKey = 'plan' | 'build' | 'verify' | 'refine' | 'fallback';
 type AutoBuildModelSettings = Record<AutoBuildModelKey, string>;
 
 type AutoBuildEffortSettings = Record<AutoBuildModelKey, string>;
+type AutoBuildSpeedSettings = Record<AutoBuildModelKey, string>;
+type AutoBuildWorkflowSettings = Record<AutoBuildModelKey, string>;
+type AutoBuildVerificationSettings = Record<AutoBuildModelKey, string>;
+type AutoBuildBudgetSettings = Record<AutoBuildModelKey, string>;
 
 const AUTO_BUILD_EFFORT_DEFAULTS: AutoBuildEffortSettings = {
+  plan: '',
+  build: '',
+  verify: '',
+  refine: '',
+  fallback: '',
+};
+
+const AUTO_BUILD_SPEED_DEFAULTS: AutoBuildSpeedSettings = {
+  plan: 'auto',
+  build: 'auto',
+  verify: 'auto',
+  refine: 'auto',
+  fallback: 'auto',
+};
+
+const AUTO_BUILD_WORKFLOW_DEFAULTS: AutoBuildWorkflowSettings = {
+  plan: 'auto',
+  build: 'auto',
+  verify: 'auto',
+  refine: 'auto',
+  fallback: 'auto',
+};
+
+const AUTO_BUILD_VERIFICATION_DEFAULTS: AutoBuildVerificationSettings = {
+  plan: 'auto',
+  build: 'auto',
+  verify: 'auto',
+  refine: 'auto',
+  fallback: 'auto',
+};
+
+const AUTO_BUILD_BUDGET_DEFAULTS: AutoBuildBudgetSettings = {
   plan: '',
   build: '',
   verify: '',
@@ -34,6 +70,27 @@ const EFFORT_OPTIONS: Array<{ value: string; label: string }> = [
   { value: 'high', label: 'High' },
   { value: 'xhigh', label: 'X-High' },
   { value: 'max', label: 'Max' },
+];
+
+const SPEED_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: 'auto', label: 'Auto' },
+  { value: 'standard', label: 'Std' },
+  { value: 'fast', label: 'Fast' },
+];
+
+const WORKFLOW_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: 'auto', label: 'Auto' },
+  { value: 'single', label: 'Single' },
+  { value: 'lead-with-delegates', label: 'Lead+' },
+  { value: 'sequential', label: 'Seq' },
+  { value: 'dynamic', label: 'Dyn' },
+];
+
+const VERIFICATION_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: 'auto', label: 'Auto' },
+  { value: 'none', label: 'None' },
+  { value: 'optional', label: 'Opt' },
+  { value: 'required', label: 'Req' },
 ];
 
 const AUTO_BUILD_MODEL_DEFAULTS: AutoBuildModelSettings = {
@@ -58,6 +115,10 @@ interface CustomCategoryState {
   description: string;
   model: string;
   effort: string;
+  speed: string;
+  workflow: string;
+  budgetUsd: string;
+  verification: string;
   keywords: string;
 }
 
@@ -67,14 +128,26 @@ function autoBuildConfigFromState(
   models: AutoBuildModelSettings,
   costAware: boolean,
   effort?: AutoBuildEffortSettings,
+  speed?: AutoBuildSpeedSettings,
+  workflow?: AutoBuildWorkflowSettings,
+  budget?: AutoBuildBudgetSettings,
+  verification?: AutoBuildVerificationSettings,
   customCats?: CustomCategoryState[],
 ) {
+  const parseBudget = (value: string) => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+  };
   const categories = (customCats || []).map(c => ({
     id: c.id,
     label: c.label,
     description: c.description,
     model: c.model,
     effort: c.effort || undefined,
+    speed: c.speed && c.speed !== 'auto' ? c.speed : undefined,
+    workflow: c.workflow && c.workflow !== 'auto' ? c.workflow : undefined,
+    budgetUsd: parseBudget(c.budgetUsd),
+    verification: c.verification && c.verification !== 'auto' ? c.verification : undefined,
     keywords: c.keywords.split(',').map((k: string) => k.trim()).filter(Boolean),
   }));
 
@@ -89,6 +162,26 @@ function autoBuildConfigFromState(
     ...(effort?.verify ? { verifyEffort: effort.verify } : {}),
     ...(effort?.refine ? { refineEffort: effort.refine } : {}),
     ...(effort?.fallback ? { fallbackEffort: effort.fallback } : {}),
+    ...(speed?.plan && speed.plan !== 'auto' ? { planSpeed: speed.plan } : {}),
+    ...(speed?.build && speed.build !== 'auto' ? { buildSpeed: speed.build } : {}),
+    ...(speed?.verify && speed.verify !== 'auto' ? { verifySpeed: speed.verify } : {}),
+    ...(speed?.refine && speed.refine !== 'auto' ? { refineSpeed: speed.refine } : {}),
+    ...(speed?.fallback && speed.fallback !== 'auto' ? { fallbackSpeed: speed.fallback } : {}),
+    ...(workflow?.plan && workflow.plan !== 'auto' ? { planWorkflow: workflow.plan } : {}),
+    ...(workflow?.build && workflow.build !== 'auto' ? { buildWorkflow: workflow.build } : {}),
+    ...(workflow?.verify && workflow.verify !== 'auto' ? { verifyWorkflow: workflow.verify } : {}),
+    ...(workflow?.refine && workflow.refine !== 'auto' ? { refineWorkflow: workflow.refine } : {}),
+    ...(workflow?.fallback && workflow.fallback !== 'auto' ? { fallbackWorkflow: workflow.fallback } : {}),
+    ...(budget?.plan && parseBudget(budget.plan) !== undefined ? { planBudgetUsd: parseBudget(budget.plan) } : {}),
+    ...(budget?.build && parseBudget(budget.build) !== undefined ? { buildBudgetUsd: parseBudget(budget.build) } : {}),
+    ...(budget?.verify && parseBudget(budget.verify) !== undefined ? { verifyBudgetUsd: parseBudget(budget.verify) } : {}),
+    ...(budget?.refine && parseBudget(budget.refine) !== undefined ? { refineBudgetUsd: parseBudget(budget.refine) } : {}),
+    ...(budget?.fallback && parseBudget(budget.fallback) !== undefined ? { fallbackBudgetUsd: parseBudget(budget.fallback) } : {}),
+    ...(verification?.plan && verification.plan !== 'auto' ? { planVerification: verification.plan } : {}),
+    ...(verification?.build && verification.build !== 'auto' ? { buildVerification: verification.build } : {}),
+    ...(verification?.verify && verification.verify !== 'auto' ? { verifyVerification: verification.verify } : {}),
+    ...(verification?.refine && verification.refine !== 'auto' ? { refineVerification: verification.refine } : {}),
+    ...(verification?.fallback && verification.fallback !== 'auto' ? { fallbackVerification: verification.fallback } : {}),
     categories,
     costAware,
   };
@@ -231,6 +324,10 @@ export default function SettingsDialog() {
   const availableModels = useSessionStore((s) => s.availableModels || []);
   const [autoBuildModels, setAutoBuildModels] = useState<AutoBuildModelSettings>(AUTO_BUILD_MODEL_DEFAULTS);
   const [autoBuildEffort, setAutoBuildEffort] = useState<AutoBuildEffortSettings>(AUTO_BUILD_EFFORT_DEFAULTS);
+  const [autoBuildSpeed, setAutoBuildSpeed] = useState<AutoBuildSpeedSettings>(AUTO_BUILD_SPEED_DEFAULTS);
+  const [autoBuildWorkflow, setAutoBuildWorkflow] = useState<AutoBuildWorkflowSettings>(AUTO_BUILD_WORKFLOW_DEFAULTS);
+  const [autoBuildBudget, setAutoBuildBudget] = useState<AutoBuildBudgetSettings>(AUTO_BUILD_BUDGET_DEFAULTS);
+  const [autoBuildVerification, setAutoBuildVerification] = useState<AutoBuildVerificationSettings>(AUTO_BUILD_VERIFICATION_DEFAULTS);
   const [autoBuildCostAware, setAutoBuildCostAware] = useState(true);
   const [customCategories, setCustomCategories] = useState<CustomCategoryState[]>([]);
 
@@ -373,6 +470,34 @@ export default function SettingsDialog() {
           if (savedAutoConfig?.refineEffort) savedEffort.refine = savedAutoConfig.refineEffort;
           if (savedAutoConfig?.fallbackEffort) savedEffort.fallback = savedAutoConfig.fallbackEffort;
           setAutoBuildEffort(savedEffort);
+          const savedSpeed: AutoBuildSpeedSettings = { ...AUTO_BUILD_SPEED_DEFAULTS };
+          if (savedAutoConfig?.planSpeed) savedSpeed.plan = savedAutoConfig.planSpeed;
+          if (savedAutoConfig?.buildSpeed) savedSpeed.build = savedAutoConfig.buildSpeed;
+          if (savedAutoConfig?.verifySpeed) savedSpeed.verify = savedAutoConfig.verifySpeed;
+          if (savedAutoConfig?.refineSpeed) savedSpeed.refine = savedAutoConfig.refineSpeed;
+          if (savedAutoConfig?.fallbackSpeed) savedSpeed.fallback = savedAutoConfig.fallbackSpeed;
+          setAutoBuildSpeed(savedSpeed);
+          const savedWorkflow: AutoBuildWorkflowSettings = { ...AUTO_BUILD_WORKFLOW_DEFAULTS };
+          if (savedAutoConfig?.planWorkflow) savedWorkflow.plan = savedAutoConfig.planWorkflow;
+          if (savedAutoConfig?.buildWorkflow) savedWorkflow.build = savedAutoConfig.buildWorkflow;
+          if (savedAutoConfig?.verifyWorkflow) savedWorkflow.verify = savedAutoConfig.verifyWorkflow;
+          if (savedAutoConfig?.refineWorkflow) savedWorkflow.refine = savedAutoConfig.refineWorkflow;
+          if (savedAutoConfig?.fallbackWorkflow) savedWorkflow.fallback = savedAutoConfig.fallbackWorkflow;
+          setAutoBuildWorkflow(savedWorkflow);
+          const savedBudget: AutoBuildBudgetSettings = { ...AUTO_BUILD_BUDGET_DEFAULTS };
+          if (savedAutoConfig?.planBudgetUsd !== undefined) savedBudget.plan = String(savedAutoConfig.planBudgetUsd);
+          if (savedAutoConfig?.buildBudgetUsd !== undefined) savedBudget.build = String(savedAutoConfig.buildBudgetUsd);
+          if (savedAutoConfig?.verifyBudgetUsd !== undefined) savedBudget.verify = String(savedAutoConfig.verifyBudgetUsd);
+          if (savedAutoConfig?.refineBudgetUsd !== undefined) savedBudget.refine = String(savedAutoConfig.refineBudgetUsd);
+          if (savedAutoConfig?.fallbackBudgetUsd !== undefined) savedBudget.fallback = String(savedAutoConfig.fallbackBudgetUsd);
+          setAutoBuildBudget(savedBudget);
+          const savedVerification: AutoBuildVerificationSettings = { ...AUTO_BUILD_VERIFICATION_DEFAULTS };
+          if (savedAutoConfig?.planVerification) savedVerification.plan = savedAutoConfig.planVerification;
+          if (savedAutoConfig?.buildVerification) savedVerification.build = savedAutoConfig.buildVerification;
+          if (savedAutoConfig?.verifyVerification) savedVerification.verify = savedAutoConfig.verifyVerification;
+          if (savedAutoConfig?.refineVerification) savedVerification.refine = savedAutoConfig.refineVerification;
+          if (savedAutoConfig?.fallbackVerification) savedVerification.fallback = savedAutoConfig.fallbackVerification;
+          setAutoBuildVerification(savedVerification);
           // Load custom categories
           if (Array.isArray(savedAutoConfig?.categories)) {
             const customs = savedAutoConfig.categories
@@ -383,6 +508,10 @@ export default function SettingsDialog() {
                 description: c.description || '',
                 model: c.model || 'claude-sonnet-4-6',
                 effort: c.effort || '',
+                speed: c.speed || 'auto',
+                workflow: c.workflow || 'auto',
+                budgetUsd: c.budgetUsd !== undefined ? String(c.budgetUsd) : '',
+                verification: c.verification || 'auto',
                 keywords: Array.isArray(c.keywords) ? c.keywords.join(', ') : (c.keywords || ''),
               }));
             setCustomCategories(customs);
@@ -914,9 +1043,18 @@ export default function SettingsDialog() {
     });
     const allModels = Array.from(allModelsById.values());
 
-    const saveAutoBuildConfig = (models: AutoBuildModelSettings, costAware = autoBuildCostAware, effort = autoBuildEffort, customs = customCategories) => {
+    const saveAutoBuildConfig = (
+      models: AutoBuildModelSettings,
+      costAware = autoBuildCostAware,
+      effort = autoBuildEffort,
+      speed = autoBuildSpeed,
+      workflow = autoBuildWorkflow,
+      budget = autoBuildBudget,
+      verification = autoBuildVerification,
+      customs = customCategories,
+    ) => {
       autoSaveAppSettings({
-        autoRouterConfig: autoBuildConfigFromState(models, costAware, effort, customs),
+        autoRouterConfig: autoBuildConfigFromState(models, costAware, effort, speed, workflow, budget, verification, customs),
       } as any);
     };
 
@@ -932,6 +1070,30 @@ export default function SettingsDialog() {
       saveAutoBuildConfig(autoBuildModels, autoBuildCostAware, updated);
     };
 
+    const updateTierSpeed = (id: AutoBuildModelKey, speed: string) => {
+      const updated = { ...autoBuildSpeed, [id]: speed };
+      setAutoBuildSpeed(updated);
+      saveAutoBuildConfig(autoBuildModels, autoBuildCostAware, autoBuildEffort, updated);
+    };
+
+    const updateTierWorkflow = (id: AutoBuildModelKey, workflow: string) => {
+      const updated = { ...autoBuildWorkflow, [id]: workflow };
+      setAutoBuildWorkflow(updated);
+      saveAutoBuildConfig(autoBuildModels, autoBuildCostAware, autoBuildEffort, autoBuildSpeed, updated);
+    };
+
+    const updateTierBudget = (id: AutoBuildModelKey, budget: string) => {
+      const updated = { ...autoBuildBudget, [id]: budget };
+      setAutoBuildBudget(updated);
+      saveAutoBuildConfig(autoBuildModels, autoBuildCostAware, autoBuildEffort, autoBuildSpeed, autoBuildWorkflow, updated);
+    };
+
+    const updateTierVerification = (id: AutoBuildModelKey, verification: string) => {
+      const updated = { ...autoBuildVerification, [id]: verification };
+      setAutoBuildVerification(updated);
+      saveAutoBuildConfig(autoBuildModels, autoBuildCostAware, autoBuildEffort, autoBuildSpeed, autoBuildWorkflow, autoBuildBudget, updated);
+    };
+
     const addCustomCategory = () => {
       const id = `custom-${Date.now()}`;
       const updated = [...customCategories, {
@@ -940,26 +1102,30 @@ export default function SettingsDialog() {
         description: '',
         model: 'claude-sonnet-4-6',
         effort: '',
+        speed: 'auto',
+        workflow: 'auto',
+        budgetUsd: '',
+        verification: 'auto',
         keywords: '',
       }];
       setCustomCategories(updated);
-      saveAutoBuildConfig(autoBuildModels, autoBuildCostAware, autoBuildEffort, updated);
+      saveAutoBuildConfig(autoBuildModels, autoBuildCostAware, autoBuildEffort, autoBuildSpeed, autoBuildWorkflow, autoBuildBudget, autoBuildVerification, updated);
     };
 
     const updateCustomCategory = (catId: string, field: string, value: string) => {
       const updated = customCategories.map(c => c.id === catId ? { ...c, [field]: value } : c);
       setCustomCategories(updated);
-      saveAutoBuildConfig(autoBuildModels, autoBuildCostAware, autoBuildEffort, updated);
+      saveAutoBuildConfig(autoBuildModels, autoBuildCostAware, autoBuildEffort, autoBuildSpeed, autoBuildWorkflow, autoBuildBudget, autoBuildVerification, updated);
     };
 
     const removeCustomCategory = (catId: string) => {
       const updated = customCategories.filter(c => c.id !== catId);
       setCustomCategories(updated);
-      saveAutoBuildConfig(autoBuildModels, autoBuildCostAware, autoBuildEffort, updated);
+      saveAutoBuildConfig(autoBuildModels, autoBuildCostAware, autoBuildEffort, autoBuildSpeed, autoBuildWorkflow, autoBuildBudget, autoBuildVerification, updated);
     };
 
     return (
-      <div className="space-y-4 p-4 overflow-y-auto max-h-[460px]">
+      <div className="space-y-4">
         <div>
           <h3 className="text-sm font-medium text-claude-text mb-1">Auto Build Routing</h3>
           <p className="text-[10px] text-claude-text-secondary mb-4">
@@ -974,37 +1140,102 @@ export default function SettingsDialog() {
             <span className="text-[10px] text-claude-text-secondary">Model assignments for the base task tiers</span>
           </div>
 
+          <div className="grid grid-cols-[116px_minmax(220px,1fr)_88px_78px] gap-2 px-2 text-[9px] font-mono uppercase tracking-wider text-claude-text-secondary">
+            <span />
+            <span>Model</span>
+            <span>Effort</span>
+            <span>Speed</span>
+          </div>
+
           {AUTO_BUILD_MODEL_ROWS.map((row) => (
-            <div key={row.id} className="grid grid-cols-[130px_14px_1fr_80px] items-center gap-2">
-              <div>
-                <div className="text-xs font-mono text-claude-text">{row.label}</div>
-                <div className="text-[9px] text-claude-text-secondary truncate">{row.detail}</div>
+            <div key={row.id} className="border border-claude-border/20 bg-claude-bg/20 px-2 py-2">
+              <div className="grid grid-cols-[116px_minmax(220px,1fr)_88px_78px] items-center gap-2">
+                <div>
+                  <div className="text-xs font-mono text-claude-text">{row.label}</div>
+                  <div className="text-[9px] text-claude-text-secondary truncate">{row.detail}</div>
+                </div>
+
+                <select
+                  value={autoBuildModels[row.id]}
+                  onChange={(e) => updateTierModel(row.id, e.target.value)}
+                  className="min-w-0 bg-claude-bg border border-claude-border px-2 py-1.5 text-xs font-mono text-claude-text focus:outline-none focus:border-claude-accent appearance-none cursor-pointer"
+                >
+                  {allModels.map(m => (
+                    <option key={m.id} value={m.id}>
+                      {m.harness ? `${m.name.replace(/ \(Codex\)| \(Cursor\)/, '')} [${m.harness}]` : m.name}
+                    </option>
+                  ))}
+                </select>
+
+                <select
+                  value={autoBuildEffort[row.id]}
+                  onChange={(e) => updateTierEffort(row.id, e.target.value)}
+                  className="bg-claude-bg border border-claude-border px-1.5 py-1.5 text-[10px] font-mono text-claude-text focus:outline-none focus:border-claude-accent appearance-none cursor-pointer"
+                  title="Effort level for this category"
+                >
+                  {EFFORT_OPTIONS.map(opt => (
+                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                  ))}
+                </select>
+
+                <select
+                  value={autoBuildSpeed[row.id]}
+                  onChange={(e) => updateTierSpeed(row.id, e.target.value)}
+                  className="bg-claude-bg border border-claude-border px-1.5 py-1.5 text-[10px] font-mono text-claude-text focus:outline-none focus:border-claude-accent appearance-none cursor-pointer"
+                  title="Speed mode"
+                >
+                  {SPEED_OPTIONS.map(opt => (
+                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                  ))}
+                </select>
               </div>
 
-              <span className="text-claude-text-secondary text-[10px]">→</span>
-
-              <select
-                value={autoBuildModels[row.id]}
-                onChange={(e) => updateTierModel(row.id, e.target.value)}
-                className="flex-1 bg-claude-bg border border-claude-border px-2 py-1.5 text-xs font-mono text-claude-text focus:outline-none focus:border-claude-accent appearance-none cursor-pointer"
-              >
-                {allModels.map(m => (
-                  <option key={m.id} value={m.id}>
-                    {m.harness ? `${m.name.replace(/ \(Codex\)| \(Cursor\)/, '')} [${m.harness}]` : m.name}
-                  </option>
-                ))}
-              </select>
-
-              <select
-                value={autoBuildEffort[row.id]}
-                onChange={(e) => updateTierEffort(row.id, e.target.value)}
-                className="bg-claude-bg border border-claude-border px-1.5 py-1.5 text-[10px] font-mono text-claude-text focus:outline-none focus:border-claude-accent appearance-none cursor-pointer"
-                title="Effort level for this category"
-              >
-                {EFFORT_OPTIONS.map(opt => (
-                  <option key={opt.value} value={opt.value}>{opt.label}</option>
-                ))}
-              </select>
+              <details className="ml-[124px] mt-2 text-[10px] text-claude-text-secondary">
+                <summary className="cursor-pointer select-none font-mono uppercase tracking-wider hover:text-claude-text">
+                  Optional policy
+                </summary>
+                <div className="mt-2 grid grid-cols-[120px_120px_96px] gap-2">
+                  <label className="space-y-1">
+                    <span className="block text-[9px] font-mono uppercase tracking-wider">Workflow</span>
+                    <select
+                      value={autoBuildWorkflow[row.id]}
+                      onChange={(e) => updateTierWorkflow(row.id, e.target.value)}
+                      className="w-full bg-claude-bg border border-claude-border px-1.5 py-1.5 text-[10px] font-mono text-claude-text focus:outline-none focus:border-claude-accent appearance-none cursor-pointer"
+                      title="Workflow mode"
+                    >
+                      {WORKFLOW_OPTIONS.map(opt => (
+                        <option key={opt.value} value={opt.value}>{opt.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="space-y-1">
+                    <span className="block text-[9px] font-mono uppercase tracking-wider">Verify</span>
+                    <select
+                      value={autoBuildVerification[row.id]}
+                      onChange={(e) => updateTierVerification(row.id, e.target.value)}
+                      className="w-full bg-claude-bg border border-claude-border px-1.5 py-1.5 text-[10px] font-mono text-claude-text focus:outline-none focus:border-claude-accent appearance-none cursor-pointer"
+                      title="Verification policy"
+                    >
+                      {VERIFICATION_OPTIONS.map(opt => (
+                        <option key={opt.value} value={opt.value}>{opt.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="space-y-1">
+                    <span className="block text-[9px] font-mono uppercase tracking-wider">Budget</span>
+                    <input
+                      type="number"
+                      min="0"
+                      step="1"
+                      value={autoBuildBudget[row.id]}
+                      onChange={(e) => updateTierBudget(row.id, e.target.value)}
+                      className="w-full bg-claude-bg border border-claude-border px-1.5 py-1.5 text-[10px] font-mono text-claude-text focus:outline-none focus:border-claude-accent"
+                      placeholder="$"
+                      title="Budget cap in USD"
+                    />
+                  </label>
+                </div>
+              </details>
             </div>
           ))}
         </div>
@@ -1044,17 +1275,11 @@ export default function SettingsDialog() {
                   ×
                 </button>
               </div>
-              <input
-                value={cat.description}
-                onChange={(e) => updateCustomCategory(cat.id, 'description', e.target.value)}
-                className="w-full bg-transparent text-[9px] text-claude-text-secondary focus:outline-none focus:text-claude-text border-b border-transparent focus:border-claude-border/30 px-0 py-0.5"
-                placeholder="Description (shown to routing)"
-              />
-              <div className="grid grid-cols-[1fr_80px] gap-2">
+              <div className="grid grid-cols-[minmax(220px,1fr)_88px_78px] gap-2">
                 <select
                   value={cat.model}
                   onChange={(e) => updateCustomCategory(cat.id, 'model', e.target.value)}
-                  className="bg-claude-bg border border-claude-border px-2 py-1 text-[10px] font-mono text-claude-text focus:outline-none focus:border-claude-accent appearance-none cursor-pointer"
+                  className="min-w-0 bg-claude-bg border border-claude-border px-2 py-1.5 text-[10px] font-mono text-claude-text focus:outline-none focus:border-claude-accent appearance-none cursor-pointer"
                 >
                   {allModels.map(m => (
                     <option key={m.id} value={m.id}>
@@ -1065,19 +1290,82 @@ export default function SettingsDialog() {
                 <select
                   value={cat.effort}
                   onChange={(e) => updateCustomCategory(cat.id, 'effort', e.target.value)}
-                  className="bg-claude-bg border border-claude-border px-1.5 py-1 text-[10px] font-mono text-claude-text focus:outline-none focus:border-claude-accent appearance-none cursor-pointer"
+                  className="bg-claude-bg border border-claude-border px-1.5 py-1.5 text-[10px] font-mono text-claude-text focus:outline-none focus:border-claude-accent appearance-none cursor-pointer"
+                  title="Effort level for this category"
                 >
                   {EFFORT_OPTIONS.map(opt => (
                     <option key={opt.value} value={opt.value}>{opt.label}</option>
                   ))}
                 </select>
+                <select
+                  value={cat.speed}
+                  onChange={(e) => updateCustomCategory(cat.id, 'speed', e.target.value)}
+                  className="bg-claude-bg border border-claude-border px-1.5 py-1.5 text-[10px] font-mono text-claude-text focus:outline-none focus:border-claude-accent appearance-none cursor-pointer"
+                  title="Speed mode"
+                >
+                  {SPEED_OPTIONS.map(opt => (
+                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                  ))}
+                </select>
               </div>
+              <input
+                value={cat.description}
+                onChange={(e) => updateCustomCategory(cat.id, 'description', e.target.value)}
+                className="w-full bg-transparent text-[9px] text-claude-text-secondary focus:outline-none focus:text-claude-text border-b border-transparent focus:border-claude-border/30 px-0 py-0.5"
+                placeholder="Description (shown to routing)"
+              />
               <input
                 value={cat.keywords}
                 onChange={(e) => updateCustomCategory(cat.id, 'keywords', e.target.value)}
                 className="w-full bg-transparent text-[9px] text-claude-text-secondary font-mono focus:outline-none focus:text-claude-text border-b border-transparent focus:border-claude-border/30 px-0 py-0.5"
                 placeholder="Keywords (comma-separated, e.g. security, auth, oauth)"
               />
+              <details className="text-[10px] text-claude-text-secondary">
+                <summary className="cursor-pointer select-none font-mono uppercase tracking-wider hover:text-claude-text">
+                  Optional policy
+                </summary>
+                <div className="mt-2 grid grid-cols-[120px_120px_96px] gap-2">
+                  <label className="space-y-1">
+                    <span className="block text-[9px] font-mono uppercase tracking-wider">Workflow</span>
+                    <select
+                      value={cat.workflow}
+                      onChange={(e) => updateCustomCategory(cat.id, 'workflow', e.target.value)}
+                      className="w-full bg-claude-bg border border-claude-border px-1.5 py-1.5 text-[10px] font-mono text-claude-text focus:outline-none focus:border-claude-accent appearance-none cursor-pointer"
+                      title="Workflow mode"
+                    >
+                      {WORKFLOW_OPTIONS.map(opt => (
+                        <option key={opt.value} value={opt.value}>{opt.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="space-y-1">
+                    <span className="block text-[9px] font-mono uppercase tracking-wider">Verify</span>
+                    <select
+                      value={cat.verification}
+                      onChange={(e) => updateCustomCategory(cat.id, 'verification', e.target.value)}
+                      className="w-full bg-claude-bg border border-claude-border px-1.5 py-1.5 text-[10px] font-mono text-claude-text focus:outline-none focus:border-claude-accent appearance-none cursor-pointer"
+                      title="Verification policy"
+                    >
+                      {VERIFICATION_OPTIONS.map(opt => (
+                        <option key={opt.value} value={opt.value}>{opt.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="space-y-1">
+                    <span className="block text-[9px] font-mono uppercase tracking-wider">Budget</span>
+                    <input
+                      type="number"
+                      min="0"
+                      step="1"
+                      value={cat.budgetUsd}
+                      onChange={(e) => updateCustomCategory(cat.id, 'budgetUsd', e.target.value)}
+                      className="w-full bg-claude-bg border border-claude-border px-1.5 py-1.5 text-[10px] font-mono text-claude-text focus:outline-none focus:border-claude-accent"
+                      placeholder="$"
+                      title="Budget cap in USD"
+                    />
+                  </label>
+                </div>
+              </details>
             </div>
           ))}
         </div>
@@ -1590,7 +1878,7 @@ export default function SettingsDialog() {
       onKeyDown={handleKeyDown}
     >
       <div
-        className="w-[680px] h-[560px] bg-claude-surface border border-claude-border flex"
+        className="w-[1080px] max-w-[calc(100vw-48px)] h-[760px] max-h-[calc(100vh-48px)] bg-claude-surface border border-claude-border flex"
         onClick={(e) => e.stopPropagation()}
         style={{ borderRadius: 0 }}
       >

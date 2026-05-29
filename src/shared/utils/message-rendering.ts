@@ -1,4 +1,5 @@
 import type { ChatMessage, ContentBlock, ToolCall } from '../types';
+import { isTranscriptVisibleToolCall } from './tool-call-transformer';
 
 export interface MessageRenderArtifacts {
   toolCalls: ToolCall[];
@@ -45,10 +46,14 @@ export function buildMissingToolCall(toolCallId: string, agentId?: string): Tool
 }
 
 export function getMessageRenderArtifacts(message: ChatMessage, streamingToolCalls?: ToolCall[]): MessageRenderArtifacts {
-  const toolCalls = streamingToolCalls || (Array.isArray(message.toolCalls) ? message.toolCalls : []);
+  const allToolCalls = streamingToolCalls || (Array.isArray(message.toolCalls) ? message.toolCalls : []);
+  const toolCalls = allToolCalls.filter(isTranscriptVisibleToolCall);
+  const visibleToolCallIds = new Set(toolCalls.map((toolCall) => toolCall.id));
+  const allToolCallIds = new Set(allToolCalls.map((toolCall) => toolCall.id));
   const renderedToolCallIds = new Set(
     (message.contentBlocks || [])
       .filter((block) => block.type === 'tool_use' && block.toolCallId)
+      .filter((block) => visibleToolCallIds.has(block.toolCallId as string) || !allToolCallIds.has(block.toolCallId as string))
       .map((block) => block.toolCallId as string),
   );
   const unrenderedToolCalls = message.contentBlocks && message.contentBlocks.length > 0

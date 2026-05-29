@@ -18,11 +18,11 @@ assertContains(
   'Auto Build plan routes must force the lead harness into plan permission mode',
 );
 assertContains(
-  /codexService\.streamAsChat\([^;]*autoBuildLeadPermissionMode\)/s,
+  /codexService\.streamAsChat\([^;]*autoBuildLeadPermissionMode(?:,|\))/s,
   'Codex lead execution must receive the Auto Build lead permission mode',
 );
 assertContains(
-  /openCodeService\.streamMessage\([^;]*autoBuildLeadPermissionMode\)/s,
+  /openCodeService\.streamMessage\([^;]*autoBuildLeadPermissionMode(?:,|\))/s,
   'OpenCode lead execution must receive the Auto Build lead permission mode',
 );
 assertContains(

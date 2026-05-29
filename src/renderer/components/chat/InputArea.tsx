@@ -2052,8 +2052,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
                   tier={autoRouteDecision.tier}
                   domain={autoRouteDecision.domain}
                   resolvedHarness={actualActiveHarness || autoRouteDecision.resolvedHarness}
-                  resolvedModel={actualActiveModel || autoRouteDecision.resolvedModel}
-                  resolvedModelLabel={actualActiveModelInfo?.name || autoRouteModelInfo?.name}
+                  modelLabel={actualActiveModelInfo?.name || autoRouteModelInfo?.name}
                   compact={!isSending}
                 />
               ) : (

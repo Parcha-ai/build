@@ -4,6 +4,7 @@ import Store from 'electron-store';
 import type { ChatMessage } from '../../shared/types';
 import type { MCPServerConfig } from './mcp.service';
 import { mcpService } from './mcp.service';
+import { prependPolicyPreamble, type HarnessPolicyTranslation } from './harness-policy.service';
 
 export interface CursorStreamEvent {
   type: 'text_delta' | 'thinking_delta' | 'tool_use' | 'tool_result' | 'message_complete' | 'error' | 'system';
@@ -94,6 +95,7 @@ class CursorService {
     message: string,
     workDir: string,
     model: string,
+    policy?: HarnessPolicyTranslation,
   ): AsyncGenerator<CursorStreamEvent> {
     const apiKey = this.getApiKey();
     if (!apiKey) {
@@ -168,7 +170,7 @@ class CursorService {
       // On follow-up turns, force-expire the previous persisted run.
       // Without this, agent.send() hangs because the SDK considers
       // the prior run still active internally.
-      const run: Run = await state.agent.send(message, {
+      const run: Run = await state.agent.send(prependPolicyPreamble(message, policy?.promptPreamble), {
         mcpServers: cursorMcpServers,
         onDelta: ({ update }: { update: InteractionUpdate }) => {
           try {

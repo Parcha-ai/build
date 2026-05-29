@@ -2,7 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { Terminal, FileText, Search, FolderOpen, Play, Edit2, Globe, Code, HelpCircle, ListTodo, Loader2, ChevronRight, ChevronDown, CheckCircle2, Circle, Clock, ExternalLink, ListPlus, ListChecks, FileSearch, List, ArrowUpRight } from 'lucide-react';
 import { LazyMonacoEditor, LazyDiffEditor } from './LazyMonacoEditor';
 import type { ToolCall } from '../../../shared/types';
-import { normalizeToolCall } from '../../../shared/utils/tool-call-transformer';
+import { isTranscriptVisibleToolCall, normalizeToolCall } from '../../../shared/utils/tool-call-transformer';
 import { extractContentBlockText } from '../../../shared/utils/content-block-text';
 import { useEditorStore } from '../../stores/editor.store';
 
@@ -947,6 +947,8 @@ function ExpandedContent({ toolCall, priority = false }: { toolCall: ToolCall; p
 
 export default function ToolCallCard({ toolCall, isLatest = false, isLatestToolCall = false, defaultCollapsed = false, onBackground }: ToolCallCardProps) {
   const normalizedToolCall = useMemo(() => normalizeToolCall(toolCall), [toolCall]);
+  const isTranscriptVisible = isTranscriptVisibleToolCall(normalizedToolCall);
+
   // Start collapsed for old messages (performance optimization) - otherwise expanded by default
   const [isExpanded, setIsExpanded] = useState(!defaultCollapsed);
   // Track if content has ever been rendered (to prevent Monaco disposal errors on collapse)
@@ -967,6 +969,9 @@ export default function ToolCallCard({ toolCall, isLatest = false, isLatestToolC
   const Icon = config.icon;
 
   const commandDisplay = useMemo(() => formatToolInput(baseToolName, normalizedToolCall.input), [baseToolName, normalizedToolCall.input]);
+  if (!isTranscriptVisible) {
+    return null;
+  }
 
   const isRunning = normalizedToolCall.status === 'running' || normalizedToolCall.status === 'pending';
 

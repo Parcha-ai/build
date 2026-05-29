@@ -4,8 +4,7 @@ interface AutoRouteBadgeProps {
   tier: string;
   domain?: string;
   resolvedHarness?: string;
-  resolvedModel?: string;
-  resolvedModelLabel?: string;
+  modelLabel?: string;
   compact?: boolean;
 }
 
@@ -61,17 +60,17 @@ export function formatHarnessModelLabel(harness?: string, model?: string, modelL
   return [harnessLabel, displayModel].filter(Boolean).join(' ') || undefined;
 }
 
-function formatRouteTitle(tier: string, domain?: string, harness?: string, model?: string, modelLabel?: string): string {
+function formatRouteTitle(tier: string, domain?: string, harness?: string, modelLabel?: string): string {
   const scope = domain && domain !== 'general' ? `${tier}:${domain}` : tier;
-  const agent = formatHarnessModelLabel(harness, model, modelLabel);
+  const agent = formatHarnessModelLabel(harness, undefined, modelLabel);
   return agent ? `Using ${agent}. Auto Build scope: ${scope}` : `Current turn scope: ${scope}`;
 }
 
-export const AutoRouteBadge: React.FC<AutoRouteBadgeProps> = ({ tier, domain, resolvedHarness, resolvedModel, resolvedModelLabel, compact }) => {
+export const AutoRouteBadge: React.FC<AutoRouteBadgeProps> = ({ tier, domain, resolvedHarness, modelLabel, compact }) => {
   const colors = TIER_COLORS[tier] || TIER_COLORS.build;
-  const agentLabel = formatHarnessModelLabel(resolvedHarness, resolvedModel, resolvedModelLabel);
+  const agentLabel = formatHarnessModelLabel(resolvedHarness, undefined, modelLabel);
   const scopeLabel = domain && domain !== 'general' ? `${tier}:${domain}` : tier;
-  const title = formatRouteTitle(tier, domain, resolvedHarness, resolvedModel, resolvedModelLabel);
+  const title = formatRouteTitle(tier, domain, resolvedHarness, modelLabel);
 
   if (compact) {
     return (

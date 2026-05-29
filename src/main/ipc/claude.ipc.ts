@@ -15,7 +15,7 @@ import {
   type PersistedChatMessage,
 } from '../../shared/utils/message-recovery';
 import { buildCompletedStreamMessage } from '../../shared/utils/stream-finalization';
-import { transcriptEntriesToChatMessages, transcriptService, type TranscriptEntry } from '../services/transcript.service';
+import { transcriptService, type TranscriptEntry } from '../services/transcript.service';
 import { sessionService } from './session.ipc';
 import { DEFAULT_AUDIO_SETTINGS } from '../../shared/types/audio';
 import { messageQueueService } from '../services/message-queue.service';
@@ -57,6 +57,7 @@ function saveCompletedStreamMessages(sessionId: string, messages: ChatMessage[])
 }
 
 function recordCompletedStreamMessage(sessionId: string, message: ChatMessage): void {
+  if (claudeService.hasBuildTranscriptForSession(sessionId)) return;
   if (!hasRecoverableOutput(message)) return;
 
   const normalizedMessage = normalizeCompletedStreamMessage(message);
@@ -773,34 +774,18 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
   });
 
   ipcMain.handle(IPC_CHANNELS.CLAUDE_GET_MESSAGES, async (_, sessionId: string, limit?: number) => {
-    // Prefer Build's canonical per-session transcript if it exists.
-    // This covers messages from ALL harnesses, not just Claude.
-    if (transcriptService.hasTranscript(sessionId)) {
-      const entries = transcriptService.loadMessages(sessionId, limit);
-      const mapped: ChatMessage[] = entries.map(entry => ({
-        id: entry.id,
-        role: entry.role,
-        content: entry.content,
-        timestamp: new Date(entry.timestamp),
-        harness: (entry.harness as ChatMessage['harness']) || undefined,
-        toolCalls: entry.toolCalls?.map(tc => ({
-          id: tc.id,
-          name: tc.name,
-          input: tc.input ? JSON.parse(tc.input) : {},
-          status: 'completed' as const,
-          result: tc.result ? JSON.parse(tc.result) : undefined,
-        })),
-        interrupted: entry.interrupted,
-        contentBlocks: entry.contentBlocks as ContentBlock[] | undefined,
-      }));
-      // Still merge with the completed-stream buffer -- it may contain messages
-      // from the current in-flight stream that haven't been flushed to disk yet.
-      return mergeCompletedStreamMessages(mapped, sessionId, limit);
-    }
+    // Build's canonical per-session transcript is the primary source for app
+    // hydration. Claude SDK transcripts are legacy/backfill only inside
+    // getCanonicalMessages(), so non-Claude harness messages survive reloads.
+    const hasBuildTranscript = claudeService.hasBuildTranscriptForSession(sessionId);
+    const canonicalMessages = await claudeService.getCanonicalMessages(sessionId, limit);
+    return hasBuildTranscript
+      ? canonicalMessages
+      : mergeCompletedStreamMessages(canonicalMessages, sessionId, limit);
+  });
 
-    // Fallback: existing Claude-transcript loading for legacy sessions
-    const transcriptMessages = await claudeService.getMessages(sessionId, limit);
-    return mergeCompletedStreamMessages(transcriptMessages, sessionId, limit);
+  ipcMain.handle(IPC_CHANNELS.CLAUDE_HAS_BUILD_TRANSCRIPT, async (_, sessionId: string) => {
+    return claudeService.hasBuildTranscriptForSession(sessionId);
   });
 
   // Handle permission responses from user

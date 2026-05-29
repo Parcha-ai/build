@@ -116,12 +116,32 @@ export type Harness = 'claude' | 'codex' | 'cursor' | 'gemini' | 'opencode' | 'c
 // Auto Build mode — intelligent model routing and harness orchestration
 export type TaskTier = 'plan' | 'build' | 'verify' | 'refine';
 export type TaskDomain = 'copy' | 'frontend' | 'backend' | 'fullstack' | 'debug' | 'ops' | 'docs' | 'data' | 'general';
+export type MetaHarnessSpeed = 'auto' | 'standard' | 'fast';
+export type MetaWorkflowMode = 'auto' | 'single' | 'lead-with-delegates' | 'sequential' | 'dynamic';
+export type MetaVerificationMode = 'auto' | 'none' | 'optional' | 'required';
 
-export interface OrchestrationStage {
+export interface MetaHarnessPolicy {
+  effort?: string;
+  speed?: MetaHarnessSpeed;
+  workflow?: MetaWorkflowMode;
+  budgetUsd?: number;
+  verification?: MetaVerificationMode;
+}
+
+export interface MetaMissionControlPolicy extends MetaHarnessPolicy {
+  controllerHarness: 'meta';
+  requestedTier: TaskTier;
+  leadTier: TaskTier;
+  leadHarness: Harness;
+  leadModel: string;
+  categoryId?: string;
+  categoryLabel?: string;
+}
+
+export interface OrchestrationStage extends MetaHarnessPolicy {
   tier: TaskTier;
   harness: Harness;
   model: string;
-  effort?: string;
   fallbackModels?: string[];
   purpose: string;
   required: boolean;
@@ -158,15 +178,20 @@ export interface RoutingDecision {
   resolvedModel: string;
   resolvedHarness?: Harness;
   resolvedEffort?: string;
+  resolvedSpeed?: MetaHarnessSpeed;
+  workflow?: MetaWorkflowMode;
+  budgetUsd?: number;
+  verification?: MetaVerificationMode;
   confidence: number;
   reason: string;
   method: 'heuristic' | 'controller';
   enableGoals?: boolean;
   goal?: GoalOrchestration;
+  missionControl?: MetaMissionControlPolicy;
   orchestration?: OrchestrationPlan;
 }
 
-export interface AutoRouterCategoryConfig {
+export interface AutoRouterCategoryConfig extends MetaHarnessPolicy {
   id: string;
   label?: string;
   description?: string;
@@ -188,6 +213,26 @@ export interface AutoRouterConfig {
   verifyEffort?: string;
   refineEffort?: string;
   fallbackEffort?: string;
+  planSpeed?: MetaHarnessSpeed;
+  buildSpeed?: MetaHarnessSpeed;
+  verifySpeed?: MetaHarnessSpeed;
+  refineSpeed?: MetaHarnessSpeed;
+  fallbackSpeed?: MetaHarnessSpeed;
+  planWorkflow?: MetaWorkflowMode;
+  buildWorkflow?: MetaWorkflowMode;
+  verifyWorkflow?: MetaWorkflowMode;
+  refineWorkflow?: MetaWorkflowMode;
+  fallbackWorkflow?: MetaWorkflowMode;
+  planBudgetUsd?: number;
+  buildBudgetUsd?: number;
+  verifyBudgetUsd?: number;
+  refineBudgetUsd?: number;
+  fallbackBudgetUsd?: number;
+  planVerification?: MetaVerificationMode;
+  buildVerification?: MetaVerificationMode;
+  verifyVerification?: MetaVerificationMode;
+  refineVerification?: MetaVerificationMode;
+  fallbackVerification?: MetaVerificationMode;
   categories?: AutoRouterCategoryConfig[];
   costAware: boolean;
   costThresholdPercent: number;

@@ -8,6 +8,7 @@ import { mcpService } from './mcp.service';
 import { sshService } from './ssh.service';
 import type { SSHConfig } from '../../shared/types';
 import { findUsableLocalExecutable } from '../utils/local-executable';
+import { prependPolicyPreamble, type HarnessPolicyTranslation } from './harness-policy.service';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 interface ToolCallData {
@@ -376,9 +377,11 @@ class CursorCliService {
     model: string,
     sshConfig?: SSHConfig,
     chatId?: string,
+    policy?: HarnessPolicyTranslation,
   ): AsyncGenerator<CursorStreamEvent> {
     const apiKey = this.getApiKey();
     const assistantState: CursorAssistantState = { emittedText: '' };
+    const effectiveMessage = prependPolicyPreamble(message, policy?.promptPreamble);
 
     const cursorModel = model.replace('cursor:', '');
 
@@ -409,6 +412,12 @@ class CursorCliService {
         '--trust',
         '--approve-mcps',
       ];
+      if (policy?.cursor?.mode) {
+        remoteArgs.push('--mode', policy.cursor.mode);
+      }
+      if (policy?.cursor?.sandbox) {
+        remoteArgs.push('--sandbox', policy.cursor.sandbox);
+      }
       if (chatId) {
         remoteArgs.push('--resume', this.quoteForRemoteShell(chatId));
       }
@@ -420,17 +429,18 @@ class CursorCliService {
         `cd ${this.remotePathForShell(remoteDir)}`,
         this.getRemotePathPrefix(),
         apiKey ? `export CURSOR_API_KEY=${this.quoteForRemoteShell(apiKey)}` : '',
+        ...Object.entries(policy?.env || {}).map(([key, value]) => `export ${key}=${this.quoteForRemoteShell(value)}`),
         'agent_bin="$(command -v cursor-agent || command -v agent)" || { echo "Cursor Agent CLI not found on remote. Install it with: curl https://cursor.com/install -fsS | bash" >&2; exit 127; }',
         `"$agent_bin" ${remoteArgs.join(' ')}`,
       ].filter(Boolean).join(' && ');
 
-      console.log(`[Cursor CLI] SSH exec on ${sshConfig.host}: cursor-agent -p <stdin:${message.length} chars> --model ${cursorModel}${chatId ? ` --resume ${chatId}` : ' (new chat)'}`);
+      console.log(`[Cursor CLI] SSH exec on ${sshConfig.host}: cursor-agent -p <stdin:${effectiveMessage.length} chars> --model ${cursorModel}${chatId ? ` --resume ${chatId}` : ' (new chat)'}`);
 
       child = spawn('ssh', this.buildSshArgs(sshConfig, remoteCmd), {
         signal: abortController.signal,
         detached: process.platform !== 'win32',
       });
-      child.stdin?.end(message);
+      child.stdin?.end(effectiveMessage);
     } else {
       const syncResult = await mcpService.syncLocalHarnessConfigs();
       if (Object.keys(syncResult.errors).length > 0) {
@@ -451,6 +461,12 @@ class CursorCliService {
         '--trust',
         '--approve-mcps',
       ];
+      if (policy?.cursor?.mode) {
+        args.push('--mode', policy.cursor.mode);
+      }
+      if (policy?.cursor?.sandbox) {
+        args.push('--sandbox', policy.cursor.sandbox);
+      }
       if (chatId) {
         args.push('--resume', chatId);
       }
@@ -460,8 +476,9 @@ class CursorCliService {
 
       const env: Record<string, string> = { ...(process.env as Record<string, string>) };
       if (apiKey) env.CURSOR_API_KEY = apiKey;
+      Object.assign(env, policy?.env || {});
 
-      console.log(`[Cursor CLI] Local spawn: cursor-agent -p <stdin:${message.length} chars> --model ${cursorModel}${chatId ? ` --resume ${chatId}` : ' (new chat)'}`);
+      console.log(`[Cursor CLI] Local spawn: cursor-agent -p <stdin:${effectiveMessage.length} chars> --model ${cursorModel}${chatId ? ` --resume ${chatId}` : ' (new chat)'}`);
 
       child = spawn(agentBin, args, {
         env,
@@ -469,7 +486,7 @@ class CursorCliService {
         signal: abortController.signal,
         detached: process.platform !== 'win32',
       });
-      child.stdin?.end(message);
+      child.stdin?.end(effectiveMessage);
     }
     child.once('error', (error: NodeJS.ErrnoException) => {
       if (error.code !== 'ABORT_ERR') {

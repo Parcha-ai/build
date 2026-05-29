@@ -8,6 +8,7 @@ import type { ChatMessage, SSHConfig } from '../../shared/types';
 import { mcpService } from './mcp.service';
 import { sshService } from './ssh.service';
 import { findUsableLocalExecutable } from '../utils/local-executable';
+import { prependPolicyPreamble, type HarnessPolicyTranslation } from './harness-policy.service';
 
 /**
  * Stream events emitted by GeminiService, aligned with the app's StreamEvent shape
@@ -411,6 +412,7 @@ class GeminiService {
     workDir: string,
     model: string,
     sshConfig?: SSHConfig,
+    policy?: HarnessPolicyTranslation,
   ): AsyncGenerator<GeminiStreamEvent> {
     // Check settings first, then fall back to system environment variables
     const apiKey = this.getApiKey() || process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
@@ -446,6 +448,8 @@ class GeminiService {
     }
 
     const geminiModel = model.replace('gemini:', '');
+    const effectiveMessage = prependPolicyPreamble(message, policy?.promptPreamble);
+    const approvalMode = policy?.gemini?.approvalMode || 'yolo';
 
     // Emit system event so the renderer knows which tools/model are active
     yield {
@@ -467,7 +471,7 @@ class GeminiService {
           '-p', "''",
           '--output-format', 'stream-json',
           '--sandbox',
-          '--yolo',
+          '--approval-mode', approvalMode,
           '--skip-trust',
         ];
         if (geminiModel) {
@@ -478,26 +482,27 @@ class GeminiService {
           getRemotePathPrefix(),
           `export GEMINI_API_KEY=${quoteForRemoteShell(apiKey)}`,
           `export GOOGLE_API_KEY=${quoteForRemoteShell(apiKey)}`,
+          ...Object.entries(policy?.env || {}).map(([key, value]) => `export ${key}=${quoteForRemoteShell(value)}`),
           'export GEMINI_CLI_TRUST_WORKSPACE=true',
           'gemini_bin="$(command -v gemini)" || { echo "Gemini CLI not found on remote. Install it with: npm install -g @google/gemini-cli" >&2; exit 127; }',
           `"$gemini_bin" ${remoteArgs.join(' ')}`,
         ].join(' && ');
 
-        console.log(`[Gemini Service] SSH exec on ${sshConfig.host}: gemini -p <stdin:${message.length} chars> --model ${geminiModel}`);
+        console.log(`[Gemini Service] SSH exec on ${sshConfig.host}: gemini -p <stdin:${effectiveMessage.length} chars> --model ${geminiModel}`);
         child = spawn('ssh', buildSshArgs(sshConfig, remoteCommand), {
           signal: abortController.signal,
           detached: process.platform !== 'win32',
         });
-        child.stdin?.end(message);
+        child.stdin?.end(effectiveMessage);
       } else {
         // Run via `node <gemini-script>` directly — avoids shell: true which
         // corrupts arguments containing shell metacharacters ($, backticks, quotes).
         const args = [
           geminiScript,
-          '-p', message,
+          '-p', effectiveMessage,
           '--output-format', 'stream-json',
           '--sandbox',
-          '--yolo',
+          '--approval-mode', approvalMode,
           '--skip-trust',
         ];
 
@@ -508,9 +513,10 @@ class GeminiService {
         const env: Record<string, string> = { ...(process.env as Record<string, string>) };
         env.GEMINI_API_KEY = apiKey;
         env.GOOGLE_API_KEY = apiKey;
+        Object.assign(env, policy?.env || {});
         env.GEMINI_CLI_TRUST_WORKSPACE = 'true';
 
-        console.log(`[Gemini Service] Spawning: ${nodeBin} ${geminiScript} -p <${message.length} chars> --model ${geminiModel}`);
+        console.log(`[Gemini Service] Spawning: ${nodeBin} ${geminiScript} -p <${effectiveMessage.length} chars> --model ${geminiModel}`);
         child = spawn(nodeBin, args, {
           env,
           cwd: workDir,

@@ -7,13 +7,30 @@ const settings = {
   autoRouterConfig: {
     categories: [
       { id: 'plan', label: 'Legacy Planning', model: 'claude-haiku-4-5-20251001' },
-      { id: 'custom-anything', label: 'Legacy Custom', model: 'cursor:o3' },
+      {
+        id: 'custom-anything',
+        label: 'Legacy Custom',
+        description: 'Custom build tasks',
+        tier: 'build',
+        model: 'cursor:o3',
+        effort: 'max',
+        speed: 'fast',
+        workflow: 'dynamic',
+        budgetUsd: 7.5,
+        verification: 'required',
+        keywords: ['custom', 'anything'],
+      },
     ],
     planModel: 'claude-opus-4-7',
     buildModel: 'codex:gpt-5.5',
     verifyModel: 'gemini:gemini-3.5-flash',
     refineModel: 'cursor:composer-2.5',
     fallbackModel: 'claude-sonnet-4-6',
+    buildEffort: 'high',
+    buildSpeed: 'fast',
+    buildWorkflow: 'lead-with-delegates',
+    buildBudgetUsd: 25,
+    buildVerification: 'required',
     costAware: false,
   },
   cerebrasApiKey: '',
@@ -56,7 +73,16 @@ moduleWithLoad._load = function patchedLoad(this: unknown, request: string, pare
 const { autoRouterService } = require('../src/main/services/auto-router.service');
 
 const config = autoRouterService.getConfig();
-const configRecord = config as typeof config & { categories?: unknown };
+const configRecord = config as typeof config & {
+  categories?: Array<{
+    id: string;
+    effort?: string;
+    speed?: string;
+    workflow?: string;
+    budgetUsd?: number;
+    verification?: string;
+  }>;
+};
 const root = path.resolve(__dirname, '..');
 const settingsDialog = fs.readFileSync(path.join(root, 'src/renderer/components/settings/SettingsDialog.tsx'), 'utf8');
 const sharedTypes = fs.readFileSync(path.join(root, 'src/shared/types/index.ts'), 'utf8');
@@ -69,8 +95,20 @@ async function main(): Promise<void> {
   assert.equal(config.verifyModel, 'gemini:gemini-3.5-flash');
   assert.equal(config.refineModel, 'cursor:composer-2.5');
   assert.equal(config.fallbackModel, 'claude-sonnet-4-6');
+  assert.equal(config.buildEffort, 'high');
+  assert.equal(config.buildSpeed, 'fast');
+  assert.equal(config.buildWorkflow, 'lead-with-delegates');
+  assert.equal(config.buildBudgetUsd, 25);
+  assert.equal(config.buildVerification, 'required');
   assert.equal(config.costAware, false);
-  assert.equal(configRecord.categories, undefined);
+  const persistedCategories = configRecord.categories;
+  assert.ok(Array.isArray(persistedCategories));
+  const customCategory = persistedCategories.find((category) => category.id === 'custom-anything');
+  assert.equal(customCategory?.effort, 'max');
+  assert.equal(customCategory?.speed, 'fast');
+  assert.equal(customCategory?.workflow, 'dynamic');
+  assert.equal(customCategory?.budgetUsd, 7.5);
+  assert.equal(customCategory?.verification, 'required');
 
   for (const tier of ['plan', 'build', 'verify', 'refine', 'fallback']) {
     assert.match(settingsDialog, new RegExp(`id: '${tier}'`), `Settings UI must expose fixed ${tier} tier row`);
@@ -81,7 +119,13 @@ async function main(): Promise<void> {
   assert.match(configWriter, /verifyModel/);
   assert.match(configWriter, /refineModel/);
   assert.match(configWriter, /fallbackModel/);
-  assert.doesNotMatch(configWriter, /\bcategories\b/, 'Settings must persist fixed tier fields, not open-ended categories');
+  assert.match(configWriter, /categories/, 'Settings must persist custom categories');
+  assert.match(configWriter, /buildSpeed/);
+  assert.match(configWriter, /buildWorkflow/);
+  assert.match(configWriter, /buildBudgetUsd/);
+  assert.match(configWriter, /buildVerification/);
+  assert.match(configWriter, /budgetUsd/);
+  assert.match(configWriter, /verification/);
   assert.doesNotMatch(settingsDialog, /useFlueMetaHarness|Flue/i, 'Flue must not be exposed as a separate user-selectable mode');
   assert.doesNotMatch(sharedTypes, /useFlueMetaHarness/, 'Auto router config must not include a Flue mode switch');
   assert.doesNotMatch(autoRouterSource, /useFlueMetaHarness/, 'Router must treat Auto Build as the single meta-routing mode');
@@ -92,6 +136,11 @@ async function main(): Promise<void> {
     verifyModel: 'codex:gpt-5.5',
     refineModel: 'cursor:composer-2.5',
     fallbackModel: 'claude-sonnet-4-6',
+    buildEffort: 'high',
+    buildSpeed: 'fast',
+    buildWorkflow: 'lead-with-delegates',
+    buildBudgetUsd: 50,
+    buildVerification: 'required',
     costAware: true,
   });
 
@@ -151,6 +200,18 @@ async function main(): Promise<void> {
   assert.equal(backendBugFixDecision.tier, 'build');
   assert.equal(backendBugFixDecision.resolvedModel, 'codex:gpt-5.5');
   assert.equal(backendBugFixDecision.resolvedHarness, 'codex');
+  assert.equal(backendBugFixDecision.resolvedEffort, 'high');
+  assert.equal(backendBugFixDecision.resolvedSpeed, 'fast');
+  assert.equal(backendBugFixDecision.workflow, 'lead-with-delegates');
+  assert.equal(backendBugFixDecision.budgetUsd, 50);
+  assert.equal(backendBugFixDecision.verification, 'required');
+  assert.equal(backendBugFixDecision.missionControl?.controllerHarness, 'meta');
+  assert.equal(backendBugFixDecision.missionControl?.leadHarness, 'codex');
+  assert.equal(backendBugFixDecision.orchestration?.stages[0]?.effort, 'high');
+  assert.equal(backendBugFixDecision.orchestration?.stages[0]?.speed, 'fast');
+  assert.equal(backendBugFixDecision.orchestration?.stages[0]?.workflow, 'lead-with-delegates');
+  assert.equal(backendBugFixDecision.orchestration?.stages[0]?.budgetUsd, 50);
+  assert.equal(backendBugFixDecision.orchestration?.stages[0]?.verification, 'required');
 
   const quotedIssueDecision = await autoRouterService.classifyAndRoute(
     'fixed-settings-no-quoted-issue-escalation',

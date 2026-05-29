@@ -8,6 +8,7 @@ import { getLatestRelease } from '../../../shared/config/release-notes';
 import { useSessionStore } from '../../stores/session.store';
 import type { ChatMessage, ToolCall } from '../../../shared/types';
 import { GSTACK_MODE_META } from '../../../shared/types';
+import { isTranscriptVisibleToolCall } from '../../../shared/utils/tool-call-transformer';
 import type { StreamEvent } from '../../stores/session.store';
 
 interface QueuedMessage {
@@ -240,6 +241,7 @@ export default function MessageList({
               if (!event.toolCall) return null;
               // Use the live-updated tool call from currentToolCalls, fall back to snapshot
               const liveToolCall = toolCallMap.get(event.toolCall.id) || event.toolCall;
+              if (!isTranscriptVisibleToolCall(liveToolCall)) return null;
               return (
                 <React.Fragment key={event.id}>
                   {agentBadge}

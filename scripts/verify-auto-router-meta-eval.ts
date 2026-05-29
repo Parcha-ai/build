@@ -539,7 +539,11 @@ function buildMockMetaDecision(request: any) {
 }
 
 function expectsControllerRequest(evalCase: EvalCase): boolean {
-  return evalCase.expectedMethodWhenMocked !== 'heuristic';
+  return Boolean(evalCase);
+}
+
+function expectsControllerAttribution(evalCase: EvalCase): boolean {
+  return evalCase.id !== 'prompt-injection-tier-override-guard';
 }
 
 type ModuleWithLoad = typeof Module & {
@@ -726,8 +730,11 @@ async function main(): Promise<void> {
     routeLatencies.push(latencyMs);
     methodCounts[decision.method] = (methodCounts[decision.method] || 0) + 1;
 
-    if (!LIVE_FLUE && evalCase.expectedMethodWhenMocked && decision.method !== evalCase.expectedMethodWhenMocked) {
-      failures.push(`${evalCase.id}: expected mocked method ${evalCase.expectedMethodWhenMocked}, got ${decision.method}`);
+    if (!LIVE_FLUE) {
+      const expectedMethod = expectsControllerAttribution(evalCase) ? 'controller' : 'heuristic';
+      if (decision.method !== expectedMethod) {
+        failures.push(`${evalCase.id}: expected mocked method ${expectedMethod}, got ${decision.method}`);
+      }
     }
 
     if (decision.tier === evalCase.expectedTier) tierMatches += 1;
@@ -820,13 +827,14 @@ async function main(): Promise<void> {
   const allowedBaselineCostRatio = baselineProjectedCost > 0
     ? 1 + (controllerCost / baselineProjectedCost) + 0.02
     : 1.02;
-  const expectedMockedControllerMethods = EVAL_CASES.filter(expectsControllerRequest).length;
-  const controllerInvocationRatio = expectedMockedControllerMethods / EVAL_CASES.length;
+  const expectedMockedControllerRequests = EVAL_CASES.filter(expectsControllerRequest).length;
+  const expectedMockedControllerMethods = EVAL_CASES.filter(expectsControllerAttribution).length;
+  const controllerInvocationRatio = expectedMockedControllerRequests / EVAL_CASES.length;
 
   if (LIVE_FLUE) {
-    assert.equal(methodCounts.controller, expectedMockedControllerMethods, 'Live Auto mode should use the real controller for every non-fast-path eval case');
+    assert.equal(methodCounts.controller, expectedMockedControllerRequests, 'Live Auto mode should use the real controller for every eval case');
   } else {
-    assert.equal(metaRequests.length, expectedMockedControllerMethods, 'Auto mode should invoke the controller only for non-fast-path eval cases');
+    assert.equal(metaRequests.length, expectedMockedControllerRequests, 'Auto mode should invoke the controller for every eval case');
     assert.equal(methodCounts.controller || 0, expectedMockedControllerMethods, 'Unexpected mocked controller attribution count');
   }
   assert.equal(categoryLeaks.length, 0, categoryLeaks.join('\n'));
@@ -841,9 +849,9 @@ async function main(): Promise<void> {
   assert.ok(costRatioVsOpus <= 0.75, `Projected cost ratio vs always-Opus too high: ${costRatioVsOpus}`);
   assert.ok(projectedCost > leadOnlyProjectedCost, 'Meta-harness eval must include helper stage execution cost, not just lead model cost');
   assert.ok(controllerCost > 0, 'Meta-harness eval must include controller cost');
-  assert.ok(controllerCost <= 0.0031, `Fast-path controller cost budget regressed: ${controllerCost}`);
+  assert.ok(controllerCost <= 0.02, `Controller-first cost budget regressed: ${controllerCost}`);
   assert.ok(costRatioVsBaseline <= allowedBaselineCostRatio, `Projected cost ratio vs fixed-settings heuristic baseline too high: ${costRatioVsBaseline}`);
-  assert.ok(controllerInvocationRatio <= 0.25, `Controller invocation ratio too high after fast paths: ${controllerInvocationRatio}`);
+  assert.equal(controllerInvocationRatio, 1, `Controller invocation ratio should be 1 for Auto mode: ${controllerInvocationRatio}`);
   const latencyBudgetMs = LIVE_FLUE ? 5_000 : 250;
   assert.ok(p95LatencyMs <= latencyBudgetMs, `Router p95 latency too high for ${LIVE_FLUE ? 'live Flue' : 'deterministic controller'} eval: ${p95LatencyMs}ms`);
 

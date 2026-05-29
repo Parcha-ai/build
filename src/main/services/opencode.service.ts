@@ -7,6 +7,7 @@ import { terminateProcessTree } from '../utils/process-tree';
 import { mcpService } from './mcp.service';
 import { sshService } from './ssh.service';
 import { findUsableLocalExecutable } from '../utils/local-executable';
+import { prependPolicyPreamble, type HarnessPolicyTranslation } from './harness-policy.service';
 
 export interface OpenCodeStreamEvent {
   type: 'text_delta' | 'thinking_delta' | 'tool_use' | 'tool_result' | 'message_complete' | 'error' | 'system';
@@ -234,11 +235,12 @@ class OpenCodeService {
     return delta ? { type: 'text_delta', content: delta } : null;
   }
 
-  private buildLocalSpawn(openCodeCommand: OpenCodeCommand, message: string, workDir: string, opencodeModel: string, abortController: AbortController, permissionMode?: string) {
+  private buildLocalSpawn(openCodeCommand: OpenCodeCommand, message: string, workDir: string, opencodeModel: string, abortController: AbortController, permissionMode?: string, policy?: HarnessPolicyTranslation) {
+    const effectiveMessage = prependPolicyPreamble(message, policy?.promptPreamble);
     const args = [
       ...openCodeCommand.prefixArgs,
       'run',
-      message,
+      effectiveMessage,
       '--model', opencodeModel,
       '--format', 'json',
       '--dir', workDir,
@@ -251,6 +253,7 @@ class OpenCodeService {
     const env: Record<string, string> = { ...(process.env as Record<string, string>) };
     const apiKey = this.getApiKey();
     if (apiKey) env.DEEPSEEK_API_KEY = apiKey;
+    Object.assign(env, policy?.env || {});
     env.OPENCODE_PERMISSION = buildPermissionConfig(permissionMode);
     env.OPENCODE_CLIENT = 'build-autobuild';
     env.OPENCODE_CONFIG = mcpService.getOpenCodeConfigPath();
@@ -258,7 +261,7 @@ class OpenCodeService {
     env.OPENCODE_DISABLE_TERMINAL_TITLE = 'true';
     env.OPENCODE_ENABLE_EXPERIMENTAL_MODELS = 'true';
 
-    console.log(`[OpenCode Service] Local spawn via ${openCodeCommand.label}: ${openCodeCommand.command} ${args.slice(0, openCodeCommand.prefixArgs.length + 1).join(' ')} <${message.length} chars>`);
+    console.log(`[OpenCode Service] Local spawn via ${openCodeCommand.label}: ${openCodeCommand.command} ${args.slice(0, openCodeCommand.prefixArgs.length + 1).join(' ')} <${effectiveMessage.length} chars>`);
 
     return spawn(openCodeCommand.command, args, {
       cwd: workDir,
@@ -268,8 +271,9 @@ class OpenCodeService {
     });
   }
 
-  private buildSshSpawn(message: string, remoteDir: string, opencodeModel: string, sshConfig: SSHConfig, permissionMode?: string) {
+  private buildSshSpawn(message: string, remoteDir: string, opencodeModel: string, sshConfig: SSHConfig, permissionMode?: string, policy?: HarnessPolicyTranslation) {
     const apiKey = this.getApiKey() || '';
+    const effectiveMessage = prependPolicyPreamble(message, policy?.promptPreamble);
     const permissionConfig = buildPermissionConfig(permissionMode);
     const skipFlag = permissionMode !== 'plan' && permissionMode !== 'dontAsk'
       ? ' --dangerously-skip-permissions'
@@ -278,6 +282,7 @@ class OpenCodeService {
       `cd ${remotePathForShell(remoteDir)}`,
       getRemotePathPrefix(),
       apiKey ? `export DEEPSEEK_API_KEY=${quoteForRemoteShell(apiKey)}` : '',
+      ...Object.entries(policy?.env || {}).map(([key, value]) => `export ${key}=${quoteForRemoteShell(value)}`),
       `export OPENCODE_PERMISSION=${quoteForRemoteShell(permissionConfig)}`,
       'export OPENCODE_CLIENT=build-autobuild',
       'export OPENCODE_CONFIG="$HOME/.config/opencode/build-mcp.json"',
@@ -297,7 +302,7 @@ class OpenCodeService {
       signal: abortController.signal,
       detached: process.platform !== 'win32',
     });
-    child.stdin?.end(message);
+    child.stdin?.end(effectiveMessage);
 
     return { child, abortController };
   }
@@ -309,6 +314,7 @@ class OpenCodeService {
     model: string,
     sshConfig?: SSHConfig,
     permissionMode?: string,
+    policy?: HarnessPolicyTranslation,
   ): AsyncGenerator<OpenCodeStreamEvent> {
     const apiKey = this.getApiKey();
     if (!apiKey) {
@@ -345,13 +351,13 @@ class OpenCodeService {
     let abortController: AbortController;
     try {
       if (sshConfig) {
-        const sshSpawn = this.buildSshSpawn(message, workDir, opencodeModel, sshConfig, permissionMode);
+        const sshSpawn = this.buildSshSpawn(message, workDir, opencodeModel, sshConfig, permissionMode, policy);
         child = sshSpawn.child;
         abortController = sshSpawn.abortController;
       } else {
         const openCodeCommand = this.getCommand();
         abortController = new AbortController();
-        child = this.buildLocalSpawn(openCodeCommand, message, workDir, opencodeModel, abortController, permissionMode);
+        child = this.buildLocalSpawn(openCodeCommand, message, workDir, opencodeModel, abortController, permissionMode, policy);
       }
     } catch (error) {
       yield { type: 'error', error: `Failed to start OpenCode: ${error instanceof Error ? error.message : String(error)}` };

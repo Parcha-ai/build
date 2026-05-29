@@ -106,3 +106,4 @@ test-*.ts
 test-*.sh
 test-*.scpt
 .gstack/
+.claude/worktrees/linear-integration
