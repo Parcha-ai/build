@@ -1309,6 +1309,8 @@ Read or source that file if you need the actual values. Do not print secret valu
 
     return `You are continuing a Build agent turn for a scoped ${stage.tier} follow-up.
 
+Before starting work, read all CLAUDE.md files in the project — the root CLAUDE.md, ~/.claude/CLAUDE.md (user instructions), and any .claude/ directory files. These contain critical project conventions, build commands, and constraints you must follow.
+
 Scope: ${stage.tier.toUpperCase()}
 Purpose: ${stage.purpose}
 
@@ -4036,7 +4038,14 @@ ${leadContent.slice(0, leadContextLimit)}
 
         const codexContext = [secureEnvContext, conversationContext].filter(Boolean).join('\n\n');
 
-        const codexPrompt = nativeCodexGoalObjective ? `/goal ${nativeCodexGoalObjective}` : userMessage;
+        const claudeMdInstruction = [
+          'Before starting work, read all CLAUDE.md files in the project — the root CLAUDE.md,',
+          '~/.claude/CLAUDE.md (user instructions), and any .claude/ directory files.',
+          'These contain critical project conventions, build commands, and constraints you must follow.',
+        ].join(' ');
+        const codexPrompt = nativeCodexGoalObjective
+          ? `/goal ${nativeCodexGoalObjective}`
+          : `${claudeMdInstruction}\n\n${userMessage}`;
 
         const codexEvents = codexService.streamAsChat(sessionId, codexPrompt, projectPath, session.sshConfig, codexContext, codexModel, attachments, autoBuildLeadPermissionMode) as AsyncIterable<StreamEvent>;
         for await (const event of this.streamLeadWithAutoBuildStages(
