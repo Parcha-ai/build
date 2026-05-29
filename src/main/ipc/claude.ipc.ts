@@ -4,17 +4,18 @@ import { randomUUID } from 'crypto';
 import { IPC_CHANNELS } from '../../shared/constants/channels';
 import { ClaudeService } from '../services/claude.service';
 import { getMainWindow } from '../index';
-import type { QuestionResponse, Attachment, PlanApprovalResponse, ChatMessage, ContentBlock, ToolCall } from '../../shared/types';
+import type { QuestionResponse, Attachment, PlanApprovalResponse, ChatMessage, ToolCall } from '../../shared/types';
 import {
   hasRecoverableOutput,
   mergeRecoveredStreamMessages,
   normalizeCompletedStreamMessage,
   serializeCompletedStreamMessage,
   harnessFromModel,
+  filterInternalPromptEchoes,
   type PersistedChatMessage,
 } from '../../shared/utils/message-recovery';
 import { buildCompletedStreamMessage } from '../../shared/utils/stream-finalization';
-import { transcriptService, type TranscriptEntry } from '../services/transcript.service';
+import { transcriptEntriesToChatMessages, transcriptService, type TranscriptEntry } from '../services/transcript.service';
 import { sessionService } from './session.ipc';
 import { DEFAULT_AUDIO_SETTINGS } from '../../shared/types/audio';
 import { messageQueueService } from '../services/message-queue.service';
@@ -91,6 +92,8 @@ function writeAssistantToTranscript(
     resolvedModel?: string | null;
   } = {},
 ): void {
+  if (!hasRecoverableOutput(finalMessage)) return;
+
   const harness = finalMessage.harness || harnessFromModel(opts.model || opts.resolvedModel);
   transcriptService.appendMessage(sessionId, {
     id: finalMessage.id || randomUUID(),
@@ -179,7 +182,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
 
   ipcMain.handle(
     IPC_CHANNELS.CLAUDE_SEND_MESSAGE,
-    async (event, sessionId: string, message: string, attachments?: Attachment[], permissionMode?: string, thinkingMode?: string, model?: string, gstackMode?: string, supplementalMessages?: ChatMessage[], fastMode?: boolean) => {
+    async (event, sessionId: string, message: string, attachments?: Attachment[], permissionMode?: string, thinkingMode?: string, model?: string, gstackMode?: string, supplementalMessages?: ChatMessage[], fastMode?: boolean, suppressUserMessage?: boolean) => {
       const mainWindow = getMainWindow();
       if (!mainWindow) return;
 
@@ -219,14 +222,18 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
         (content) => sendToSender(IPC_CHANNELS.CLAUDE_THINKING_CHUNK, { sessionId, content })
       );
 
-      // Write the user message to the canonical transcript
-      transcriptService.appendMessage(sessionId, {
-        id: randomUUID(),
-        role: 'user',
-        content: message,
-        timestamp: new Date().toISOString(),
-        harness: harnessFromModel(model),
-      });
+      // Write visible user messages to the canonical transcript. Internal
+      // continuations such as Ralph Loop /goal prompts are model input, but
+      // should not come back as user-authored transcript rows after reload.
+      if (!suppressUserMessage) {
+        transcriptService.appendMessage(sessionId, {
+          id: randomUUID(),
+          role: 'user',
+          content: message,
+          timestamp: new Date().toISOString(),
+          harness: harnessFromModel(model),
+        });
+      }
 
       let fullMessageContent = '';
       let accumulatedThinking = '';
@@ -766,34 +773,38 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
   });
 
   ipcMain.handle(IPC_CHANNELS.CLAUDE_GET_MESSAGES, async (_, sessionId: string, limit?: number) => {
-    // Prefer Build's canonical per-session transcript if it exists.
-    // This covers messages from ALL harnesses, not just Claude.
-    if (transcriptService.hasTranscript(sessionId)) {
-      const entries = transcriptService.loadMessages(sessionId, limit);
-      const mapped: ChatMessage[] = entries.map(entry => ({
-        id: entry.id,
-        role: entry.role,
-        content: entry.content,
-        timestamp: new Date(entry.timestamp),
-        harness: (entry.harness as ChatMessage['harness']) || undefined,
-        toolCalls: entry.toolCalls?.map(tc => ({
-          id: tc.id,
-          name: tc.name,
-          input: tc.input ? JSON.parse(tc.input) : {},
-          status: 'completed' as const,
-          result: tc.result ? JSON.parse(tc.result) : undefined,
-        })),
-        interrupted: entry.interrupted,
-        contentBlocks: entry.contentBlocks as ContentBlock[] | undefined,
-      }));
-      // Still merge with the completed-stream buffer -- it may contain messages
-      // from the current in-flight stream that haven't been flushed to disk yet.
-      return mergeCompletedStreamMessages(mapped, sessionId, limit);
+    // Build is the canonical transcript. Claude's SDK transcript is only used
+    // to backfill legacy/partial sessions, and recovered turns are written back
+    // into Build so future loads don't depend on Claude as an equal source.
+    const claudeTranscriptMessages = await claudeService.getMessages(sessionId, limit).catch((error) => {
+      console.warn('[Claude IPC] Could not load Claude transcript; using Build transcript only:', error);
+      return [] as ChatMessage[];
+    });
+    const buildTranscriptEntries = transcriptService.hasTranscript(sessionId)
+      ? transcriptService.loadMessages(sessionId)
+      : [];
+    const buildTranscriptMessages = transcriptEntriesToChatMessages(buildTranscriptEntries);
+    const usableClaudeMessages = claudeTranscriptMessages
+      .filter((message) => message.role !== 'assistant' || hasRecoverableOutput(message));
+
+    if (usableClaudeMessages.length > 0) {
+      const upsert = transcriptService.upsertMessages(sessionId, usableClaudeMessages, {
+        existingEntries: buildTranscriptEntries,
+      });
+      if (upsert.changed) {
+        console.log(`[Claude IPC] Backfilled Build transcript for ${sessionId} (${upsert.written} canonical entries)`);
+      }
     }
 
-    // Fallback: existing Claude-transcript loading for legacy sessions
-    const transcriptMessages = await claudeService.getMessages(sessionId, limit);
-    return mergeCompletedStreamMessages(transcriptMessages, sessionId, limit);
+    const mergedTranscriptMessages = mergeRecoveredStreamMessages(
+      buildTranscriptMessages,
+      usableClaudeMessages,
+      limit
+    );
+
+    // Still merge with the completed-stream buffer -- it may contain messages
+    // from the current in-flight stream that haven't been flushed to disk yet.
+    return filterInternalPromptEchoes(mergeCompletedStreamMessages(mergedTranscriptMessages, sessionId, limit));
   });
 
   // Handle permission responses from user

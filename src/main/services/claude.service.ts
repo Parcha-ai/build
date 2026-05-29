@@ -35,6 +35,8 @@ import { secureKeysService } from './secure-keys.service';
 import { analyticsService, estimateBaselineCost, estimateCost } from './analytics.service';
 import { truncateMiddlePreservingTail } from '../../shared/utils/prompt-truncation';
 import { findUsableLocalExecutable } from '../utils/local-executable';
+import { transcriptEntriesToChatMessages, transcriptService } from './transcript.service';
+import { filterInternalPromptEchoes, hasRecoverableOutput, mergeRecoveredStreamMessages } from '../../shared/utils/message-recovery';
 
 const STREAM_DEBUG = process.env.GREP_DEBUG_STREAMING === '1';
 
@@ -1124,7 +1126,7 @@ Read or source that file if you need the actual values. Do not print secret valu
     prefetchedTranscriptMessages?: ChatMessage[],
   ): Promise<string> {
     const transcriptMessages = prefetchedTranscriptMessages
-      ?? await this.getMessages(sessionId, ROUTING_TRANSCRIPT_LIMIT);
+      ?? await this.getCanonicalMessages(sessionId, ROUTING_TRANSCRIPT_LIMIT);
     const mergedMessages = mergeConversationMessages(transcriptMessages, normalizedSupplementalMessages);
     const memoryProjectPath = this.getMemoryProjectPath(session, projectPath);
     const memoriesContext = memoryProjectPath
@@ -1196,7 +1198,7 @@ Read or source that file if you need the actual values. Do not print secret valu
     }
 
     try {
-      const transcriptPeek = await this.getMessages(sessionId, ROUTING_TRANSCRIPT_LIMIT);
+      const transcriptPeek = await this.getCanonicalMessages(sessionId, ROUTING_TRANSCRIPT_LIMIT);
       return this.getLastAssistantHarness(supplementalMessages, transcriptPeek);
     } catch (error) {
       console.warn('[Claude Service] Could not peek transcript for last assistant harness:', error);
@@ -3856,7 +3858,7 @@ ${leadContent.slice(0, leadContextLimit)}
         try {
           let recentRoutingMessages = normalizedSupplementalMessages;
           try {
-            const transcriptMessages = await this.getMessages(sessionId, ROUTING_TRANSCRIPT_LIMIT);
+            const transcriptMessages = await this.getCanonicalMessages(sessionId, ROUTING_TRANSCRIPT_LIMIT);
             recentRoutingMessages = mergeConversationMessages(transcriptMessages, normalizedSupplementalMessages);
             prefetchedRoutingMessages = recentRoutingMessages;
           } catch (error) {
@@ -4326,7 +4328,7 @@ ${leadContent.slice(0, leadContextLimit)}
       // Build cross-harness context so Claude sees messages from Cursor/Codex turns
       let supplementalConversationContext = '';
       try {
-        const transcriptMessages = await this.getMessages(sessionId);
+        const transcriptMessages = await this.getCanonicalMessages(sessionId);
         const merged = mergeConversationMessages(transcriptMessages, normalizedSupplementalMessages);
         if (merged.length > 0) {
           supplementalConversationContext = buildCrossHarnessContext(merged, [], 'claude');
@@ -7611,6 +7613,34 @@ Begin by creating the task structure now.
     if (this.messageCache.delete(sessionId)) {
       console.log('[Claude] Invalidated message cache for', sessionId);
     }
+  }
+
+  async getCanonicalMessages(sessionId: string, limit = 200): Promise<ChatMessage[]> {
+    const claudeMessages = await this.getMessages(sessionId, limit).catch((error) => {
+      console.warn('[Claude] Could not load Claude transcript for canonical history:', error);
+      return [] as ChatMessage[];
+    });
+    const buildTranscriptEntries = transcriptService.hasTranscript(sessionId)
+      ? transcriptService.loadMessages(sessionId)
+      : [];
+    const buildMessages = transcriptEntriesToChatMessages(buildTranscriptEntries);
+    const usableClaudeMessages = claudeMessages
+      .filter((message) => message.role !== 'assistant' || hasRecoverableOutput(message));
+
+    if (usableClaudeMessages.length > 0) {
+      const upsert = transcriptService.upsertMessages(sessionId, usableClaudeMessages, {
+        existingEntries: buildTranscriptEntries,
+      });
+      if (upsert.changed) {
+        console.log(`[Claude] Backfilled Build transcript for ${sessionId} (${upsert.written} canonical entries)`);
+      }
+    }
+
+    return filterInternalPromptEchoes(mergeRecoveredStreamMessages(
+      buildMessages,
+      usableClaudeMessages,
+      limit
+    ));
   }
 
   /**

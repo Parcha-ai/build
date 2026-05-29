@@ -216,3 +216,39 @@ export function mergeRecoveredStreamMessages(
 
   return limit && limit > 0 ? merged.slice(-limit) : merged;
 }
+
+function normalizedPromptText(content: string): string {
+  return content.replace(/\r\n/g, '\n').replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+function goalEchoContent(content: string): string | undefined {
+  const match = content.match(/^\/goal\s+([\s\S]+)$/i);
+  return match?.[1]?.trim() || undefined;
+}
+
+export function filterInternalPromptEchoes(messages: ChatMessage[]): ChatMessage[] {
+  const filtered: ChatMessage[] = [];
+
+  for (const message of messages) {
+    const goalContent = message.role === 'user' ? goalEchoContent(message.content || '') : undefined;
+    if (goalContent) {
+      const normalizedGoal = normalizedPromptText(goalContent);
+      const messageTime = messageTimestamp(message);
+      const duplicateVisiblePrompt = [...filtered].reverse().find((candidate) => {
+        if (candidate.role !== 'user') return false;
+        const candidateContent = candidate.content || '';
+        if (goalEchoContent(candidateContent)) return false;
+        if (normalizedPromptText(candidateContent) !== normalizedGoal) return false;
+        return Math.abs(messageTime - messageTimestamp(candidate)) <= 10 * 60_000;
+      });
+
+      if (duplicateVisiblePrompt) {
+        continue;
+      }
+    }
+
+    filtered.push(message);
+  }
+
+  return filtered;
+}

@@ -7,6 +7,7 @@ import { normalizeToolCall } from '../src/shared/utils/tool-call-transformer';
 import { truncateMiddlePreservingTail } from '../src/shared/utils/prompt-truncation';
 import {
   fallbackModelForHarness,
+  filterInternalPromptEchoes,
   hasRecoverableOutput,
   isCloseContentDuplicate,
   isCloseTimelineDuplicate,
@@ -260,6 +261,20 @@ assert(missingToolRefContext.includes('Tool refs without metadata: lost-tool-1')
 
 const limited = mergeRecoveredStreamMessages(transcript, [attributed, toolOnlyRecovered], 2);
 assert.deepEqual(limited.map((m) => m.id), ['assistant-1', 'tool-only']);
+
+const buildPreferred = mergeRecoveredStreamMessages([
+  message('build-canonical', 'assistant', 'same visible output', '2026-05-24T01:01:00.000Z', { harness: 'codex' }),
+], [
+  message('claude-backfill', 'assistant', 'same visible output', '2026-05-24T01:01:01.000Z', { harness: 'codex' }),
+]);
+assert.deepEqual(buildPreferred.map((m) => m.id), ['build-canonical']);
+
+const filteredInternalGoals = filterInternalPromptEchoes([
+  message('visible-user-goal', 'user', 'prioritize the urgent tickets', '2026-05-24T01:01:00.000Z'),
+  message('internal-goal-echo', 'user', '/goal prioritize the urgent tickets', '2026-05-24T01:01:20.000Z'),
+  message('explicit-goal', 'user', '/goal handle a different objective', '2026-05-24T01:02:00.000Z'),
+]);
+assert.deepEqual(filteredInternalGoals.map((m) => m.id), ['visible-user-goal', 'explicit-goal']);
 
 const completedFromStream = buildCompletedStreamMessage({
   content: 'streamed text',

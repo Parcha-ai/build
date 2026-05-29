@@ -176,8 +176,8 @@ const electronAPI = {
 
   // Claude
   claude: {
-    sendMessage: (sessionId: string, message: string, attachments?: unknown[], permissionMode?: string, thinkingMode?: string, model?: string, gstackMode?: string, supplementalMessages?: ChatMessage[], fastMode?: boolean): Promise<void> =>
-      ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_SEND_MESSAGE, sessionId, message, attachments, permissionMode, thinkingMode, model, gstackMode, supplementalMessages, fastMode),
+    sendMessage: (sessionId: string, message: string, attachments?: unknown[], permissionMode?: string, thinkingMode?: string, model?: string, gstackMode?: string, supplementalMessages?: ChatMessage[], fastMode?: boolean, suppressUserMessage?: boolean): Promise<void> =>
+      ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_SEND_MESSAGE, sessionId, message, attachments, permissionMode, thinkingMode, model, gstackMode, supplementalMessages, fastMode, suppressUserMessage),
     resumeRemoteTurn: (sessionId: string, model?: string): Promise<void> =>
       ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_RESUME_REMOTE_TURN, sessionId, model),
     getMessages: (sessionId: string, limit?: number): Promise<ChatMessage[]> =>

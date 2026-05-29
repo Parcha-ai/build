@@ -11,6 +11,7 @@ import { GitService } from './git.service';
 import { getSessionStoreName } from '../store-names';
 import type { Session, SessionStatus } from '../../shared/types';
 import Anthropic from '@anthropic-ai/sdk';
+import { transcriptService } from './transcript.service';
 
 interface SessionCreateConfig {
   name: string;
@@ -845,6 +846,14 @@ Only return the title, nothing else.`
 
     // Write the truncated transcript
     await fs.writeFile(forkedTranscriptPath, updatedLines.join('\n') + '\n', 'utf-8');
+    const buildTranscriptClone = transcriptService.cloneTranscript(sessionId, forkedSessionId, {
+      upToMessageId: rewindToMessageId,
+    });
+    if (buildTranscriptClone.copied > 0) {
+      console.log(
+        `[Session] Cloned ${buildTranscriptClone.copied} Build transcript entries for rewind fork ${forkedSessionId}`
+      );
+    }
 
     // Generate forked session name
     const originalName = originalSession.name;
@@ -976,6 +985,15 @@ Only return the title, nothing else.`
 
     // Store the forked session
     this.store.set(`sessions.${forkedSessionId}`, forkedSession);
+
+    const buildTranscriptClone = transcriptService.cloneTranscript(parentSessionId, forkedSessionId, {
+      upToMessageId: forkPoint === 'end' ? undefined : forkPoint,
+    });
+    if (buildTranscriptClone.copied > 0) {
+      console.log(
+        `[Session] Cloned ${buildTranscriptClone.copied} Build transcript entries for fork ${forkedSessionId}`
+      );
+    }
 
     // Map to the SDK session ID so getMessages() finds the transcript.
     // For SSH forks, map to the parent SDK ID so messages load from parent

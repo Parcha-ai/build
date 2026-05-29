@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import type { Session, ChatMessage, ToolCall, ContentBlock, PermissionRequest, PermissionResponse, QuestionRequest, QuestionResponse, SetupProgressEvent, CompactionStatus, PlanApprovalRequest, PlanApprovalResponse, GStackMode, Harness, TaskTier } from '../../shared/types';
 import { AGENT_COLORS } from '../../shared/types';
 import { normalizeToolCall } from '../../shared/utils/tool-call-transformer';
-import { contentBlockSignature, isCloseContentDuplicate, isCloseTimelineDuplicate, isInterruptedSafetyNetDuplicate, toolSignature } from '../../shared/utils/message-recovery';
+import { contentBlockSignature, filterInternalPromptEchoes, hasRecoverableOutput, isCloseContentDuplicate, isCloseTimelineDuplicate, isInterruptedSafetyNetDuplicate, toolSignature } from '../../shared/utils/message-recovery';
 import { buildCompletedStreamMessage } from '../../shared/utils/stream-finalization';
 import { extractContentBlockText, stringifyToolResultForDisplay } from '../../shared/utils/content-block-text';
 import { useAudioStore } from './audio.store';
@@ -2150,7 +2150,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         model,
         activeGStackMode,
         supplementalMessagesForContext,
-        get().fastMode
+        get().fastMode,
+        suppressUserMessage
       );
       console.log('[SessionStore] sendMessage returned:', result);
     } catch (error) {
@@ -2178,7 +2179,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     const applyLoadedMessages = (transcriptMessages: ChatMessage[]) => {
       const supplementalMessages = loadSupplementalMessages(sessionId);
-      const mergedMessages = mergeTimelineMessages(transcriptMessages || [], supplementalMessages);
+      const mergedMessages = filterInternalPromptEchoes(mergeTimelineMessages(transcriptMessages || [], supplementalMessages))
+        .filter((message) => message.role !== 'assistant' || hasRecoverableOutput(message));
       console.log(`[Perf] Message load took ${performance.now() - perfStart}ms (${mergedMessages.length} merged messages)`);
 
       if (mergedMessages.length > 0) {
@@ -2195,7 +2197,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           // the same close-duplicate rules as supplemental recovery because
           // tool-only/content-block-only harness messages are valid output even
           // when content is empty.
-          const existing = state.messages[sessionId] || [];
+          const existing = filterInternalPromptEchoes(state.messages[sessionId] || [])
+            .filter((message) => message.role !== 'assistant' || hasRecoverableOutput(message));
           if (existing.length > 0 && mergedMessages.length > 0) {
             // Always preserve non-Claude harness messages from memory —
             // they're never in the Claude transcript on disk, so the
