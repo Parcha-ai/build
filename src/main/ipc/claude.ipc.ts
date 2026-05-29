@@ -4,7 +4,7 @@ import { randomUUID } from 'crypto';
 import { IPC_CHANNELS } from '../../shared/constants/channels';
 import { ClaudeService } from '../services/claude.service';
 import { getMainWindow } from '../index';
-import type { QuestionResponse, Attachment, PlanApprovalResponse, ChatMessage, ToolCall } from '../../shared/types';
+import type { QuestionResponse, Attachment, PlanApprovalResponse, ChatMessage, ToolCall, ContentBlock } from '../../shared/types';
 import {
   hasRecoverableOutput,
   mergeRecoveredStreamMessages,
