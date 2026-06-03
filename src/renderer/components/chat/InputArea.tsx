@@ -423,6 +423,13 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
 
   const isSending = isStreamingState || (isStreamingProp ?? false);
   const hasQueuedMessages = queuedMessages.length > 0;
+  const modeChangeDisabled = disabled || isSending || hasQueuedMessages;
+
+  useEffect(() => {
+    if (isSending || hasQueuedMessages) {
+      setShowPlanModeNudge(false);
+    }
+  }, [isSending, hasQueuedMessages]);
 
   // Model selector state
   const [showModelDropdown, setShowModelDropdown] = useState(false);
@@ -1074,6 +1081,8 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
 
     if (
       !planNudgeAction &&
+      !isSending &&
+      !hasQueuedMessages &&
       shouldSuggestPlanModeNudge(message, attachments, currentModel, currentMode)
     ) {
       setShowPlanModeNudge(true);
@@ -1206,6 +1215,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
     // Shift+Tab to cycle permission modes
     if (e.key === 'Tab' && e.shiftKey) {
       e.preventDefault();
+      if (modeChangeDisabled) return;
       cyclePermissionMode(sessionId);
       return;
     }
@@ -1814,7 +1824,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
           {/* Left: mode */}
           <button
             onClick={() => cyclePermissionMode(sessionId)}
-            disabled={disabled}
+            disabled={modeChangeDisabled}
             className={`hover:opacity-80 transition-opacity disabled:opacity-40 text-[10px] -order-3 ${modeConfig.color}`}
             title={permissionModeTitle}
           >
