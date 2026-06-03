@@ -97,7 +97,8 @@ assert.ok((claudeIpc.match(/claudeService\.noteActiveQueryEvent\(sessionId\)/g) 
 
 const drainHandler = claudeIpc.match(/messageQueueService\.on\('drain-ready'[\s\S]*?\n {2}\}\);/)?.[0] || '';
 const sessionIndex = drainHandler.indexOf('const session = await sessionService.getSession(sessionId)');
-const remoteProbeIndex = drainHandler.indexOf('const remoteActive = session?.sshConfig');
+const remoteReaderIndex = drainHandler.indexOf('const readRemoteActive = async () => session?.sshConfig');
+const remoteProbeIndex = drainHandler.indexOf('let remoteActive = await readRemoteActive()');
 const activeStateIndex = drainHandler.indexOf('const activeState = claudeService.getActiveQueryState(sessionId)');
 const deferredMsIndex = drainHandler.indexOf('const deferredMs = messageQueueService.getDrainDeferredMs(sessionId)');
 const supportsActiveInjectionIndex = drainHandler.indexOf('const supportsActiveInjection = messageQueueService.supportsActiveInjection(sessionId)');
@@ -107,12 +108,15 @@ const activeRemoteDeferralIndex = drainHandler.indexOf('if (remoteActive) {', in
 const staleIndex = drainHandler.indexOf('const canTreatAsStale = (!activeState.injectable || !supportsActiveInjection)');
 const deferActiveIndex = drainHandler.indexOf('messageQueueService.deferDrain(sessionId, 1000)', staleIndex);
 const cancelIndex = drainHandler.indexOf('claudeService.cancelQuery(sessionId)');
+const cleanupCompletedIndex = drainHandler.indexOf('sshService.cleanupDetachedBridgeProcessesForNewTurn(sessionId, session.sshConfig');
+const remoteRecheckIndex = drainHandler.indexOf('remoteActive = await readRemoteActive()', cleanupCompletedIndex);
 const finalRemoteActiveIndex = drainHandler.lastIndexOf('if (remoteActive) {');
 const injectableDequeueIndex = drainHandler.indexOf('const next = messageQueueService.dequeueForDrain(sessionId)');
 const newTurnDequeueIndex = drainHandler.lastIndexOf('const next = messageQueueService.dequeueForDrain(sessionId)');
 
 assert.ok(sessionIndex >= 0, 'drain handler must load the session before active-query decisions');
-assert.ok(remoteProbeIndex > sessionIndex, 'drain handler must check remote process state early');
+assert.ok(remoteReaderIndex > sessionIndex, 'drain handler must define a remote process state reader early');
+assert.ok(remoteProbeIndex > remoteReaderIndex, 'drain handler must check remote process state early');
 assert.ok(activeStateIndex >= 0, 'drain handler must inspect active query state');
 assert.ok(activeStateIndex > remoteProbeIndex, 'remote process state must be known before active-query stale handling');
 assert.ok(deferredMsIndex > activeStateIndex, 'deferred age must be read after active query state');
@@ -125,7 +129,9 @@ assert.ok(activeRemoteDeferralIndex < staleIndex, 'remote liveness must prevent 
 assert.ok(staleIndex > activeRemoteDeferralIndex, 'stale decision must run only after remote-active deferral');
 assert.ok(deferActiveIndex > staleIndex, 'active runtime must be deferred before cancellation');
 assert.ok(cancelIndex > deferActiveIndex, 'stale active query must be cancelled only after non-stale deferral branch');
-assert.ok(finalRemoteActiveIndex > cancelIndex, 'remote process check must run again before new-turn drain');
+assert.ok(cleanupCompletedIndex > cancelIndex, 'completed remote bridge cleanup must run before final remote-active deferral');
+assert.ok(remoteRecheckIndex > cleanupCompletedIndex, 'remote process state must be rechecked after completed bridge cleanup');
+assert.ok(finalRemoteActiveIndex > remoteRecheckIndex, 'remote process check must run again before new-turn drain');
 assert.ok(newTurnDequeueIndex > finalRemoteActiveIndex, 'new-turn queue drain must happen only after active and remote process checks');
 assert.match(drainHandler, /if \(!canTreatAsStale\) \{[\s\S]*?return;[\s\S]*?\}/);
 assert.match(drainHandler, /Clearing stale active query before drain/);
@@ -134,5 +140,16 @@ assert.match(drainHandler, /supportsActiveInjection=\$\{supportsActiveInjection 
 
 assert.doesNotMatch(sessionStore, /window\.electronAPI\.claude\.injectMessage\(\s*sessionId,\s*nextMessage\.message/);
 assert.match(sessionStore, /main queue owns injection/);
+
+const optimisticMessageIndex = sessionStore.indexOf('addMessage(sessionId, userMessage)');
+const rendererRemoteProbeIndex = sessionStore.indexOf('window.electronAPI.ssh.hasActiveRemoteProcess(sessionId)', optimisticMessageIndex);
+const rendererQueueIndex = sessionStore.indexOf('window.electronAPI.queue?.enqueue(sessionId, message, attachments', rendererRemoteProbeIndex);
+const rendererStreamStartIndex = sessionStore.indexOf('setStreaming(sessionId, true)', rendererRemoteProbeIndex);
+assert.ok(optimisticMessageIndex >= 0, 'renderer send path must add the user message optimistically');
+assert.ok(rendererRemoteProbeIndex > optimisticMessageIndex, 'renderer remote-active probe must happen after the visible user message');
+assert.ok(rendererQueueIndex > rendererRemoteProbeIndex, 'renderer must enqueue instead of direct-sending when remote Claude is active');
+assert.ok(rendererStreamStartIndex > rendererQueueIndex, 'renderer remote-active queue branch must run before starting a new stream');
+assert.match(sessionStore, /deferDrain: true/);
+assert.match(sessionStore, /queued message after optimistic send/);
 
 console.log('queue stale active-query verifier passed');

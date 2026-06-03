@@ -1182,9 +1182,10 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
   // messages into one ordered prompt and forward it through the normal flow.
   messageQueueService.on('drain-ready', async (sessionId: string) => {
     const session = await sessionService.getSession(sessionId).catch(() => null);
-    const remoteActive = session?.sshConfig
-      ? await sshService.hasActiveRemoteProcess(sessionId, session.sshConfig).catch(() => false)
+    const readRemoteActive = async () => session?.sshConfig
+      ? sshService.hasActiveRemoteProcess(sessionId, session.sshConfig).catch(() => false)
       : false;
+    let remoteActive = await readRemoteActive();
     const activeState = claudeService.getActiveQueryState(sessionId);
     if (activeState.active) {
       const deferredMs = messageQueueService.getDrainDeferredMs(sessionId);
@@ -1245,6 +1246,19 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
         `deferredMs=${deferredMs}, ageMs=${activeState.ageMs}, idleMs=${activeState.idleMs}`
       );
       claudeService.cancelQuery(sessionId);
+    }
+
+    if (remoteActive) {
+      if (session?.sshConfig) {
+        await sshService.cleanupDetachedBridgeProcessesForNewTurn(sessionId, session.sshConfig, {
+          killActive: false,
+        });
+        remoteActive = await readRemoteActive();
+        console.log(
+          `[Queue] Rechecked remote process after completed bridge cleanup for ${sessionId}; ` +
+          `remoteActive=${remoteActive ? 'yes' : 'no'}`
+        );
+      }
     }
 
     if (remoteActive) {

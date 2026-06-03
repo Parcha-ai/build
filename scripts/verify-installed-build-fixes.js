@@ -88,6 +88,7 @@ const mainMarkers = [
   'Injecting queued message into active query',
   'supportsActiveInjection=',
   'remote process is still active (localActive=yes',
+  'Rechecked remote process after completed bridge cleanup',
   'getDrainDeferredMs',
   'Browser partition cleanup',
   'Storage cleared for partition',
@@ -113,6 +114,7 @@ const rendererMarkers = [
   'merged',
   'Failed to persist permission mode changed from main',
   'main queue owns injection',
+  'queued message after optimistic send',
   'Secure-key scan failed; sending original text',
 ];
 

@@ -12,15 +12,12 @@ const sendMessageMethod = sendMessageStart >= 0 && loadMessagesStart > sendMessa
   : '';
 
 assert.ok(sendMessageMethod, 'must find renderer sendMessage implementation');
-assert.doesNotMatch(
-  sendMessageMethod,
-  /hasActiveRemoteProcess|hasActiveQuery/,
-  'renderer sendMessage must not block on backend or remote active-process probes',
-);
 
 const normalSendStart = sendMessageMethod.indexOf('const { addMessage, setStreaming, permissionMode, thinkingMode, selectedModel, gstackMode } = state;');
 const optimisticComment = sendMessageMethod.indexOf('pressing\n    // Enter always produces immediate visible feedback');
 const addUserMessageIndex = sendMessageMethod.indexOf('addMessage(sessionId, userMessage);');
+const preVisibleSendPath = sendMessageMethod.slice(normalSendStart, addUserMessageIndex);
+const postVisibleRemoteProbeIndex = sendMessageMethod.indexOf('window.electronAPI.ssh.hasActiveRemoteProcess(sessionId)', addUserMessageIndex);
 const setStreamingIndex = sendMessageMethod.indexOf('setStreaming(sessionId, true);');
 const secureScanIndex = sendMessageMethod.indexOf('window.electronAPI.secureKeys.interceptAndReplace');
 const sanitizedUpdateIndex = sendMessageMethod.indexOf('if (modifiedText !== message) {');
@@ -30,6 +27,12 @@ const ipcSendIndex = sendMessageMethod.indexOf('window.electronAPI.claude.sendMe
 assert.ok(normalSendStart >= 0, 'must locate normal send branch');
 assert.ok(optimisticComment > normalSendStart, 'normal send branch must document immediate feedback behavior');
 assert.ok(addUserMessageIndex > normalSendStart, 'normal send branch must add a user message');
+assert.doesNotMatch(
+  preVisibleSendPath,
+  /hasActiveRemoteProcess|hasActiveQuery/,
+  'renderer sendMessage must not block visible feedback on backend or remote active-process probes',
+);
+assert.ok(postVisibleRemoteProbeIndex > addUserMessageIndex, 'remote-active queue fallback must run only after the user message is visible');
 assert.ok(addUserMessageIndex < secureScanIndex, 'user message must be shown before secure-key scanning');
 assert.ok(setStreamingIndex > addUserMessageIndex, 'streaming state must start after the user message is visible');
 assert.ok(setStreamingIndex < secureScanIndex, 'streaming state must start before secure-key scanning');
