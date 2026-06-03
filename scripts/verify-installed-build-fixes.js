@@ -145,6 +145,36 @@ const running = processList
   .filter((line) => line.includes(executablePath))
   .map(parsePsLine)
   .filter(Boolean);
+const buildExecutableProcesses = processList
+  .split('\n')
+  .map(parsePsLine)
+  .filter(Boolean)
+  .map((processInfo) => {
+    const executableMatch = processInfo.command.match(/^(.*?Build\.app\/Contents\/MacOS\/build)(?:\s|$)/);
+    if (!executableMatch) return null;
+    return {
+      ...processInfo,
+      executablePath: path.resolve(executableMatch[1]),
+    };
+  })
+  .filter(Boolean);
+
+if (isInstalledProductionApp) {
+  const expectedExecutablePath = path.resolve(executablePath);
+  const staleBuildProcesses = buildExecutableProcesses.filter((processInfo) =>
+    processInfo.executablePath !== expectedExecutablePath
+  );
+  if (staleBuildProcesses.length > 0) {
+    console.error('stale Build.app processes:');
+    for (const processInfo of staleBuildProcesses) {
+      console.error(processInfo.line);
+    }
+    fail(
+      'non-installed Build.app process is running; quit it and launch /Applications/Build.app before trusting runtime behavior'
+    );
+  }
+}
+
 if (running.length > 0) {
   console.log('running app processes:');
   for (const processInfo of running) {
@@ -154,7 +184,10 @@ if (running.length > 0) {
       continue;
     }
     if (processInfo.startedAtMs < stat.mtimeMs) {
-      console.log(`activation state for pid ${processInfo.pid}: running process predates installed app.asar; relaunch required to use installed fixes`);
+      if (isInstalledProductionApp) {
+        fail(`running installed Build.app pid ${processInfo.pid} predates installed app.asar; relaunch required to use installed fixes`);
+      }
+      console.log(`activation state for pid ${processInfo.pid}: running process predates checked app.asar; relaunch required to use checked fixes`);
     } else {
       console.log(`activation state for pid ${processInfo.pid}: running process started after installed app.asar`);
     }

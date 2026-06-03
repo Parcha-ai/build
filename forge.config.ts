@@ -190,6 +190,31 @@ const config: ForgeConfig = {
             await fs.remove(applicationsPath);
             await fs.copy(appPath, applicationsPath);
             console.log('[Packaging] Installed to /Applications/Build.app');
+
+            try {
+              // Avoid LaunchServices resolving com.parcha.build to an older
+              // staged out/v*/Build.app after installing the fresh app.
+              const { execFile } = require('child_process');
+              const { promisify } = require('util');
+              const execFileAsync = promisify(execFile);
+              const lsregister = '/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister';
+              const outRoot = path.join(__dirname, 'out');
+              if (fs.existsSync(lsregister) && fs.existsSync(outRoot)) {
+                const currentOutDir = path.resolve(outputPath);
+                const entries = await fs.readdir(outRoot);
+                for (const entry of entries) {
+                  if (!entry.startsWith('v')) continue;
+                  const oldApp = path.join(outRoot, entry, 'Build-darwin-arm64', 'Build.app');
+                  if (!fs.existsSync(oldApp)) continue;
+                  if (path.resolve(path.dirname(oldApp)) === currentOutDir) continue;
+                  await execFileAsync(lsregister, ['-u', oldApp]).catch(() => undefined);
+                }
+                await execFileAsync(lsregister, ['-f', applicationsPath]).catch(() => undefined);
+                console.log('[Packaging] Refreshed LaunchServices registration for /Applications/Build.app');
+              }
+            } catch (registrationError) {
+              console.warn('[Packaging] Warning: Failed to refresh LaunchServices registration:', registrationError);
+            }
           } catch (err) {
             console.error('[Packaging] Warning: Failed to copy to /Applications:', err);
           }
