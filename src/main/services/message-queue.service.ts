@@ -50,13 +50,11 @@ class MessageQueueService extends EventEmitter {
     }
     this.emitStateChange(sessionId);
 
-    // If not streaming, drain immediately. Claude can also accept queued input
-    // mid-stream via streamInput; keep that drain in main so queue state and
-    // injection are updated atomically.
+    // If not streaming, drain immediately. Harnesses that explicitly support
+    // active-turn injection can also drain mid-stream from main, keeping queue
+    // state and injection updated atomically.
     const isStreaming = this.streaming.get(sessionId) || false;
-    const harness = this.activeHarness.get(sessionId);
-    const caps = getHarnessCapabilities(harness);
-    const canDrainActiveStream = isStreaming && Boolean(harness) && caps.supportsAsyncInjection;
+    const canDrainActiveStream = isStreaming && this.supportsActiveInjection(sessionId);
     if ((!isStreaming || canDrainActiveStream) && !this.processing.get(sessionId)) {
       this.scheduleDrain(sessionId, 0);
     }
@@ -225,6 +223,12 @@ class MessageQueueService extends EventEmitter {
     return startedAt ? Date.now() - startedAt : 0;
   }
 
+  supportsActiveInjection(sessionId: string): boolean {
+    const harness = this.activeHarness.get(sessionId);
+    if (!harness) return false;
+    return getHarnessCapabilities(harness).supportsAsyncInjection;
+  }
+
   private scheduleDrain(sessionId: string, delayMs: number): void {
     const existing = this.drainTimers.get(sessionId);
     if (existing) clearTimeout(existing);
@@ -234,9 +238,7 @@ class MessageQueueService extends EventEmitter {
     const timer = setTimeout(() => {
       this.drainTimers.delete(sessionId);
       const isStreaming = this.streaming.get(sessionId) || false;
-      const harness = this.activeHarness.get(sessionId);
-      const caps = getHarnessCapabilities(harness);
-      const canDrainActiveStream = isStreaming && Boolean(harness) && caps.supportsAsyncInjection;
+      const canDrainActiveStream = isStreaming && this.supportsActiveInjection(sessionId);
       if ((!isStreaming || canDrainActiveStream) && this.hasMessages(sessionId)) {
         // Emit drain-ready event -- the IPC handler will dequeue and send
         this.emit('drain-ready', sessionId);

@@ -4,9 +4,16 @@ import path from 'path';
 
 const root = path.resolve(__dirname, '..');
 const queueService = fs.readFileSync(path.join(root, 'src/main/services/message-queue.service.ts'), 'utf8');
+const harnessCapabilities = fs.readFileSync(path.join(root, 'src/main/services/harness-capabilities.ts'), 'utf8');
 const claudeService = fs.readFileSync(path.join(root, 'src/main/services/claude.service.ts'), 'utf8');
 const claudeIpc = fs.readFileSync(path.join(root, 'src/main/ipc/claude.ipc.ts'), 'utf8');
 const sessionStore = fs.readFileSync(path.join(root, 'src/renderer/stores/session.store.ts'), 'utf8');
+
+assert.match(
+  harnessCapabilities,
+  /claude:\s+\{\s*supportsAsyncInjection: false,\s*supportsMultiTurn: true,\s*minTurnGapMs: 500,/,
+  'Claude queueing must wait for the active turn to finish instead of using streamInput mid-turn',
+);
 
 assert.match(queueService, /private drainDeferredSince = new Map<string, number>\(\);/);
 assert.match(queueService, /opts\?\.deferDrain/);
@@ -38,17 +45,20 @@ const getDrainDeferredMsMethod = queueService.match(/getDrainDeferredMs\(session
 assert.match(getDrainDeferredMsMethod, /const startedAt = this\.drainDeferredSince\.get\(sessionId\)/);
 assert.match(getDrainDeferredMsMethod, /return startedAt \? Date\.now\(\) - startedAt : 0/);
 
+const supportsActiveInjectionMethod = queueService.match(/supportsActiveInjection\(sessionId: string\): boolean \{[\s\S]*?\n {2}\}/)?.[0] || '';
+assert.match(supportsActiveInjectionMethod, /const harness = this\.activeHarness\.get\(sessionId\)/);
+assert.match(supportsActiveInjectionMethod, /if \(!harness\) return false/);
+assert.match(supportsActiveInjectionMethod, /return getHarnessCapabilities\(harness\)\.supportsAsyncInjection/);
+
 const scheduleDrainMethod = queueService.match(/private scheduleDrain\(sessionId: string, delayMs: number\): void \{[\s\S]*?\n {2}\}/)?.[0] || '';
 assert.match(scheduleDrainMethod, /if \(!this\.hasMessages\(sessionId\)\) return/);
 assert.match(scheduleDrainMethod, /const isStreaming = this\.streaming\.get\(sessionId\) \|\| false/);
-assert.match(scheduleDrainMethod, /const harness = this\.activeHarness\.get\(sessionId\)/);
-assert.match(scheduleDrainMethod, /const caps = getHarnessCapabilities\(harness\)/);
-assert.match(scheduleDrainMethod, /const canDrainActiveStream = isStreaming && Boolean\(harness\) && caps\.supportsAsyncInjection/);
+assert.match(scheduleDrainMethod, /const canDrainActiveStream = isStreaming && this\.supportsActiveInjection\(sessionId\)/);
 assert.match(scheduleDrainMethod, /if \(\(!isStreaming \|\| canDrainActiveStream\) && this\.hasMessages\(sessionId\)\) \{/);
 assert.match(scheduleDrainMethod, /this\.emit\('drain-ready', sessionId\)/);
 
 const enqueueMethod = queueService.match(/enqueue\(sessionId: string, text: string, attachments\?: unknown\[\], opts\?: \{[\s\S]*?\n {2}\}/)?.[0] || '';
-assert.match(enqueueMethod, /const canDrainActiveStream = isStreaming && Boolean\(harness\) && caps\.supportsAsyncInjection/);
+assert.match(enqueueMethod, /const canDrainActiveStream = isStreaming && this\.supportsActiveInjection\(sessionId\)/);
 assert.match(enqueueMethod, /if \(\(!isStreaming \|\| canDrainActiveStream\) && !this\.processing\.get\(sessionId\)\) \{/);
 
 assert.match(claudeService, /private activeQueryStartedAt: Map<string, number> = new Map\(\);/);
@@ -86,30 +96,41 @@ assert.match(claudeIpc, /const STALE_QUEUE_DRAIN_ACTIVE_QUERY_GRACE_MS = 30_000;
 assert.ok((claudeIpc.match(/claudeService\.noteActiveQueryEvent\(sessionId\)/g) || []).length >= 2, 'stream and resume loops must refresh active query activity');
 
 const drainHandler = claudeIpc.match(/messageQueueService\.on\('drain-ready'[\s\S]*?\n {2}\}\);/)?.[0] || '';
+const sessionIndex = drainHandler.indexOf('const session = await sessionService.getSession(sessionId)');
+const remoteProbeIndex = drainHandler.indexOf('const remoteActive = session?.sshConfig');
 const activeStateIndex = drainHandler.indexOf('const activeState = claudeService.getActiveQueryState(sessionId)');
 const deferredMsIndex = drainHandler.indexOf('const deferredMs = messageQueueService.getDrainDeferredMs(sessionId)');
-const injectableIndex = drainHandler.indexOf('if (activeState.injectable) {');
+const supportsActiveInjectionIndex = drainHandler.indexOf('const supportsActiveInjection = messageQueueService.supportsActiveInjection(sessionId)');
+const injectableIndex = drainHandler.indexOf('if (activeState.injectable && supportsActiveInjection) {');
 const injectMessageIndex = drainHandler.indexOf('claudeService.injectMessage(');
-const staleIndex = drainHandler.indexOf('const canTreatAsStale = !activeState.injectable && deferredMs >= STALE_QUEUE_DRAIN_ACTIVE_QUERY_GRACE_MS');
-const deferActiveIndex = drainHandler.indexOf('messageQueueService.deferDrain(sessionId, 1000)');
+const activeRemoteDeferralIndex = drainHandler.indexOf('if (remoteActive) {', injectableIndex);
+const staleIndex = drainHandler.indexOf('const canTreatAsStale = (!activeState.injectable || !supportsActiveInjection)');
+const deferActiveIndex = drainHandler.indexOf('messageQueueService.deferDrain(sessionId, 1000)', staleIndex);
 const cancelIndex = drainHandler.indexOf('claudeService.cancelQuery(sessionId)');
-const remoteActiveIndex = drainHandler.indexOf('const remoteActive = await sshService.hasActiveRemoteProcess');
+const finalRemoteActiveIndex = drainHandler.lastIndexOf('if (remoteActive) {');
 const injectableDequeueIndex = drainHandler.indexOf('const next = messageQueueService.dequeueForDrain(sessionId)');
 const newTurnDequeueIndex = drainHandler.lastIndexOf('const next = messageQueueService.dequeueForDrain(sessionId)');
 
+assert.ok(sessionIndex >= 0, 'drain handler must load the session before active-query decisions');
+assert.ok(remoteProbeIndex > sessionIndex, 'drain handler must check remote process state early');
 assert.ok(activeStateIndex >= 0, 'drain handler must inspect active query state');
+assert.ok(activeStateIndex > remoteProbeIndex, 'remote process state must be known before active-query stale handling');
 assert.ok(deferredMsIndex > activeStateIndex, 'deferred age must be read after active query state');
-assert.ok(injectableIndex > deferredMsIndex, 'injectable active queries must be handled before stale cancellation');
+assert.ok(supportsActiveInjectionIndex > deferredMsIndex, 'active injection must be gated by harness capabilities');
+assert.ok(injectableIndex > supportsActiveInjectionIndex, 'injectable active queries must be handled only when harness capabilities allow it');
 assert.ok(injectableDequeueIndex > injectableIndex, 'injectable active queries must drain the queue before injection');
 assert.ok(injectMessageIndex > injectableDequeueIndex, 'drain handler must inject queued messages into injectable active queries');
-assert.ok(staleIndex > injectMessageIndex, 'stale decision must run after injectable active-query injection');
+assert.ok(activeRemoteDeferralIndex > injectMessageIndex, 'active remote sessions must be deferred after any supported injection branch');
+assert.ok(activeRemoteDeferralIndex < staleIndex, 'remote liveness must prevent stale active-query cancellation');
+assert.ok(staleIndex > activeRemoteDeferralIndex, 'stale decision must run only after remote-active deferral');
 assert.ok(deferActiveIndex > staleIndex, 'active runtime must be deferred before cancellation');
 assert.ok(cancelIndex > deferActiveIndex, 'stale active query must be cancelled only after non-stale deferral branch');
-assert.ok(remoteActiveIndex > cancelIndex, 'remote process check must happen after stale local active-query handling');
-assert.ok(newTurnDequeueIndex > remoteActiveIndex, 'new-turn queue drain must happen only after active and remote process checks');
+assert.ok(finalRemoteActiveIndex > cancelIndex, 'remote process check must run again before new-turn drain');
+assert.ok(newTurnDequeueIndex > finalRemoteActiveIndex, 'new-turn queue drain must happen only after active and remote process checks');
 assert.match(drainHandler, /if \(!canTreatAsStale\) \{[\s\S]*?return;[\s\S]*?\}/);
 assert.match(drainHandler, /Clearing stale active query before drain/);
 assert.match(drainHandler, /Deferring drain for \$\{sessionId\}; remote process is still active/);
+assert.match(drainHandler, /supportsActiveInjection=\$\{supportsActiveInjection \? 'yes' : 'no'\}/);
 
 assert.doesNotMatch(sessionStore, /window\.electronAPI\.claude\.injectMessage\(\s*sessionId,\s*nextMessage\.message/);
 assert.match(sessionStore, /main queue owns injection/);

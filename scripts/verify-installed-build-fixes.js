@@ -86,6 +86,8 @@ const mainMarkers = [
   'Cache invalidated - transcript path changed',
   'Clearing stale active query before drain',
   'Injecting queued message into active query',
+  'supportsActiveInjection=',
+  'remote process is still active (localActive=yes',
   'getDrainDeferredMs',
   'Browser partition cleanup',
   'Storage cleared for partition',
@@ -95,6 +97,8 @@ const mainMarkers = [
   'ps -p "$pid" -o args=',
   'label:"New Session",accelerator:"CommandOrControl+N"',
   'Overrode stale Auto Build plan permission for direct model turn',
+  'Auto Build plan route using turn-local plan permission',
+  'Cleared Auto Build plan marker; session mode remains',
   'Persisted restored permission mode',
   'Persisted Auto Build forced plan restore mode',
 ];

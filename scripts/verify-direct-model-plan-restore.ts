@@ -28,7 +28,7 @@ assert.match(
 );
 
 const routePlanBlock = service.match(
-  /if \(routingDecision\.tier === 'plan'\) \{[\s\S]*?this\.persistAutoBuildForcedPlanMode\(sessionId, prePlanMode\);[\s\S]*?\n {12}\}/,
+  /if \(routingDecision\.tier === 'plan'\) \{[\s\S]*?Auto Build plan route using turn-local plan permission; session mode remains[\s\S]*?\n {10}\}/,
 )?.[0] || '';
 
 assert.ok(routePlanBlock, 'Auto Build plan routes must handle forced plan mode');
@@ -36,6 +36,11 @@ assert.match(
   routePlanBlock,
   /if \(sdkPermissionMode !== 'plan'\) \{/,
   'Auto Build plan routes must only mark forced plan mode when the original mode was not already plan',
+);
+assert.doesNotMatch(
+  routePlanBlock,
+  /this\.sessionPermissionModes\.set\(sessionId, 'plan'\)/,
+  'Auto Build plan routes must not persist plan as the session permission mode',
 );
 assert.match(
   routePlanBlock,
@@ -46,6 +51,11 @@ assert.match(
   routePlanBlock,
   /this\.persistAutoBuildForcedPlanMode\(sessionId, prePlanMode\)/,
   'Auto Build plan routes must persist forced plan mode for relaunch recovery',
+);
+assert.match(
+  routePlanBlock,
+  /Auto Build plan route using turn-local plan permission; session mode remains/,
+  'Auto Build plan routes must log that plan is turn-local',
 );
 
 const restoreBlock = service.match(
@@ -65,8 +75,13 @@ assert.match(
 );
 assert.match(
   restoreBlock,
-  /const shouldRestoreAutoBuildPlanMode = autoBuildForcedPlanMode && \(storedPlanMode === 'plan' \|\| effectivePermissionMode === 'plan'\)/,
-  'direct-model plan restore must only run when a forced plan marker and plan mode are both present',
+  /if \(autoBuildForcedPlanMode\) \{/,
+  'direct-model plan restore must clear forced plan markers whenever they are present',
+);
+assert.match(
+  restoreBlock,
+  /const shouldRestoreAutoBuildPlanMode = storedPlanMode === 'plan' \|\| effectivePermissionMode === 'plan'/,
+  'direct-model plan restore must only rewrite permission mode when plan leaked into stored or effective mode',
 );
 assert.match(
   restoreBlock,
@@ -75,7 +90,7 @@ assert.match(
 );
 assert.match(
   restoreBlock,
-  /if \(effectivePermissionMode === 'plan'\) \{[\s\S]*?effectivePermissionMode = restored;/,
+  /if \(shouldRestoreAutoBuildPlanMode && effectivePermissionMode === 'plan'\) \{[\s\S]*?effectivePermissionMode = restored;/,
   'direct-model plan restore must override a stale plan argument for the current turn',
 );
 assert.match(
@@ -87,6 +102,16 @@ assert.match(
   restoreBlock,
   /this\.persistSessionPermissionMode\(sessionId, restored\)/,
   'direct-model plan restore must persist the restored permission mode',
+);
+assert.match(
+  restoreBlock,
+  /this\.clearPersistedAutoBuildForcedPlanMode\(sessionId\)/,
+  'direct-model plan restore must clear persisted forced plan markers even when no mode rewrite is needed',
+);
+assert.match(
+  restoreBlock,
+  /Cleared Auto Build plan marker; session mode remains/,
+  'direct-model plan restore must log marker-only cleanup separately from permission restoration',
 );
 assert.match(
   service,

@@ -1181,10 +1181,15 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
   // When the queue decides it's time to send the next turn, drain all pending
   // messages into one ordered prompt and forward it through the normal flow.
   messageQueueService.on('drain-ready', async (sessionId: string) => {
+    const session = await sessionService.getSession(sessionId).catch(() => null);
+    const remoteActive = session?.sshConfig
+      ? await sshService.hasActiveRemoteProcess(sessionId, session.sshConfig).catch(() => false)
+      : false;
     const activeState = claudeService.getActiveQueryState(sessionId);
     if (activeState.active) {
       const deferredMs = messageQueueService.getDrainDeferredMs(sessionId);
-      if (activeState.injectable) {
+      const supportsActiveInjection = messageQueueService.supportsActiveInjection(sessionId);
+      if (activeState.injectable && supportsActiveInjection) {
         const next = messageQueueService.dequeueForDrain(sessionId);
         if (!next) return;
 
@@ -1211,11 +1216,25 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
         return;
       }
 
-      const canTreatAsStale = !activeState.injectable && deferredMs >= STALE_QUEUE_DRAIN_ACTIVE_QUERY_GRACE_MS;
+      if (remoteActive) {
+        console.warn(
+          `[Queue] Deferring drain for ${sessionId}; remote process is still active ` +
+          `(localActive=yes, injectable=${activeState.injectable ? 'yes' : 'no'}, ` +
+          `supportsActiveInjection=${supportsActiveInjection ? 'yes' : 'no'}, ` +
+          `deferredMs=${deferredMs}, idleMs=${activeState.idleMs})`
+        );
+        messageQueueService.deferDrain(sessionId, 1000);
+        return;
+      }
+
+      const canTreatAsStale = (!activeState.injectable || !supportsActiveInjection)
+        && deferredMs >= STALE_QUEUE_DRAIN_ACTIVE_QUERY_GRACE_MS;
       if (!canTreatAsStale) {
         console.warn(
           `[Queue] Deferring drain for ${sessionId}; runtime is still active ` +
-          `(injectable=${activeState.injectable ? 'yes' : 'no'}, deferredMs=${deferredMs}, idleMs=${activeState.idleMs})`
+          `(injectable=${activeState.injectable ? 'yes' : 'no'}, ` +
+          `supportsActiveInjection=${supportsActiveInjection ? 'yes' : 'no'}, ` +
+          `deferredMs=${deferredMs}, idleMs=${activeState.idleMs})`
         );
         messageQueueService.deferDrain(sessionId, 1000);
         return;
@@ -1228,14 +1247,10 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
       claudeService.cancelQuery(sessionId);
     }
 
-    const session = await sessionService.getSession(sessionId).catch(() => null);
-    if (session?.sshConfig) {
-      const remoteActive = await sshService.hasActiveRemoteProcess(sessionId, session.sshConfig).catch(() => false);
-      if (remoteActive) {
-        console.warn(`[Queue] Deferring drain for ${sessionId}; remote process is still active`);
-        messageQueueService.deferDrain(sessionId, 1000);
-        return;
-      }
+    if (remoteActive) {
+      console.warn(`[Queue] Deferring drain for ${sessionId}; remote process is still active`);
+      messageQueueService.deferDrain(sessionId, 1000);
+      return;
     }
 
     const next = messageQueueService.dequeueForDrain(sessionId);

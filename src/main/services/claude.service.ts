@@ -4068,14 +4068,15 @@ ${leadContent.slice(0, leadContextLimit)}
       const storedPlanMode = this.sessionPermissionModes.get(sessionId);
       const persistedAutoBuildPrePlanMode = this.getPersistedAutoBuildPrePlanMode(sessionId);
       const autoBuildForcedPlanMode = this.autoBuildForcedPlanSessions.has(sessionId) || Boolean(persistedAutoBuildPrePlanMode);
-      const shouldRestoreAutoBuildPlanMode = autoBuildForcedPlanMode && (storedPlanMode === 'plan' || effectivePermissionMode === 'plan');
-      if (shouldRestoreAutoBuildPlanMode) {
+      if (autoBuildForcedPlanMode) {
+        const shouldRestoreAutoBuildPlanMode = storedPlanMode === 'plan' || effectivePermissionMode === 'plan';
         const restored = this.prePlanPermissionModes.get(sessionId) || persistedAutoBuildPrePlanMode || 'acceptEdits';
-        this.sessionPermissionModes.set(sessionId, restored);
+        if (shouldRestoreAutoBuildPlanMode) {
+          this.sessionPermissionModes.set(sessionId, restored);
+        }
         this.prePlanPermissionModes.delete(sessionId);
         this.autoBuildForcedPlanSessions.delete(sessionId);
-        console.log(`[Claude Service] Cleared Auto Build plan mode, restored to ${restored}`);
-        if (effectivePermissionMode === 'plan') {
+        if (shouldRestoreAutoBuildPlanMode && effectivePermissionMode === 'plan') {
           effectivePermissionMode = restored;
           console.log(`[Claude Service] Overrode stale Auto Build plan permission for direct model turn, restored to ${restored}`);
           this.mainWindow?.webContents.send(IPC_CHANNELS.CLAUDE_PERMISSION_MODE_CHANGED, {
@@ -4083,7 +4084,13 @@ ${leadContent.slice(0, leadContextLimit)}
             mode: restored,
           });
         }
-        this.persistSessionPermissionMode(sessionId, restored);
+        if (shouldRestoreAutoBuildPlanMode) {
+          console.log(`[Claude Service] Cleared Auto Build plan mode, restored to ${restored}`);
+          this.persistSessionPermissionMode(sessionId, restored);
+        } else {
+          this.clearPersistedAutoBuildForcedPlanMode(sessionId);
+          console.log(`[Claude Service] Cleared Auto Build plan marker; session mode remains ${effectivePermissionMode}`);
+        }
       }
     }
 
@@ -4219,7 +4226,6 @@ ${leadContent.slice(0, leadContextLimit)}
           autoRoutedDomain = routingDecision.domain;
           if (routingDecision.tier === 'plan') {
             autoBuildLeadPermissionMode = 'plan';
-            this.sessionPermissionModes.set(sessionId, 'plan');
             if (sdkPermissionMode !== 'plan') {
               const prePlanMode = this.prePlanPermissionModes.get(sessionId)
                 || (sdkPermissionMode === 'dontAsk' ? 'acceptEdits' : sdkPermissionMode);
@@ -4229,6 +4235,7 @@ ${leadContent.slice(0, leadContextLimit)}
               }
               this.persistAutoBuildForcedPlanMode(sessionId, prePlanMode);
             }
+            console.log(`[Claude Service] Auto Build plan route using turn-local plan permission; session mode remains ${sdkPermissionMode}`);
           }
           if (routingDecision.resolvedEffort) {
             thinkingMode = routingDecision.resolvedEffort;
