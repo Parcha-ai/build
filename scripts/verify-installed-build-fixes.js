@@ -116,6 +116,8 @@ const rendererMarkers = [
   'main queue owns injection',
   'queued message after optimistic send',
   'Secure-key scan failed; sending original text',
+  'Ignoring permission mode change to',
+  'Ignoring permission mode cycle while turn is active or queued',
 ];
 
 for (const marker of mainMarkers) {

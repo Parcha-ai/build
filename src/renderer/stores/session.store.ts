@@ -607,6 +607,20 @@ function persistPermissionMode(sessionId: string, mode: PermissionMode) {
   });
 }
 
+function hasActiveOrQueuedTurn(state: Pick<SessionState, 'isStreaming' | 'isProcessingQueue' | 'activeStreamModel' | 'activeUserPrompt' | 'messageQueue'>, sessionId: string): boolean {
+  return Boolean(
+    state.isStreaming[sessionId] ||
+    state.isProcessingQueue[sessionId] ||
+    state.activeStreamModel[sessionId] ||
+    state.activeUserPrompt[sessionId] ||
+    (state.messageQueue[sessionId]?.length ?? 0) > 0,
+  );
+}
+
+function canChangePermissionModeDuringActiveTurn(mode: PermissionMode): boolean {
+  return mode === 'bypassPermissions';
+}
+
 type PersistedChatMessage = Omit<ChatMessage, 'timestamp'> & { timestamp: string };
 
 export function getSupplementalStorageKey(sessionId: string): string {
@@ -1810,6 +1824,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const state = get();
     const model = getSessionModel(state, sessionId);
     const normalizedMode = normalizePermissionModeForModel(model, mode);
+    const currentMode = normalizePermissionModeForModel(model, state.permissionMode[sessionId]);
+    if (
+      normalizedMode !== currentMode &&
+      hasActiveOrQueuedTurn(state, sessionId) &&
+      !canChangePermissionModeDuringActiveTurn(normalizedMode)
+    ) {
+      console.warn(`[SessionStore] Ignoring permission mode change to ${normalizedMode} while turn is active or queued for ${sessionId}`);
+      return;
+    }
 
     // Update local state
     set((state) => ({
@@ -1889,6 +1912,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   cyclePermissionMode: (sessionId) => {
     const state = get();
+    if (hasActiveOrQueuedTurn(state, sessionId)) {
+      console.warn(`[SessionStore] Ignoring permission mode cycle while turn is active or queued for ${sessionId}`);
+      return;
+    }
+
     const model = getSessionModel(state, sessionId);
     const modes = getSupportedPermissionModes(model);
     const currentMode = normalizePermissionModeForModel(model, state.permissionMode[sessionId]);
