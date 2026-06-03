@@ -4033,7 +4033,7 @@ ${leadContent.slice(0, leadContextLimit)}
 
     if (session.sshConfig) {
       await sshService.cleanupDetachedBridgeProcessesForNewTurn(sessionId, session.sshConfig, {
-        killActive: hadPriorRuntime,
+        killActive: true,
       });
     }
 
