@@ -140,5 +140,10 @@
     "yaml": "^2.8.2",
     "zod": "^4.3.5",
     "zustand": "^5.0.9"
+  },
+  "overrides": {
+    "plist": {
+      "@xmldom/xmldom": "0.8.12"
+    }
   }
 }
