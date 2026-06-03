@@ -1,6 +1,15 @@
-import React, { useState } from 'react';
-import { ChevronDown, ChevronUp, Sparkles, Wrench, Zap, X } from 'lucide-react';
-import { RELEASE_NOTES, getLatestRelease, type ReleaseNote } from '../../../shared/config/release-notes';
+import React, { useState, useEffect } from 'react';
+import { ChevronDown, ChevronUp, Sparkles, Loader2, X } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+
+interface GitHubRelease {
+  tag_name: string;
+  name: string | null;
+  body: string | null;
+  published_at: string;
+  html_url: string;
+}
 
 interface ReleaseNotesProps {
   /** Show only the latest release in compact form */
@@ -11,19 +20,18 @@ interface ReleaseNotesProps {
   onDismiss?: () => void;
 }
 
-const ChangeIcon = ({ type }: { type: 'feature' | 'fix' | 'improvement' }) => {
-  switch (type) {
-    case 'feature':
-      return <Sparkles size={12} className="text-green-400" />;
-    case 'fix':
-      return <Wrench size={12} className="text-amber-400" />;
-    case 'improvement':
-      return <Zap size={12} className="text-blue-400" />;
-  }
-};
+const GITHUB_RELEASES_URL = 'https://api.github.com/repos/Parcha-ai/build/releases?per_page=20';
+
+function formatVersion(tagName: string): string {
+  return tagName.replace(/^v/, '');
+}
+
+function formatDate(isoDate: string): string {
+  return isoDate.slice(0, 10); // YYYY-MM-DD
+}
 
 const ReleaseCard = ({ release, isExpanded, onToggle }: {
-  release: ReleaseNote;
+  release: GitHubRelease;
   isExpanded: boolean;
   onToggle?: () => void;
 }) => (
@@ -33,39 +41,30 @@ const ReleaseCard = ({ release, isExpanded, onToggle }: {
       onClick={onToggle}
     >
       <div className="flex items-center gap-3">
-        <span className="text-xs font-bold text-claude-accent px-2 py-0.5 bg-claude-accent/10 border border-claude-accent/30">
-          v{release.version}
+        <span className="text-xs font-bold text-claude-accent px-2 py-0.5 bg-claude-accent/10 border border-claude-accent/30 font-mono">
+          v{formatVersion(release.tag_name)}
         </span>
-        <span className="text-sm font-bold text-claude-text">{release.title}</span>
-        <span className="text-xs text-claude-text-secondary">{release.date}</span>
+        <span className="text-sm font-bold text-claude-text">{release.name || formatVersion(release.tag_name)}</span>
+        <span className="text-xs text-claude-text-secondary font-mono">{formatDate(release.published_at)}</span>
       </div>
       {onToggle && (
         isExpanded ? <ChevronUp size={16} className="text-claude-text-secondary" /> : <ChevronDown size={16} className="text-claude-text-secondary" />
       )}
     </div>
 
-    {isExpanded && (
+    {isExpanded && release.body && (
       <div className="px-3 pb-3 border-t border-claude-border/50">
-        {/* Highlights */}
-        <div className="mt-2 flex flex-wrap gap-2">
-          {release.highlights.map((highlight, i) => (
-            <span
-              key={i}
-              className="text-xs px-2 py-1 bg-purple-500/10 text-purple-400 border border-purple-500/30"
-            >
-              {highlight}
-            </span>
-          ))}
-        </div>
-
-        {/* Detailed changes */}
-        <div className="mt-3 space-y-1.5">
-          {release.changes.map((change, i) => (
-            <div key={i} className="flex items-start gap-2 text-xs">
-              <ChangeIcon type={change.type} />
-              <span className="text-claude-text-secondary">{change.description}</span>
-            </div>
-          ))}
+        <div className="mt-2 prose prose-invert prose-sm max-w-none
+          prose-headings:text-claude-text prose-headings:font-mono prose-headings:uppercase prose-headings:tracking-wider prose-headings:text-xs prose-headings:mt-3 prose-headings:mb-1
+          prose-p:text-claude-text-secondary prose-p:text-xs prose-p:leading-relaxed prose-p:my-1
+          prose-li:text-claude-text-secondary prose-li:text-xs prose-li:leading-relaxed prose-li:my-0.5
+          prose-ul:my-1 prose-ol:my-1
+          prose-strong:text-claude-text prose-strong:font-bold
+          prose-code:text-purple-400 prose-code:text-[11px] prose-code:bg-purple-500/10 prose-code:px-1 prose-code:py-0.5 prose-code:font-mono
+          prose-a:text-claude-accent prose-a:no-underline hover:prose-a:underline
+          prose-hr:border-claude-border/30 prose-hr:my-2
+        ">
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{release.body}</ReactMarkdown>
         </div>
       </div>
     )}
@@ -73,42 +72,98 @@ const ReleaseCard = ({ release, isExpanded, onToggle }: {
 );
 
 export default function ReleaseNotes({ compact = false, banner = false, onDismiss }: ReleaseNotesProps) {
-  const [expandedVersions, setExpandedVersions] = useState<Set<string>>(new Set([getLatestRelease().version]));
+  const [releases, setReleases] = useState<GitHubRelease[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [expandedVersions, setExpandedVersions] = useState<Set<string>>(new Set());
 
-  const toggleExpanded = (version: string) => {
+  useEffect(() => {
+    let cancelled = false;
+
+    setLoading(true);
+    setError(null);
+
+    fetch(GITHUB_RELEASES_URL, {
+      headers: { 'Accept': 'application/vnd.github+json' },
+    })
+      .then(res => {
+        if (!res.ok) throw new Error(`GitHub API returned ${res.status}`);
+        return res.json();
+      })
+      .then((data: GitHubRelease[]) => {
+        if (cancelled) return;
+        setReleases(data);
+        // Auto-expand the latest release
+        if (data.length > 0) {
+          setExpandedVersions(new Set([data[0].tag_name]));
+        }
+        setLoading(false);
+      })
+      .catch(err => {
+        if (cancelled) return;
+        console.error('[ReleaseNotes] Failed to fetch releases:', err);
+        setError('Failed to load releases');
+        setLoading(false);
+      });
+
+    return () => { cancelled = true; };
+  }, []);
+
+  const toggleExpanded = (tagName: string) => {
     setExpandedVersions(prev => {
       const next = new Set(prev);
-      if (next.has(version)) {
-        next.delete(version);
+      if (next.has(tagName)) {
+        next.delete(tagName);
       } else {
-        next.add(version);
+        next.add(tagName);
       }
       return next;
     });
   };
 
+  // Loading state
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-8 gap-2">
+        <Loader2 size={14} className="animate-spin text-claude-text-secondary" />
+        <span className="text-xs font-mono text-claude-text-secondary uppercase tracking-wider">Loading releases...</span>
+      </div>
+    );
+  }
+
+  // Error state
+  if (error) {
+    return (
+      <div className="py-8 text-center">
+        <span className="text-xs font-mono text-red-400 uppercase tracking-wider">{error}</span>
+      </div>
+    );
+  }
+
+  // No releases
+  if (releases.length === 0) {
+    return (
+      <div className="py-8 text-center">
+        <span className="text-xs font-mono text-claude-text-secondary uppercase tracking-wider">No releases found</span>
+      </div>
+    );
+  }
+
   if (banner) {
-    const latest = getLatestRelease();
+    const latest = releases[0];
     return (
       <div className="border-b border-claude-border bg-gradient-to-r from-purple-500/5 to-claude-surface/50 p-3">
         <div className="flex items-start justify-between gap-4">
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 mb-2">
               <Sparkles size={14} className="text-purple-400" />
-              <span className="text-xs font-bold text-purple-400 uppercase" style={{ letterSpacing: '0.05em' }}>
-                What's New in v{latest.version}
+              <span className="text-xs font-bold text-purple-400 uppercase font-mono" style={{ letterSpacing: '0.05em' }}>
+                What's New in v{formatVersion(latest.tag_name)}
               </span>
             </div>
-            <div className="flex flex-wrap gap-2">
-              {latest.highlights.map((highlight, i) => (
-                <span
-                  key={i}
-                  className="text-xs px-2 py-0.5 bg-purple-500/10 text-purple-300 border border-purple-500/20"
-                >
-                  {highlight}
-                </span>
-              ))}
-            </div>
+            <span className="text-xs text-claude-text-secondary font-mono">
+              {latest.name || formatVersion(latest.tag_name)}
+            </span>
           </div>
           {onDismiss && (
             <button
@@ -124,7 +179,7 @@ export default function ReleaseNotes({ compact = false, banner = false, onDismis
   }
 
   if (compact) {
-    const latest = getLatestRelease();
+    const latest = releases[0];
     return (
       <div className="space-y-2">
         <ReleaseCard
@@ -139,15 +194,15 @@ export default function ReleaseNotes({ compact = false, banner = false, onDismis
   // Full release notes list
   return (
     <div className="space-y-2">
-      <h3 className="text-sm font-bold text-claude-text uppercase mb-3" style={{ letterSpacing: '0.05em' }}>
+      <h3 className="text-sm font-bold text-claude-text uppercase mb-3 font-mono" style={{ letterSpacing: '0.05em' }}>
         Release History
       </h3>
-      {RELEASE_NOTES.map(release => (
+      {releases.map(release => (
         <ReleaseCard
-          key={release.version}
+          key={release.tag_name}
           release={release}
-          isExpanded={expandedVersions.has(release.version)}
-          onToggle={() => toggleExpanded(release.version)}
+          isExpanded={expandedVersions.has(release.tag_name)}
+          onToggle={() => toggleExpanded(release.tag_name)}
         />
       ))}
     </div>

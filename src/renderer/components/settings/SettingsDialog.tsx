@@ -289,6 +289,8 @@ export default function SettingsDialog() {
   const [showDeepseekApiKey, setShowDeepseekApiKey] = useState(false);
   const [geminiApiKey, setGeminiApiKey] = useState('');
   const [showGeminiApiKey, setShowGeminiApiKey] = useState(false);
+  const [cerebrasApiKey, setCerebrasApiKey] = useState('');
+  const [showCerebrasApiKey, setShowCerebrasApiKey] = useState(false);
 
   // Audio settings
   const [voiceModeEnabled, setVoiceModeEnabled] = useState(false);
@@ -353,7 +355,7 @@ export default function SettingsDialog() {
   }, []);
 
   // Auto-save app settings (toggles and time picker)
-  const autoSaveAppSettings = useCallback(async (updates: { qmdEnabled?: boolean; ultraPlanMode?: boolean; showClearContextOnPlanAccept?: boolean; lunchReminderEnabled?: boolean; lunchReminderTime?: string; bedtimeReminderEnabled?: boolean; bedtimeReminderTime?: string; dailyReviewEnabled?: boolean; dailyReviewTime?: string; bedtimeTaskReviewEnabled?: boolean; foundryEnabled?: boolean; foundryBaseUrl?: string; foundryApiKey?: string; foundryDefaultSonnetModel?: string; foundryDefaultHaikuModel?: string; foundryDefaultOpusModel?: string; customModels?: typeof customModels; cursorApiKey?: string; deepseekApiKey?: string; geminiApiKey?: string; autoRouterConfig?: any }) => {
+  const autoSaveAppSettings = useCallback(async (updates: { qmdEnabled?: boolean; ultraPlanMode?: boolean; showClearContextOnPlanAccept?: boolean; lunchReminderEnabled?: boolean; lunchReminderTime?: string; bedtimeReminderEnabled?: boolean; bedtimeReminderTime?: string; dailyReviewEnabled?: boolean; dailyReviewTime?: string; bedtimeTaskReviewEnabled?: boolean; foundryEnabled?: boolean; foundryBaseUrl?: string; foundryApiKey?: string; foundryDefaultSonnetModel?: string; foundryDefaultHaikuModel?: string; foundryDefaultOpusModel?: string; customModels?: typeof customModels; cursorApiKey?: string; deepseekApiKey?: string; geminiApiKey?: string; cerebrasApiKey?: string; autoRouterConfig?: any }) => {
     showSaveIndicator();
     try {
       await window.electronAPI.settings.set(updates);
@@ -454,6 +456,7 @@ export default function SettingsDialog() {
           setCursorApiKey((appSettings as any).cursorApiKey || '');
           setDeepseekApiKey((appSettings as any).deepseekApiKey || '');
           setGeminiApiKey((appSettings as any).geminiApiKey || '');
+          setCerebrasApiKey((appSettings as any).cerebrasApiKey || '');
           // Auto Build config
           const savedAutoConfig = (appSettings as any).autoRouterConfig;
           if (savedAutoConfig) {
@@ -1731,6 +1734,36 @@ export default function SettingsDialog() {
             className="text-claude-accent hover:underline"
           >
             Get key
+          </a>
+        </p>
+      </div>
+
+      {/* Cerebras API Key (Auto Build routing) */}
+      <div className="space-y-2 pt-4 border-t border-claude-border">
+        <label className="block text-xs font-mono text-claude-text-secondary uppercase tracking-wider">
+          Cerebras API Key
+        </label>
+        <ApiKeyInput
+          value={cerebrasApiKey}
+          onChange={setCerebrasApiKey}
+          show={showCerebrasApiKey}
+          onToggleShow={() => setShowCerebrasApiKey(!showCerebrasApiKey)}
+          placeholder="csk-..."
+          onSave={(value) => autoSaveAppSettings({ cerebrasApiKey: value })}
+          isLoading={isLoading}
+          handleDebouncedChange={handleDebouncedChange}
+        />
+        <p className="text-[10px] font-mono text-claude-text-secondary">
+          Required for Auto Build intelligent routing. Without this key, Auto Build falls back to heuristic-only routing.{' '}
+          <a
+            href="#"
+            onClick={(e) => {
+              e.preventDefault();
+              window.electronAPI.app?.openExternal?.('https://cloud.cerebras.ai/');
+            }}
+            className="text-claude-accent hover:underline"
+          >
+            Get your key at cloud.cerebras.ai
           </a>
         </p>
       </div>

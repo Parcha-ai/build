@@ -1,5 +1,5 @@
 import { IpcMain, app, shell, dialog, BrowserWindow } from 'electron';
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import { IPC_CHANNELS } from '../../shared/constants/channels';
 import { SettingsService } from '../services/settings.service';
 
@@ -47,7 +47,7 @@ export function registerSettingsHandlers(ipcMain: IpcMain): void {
       await shell.openExternal(url);
     } catch (err) {
       console.error('[Settings IPC] shell.openExternal failed, falling back to open command:', err);
-      exec(`open "${url.replace(/"/g, '\\"')}"`);
+      execFile('open', [url]);
     }
   });
 

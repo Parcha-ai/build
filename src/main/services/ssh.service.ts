@@ -226,7 +226,7 @@ export class SSHService {
       'grep -azqx "CLAUDETTE_SESSION_ID=$safe_session" "$envfile" 2>/dev/null || continue',
       body,
       'done',
-    ].join('; ');
+    ].join('\n');
   }
 
   private buildKillSessionEnvProcessesCommand(sessionId: string): string {
@@ -823,7 +823,12 @@ export class SSHService {
 
       const output = await this.execCommand(client,
         'active=0; ' +
-        this.buildSessionEnvProcessLoop(sessionId, 'kill -0 "$pid" 2>/dev/null && { active=1; break; }') + '; ' +
+        this.buildSessionEnvProcessLoop(sessionId, [
+          'cmd="$(ps -p "$pid" -o args= 2>/dev/null || true)"',
+          'case "$cmd" in',
+          'claude|claude\\ *|*/claude|*/claude\\ *|*\\ claude|*\\ claude\\ *|*@anthropic-ai/claude-code*|*/claude-code/*) kill -0 "$pid" 2>/dev/null && { active=1; break; } ;;',
+          'esac',
+        ].join('\n')) + '; ' +
         `if test "$active" = "0" && tmux has-session -t ${this.quoteForShell(legacyTmuxName)} 2>/dev/null; then active=1; fi; ` +
         'echo "$active"'
       );

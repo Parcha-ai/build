@@ -36,8 +36,19 @@ assert.match(sshService, /private buildSessionEnvProcessLoop\(sessionId: string,
 assert.match(sshService, /grep -azqx "CLAUDETTE_SESSION_ID=\$safe_session"/);
 assert.match(sshService, /private buildKillSessionEnvProcessesCommand\(sessionId: string\): string \{/);
 
+const sessionEnvProcessLoopMethod = sshService.match(/private buildSessionEnvProcessLoop\(sessionId: string, body: string\): string \{[\s\S]*?\n {2}\}/)?.[0] || '';
+assert.match(sessionEnvProcessLoopMethod, /\.join\('\\n'\)/);
+assert.doesNotMatch(
+  sessionEnvProcessLoopMethod,
+  /\.join\('; '\)/,
+  'Session env process loop must not generate a shell "do;" token'
+);
+
 const hasActiveRemoteProcessMethod = sshService.match(/async hasActiveRemoteProcess\(sessionId: string, config: SSHConfig\): Promise<boolean> \{[\s\S]*?\n {2}\}/)?.[0] || '';
 assert.match(hasActiveRemoteProcessMethod, /this\.buildSessionEnvProcessLoop\(sessionId/);
+assert.match(hasActiveRemoteProcessMethod, /ps -p "\$pid" -o args=/);
+assert.match(hasActiveRemoteProcessMethod, /@anthropic-ai\/claude-code/);
+assert.doesNotMatch(hasActiveRemoteProcessMethod, /buildSessionEnvProcessLoop\(sessionId, 'kill -0 "\$pid"/);
 assert.match(hasActiveRemoteProcessMethod, /active=1; break/);
 
 const cleanupMethod = sshService.match(/async cleanupDetachedBridgeProcessesForNewTurn\([\s\S]*?\n {2}\}/)?.[0] || '';
