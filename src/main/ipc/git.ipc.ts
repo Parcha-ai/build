@@ -36,15 +36,28 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
       };
     }
 
-    return gitService.getStatus(sessionId);
+    try {
+      return await gitService.getStatus(sessionId);
+    } catch {
+      // Session directory doesn't exist or session not found — return safe default
+      return { current: null, tracking: null, files: [], ahead: 0, behind: 0 };
+    }
   });
 
   ipcMain.handle(IPC_CHANNELS.GIT_LOG, async (_, sessionId: string, limit?: number) => {
-    return gitService.getLog(sessionId, limit);
+    try {
+      return await gitService.getLog(sessionId, limit);
+    } catch {
+      return [];
+    }
   });
 
   ipcMain.handle(IPC_CHANNELS.GIT_BRANCHES, async (_, sessionId: string) => {
-    return gitService.getBranches(sessionId);
+    try {
+      return await gitService.getBranches(sessionId);
+    } catch {
+      return { all: [], current: null };
+    }
   });
 
   ipcMain.handle(IPC_CHANNELS.GIT_CHECKOUT, async (_, sessionId: string, branch: string) => {

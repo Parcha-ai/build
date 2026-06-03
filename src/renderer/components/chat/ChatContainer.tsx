@@ -32,7 +32,19 @@ function SessionGitInfo({ sessionId }: { sessionId: string }) {
     prUrl?: string;
   } | null>(null);
 
+  // Check if this is an SSH session — skip polling for SSH to avoid
+  // redundant remote git calls (branch is already refreshed by SessionCard)
+  const isSSH = useSessionStore(useCallback(
+    (s) => !!(s.sessions.find(sess => sess.id === sessionId)?.sshConfig),
+    [sessionId]
+  ));
+
   useEffect(() => {
+    // Skip git status polling entirely for SSH sessions — branch info
+    // is already refreshed by SessionCard's own interval, and polling
+    // git:status for SSH triggers expensive remote SSH exec calls
+    if (isSSH) return;
+
     let cancelled = false;
 
     const fetchGitInfo = async () => {
@@ -74,7 +86,7 @@ function SessionGitInfo({ sessionId }: { sessionId: string }) {
     fetchGitInfo();
     const interval = setInterval(fetchGitInfo, 30000);
     return () => { cancelled = true; clearInterval(interval); };
-  }, [sessionId]);
+  }, [sessionId, isSSH]);
 
   if (!gitInfo) return null;
 
