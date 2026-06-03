@@ -2,6 +2,8 @@
 
 One IDE for every coding agent. Claude Code, Cursor, Codex, Gemini, OpenCode — same chat, same terminal, same preview, same git. Hot-swap harness mid-session without re-pasting context.
 
+![Build desktop app showing agent chat, project sessions, and browser preview](assets/build-readme-preview.png)
+
 ## Download
 
 Download the latest macOS build from [GitHub Releases](https://github.com/Parcha-ai/build/releases).
