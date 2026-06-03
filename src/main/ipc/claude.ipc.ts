@@ -29,6 +29,7 @@ import { updateDynamicSessionTitle } from '../services/session-title.service';
 const settingsStore = new Store({ name: 'claudette-settings' }) as any;
 const COMPLETED_STREAM_MESSAGE_LIMIT = 100;
 const STALE_QUEUE_DRAIN_ACTIVE_QUERY_GRACE_MS = 30_000;
+const STALE_QUEUE_DRAIN_REMOTE_PROCESS_GRACE_MS = 30_000;
 
 // Durable buffer for harness responses that are not backed by a Claude transcript.
 // Keep this out of electron-store: that store rewrites the whole JSON file
@@ -781,10 +782,10 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
             });
           }
 
-          // Notify queue service that streaming has ended. Do not auto-drain
-          // after failed/aborted streams; that can immediately restart into the
-          // same broken runtime and create an input/abort loop.
-          messageQueueService.onStreamEnd(sessionId, { drain: !hadError });
+          // Notify queue service that streaming has ended.
+          // Always drain — user-queued messages are their explicit intent.
+          // After errors, the drain delay gives the runtime time to settle.
+          messageQueueService.onStreamEnd(sessionId, { drain: true });
         }
 
     }
@@ -1004,7 +1005,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
         }
 
         // Notify queue service that streaming has ended (resume).
-        messageQueueService.onStreamEnd(sessionId, { drain: !hadError });
+        messageQueueService.onStreamEnd(sessionId, { drain: true });
       }
     }
   );
@@ -1187,9 +1188,9 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
       : false;
     let remoteActive = await readRemoteActive();
     const activeState = claudeService.getActiveQueryState(sessionId);
+    const deferredMs = messageQueueService.getDrainDeferredMs(sessionId);
+    const supportsActiveInjection = messageQueueService.supportsActiveInjection(sessionId);
     if (activeState.active) {
-      const deferredMs = messageQueueService.getDrainDeferredMs(sessionId);
-      const supportsActiveInjection = messageQueueService.supportsActiveInjection(sessionId);
       if (activeState.injectable && supportsActiveInjection) {
         const next = messageQueueService.dequeueForDrain(sessionId);
         if (!next) return;
@@ -1259,6 +1260,21 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
           `remoteActive=${remoteActive ? 'yes' : 'no'}`
         );
       }
+    }
+
+    if (remoteActive && session?.sshConfig && deferredMs >= STALE_QUEUE_DRAIN_REMOTE_PROCESS_GRACE_MS) {
+      console.warn(
+        `[Queue] Clearing stale remote process before drain for ${sessionId}; ` +
+        `deferredMs=${deferredMs}`
+      );
+      await sshService.cleanupDetachedBridgeProcessesForNewTurn(sessionId, session.sshConfig, {
+        killActive: true,
+      });
+      remoteActive = await readRemoteActive();
+      console.log(
+        `[Queue] Rechecked remote process after stale remote cleanup for ${sessionId}; ` +
+        `remoteActive=${remoteActive ? 'yes' : 'no'}`
+      );
     }
 
     if (remoteActive) {
