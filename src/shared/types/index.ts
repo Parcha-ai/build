@@ -56,6 +56,8 @@ export interface Session {
   isTeleported?: boolean; // True for sessions imported from claude.ai/code
   lastBrowserUrl?: string; // Last URL visited in browser preview
   model?: string; // Selected Claude model for this session
+  autoBuildForcedPlanMode?: boolean; // True when Auto Build temporarily forced plan mode for this session
+  autoBuildPrePlanPermissionMode?: string; // Permission mode to restore after Auto Build's forced plan mode
   worktreeInstructions?: string; // Setup instructions to send to Claude when session starts
   worktreeInstructionsSent?: boolean; // Track if instructions have been sent
   errorMessage?: string; // Error message when status is 'error'

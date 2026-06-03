@@ -9,6 +9,7 @@ const asar = require('@electron/asar');
 const appPath = process.argv[2] || '/Applications/Build.app';
 const asarPath = path.join(appPath, 'Contents', 'Resources', 'app.asar');
 const executablePath = path.join(appPath, 'Contents', 'MacOS', 'build');
+const isInstalledProductionApp = path.resolve(appPath) === '/Applications/Build.app';
 
 function fail(message) {
   console.error(`verify-installed-build-fixes failed: ${message}`);
@@ -37,6 +38,13 @@ function requireMarker(bundleName, bundleText, marker) {
     fail(`${bundleName} is missing marker: ${marker}`);
   }
   console.log(`ok ${bundleName}: ${marker}`);
+}
+
+function forbidMarker(bundleName, bundleText, marker) {
+  if (bundleText.includes(marker)) {
+    fail(`${bundleName} still contains forbidden marker: ${marker}`);
+  }
+  console.log(`ok ${bundleName} excludes: ${marker}`);
 }
 
 function parsePsLine(line) {
@@ -77,10 +85,17 @@ const mainMarkers = [
   'Requested SDK transcript not found; refusing to load a different transcript',
   'Cache invalidated - transcript path changed',
   'Clearing stale active query before drain',
+  'Injecting queued message into active query',
   'getDrainDeferredMs',
   'Browser partition cleanup',
   'Storage cleared for partition',
   'persist:browser-',
+  'buildSessionEnvProcessLoop',
+  '].join("\\n")',
+  'ps -p "$pid" -o args=',
+  'label:"New Session",accelerator:"CommandOrControl+N"',
+  'Overrode stale Auto Build plan permission for direct model turn',
+  'Persisted restored permission mode',
 ];
 
 const rendererMarkers = [
@@ -91,6 +106,7 @@ const rendererMarkers = [
   'persist:browser-',
   'Build transcript',
   'merged',
+  'Failed to persist permission mode changed from main',
 ];
 
 for (const marker of mainMarkers) {
@@ -99,14 +115,19 @@ for (const marker of mainMarkers) {
 for (const marker of rendererMarkers) {
   requireMarker('renderer bundle', rendererBundle, marker);
 }
+requireMarker('renderer bundle', rendererBundle, 'case"new-session"');
+forbidMarker('main bundle', mainBundle, 'label:"New Window",accelerator:"CommandOrControl+N"');
+forbidMarker('main bundle', mainBundle, '].join("; ")}buildKillSessionEnvProcessesCommand');
 
-if (process.platform === 'darwin') {
+if (process.platform === 'darwin' && isInstalledProductionApp) {
   run('codesign', ['--verify', '--deep', '--strict', appPath]);
   const spctlOutput = run('spctl', ['-a', '-vv', appPath]);
   if (!spctlOutput.includes('accepted')) {
     fail(`spctl output did not include accepted:\n${spctlOutput}`);
   }
   console.log(spctlOutput);
+} else if (process.platform === 'darwin') {
+  console.log('skipping notarization check for staged app bundle');
 }
 
 const processList = run('ps', ['-axo', 'pid,lstart,command']);

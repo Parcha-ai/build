@@ -2312,8 +2312,83 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }));
     window.electronAPI.sessions.update(sessionId, { updatedAt: now });
 
-    // Intercept and secure any API keys/tokens in the message
-    const { modifiedText, keysDetected } = await window.electronAPI.secureKeys.interceptAndReplace(sessionId, message);
+    // Add the user's message before slower async preprocessing so pressing
+    // Enter always produces immediate visible feedback in the chat.
+    const existingMessages = get().messages[sessionId] || [];
+    const alreadyInChat =
+      !!opts?.existingMessageId &&
+      existingMessages.some((m) => m.id === opts!.existingMessageId);
+    const userMessage: ChatMessage = {
+      id: opts?.existingMessageId || `msg-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+      role: 'user',
+      content: message,
+      timestamp: new Date(),
+      harness: harnessFromModel(model),
+      attachments: (attachments as ChatMessage['attachments'])?.length ? attachments as ChatMessage['attachments'] : undefined,
+    };
+    if (!suppressUserMessage && !alreadyInChat) {
+      addMessage(sessionId, userMessage);
+    }
+
+    // Start streaming immediately so the input area moves into queued/send state
+    // before remote probes, key scanning, or transcript checks complete.
+    setStreaming(sessionId, true);
+    set((state) => ({
+      streamGeneration: {
+        ...state.streamGeneration,
+        [sessionId]: (state.streamGeneration[sessionId] || 0) + 1,
+      },
+      streamStartTime: {
+        ...state.streamStartTime,
+        [sessionId]: Date.now(),
+      },
+      activeStreamModel: {
+        ...state.activeStreamModel,
+        [sessionId]: model,
+      },
+      activeUserPrompt: {
+        ...state.activeUserPrompt,
+        [sessionId]: {
+          id: userMessage.id,
+          message,
+          attachments,
+          timestamp: userMessage.timestamp.getTime(),
+          model,
+          suppressUserMessage,
+        },
+      },
+    }));
+
+    // Intercept and secure any API keys/tokens in the message. The chat bubble
+    // is already visible, so fall back to the original text if scanning fails.
+    let modifiedText = message;
+    let keysDetected: Array<{ description: string }> = [];
+    try {
+      const secureResult = await window.electronAPI.secureKeys.interceptAndReplace(sessionId, message);
+      modifiedText = secureResult.modifiedText;
+      keysDetected = secureResult.keysDetected || [];
+    } catch (error) {
+      console.warn('[SessionStore] Secure-key scan failed; sending original text:', error);
+    }
+
+    let outboundUserMessage = userMessage;
+    if (modifiedText !== message) {
+      outboundUserMessage = { ...userMessage, content: modifiedText };
+      set((state) => ({
+        messages: {
+          ...state.messages,
+          [sessionId]: (state.messages[sessionId] || []).map((existingMessage) =>
+            existingMessage.id === userMessage.id ? outboundUserMessage : existingMessage
+          ),
+        },
+        activeUserPrompt: {
+          ...state.activeUserPrompt,
+          [sessionId]: state.activeUserPrompt[sessionId]
+            ? { ...state.activeUserPrompt[sessionId], message: modifiedText }
+            : state.activeUserPrompt[sessionId],
+        },
+      }));
+    }
 
     // Log if keys were detected (without revealing the actual keys)
     if (keysDetected.length > 0) {
@@ -2335,57 +2410,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       console.log(`[SessionStore] Build transcript exists for ${sessionId}; not sending supplemental local fallback as model context`);
     }
 
-    // Add user message (with keys replaced by placeholders).
-    // If the caller passed `existingMessageId` (e.g. we're re-sending a queued
-    // message that was already shown in the chat when it was enqueued), skip
-    // adding so the message doesn't appear twice.
-    const existingMessages = get().messages[sessionId] || [];
-    const alreadyInChat =
-      !!opts?.existingMessageId &&
-      existingMessages.some((m) => m.id === opts!.existingMessageId);
-    const userMessage: ChatMessage = {
-      id: opts?.existingMessageId || Date.now().toString(),
-      role: 'user',
-      content: modifiedText, // Use the secured version
-      timestamp: new Date(),
-      harness: harnessFromModel(model),
-      attachments: (attachments as ChatMessage['attachments'])?.length ? attachments as ChatMessage['attachments'] : undefined,
-    };
-    if (!suppressUserMessage && !alreadyInChat) {
-      addMessage(sessionId, userMessage);
-    }
     if (!suppressUserMessage && (isNonClaudeHarness(model) || model === 'auto')) {
-      persistSupplementalMessage(sessionId, userMessage);
+      persistSupplementalMessage(sessionId, outboundUserMessage);
     }
-
-    // Start streaming — bump generation and record start time to detect stale
-    // STREAM_END/STREAM_ERROR from previously cancelled queries.
-    setStreaming(sessionId, true);
-    set((state) => ({
-      streamGeneration: {
-        ...state.streamGeneration,
-        [sessionId]: (state.streamGeneration[sessionId] || 0) + 1,
-      },
-      streamStartTime: {
-        ...state.streamStartTime,
-        [sessionId]: Date.now(),
-      },
-      activeStreamModel: {
-        ...state.activeStreamModel,
-        [sessionId]: model,
-      },
-      activeUserPrompt: {
-        ...state.activeUserPrompt,
-        [sessionId]: {
-          id: userMessage.id,
-          message: modifiedText,
-          attachments,
-          timestamp: userMessage.timestamp.getTime(),
-          model,
-          suppressUserMessage,
-        },
-      },
-    }));
 
     try {
       console.log('[SessionStore] Calling electronAPI.claude.sendMessage with', attachments?.length || 0, 'attachments, model:', model);
@@ -3289,14 +3316,17 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // Subscribe to permission mode changes from main process (e.g., after plan approval)
     const unsubPermissionModeChanged = window.electronAPI.claude.onPermissionModeChanged((data) => {
       console.log('[Session Store] Permission mode changed from main:', data.sessionId, data.mode);
-      set((state) => {
-        const sessionModel = getSessionModel(state, data.sessionId);
-        return {
-          permissionMode: {
-            ...state.permissionMode,
-            [data.sessionId]: normalizePermissionModeForModel(sessionModel, data.mode as PermissionMode),
-          },
-        };
+      const currentState = get();
+      const sessionModel = getSessionModel(currentState, data.sessionId);
+      const normalizedMode = normalizePermissionModeForModel(sessionModel, data.mode as PermissionMode);
+      set((state) => ({
+        permissionMode: {
+          ...state.permissionMode,
+          [data.sessionId]: normalizedMode,
+        },
+      }));
+      window.electronAPI.sessions.update(data.sessionId, { permissionMode: normalizedMode } as any).catch((err: Error) => {
+        console.error('[SessionStore] Failed to persist permission mode changed from main:', err);
       });
     });
 

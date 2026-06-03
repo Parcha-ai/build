@@ -38,6 +38,7 @@ interface UIState {
   isAnalyticsPanelOpen: boolean;
   isInspectorActive: boolean;
   isSettingsOpen: boolean;
+  settingsTab: string | null;
   isOnboardingOpen: boolean;
   hasApiKey: boolean | null; // null = not checked yet, false = missing, true = present
   selectedElement: unknown | null;
@@ -92,7 +93,7 @@ interface UIState {
   toggleViewportMode: () => void;
   setViewportMode: (mode: ViewportMode) => void;
   setMobileBrowserHeight: (height: number) => void;
-  openSettings: () => void;
+  openSettings: (tab?: unknown) => void;
   closeSettings: () => void;
   checkApiKey: () => Promise<boolean>;
   openOnboarding: () => void;
@@ -127,6 +128,7 @@ export const useUIStore = create<UIState>((set, get) => ({
   isAnalyticsPanelOpen: false,
   isInspectorActive: false,
   isSettingsOpen: false,
+  settingsTab: null,
   isOnboardingOpen: false,
   hasApiKey: null,
   selectedElement: null,
@@ -286,7 +288,10 @@ export const useUIStore = create<UIState>((set, get) => ({
     }
     set({ mobileBrowserHeight: clampedHeight });
   },
-  openSettings: () => set({ isSettingsOpen: true }),
+  openSettings: (tab?: unknown) => set({
+    isSettingsOpen: true,
+    settingsTab: typeof tab === 'string' ? tab : null,
+  }),
   closeSettings: () => set({ isSettingsOpen: false }),
   checkApiKey: async () => {
     try {

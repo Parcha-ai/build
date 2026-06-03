@@ -1184,6 +1184,33 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
     const activeState = claudeService.getActiveQueryState(sessionId);
     if (activeState.active) {
       const deferredMs = messageQueueService.getDrainDeferredMs(sessionId);
+      if (activeState.injectable) {
+        const next = messageQueueService.dequeueForDrain(sessionId);
+        if (!next) return;
+
+        if ((next.sourceCount || 0) > 1) {
+          console.log(`[Queue] Injecting ${next.sourceCount} queued messages into active query for ${sessionId}`);
+        } else {
+          console.log(`[Queue] Injecting queued message into active query for ${sessionId}`);
+        }
+
+        const injected = await claudeService.injectMessage(
+          sessionId,
+          next.text,
+          next.attachments as Attachment[] | undefined
+        );
+        if (injected) {
+          return;
+        }
+
+        console.warn(`[Queue] Injection failed for ${sessionId}; sending queued message as a new turn`);
+        const mainWindow = getMainWindow();
+        if (mainWindow) {
+          mainWindow.webContents.send('queue:send-next', sessionId, next);
+        }
+        return;
+      }
+
       const canTreatAsStale = !activeState.injectable && deferredMs >= STALE_QUEUE_DRAIN_ACTIVE_QUERY_GRACE_MS;
       if (!canTreatAsStale) {
         console.warn(

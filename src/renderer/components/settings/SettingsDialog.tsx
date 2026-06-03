@@ -1,11 +1,40 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { X, Eye, EyeOff, Check, Loader2, Search, Download, Sparkles, Settings, Key, History } from 'lucide-react';
+import { X, Eye, EyeOff, Check, Loader2, Search, Download, Sparkles, Settings, Key, History, AlertCircle, ExternalLink, Terminal, Copy, Bot, RefreshCw } from 'lucide-react';
 import { useUIStore } from '../../stores/ui.store';
 import { useAudioStore } from '../../stores/audio.store';
 import { useSessionStore } from '../../stores/session.store';
 import ReleaseNotes from '../common/ReleaseNotes';
 
-type TabId = 'general' | 'autoBuild' | 'apiKeys' | 'releases';
+type TabId = 'general' | 'autoBuild' | 'agents' | 'releases';
+
+type ProviderStatus = {
+  installed?: boolean;
+  loggedIn: boolean;
+  method?: 'cli' | 'apiKey' | 'chatgpt';
+  detail?: string;
+  path?: string | null;
+  version?: string | null;
+  installCommand?: string;
+  docsUrl?: string;
+};
+
+type ProvidersState = {
+  claude: ProviderStatus;
+  codex: ProviderStatus;
+  cursor: ProviderStatus;
+  gemini: ProviderStatus;
+  grok: ProviderStatus;
+  opencode: ProviderStatus;
+};
+
+const DEFAULT_PROVIDERS: ProvidersState = {
+  claude: { loggedIn: false },
+  codex: { loggedIn: false },
+  cursor: { loggedIn: false },
+  gemini: { loggedIn: false },
+  grok: { loggedIn: false },
+  opencode: { loggedIn: false },
+};
 
 interface TabConfig {
   id: TabId;
@@ -256,17 +285,17 @@ const ApiKeyInput = React.memo(ApiKeyInputComponent);
 const TABS: TabConfig[] = [
   { id: 'general', label: 'General', icon: <Settings size={14} /> },
   { id: 'autoBuild', label: 'Auto Build', icon: <Sparkles size={14} /> },
-  { id: 'apiKeys', label: 'API Keys', icon: <Key size={14} /> },
+  { id: 'agents', label: 'Agents', icon: <Bot size={14} /> },
   { id: 'releases', label: 'Releases', icon: <History size={14} /> },
 ];
 
 export default function SettingsDialog() {
-  const { isSettingsOpen, closeSettings } = useUIStore();
+  const { isSettingsOpen, closeSettings, settingsTab } = useUIStore();
   const { settings: audioSettings, loadSettings, updateSettings } = useAudioStore();
   const loadAvailableModels = useSessionStore((s) => s.loadAvailableModels);
 
   // Active tab state
-  const [activeTab, setActiveTab] = useState<TabId>('general');
+  const [activeTab, setActiveTab] = useState<TabId>((settingsTab as TabId) || 'general');
 
   // Save status indicator
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
@@ -291,6 +320,8 @@ export default function SettingsDialog() {
   const [showGeminiApiKey, setShowGeminiApiKey] = useState(false);
   const [cerebrasApiKey, setCerebrasApiKey] = useState('');
   const [showCerebrasApiKey, setShowCerebrasApiKey] = useState(false);
+  const [xaiApiKey, setXaiApiKey] = useState('');
+  const [showXaiApiKey, setShowXaiApiKey] = useState(false);
 
   // Audio settings
   const [voiceModeEnabled, setVoiceModeEnabled] = useState(false);
@@ -339,6 +370,8 @@ export default function SettingsDialog() {
   const [qmdInstallMessage, setQmdInstallMessage] = useState('');
 
   const [isLoading, setIsLoading] = useState(true);
+  const [providers, setProviders] = useState<ProvidersState>(DEFAULT_PROVIDERS);
+  const [isCheckingProviders, setIsCheckingProviders] = useState(false);
 
   // Show save indicator briefly
   const showSaveIndicator = useCallback(() => {
@@ -355,14 +388,14 @@ export default function SettingsDialog() {
   }, []);
 
   // Auto-save app settings (toggles and time picker)
-  const autoSaveAppSettings = useCallback(async (updates: { qmdEnabled?: boolean; ultraPlanMode?: boolean; showClearContextOnPlanAccept?: boolean; lunchReminderEnabled?: boolean; lunchReminderTime?: string; bedtimeReminderEnabled?: boolean; bedtimeReminderTime?: string; dailyReviewEnabled?: boolean; dailyReviewTime?: string; bedtimeTaskReviewEnabled?: boolean; foundryEnabled?: boolean; foundryBaseUrl?: string; foundryApiKey?: string; foundryDefaultSonnetModel?: string; foundryDefaultHaikuModel?: string; foundryDefaultOpusModel?: string; customModels?: typeof customModels; cursorApiKey?: string; deepseekApiKey?: string; geminiApiKey?: string; cerebrasApiKey?: string; autoRouterConfig?: any }) => {
+  const autoSaveAppSettings = useCallback(async (updates: { qmdEnabled?: boolean; ultraPlanMode?: boolean; showClearContextOnPlanAccept?: boolean; lunchReminderEnabled?: boolean; lunchReminderTime?: string; bedtimeReminderEnabled?: boolean; bedtimeReminderTime?: string; dailyReviewEnabled?: boolean; dailyReviewTime?: string; bedtimeTaskReviewEnabled?: boolean; foundryEnabled?: boolean; foundryBaseUrl?: string; foundryApiKey?: string; foundryDefaultSonnetModel?: string; foundryDefaultHaikuModel?: string; foundryDefaultOpusModel?: string; customModels?: typeof customModels; cursorApiKey?: string; deepseekApiKey?: string; geminiApiKey?: string; xaiApiKey?: string; cerebrasApiKey?: string; autoRouterConfig?: any }) => {
     showSaveIndicator();
     try {
       await window.electronAPI.settings.set(updates);
       console.log('[SettingsDialog] Auto-saved app settings:', updates);
 
       // Reload available models if model-affecting settings changed
-      const isModelUpdate = 'foundryEnabled' in updates || 'foundryDefaultSonnetModel' in updates || 'foundryDefaultHaikuModel' in updates || 'foundryDefaultOpusModel' in updates || 'customModels' in updates || 'cursorApiKey' in updates || 'deepseekApiKey' in updates || 'geminiApiKey' in updates;
+      const isModelUpdate = 'foundryEnabled' in updates || 'foundryDefaultSonnetModel' in updates || 'foundryDefaultHaikuModel' in updates || 'foundryDefaultOpusModel' in updates || 'customModels' in updates || 'cursorApiKey' in updates || 'deepseekApiKey' in updates || 'geminiApiKey' in updates || 'xaiApiKey' in updates;
       if (isModelUpdate) {
         console.log('[SettingsDialog] Model-affecting settings changed, reloading available models');
         await loadAvailableModels();
@@ -416,10 +449,31 @@ export default function SettingsDialog() {
     }, 500);
   }, []);
 
+  const refreshProviders = useCallback(async () => {
+    setIsCheckingProviders(true);
+    try {
+      const result = await window.electronAPI.auth?.checkProviders?.();
+      if (result) {
+        setProviders({ ...DEFAULT_PROVIDERS, ...result });
+      }
+    } catch (error) {
+      console.warn('[SettingsDialog] Provider status check failed:', error);
+    } finally {
+      setIsCheckingProviders(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (isSettingsOpen) {
+      setActiveTab((settingsTab as TabId) || 'general');
+    }
+  }, [isSettingsOpen, settingsTab]);
+
   // Load all settings on open — fast store reads first, slow QMD check independently
   useEffect(() => {
     if (isSettingsOpen) {
       setIsLoading(true);
+      void refreshProviders();
 
       // These are all instant electron-store reads — never hang
       Promise.all([
@@ -457,6 +511,7 @@ export default function SettingsDialog() {
           setDeepseekApiKey((appSettings as any).deepseekApiKey || '');
           setGeminiApiKey((appSettings as any).geminiApiKey || '');
           setCerebrasApiKey((appSettings as any).cerebrasApiKey || '');
+          setXaiApiKey((appSettings as any).xaiApiKey || '');
           // Auto Build config
           const savedAutoConfig = (appSettings as any).autoRouterConfig;
           if (savedAutoConfig) {
@@ -531,7 +586,7 @@ export default function SettingsDialog() {
         .then((s) => setQmdStatus(s))
         .catch((err) => console.warn('[SettingsDialog] QMD status check failed:', err));
     }
-  }, [isSettingsOpen, loadSettings]);
+  }, [isSettingsOpen, loadSettings, refreshProviders]);
 
   // Update local state when audio settings load
   useEffect(() => {
@@ -1006,6 +1061,7 @@ export default function SettingsDialog() {
       if (id.startsWith('codex:')) return 'Codex';
       if (id.startsWith('cursor:')) return 'Cursor';
       if (id.startsWith('gemini:')) return 'Gemini';
+      if (id.startsWith('grok:')) return 'Grok';
       if (id.startsWith('opencode:')) return 'DeepSeek';
       if (id.startsWith('custom:')) return 'Custom';
       if (id.startsWith('claude-')) return 'Claude';
@@ -1133,6 +1189,36 @@ export default function SettingsDialog() {
           <h3 className="text-sm font-medium text-claude-text mb-1">Auto Build Routing</h3>
           <p className="text-[10px] text-claude-text-secondary mb-4">
             Pick the harness/model for each fixed task category. When Auto Build is selected, routing assigns the turn to one of these categories and delegates execution to the selected harness.
+          </p>
+        </div>
+
+        {/* Cerebras API Key — enables intelligent routing */}
+        <div className="space-y-2 border border-claude-border/30 p-3">
+          <label className="block text-[10px] font-mono text-claude-text-secondary uppercase tracking-wider">
+            Cerebras API Key
+          </label>
+          <ApiKeyInput
+            value={cerebrasApiKey}
+            onChange={setCerebrasApiKey}
+            show={showCerebrasApiKey}
+            onToggleShow={() => setShowCerebrasApiKey(!showCerebrasApiKey)}
+            placeholder="csk-..."
+            onSave={(value) => autoSaveAppSettings({ cerebrasApiKey: value })}
+            isLoading={isLoading}
+            handleDebouncedChange={handleDebouncedChange}
+          />
+          <p className="text-[10px] font-mono text-claude-text-secondary">
+            Required for intelligent Auto Build routing. Without this key, Auto Build uses heuristic-only routing.{' '}
+            <a
+              href="#"
+              onClick={(e) => {
+                e.preventDefault();
+                window.electronAPI.app?.openExternal?.('https://cloud.cerebras.ai');
+              }}
+              className="text-claude-accent hover:underline"
+            >
+              cloud.cerebras.ai
+            </a>
           </p>
         </div>
 
@@ -1403,37 +1489,398 @@ export default function SettingsDialog() {
     );
   };
 
-  // Render API Keys Tab
-  const renderApiKeysTab = () => (
-    <div className="space-y-6">
-      {/* Anthropic API Key */}
-      <div className="space-y-2">
-        <label className="block text-xs font-mono text-claude-text-secondary uppercase tracking-wider">
-          Anthropic API Key
-        </label>
-        <ApiKeyInput
-          value={apiKey}
-          onChange={setApiKey}
-          show={showApiKey}
-          onToggleShow={() => setShowApiKey(!showApiKey)}
-          placeholder="sk-ant-..."
-          onSave={(value) => autoSaveApiKey(value, 'anthropic')}
-          isLoading={isLoading}
-          handleDebouncedChange={handleDebouncedChange}
-        />
-        <p className="text-[10px] font-mono text-claude-text-secondary">
-          Get your API key from{' '}
-          <a
-            href="#"
-            onClick={(e) => {
-              e.preventDefault();
-              window.electronAPI.app?.openExternal?.('https://console.anthropic.com/settings/keys');
+  const getProviderStatusText = (status: ProviderStatus) => {
+    if (isCheckingProviders) return 'Checking...';
+    if (status.loggedIn) return status.detail || 'Ready';
+    if (status.installed === false) return 'CLI missing';
+    if (status.installed) return status.detail || 'Setup required';
+    return status.detail || 'Not ready';
+  };
+
+  const copySetupCommand = (command?: string) => {
+    if (command) {
+      navigator.clipboard?.writeText(command).catch(() => undefined);
+    }
+  };
+
+  const renderHarnessCard = ({
+    id,
+    label,
+    description,
+    status,
+    apiKeyLabel,
+    apiKeyInput,
+    docsUrl,
+    keyHelp,
+  }: {
+    id: keyof ProvidersState;
+    label: string;
+    description: string;
+    status: ProviderStatus;
+    apiKeyLabel: string;
+    apiKeyInput: React.ReactNode;
+    docsUrl: string;
+    keyHelp: React.ReactNode;
+  }) => {
+    const ready = status.loggedIn;
+    const setupCommand = status.installCommand;
+    const effectiveDocsUrl = status.docsUrl || docsUrl;
+
+    return (
+      <div key={id} className="border border-claude-border bg-claude-bg/30" style={{ borderRadius: 0 }}>
+        <div className="p-3 border-b border-claude-border/70">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <Terminal size={14} className="text-claude-text-secondary" />
+                <h4 className="text-sm font-mono font-semibold text-claude-text">{label}</h4>
+              </div>
+              <p className="mt-1 text-[10px] font-mono text-claude-text-secondary">{description}</p>
+            </div>
+            <div className={`shrink-0 flex items-center gap-1.5 px-2 py-1 border text-[10px] font-mono ${
+              ready
+                ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-400'
+                : 'border-amber-500/50 bg-amber-500/10 text-amber-400'
+            }`}>
+              {isCheckingProviders ? (
+                <Loader2 size={11} className="animate-spin" />
+              ) : ready ? (
+                <Check size={11} />
+              ) : (
+                <AlertCircle size={11} />
+              )}
+              {getProviderStatusText(status)}
+            </div>
+          </div>
+          {(status.version || status.path) && (
+            <div className="mt-2 text-[10px] font-mono text-claude-text-secondary truncate">
+              {[status.version, status.path].filter(Boolean).join(' · ')}
+            </div>
+          )}
+        </div>
+
+        <div className="p-3 space-y-3">
+          {!ready && setupCommand && (
+            <div className="space-y-1.5">
+              <label className="block text-[10px] font-mono text-claude-text-secondary uppercase tracking-wider">
+                Install CLI
+              </label>
+              <div className="flex items-center gap-2">
+                <code className="flex-1 min-w-0 px-2 py-1.5 bg-claude-surface border border-claude-border text-[10px] font-mono text-claude-text-secondary truncate">
+                  {setupCommand}
+                </code>
+                <button
+                  type="button"
+                  onClick={() => copySetupCommand(setupCommand)}
+                  className="p-1.5 border border-claude-border text-claude-text-secondary hover:text-claude-text hover:bg-claude-surface"
+                  title="Copy setup command"
+                >
+                  <Copy size={12} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => window.electronAPI.app?.openExternal?.(effectiveDocsUrl)}
+                  className="p-1.5 border border-claude-border text-claude-text-secondary hover:text-claude-text hover:bg-claude-surface"
+                  title="Open setup docs"
+                >
+                  <ExternalLink size={12} />
+                </button>
+              </div>
+            </div>
+          )}
+
+          <div className="space-y-2">
+            <label className="block text-[10px] font-mono text-claude-text-secondary uppercase tracking-wider">
+              {apiKeyLabel}
+            </label>
+            {apiKeyInput}
+            <p className="text-[10px] font-mono text-claude-text-secondary">{keyHelp}</p>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  // Render Agents Tab
+  const renderAgentsTab = () => {
+    const hasReadyAgent = Object.values(providers).some((provider) => provider.loggedIn);
+    const handleContinue = async () => {
+      await window.electronAPI?.settings?.set?.({ onboardingSkipped: true });
+      closeSettings();
+    };
+
+    const harnessCards = [
+      renderHarnessCard({
+        id: 'claude',
+        label: 'Claude Code',
+        description: 'Primary Anthropic coding harness with CLI auth or direct API key support.',
+        status: providers.claude,
+        apiKeyLabel: 'Anthropic API Key',
+        docsUrl: 'https://docs.anthropic.com/claude-code',
+        apiKeyInput: (
+          <ApiKeyInput
+            value={apiKey}
+            onChange={setApiKey}
+            show={showApiKey}
+            onToggleShow={() => setShowApiKey(!showApiKey)}
+            placeholder="sk-ant-..."
+            onSave={async (value) => {
+              await autoSaveApiKey(value, 'anthropic');
+              await refreshProviders();
             }}
-            className="text-claude-accent hover:underline"
+            isLoading={isLoading}
+            handleDebouncedChange={handleDebouncedChange}
+          />
+        ),
+        keyHelp: (
+          <>
+            Add a key from{' '}
+            <button
+              type="button"
+              onClick={() => window.electronAPI.app?.openExternal?.('https://console.anthropic.com/settings/keys')}
+              className="text-claude-accent hover:underline"
+            >
+              console.anthropic.com
+            </button>
+            {' '}or run <span className="text-claude-text">claude login</span>.
+          </>
+        ),
+      }),
+      renderHarnessCard({
+        id: 'codex',
+        label: 'Codex',
+        description: 'OpenAI coding harness for GPT-5 class models.',
+        status: providers.codex,
+        apiKeyLabel: 'OpenAI API Key',
+        docsUrl: 'https://github.com/openai/codex',
+        apiKeyInput: (
+          <ApiKeyInput
+            value={openaiApiKey}
+            onChange={setOpenaiApiKey}
+            show={showOpenaiApiKey}
+            onToggleShow={() => setShowOpenaiApiKey(!showOpenaiApiKey)}
+            placeholder="sk-..."
+            onSave={async (value) => {
+              await autoSaveApiKey(value, 'openai');
+              await refreshProviders();
+            }}
+            isLoading={isLoading}
+            handleDebouncedChange={handleDebouncedChange}
+          />
+        ),
+        keyHelp: (
+          <>
+            Add a key from{' '}
+            <button
+              type="button"
+              onClick={() => window.electronAPI.app?.openExternal?.('https://platform.openai.com/api-keys')}
+              className="text-claude-accent hover:underline"
+            >
+              platform.openai.com
+            </button>
+            {' '}or sign in with ChatGPT through the Codex CLI.
+          </>
+        ),
+      }),
+      renderHarnessCard({
+        id: 'cursor',
+        label: 'Cursor Agent',
+        description: 'Cursor coding agent integration for local sessions.',
+        status: providers.cursor,
+        apiKeyLabel: 'Cursor API Key',
+        docsUrl: 'https://cursor.com/cli',
+        apiKeyInput: (
+          <ApiKeyInput
+            value={cursorApiKey}
+            onChange={setCursorApiKey}
+            show={showCursorApiKey}
+            onToggleShow={() => setShowCursorApiKey(!showCursorApiKey)}
+            placeholder="cur-..."
+            onSave={async (value) => {
+              await autoSaveAppSettings({ cursorApiKey: value });
+              await refreshProviders();
+            }}
+            isLoading={isLoading}
+            handleDebouncedChange={handleDebouncedChange}
+          />
+        ),
+        keyHelp: (
+          <>
+            Add a key from{' '}
+            <button
+              type="button"
+              onClick={() => window.electronAPI.app?.openExternal?.('https://cursor.com/settings')}
+              className="text-claude-accent hover:underline"
+            >
+              cursor.com/settings
+            </button>
+            .
+          </>
+        ),
+      }),
+      renderHarnessCard({
+        id: 'gemini',
+        label: 'Gemini CLI',
+        description: 'Google Gemini coding harness for Gemini Pro and Flash models.',
+        status: providers.gemini,
+        apiKeyLabel: 'Gemini API Key',
+        docsUrl: 'https://github.com/google-gemini/gemini-cli',
+        apiKeyInput: (
+          <ApiKeyInput
+            value={geminiApiKey}
+            onChange={setGeminiApiKey}
+            show={showGeminiApiKey}
+            onToggleShow={() => setShowGeminiApiKey(!showGeminiApiKey)}
+            placeholder="Enter your Google Gemini API key"
+            onSave={async (value) => {
+              await autoSaveAppSettings({ geminiApiKey: value });
+              await refreshProviders();
+            }}
+            isLoading={isLoading}
+            handleDebouncedChange={handleDebouncedChange}
+          />
+        ),
+        keyHelp: (
+          <>
+            Add a Gemini key from{' '}
+            <button
+              type="button"
+              onClick={() => window.electronAPI.app?.openExternal?.('https://aistudio.google.com/apikey')}
+              className="text-claude-accent hover:underline"
+            >
+              AI Studio
+            </button>
+            .
+          </>
+        ),
+      }),
+      renderHarnessCard({
+        id: 'grok',
+        label: 'Grok Build',
+        description: 'xAI Grok Build CLI harness using the grok-build model.',
+        status: providers.grok,
+        apiKeyLabel: 'xAI API Key',
+        docsUrl: 'https://docs.x.ai/build/overview',
+        apiKeyInput: (
+          <ApiKeyInput
+            value={xaiApiKey}
+            onChange={setXaiApiKey}
+            show={showXaiApiKey}
+            onToggleShow={() => setShowXaiApiKey(!showXaiApiKey)}
+            placeholder="xai-..."
+            onSave={async (value) => {
+              await autoSaveAppSettings({ xaiApiKey: value });
+              await refreshProviders();
+            }}
+            isLoading={isLoading}
+            handleDebouncedChange={handleDebouncedChange}
+          />
+        ),
+        keyHelp: (
+          <>
+            Add a key from{' '}
+            <button
+              type="button"
+              onClick={() => window.electronAPI.app?.openExternal?.('https://console.x.ai/')}
+              className="text-claude-accent hover:underline"
+            >
+              console.x.ai
+            </button>
+            {' '}or use Grok CLI auth.
+          </>
+        ),
+      }),
+      renderHarnessCard({
+        id: 'opencode',
+        label: 'OpenCode',
+        description: 'OpenCode harness for DeepSeek-backed coding models.',
+        status: providers.opencode,
+        apiKeyLabel: 'DeepSeek API Key',
+        docsUrl: 'https://opencode.ai/docs',
+        apiKeyInput: (
+          <ApiKeyInput
+            value={deepseekApiKey}
+            onChange={setDeepseekApiKey}
+            show={showDeepseekApiKey}
+            onToggleShow={() => setShowDeepseekApiKey(!showDeepseekApiKey)}
+            placeholder="sk-..."
+            onSave={async (value) => {
+              await autoSaveAppSettings({ deepseekApiKey: value });
+              await refreshProviders();
+            }}
+            isLoading={isLoading}
+            handleDebouncedChange={handleDebouncedChange}
+          />
+        ),
+        keyHelp: (
+          <>
+            Add a key from{' '}
+            <button
+              type="button"
+              onClick={() => window.electronAPI.app?.openExternal?.('https://platform.deepseek.com')}
+              className="text-claude-accent hover:underline"
+            >
+              platform.deepseek.com
+            </button>
+            .
+          </>
+        ),
+      }),
+    ];
+
+    return (
+      <div className="space-y-6">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-mono font-semibold text-claude-text">Agent Harnesses</h3>
+            <p className="mt-1 text-[10px] font-mono text-claude-text-secondary">
+              Configure local agent CLIs and their API keys in one place.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={refreshProviders}
+            disabled={isCheckingProviders}
+            className="flex items-center gap-1.5 px-2 py-1 border border-claude-border text-[10px] font-mono text-claude-text-secondary hover:text-claude-text hover:bg-claude-bg disabled:opacity-60"
+            style={{ borderRadius: 0 }}
           >
-            console.anthropic.com
-          </a>
-          . Or skip this and run <span className="text-claude-text">claude login</span> in your terminal to use OAuth.
+            <RefreshCw size={11} className={isCheckingProviders ? 'animate-spin' : ''} />
+            Refresh
+          </button>
+        </div>
+
+        <div className="space-y-3">
+          {harnessCards}
+        </div>
+
+        {renderOtherApiKeysSection()}
+
+        <button
+          type="button"
+          onClick={handleContinue}
+          disabled={!hasReadyAgent && !apiKey.trim()}
+          className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-claude-accent text-white font-mono text-xs uppercase tracking-wider hover:bg-claude-accent/80 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          style={{ borderRadius: 0 }}
+        >
+          <Check size={13} />
+          Continue to Build
+        </button>
+      </div>
+    );
+  };
+
+  // Render non-harness API keys inside the Agents tab
+  const renderOtherApiKeysSection = () => (
+    <div className="space-y-6">
+      <div className="space-y-2 pt-4 border-t border-claude-border">
+        <div className="flex items-center gap-2">
+          <Key size={14} className="text-claude-text-secondary" />
+          <h3 className="text-xs font-mono text-claude-text uppercase tracking-wider">
+            Other API Keys
+          </h3>
+        </div>
+        <p className="text-[10px] font-mono text-claude-text-secondary">
+          Keys below support non-agent features such as voice, browser automation, hosted Claude endpoints, and custom API models.
         </p>
       </div>
 
@@ -1549,7 +1996,7 @@ export default function SettingsDialog() {
           handleDebouncedChange={handleDebouncedChange}
         />
         <p className="text-[10px] font-mono text-claude-text-secondary">
-          For voice transcription using Whisper.{' '}
+          For voice transcription using Whisper. This is the same OpenAI key used by the Codex agent.{' '}
           <a
             href="#"
             onClick={(e) => {
@@ -1618,96 +2065,6 @@ export default function SettingsDialog() {
         </p>
       </div>
 
-      {/* Cursor API Key */}
-      <div className="space-y-2 pt-4 border-t border-claude-border">
-        <label className="block text-xs font-mono text-claude-text-secondary uppercase tracking-wider">
-          Cursor API Key
-        </label>
-        <ApiKeyInput
-          value={cursorApiKey}
-          onChange={setCursorApiKey}
-          show={showCursorApiKey}
-          onToggleShow={() => setShowCursorApiKey(!showCursorApiKey)}
-          placeholder="cur-..."
-          onSave={(value) => autoSaveAppSettings({ cursorApiKey: value })}
-          isLoading={isLoading}
-          handleDebouncedChange={handleDebouncedChange}
-        />
-        <p className="text-[10px] font-mono text-claude-text-secondary">
-          For Cursor coding agent (local sessions only).{' '}
-          <a
-            href="#"
-            onClick={(e) => {
-              e.preventDefault();
-              window.electronAPI.app?.openExternal?.('https://cursor.com/settings');
-            }}
-            className="text-claude-accent hover:underline"
-          >
-            Get your key at cursor.com
-          </a>
-        </p>
-      </div>
-
-      {/* DeepSeek API Key */}
-      <div className="space-y-2 pt-4 border-t border-claude-border">
-        <label className="block text-xs font-mono text-claude-text-secondary uppercase tracking-wider">
-          DeepSeek API Key
-        </label>
-        <ApiKeyInput
-          value={deepseekApiKey}
-          onChange={setDeepseekApiKey}
-          show={showDeepseekApiKey}
-          onToggleShow={() => setShowDeepseekApiKey(!showDeepseekApiKey)}
-          placeholder="sk-..."
-          onSave={(value) => autoSaveAppSettings({ deepseekApiKey: value })}
-          isLoading={isLoading}
-          handleDebouncedChange={handleDebouncedChange}
-        />
-        <p className="text-[10px] font-mono text-claude-text-secondary">
-          For DeepSeek models via OpenCode agent.{' '}
-          <a
-            href="#"
-            onClick={(e) => {
-              e.preventDefault();
-              window.electronAPI.app?.openExternal?.('https://platform.deepseek.com');
-            }}
-            className="text-claude-accent hover:underline"
-          >
-            Get your key at platform.deepseek.com
-          </a>
-        </p>
-      </div>
-
-      {/* Gemini CLI API Key */}
-      <div className="space-y-2 pt-4 border-t border-claude-border">
-        <label className="block text-xs font-mono text-claude-text-secondary uppercase tracking-wider">
-          Gemini API Key
-        </label>
-        <ApiKeyInput
-          value={geminiApiKey}
-          onChange={setGeminiApiKey}
-          show={showGeminiApiKey}
-          onToggleShow={() => setShowGeminiApiKey(!showGeminiApiKey)}
-          placeholder="Enter your Google Gemini API key"
-          onSave={(value) => autoSaveAppSettings({ geminiApiKey: value })}
-          isLoading={isLoading}
-          handleDebouncedChange={handleDebouncedChange}
-        />
-        <p className="text-[10px] font-mono text-claude-text-secondary">
-          For Gemini coding agent via CLI (gemini-2.5-pro, gemini-2.5-flash).{' '}
-          <a
-            href="#"
-            onClick={(e) => {
-              e.preventDefault();
-              window.electronAPI.app?.openExternal?.('https://aistudio.google.com/apikey');
-            }}
-            className="text-claude-accent hover:underline"
-          >
-            Get your key at aistudio.google.com
-          </a>
-        </p>
-      </div>
-
       {/* Google/Gemini API Key (Browser AI) */}
       <div className="space-y-2 pt-4 border-t border-claude-border">
         <label className="block text-xs font-mono text-claude-text-secondary uppercase tracking-wider">
@@ -1734,36 +2091,6 @@ export default function SettingsDialog() {
             className="text-claude-accent hover:underline"
           >
             Get key
-          </a>
-        </p>
-      </div>
-
-      {/* Cerebras API Key (Auto Build routing) */}
-      <div className="space-y-2 pt-4 border-t border-claude-border">
-        <label className="block text-xs font-mono text-claude-text-secondary uppercase tracking-wider">
-          Cerebras API Key
-        </label>
-        <ApiKeyInput
-          value={cerebrasApiKey}
-          onChange={setCerebrasApiKey}
-          show={showCerebrasApiKey}
-          onToggleShow={() => setShowCerebrasApiKey(!showCerebrasApiKey)}
-          placeholder="csk-..."
-          onSave={(value) => autoSaveAppSettings({ cerebrasApiKey: value })}
-          isLoading={isLoading}
-          handleDebouncedChange={handleDebouncedChange}
-        />
-        <p className="text-[10px] font-mono text-claude-text-secondary">
-          Required for Auto Build intelligent routing. Without this key, Auto Build falls back to heuristic-only routing.{' '}
-          <a
-            href="#"
-            onClick={(e) => {
-              e.preventDefault();
-              window.electronAPI.app?.openExternal?.('https://cloud.cerebras.ai/');
-            }}
-            className="text-claude-accent hover:underline"
-          >
-            Get your key at cloud.cerebras.ai
           </a>
         </p>
       </div>
@@ -1870,7 +2197,7 @@ export default function SettingsDialog() {
       {/* Info */}
       <div className="pt-4">
         <p className="text-[10px] font-mono text-claude-text-secondary text-center">
-          API keys are stored locally and encrypted. Voice features require external API keys.
+          Agent credentials and API keys are stored locally and encrypted.
         </p>
       </div>
     </div>
@@ -1895,8 +2222,8 @@ export default function SettingsDialog() {
         return renderGeneralTab();
       case 'autoBuild':
         return renderAutoBuildTab();
-      case 'apiKeys':
-        return renderApiKeysTab();
+      case 'agents':
+        return renderAgentsTab();
       case 'releases':
         return renderReleasesTab();
       default:

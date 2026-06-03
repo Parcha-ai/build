@@ -156,6 +156,7 @@ export class ClaudeService {
   private activeQueryObjects: Map<string, Query> = new Map(); // Store Query objects for streamInput
   private sessionPermissionModes: Map<string, string> = new Map(); // Track current permission mode per session
   private prePlanPermissionModes: Map<string, string> = new Map(); // Track pre-plan mode for restoration after plan approval
+  private autoBuildForcedPlanSessions: Set<string> = new Set(); // Track Auto Build's temporary plan-mode handoffs
   private pendingQuestions: Map<string, PendingQuestion> = new Map();
   private pendingPermissions: Map<string, PendingPermission> = new Map();
   private pendingPlanApprovals: Map<string, PendingPlanApproval> = new Map();
@@ -191,6 +192,60 @@ export class ClaudeService {
 
   setMainWindow(window: BrowserWindow | null): void {
     this.mainWindow = window;
+  }
+
+  private updateStoredSession(sessionId: string, updater: (session: Session) => Session): boolean {
+    for (const prefix of ['sessions', 'discoveredSessions'] as const) {
+      const key = `${prefix}.${sessionId}`;
+      const session = this.sessionStore.get(key) as Session | undefined;
+      if (!session) continue;
+      this.sessionStore.set(key, updater(session));
+      return true;
+    }
+    return false;
+  }
+
+  private getPersistedAutoBuildPrePlanMode(sessionId: string): string | undefined {
+    const session = (this.sessionStore.get(`sessions.${sessionId}`) as Session | undefined)
+      || (this.sessionStore.get(`discoveredSessions.${sessionId}`) as Session | undefined);
+    if (!session?.autoBuildForcedPlanMode) return undefined;
+    return session.autoBuildPrePlanPermissionMode || 'acceptEdits';
+  }
+
+  private persistAutoBuildForcedPlanMode(sessionId: string, prePlanMode: string): void {
+    const updated = this.updateStoredSession(sessionId, (session) => ({
+      ...session,
+      autoBuildForcedPlanMode: true,
+      autoBuildPrePlanPermissionMode: prePlanMode,
+    }));
+    if (updated) {
+      console.log(`[Claude Service] Persisted Auto Build forced plan restore mode for ${sessionId}: ${prePlanMode}`);
+    }
+  }
+
+  private clearPersistedAutoBuildForcedPlanMode(sessionId: string): void {
+    this.updateStoredSession(sessionId, (session) => {
+      const {
+        autoBuildForcedPlanMode: _autoBuildForcedPlanMode,
+        autoBuildPrePlanPermissionMode: _autoBuildPrePlanPermissionMode,
+        ...cleanSession
+      } = session;
+      return cleanSession as Session;
+    });
+  }
+
+  private persistSessionPermissionMode(sessionId: string, mode: string): void {
+    const updated = this.updateStoredSession(sessionId, (session) => {
+      const {
+        autoBuildForcedPlanMode: _autoBuildForcedPlanMode,
+        autoBuildPrePlanPermissionMode: _autoBuildPrePlanPermissionMode,
+        ...cleanSession
+      } = session;
+      return { ...cleanSession, permissionMode: mode } as Session;
+    });
+    if (updated) {
+      console.log(`[Claude Service] Persisted restored permission mode for ${sessionId}: ${mode}`);
+    }
   }
 
   setOnSessionNameChanged(callback: () => void): void {
@@ -277,6 +332,8 @@ export class ClaudeService {
    */
   setSessionPermissionMode(sessionId: string, mode: string): void {
     console.log(`[Claude Service] Setting permission mode for ${sessionId}: ${mode}`);
+    this.autoBuildForcedPlanSessions.delete(sessionId);
+    this.clearPersistedAutoBuildForcedPlanMode(sessionId);
     // When entering plan mode, store the previous mode for restoration after plan approval
     if (mode === 'plan') {
       const currentMode = this.sessionPermissionModes.get(sessionId) || 'acceptEdits';
@@ -4002,17 +4059,31 @@ ${leadContent.slice(0, leadContextLimit)}
     let selectedModel = model;
     let selectionMode: 'auto' | 'manual' | 'default' = model === 'auto' ? 'auto' : model ? 'manual' : 'default';
     let selectionSource: 'request' | 'session' | 'default' = model ? 'request' : 'default';
+    let effectivePermissionMode = permissionMode;
 
     // Clear Auto Build's forced plan permission mode when user switches to a
     // direct model. Without this, plan mode persists and blocks Bash/writes
     // even after the user switches away from Auto Build.
     if (model && model !== 'auto') {
       const storedPlanMode = this.sessionPermissionModes.get(sessionId);
-      if (storedPlanMode === 'plan' && this.prePlanPermissionModes.has(sessionId)) {
-        const restored = this.prePlanPermissionModes.get(sessionId)!;
+      const persistedAutoBuildPrePlanMode = this.getPersistedAutoBuildPrePlanMode(sessionId);
+      const autoBuildForcedPlanMode = this.autoBuildForcedPlanSessions.has(sessionId) || Boolean(persistedAutoBuildPrePlanMode);
+      const shouldRestoreAutoBuildPlanMode = autoBuildForcedPlanMode && (storedPlanMode === 'plan' || effectivePermissionMode === 'plan');
+      if (shouldRestoreAutoBuildPlanMode) {
+        const restored = this.prePlanPermissionModes.get(sessionId) || persistedAutoBuildPrePlanMode || 'acceptEdits';
         this.sessionPermissionModes.set(sessionId, restored);
         this.prePlanPermissionModes.delete(sessionId);
+        this.autoBuildForcedPlanSessions.delete(sessionId);
         console.log(`[Claude Service] Cleared Auto Build plan mode, restored to ${restored}`);
+        if (effectivePermissionMode === 'plan') {
+          effectivePermissionMode = restored;
+          console.log(`[Claude Service] Overrode stale Auto Build plan permission for direct model turn, restored to ${restored}`);
+          this.mainWindow?.webContents.send(IPC_CHANNELS.CLAUDE_PERMISSION_MODE_CHANGED, {
+            sessionId,
+            mode: restored,
+          });
+        }
+        this.persistSessionPermissionMode(sessionId, restored);
       }
     }
 
@@ -4035,8 +4106,8 @@ ${leadContent.slice(0, leadContextLimit)}
       // Validate and cast permission mode to SDK type
       const validModes = ['default', 'acceptEdits', 'bypassPermissions', 'plan', 'dontAsk'] as const;
       type SDKPermissionMode = typeof validModes[number];
-      const sdkPermissionMode: SDKPermissionMode = validModes.includes(permissionMode as SDKPermissionMode)
-        ? (permissionMode as SDKPermissionMode)
+      const sdkPermissionMode: SDKPermissionMode = validModes.includes(effectivePermissionMode as SDKPermissionMode)
+        ? (effectivePermissionMode as SDKPermissionMode)
         : 'acceptEdits';
       let autoBuildLeadPermissionMode: SDKPermissionMode = sdkPermissionMode;
 
@@ -4149,8 +4220,14 @@ ${leadContent.slice(0, leadContextLimit)}
           if (routingDecision.tier === 'plan') {
             autoBuildLeadPermissionMode = 'plan';
             this.sessionPermissionModes.set(sessionId, 'plan');
-            if (sdkPermissionMode !== 'plan' && !this.prePlanPermissionModes.has(sessionId)) {
-              this.prePlanPermissionModes.set(sessionId, sdkPermissionMode === 'dontAsk' ? 'acceptEdits' : sdkPermissionMode);
+            if (sdkPermissionMode !== 'plan') {
+              const prePlanMode = this.prePlanPermissionModes.get(sessionId)
+                || (sdkPermissionMode === 'dontAsk' ? 'acceptEdits' : sdkPermissionMode);
+              this.autoBuildForcedPlanSessions.add(sessionId);
+              if (!this.prePlanPermissionModes.has(sessionId)) {
+                this.prePlanPermissionModes.set(sessionId, prePlanMode);
+              }
+              this.persistAutoBuildForcedPlanMode(sessionId, prePlanMode);
             }
           }
           if (routingDecision.resolvedEffort) {
@@ -5332,6 +5409,8 @@ Begin by creating the task structure now.
                   // Switch to bypassPermissions (GREP IT) mode so the agent can execute its plan without interruptions
                   this.sessionPermissionModes.set(sessionId, 'bypassPermissions');
                   this.prePlanPermissionModes.delete(sessionId); // Clean up
+                  this.autoBuildForcedPlanSessions.delete(sessionId);
+                  this.persistSessionPermissionMode(sessionId, 'bypassPermissions');
                   console.log('[Claude Service] Plan approved — switching to bypassPermissions mode for execution');
 
                   // Notify the renderer to update its permission mode state
@@ -7076,6 +7155,7 @@ Begin by creating the task structure now.
     // Session-keyed maps
     this.sessionPermissionModes.delete(sessionId);
     this.prePlanPermissionModes.delete(sessionId);
+    this.autoBuildForcedPlanSessions.delete(sessionId);
     this.sessionContextPercentage.delete(sessionId);
     this.sessionStore.delete(`contextUsage.${sessionId}`);
     this.sessionPlanFiles.delete(sessionId);

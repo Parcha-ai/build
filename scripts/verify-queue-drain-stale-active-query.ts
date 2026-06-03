@@ -79,19 +79,25 @@ assert.ok((claudeIpc.match(/claudeService\.noteActiveQueryEvent\(sessionId\)/g) 
 const drainHandler = claudeIpc.match(/messageQueueService\.on\('drain-ready'[\s\S]*?\n {2}\}\);/)?.[0] || '';
 const activeStateIndex = drainHandler.indexOf('const activeState = claudeService.getActiveQueryState(sessionId)');
 const deferredMsIndex = drainHandler.indexOf('const deferredMs = messageQueueService.getDrainDeferredMs(sessionId)');
+const injectableIndex = drainHandler.indexOf('if (activeState.injectable) {');
+const injectMessageIndex = drainHandler.indexOf('claudeService.injectMessage(');
 const staleIndex = drainHandler.indexOf('const canTreatAsStale = !activeState.injectable && deferredMs >= STALE_QUEUE_DRAIN_ACTIVE_QUERY_GRACE_MS');
 const deferActiveIndex = drainHandler.indexOf('messageQueueService.deferDrain(sessionId, 1000)');
 const cancelIndex = drainHandler.indexOf('claudeService.cancelQuery(sessionId)');
 const remoteActiveIndex = drainHandler.indexOf('const remoteActive = await sshService.hasActiveRemoteProcess');
-const dequeueIndex = drainHandler.indexOf('const next = messageQueueService.dequeueForDrain(sessionId)');
+const injectableDequeueIndex = drainHandler.indexOf('const next = messageQueueService.dequeueForDrain(sessionId)');
+const newTurnDequeueIndex = drainHandler.lastIndexOf('const next = messageQueueService.dequeueForDrain(sessionId)');
 
 assert.ok(activeStateIndex >= 0, 'drain handler must inspect active query state');
 assert.ok(deferredMsIndex > activeStateIndex, 'deferred age must be read after active query state');
-assert.ok(staleIndex > deferredMsIndex, 'stale decision must use deferred age');
+assert.ok(injectableIndex > deferredMsIndex, 'injectable active queries must be handled before stale cancellation');
+assert.ok(injectableDequeueIndex > injectableIndex, 'injectable active queries must drain the queue before injection');
+assert.ok(injectMessageIndex > injectableDequeueIndex, 'drain handler must inject queued messages into injectable active queries');
+assert.ok(staleIndex > injectMessageIndex, 'stale decision must run after injectable active-query injection');
 assert.ok(deferActiveIndex > staleIndex, 'active runtime must be deferred before cancellation');
 assert.ok(cancelIndex > deferActiveIndex, 'stale active query must be cancelled only after non-stale deferral branch');
 assert.ok(remoteActiveIndex > cancelIndex, 'remote process check must happen after stale local active-query handling');
-assert.ok(dequeueIndex > remoteActiveIndex, 'queue must drain only after active and remote process checks');
+assert.ok(newTurnDequeueIndex > remoteActiveIndex, 'new-turn queue drain must happen only after active and remote process checks');
 assert.match(drainHandler, /if \(!canTreatAsStale\) \{[\s\S]*?return;[\s\S]*?\}/);
 assert.match(drainHandler, /Clearing stale active query before drain/);
 assert.match(drainHandler, /Deferring drain for \$\{sessionId\}; remote process is still active/);

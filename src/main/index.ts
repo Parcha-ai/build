@@ -282,6 +282,12 @@ const createWindow = (): void => {
   claudeService.setMainWindow(mainWindow);
   console.log('[Main] Main window reference set for Claude service');
 
+  const sendAppShortcutToFocusedWindow = (action: string) => {
+    const target = BrowserWindow.getFocusedWindow() || mainWindow;
+    if (!target || target.isDestroyed()) return;
+    target.webContents.send(IPC_CHANNELS.APP_SHORTCUT_TRIGGERED, { action });
+  };
+
   // Set custom application menu to disable CMD+R reload (we handle it ourselves)
   const template: Electron.MenuItemConstructorOptions[] = [
     {
@@ -302,9 +308,9 @@ const createWindow = (): void => {
       label: 'File',
       submenu: [
         {
-          label: 'New Window',
+          label: 'New Session',
           accelerator: 'CommandOrControl+N',
-          click: () => createNewWindow(),
+          click: () => sendAppShortcutToFocusedWindow('new-session'),
         },
       ],
     },
@@ -411,7 +417,9 @@ const createWindow = (): void => {
 
     let action: string | null = null;
 
-    if (!input.shift && key === 'r') {
+    if (!input.shift && key === 'n') {
+      action = 'new-session';
+    } else if (!input.shift && key === 'r') {
       action = 'browser-refresh';
     } else if (input.shift && key === 'g') {
       action = 'toggle-command-center';
@@ -644,7 +652,9 @@ function createNewWindow(): void {
     if (!primaryModifier || input.alt) return;
 
     let action: string | null = null;
-    if (!input.shift && key === 'r') {
+    if (!input.shift && key === 'n') {
+      action = 'new-session';
+    } else if (!input.shift && key === 'r') {
       action = 'browser-refresh';
     } else if (input.shift && key === 'g') {
       action = 'toggle-command-center';

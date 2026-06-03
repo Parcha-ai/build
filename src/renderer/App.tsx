@@ -602,6 +602,9 @@ function ElectronApp() {
         case 'toggle-quick-search':
           useEditorStore.getState().toggleQuickSearch();
           return;
+        case 'new-session':
+          useUIStore.getState().openNewSessionDialog();
+          return;
         case 'browser-refresh': {
           const uiState = useUIStore.getState();
           if (!uiState.isBrowserPanelOpen) {
