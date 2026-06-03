@@ -2097,51 +2097,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       console.log(`[SessionStore] Message: "${message.slice(0, 80)}..."`);
     }
 
-    if (!fromQueueDrain && (state.isStreaming[sessionId] || state.isProcessingQueue[sessionId])) {
-      const streamAge = Date.now() - (state.streamStartTime[sessionId] || 0);
-      const oldEnoughToProbe = streamAge > 1500 || state.isProcessingQueue[sessionId];
-      if (oldEnoughToProbe) {
-        const [backendActive, remoteActive] = await Promise.all([
-          window.electronAPI.claude.hasActiveQuery(sessionId).catch(() => false),
-          window.electronAPI.ssh.hasActiveRemoteProcess(sessionId).catch(() => false),
-        ]);
-        if (!backendActive && !remoteActive) {
-          console.warn(`[SessionStore] Clearing stale stream/queue state before send for ${sessionId}`);
-          await (window.electronAPI.queue?.clear(sessionId) || Promise.resolve()).catch(() => undefined);
-          set((state) => ({
-            isStreaming: { ...state.isStreaming, [sessionId]: false },
-            isProcessingQueue: { ...state.isProcessingQueue, [sessionId]: false },
-            sessionActivity: { ...state.sessionActivity, [sessionId]: 'idle' },
-            messageQueue: { ...state.messageQueue, [sessionId]: [] },
-            activeStreamModel: { ...state.activeStreamModel, [sessionId]: undefined },
-            activeUserPrompt: { ...state.activeUserPrompt, [sessionId]: null },
-            currentStreamContent: { ...state.currentStreamContent, [sessionId]: '' },
-            currentThinkingContent: { ...state.currentThinkingContent, [sessionId]: '' },
-            currentToolCalls: { ...state.currentToolCalls, [sessionId]: [] },
-            currentSystemInfo: { ...state.currentSystemInfo, [sessionId]: null },
-          }));
-          state = get();
-        }
-      }
-    }
-
-    let backendOrRemoteActiveWhileRendererIdle = false;
-    if (!fromQueueDrain && !state.isStreaming[sessionId] && !state.isProcessingQueue[sessionId]) {
-      const [backendActive, remoteActive] = await Promise.all([
-        window.electronAPI.claude.hasActiveQuery(sessionId).catch(() => false),
-        window.electronAPI.ssh.hasActiveRemoteProcess(sessionId).catch(() => false),
-      ]);
-      backendOrRemoteActiveWhileRendererIdle = backendActive || remoteActive;
-      if (backendOrRemoteActiveWhileRendererIdle) {
-        console.warn(`[SessionStore] Backend/remote still active for ${sessionId}; queueing instead of starting a new turn`);
-        set((state) => ({
-          isProcessingQueue: { ...state.isProcessingQueue, [sessionId]: true },
-          sessionActivity: { ...state.sessionActivity, [sessionId]: 'active' },
-        }));
-        state = get();
-      }
-    }
-
     // If the user sends a quick follow-up before the agent has visibly started,
     // restart the turn with both prompts together instead of making the second
     // prompt wait behind a doomed first draft.
@@ -2221,7 +2176,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
 
     // If already streaming or queue handoff is in progress, queue the message.
-    if (!fromQueueDrain && (state.isStreaming[sessionId] || state.isProcessingQueue[sessionId] || backendOrRemoteActiveWhileRendererIdle)) {
+    if (!fromQueueDrain && (state.isStreaming[sessionId] || state.isProcessingQueue[sessionId])) {
       const normalizedMessage = message.trim();
       const existingQueue = state.messageQueue[sessionId] || [];
       const recentlyQueuedSame = normalizedMessage.length > 0 && existingQueue.some((queuedMessage) =>
@@ -2273,7 +2228,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         id: queuedMsg.id,
         model,
         suppressUserMessage,
-        deferDrain: backendOrRemoteActiveWhileRendererIdle,
       });
 
       return;
@@ -2362,7 +2316,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // Intercept and secure any API keys/tokens in the message. The chat bubble
     // is already visible, so fall back to the original text if scanning fails.
     let modifiedText = message;
-    let keysDetected: Array<{ description: string }> = [];
+    let keysDetected: Array<{ id: string; type: string; description: string }> = [];
     try {
       const secureResult = await window.electronAPI.secureKeys.interceptAndReplace(sessionId, message);
       modifiedText = secureResult.modifiedText;
@@ -2827,7 +2781,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         });
       }
 
-      // Check if there are queued messages to inject after this tool completes
+      // Queued message injection is owned by the main-process queue service.
+      // The renderer only reflects queue:state-changed updates, which avoids
+      // local dequeue state racing the main queue source of truth.
       const currentState = get();
       const queue = currentState.messageQueue[sessionId] || [];
       if (queue.length > 0) {
@@ -2836,103 +2792,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           console.log('[SessionStore] Tool completed during non-Claude run - queued message will wait for stream end');
           return;
         }
-
-        const nextMessage = queue[0];
-        console.log(`[SessionStore] Tool completed, injecting queued message: "${nextMessage.message.slice(0, 50)}..."`);
-
-        // The user message was already added to the chat when queued (sendMessage
-        // line ~1395). We just need to remove it from the queue here. If for some
-        // reason the message isn't already in the chat (legacy state), add it.
-        set((state) => {
-          const existing = state.messages[sessionId] || [];
-          const alreadyShown = existing.some((m) => m.id === nextMessage.id);
-          const userMessage: ChatMessage = {
-            id: nextMessage.id,
-            role: 'user',
-            content: nextMessage.message,
-            timestamp: new Date(nextMessage.timestamp),
-            harness: harnessFromModel(activeStreamModel),
-          };
-          return {
-            messages: alreadyShown
-              ? state.messages
-              : {
-                  ...state.messages,
-                  [sessionId]: nextMessage.suppressUserMessage ? existing : [...existing, userMessage],
-                },
-            messageQueue: {
-              ...state.messageQueue,
-              [sessionId]: (state.messageQueue[sessionId] || []).slice(1),
-            },
-          };
-        });
-
-        console.log(`[SessionStore] Queued message dequeued for inject: "${nextMessage.message.slice(0, 50)}..."`);
-
-        // Inject into the active query via streamInput
-        try {
-          const success = await window.electronAPI.claude.injectMessage(
-            sessionId,
-            nextMessage.message,
-            nextMessage.attachments as any[]
-          );
-          console.log(`[SessionStore] Message injection result:`, success);
-          if (!success) {
-            console.warn('[SessionStore] Message injection returned false - query may have ended');
-            set((state) => ({
-              messages: {
-                ...state.messages,
-                [sessionId]: (state.messages[sessionId] || []).filter((message) => message.id !== nextMessage.id),
-              },
-              messageQueue: {
-                ...state.messageQueue,
-                [sessionId]: [nextMessage, ...(state.messageQueue[sessionId] || [])],
-              },
-            }));
-
-            if (!get().isStreaming[sessionId]) {
-              console.log('[SessionStore] Active query ended before injection completed - sending queued message as a new turn');
-              set((state) => ({
-                messageQueue: {
-                  ...state.messageQueue,
-                  [sessionId]: (state.messageQueue[sessionId] || []).slice(1),
-                },
-              }));
-              setTimeout(() => {
-                get().sendMessage(sessionId, nextMessage.message, nextMessage.attachments, {
-                  suppressUserMessage: nextMessage.suppressUserMessage,
-                });
-              }, 0);
-            }
-          }
-        } catch (error) {
-          console.error('[SessionStore] Failed to inject message:', error);
-          set((state) => ({
-            messages: {
-              ...state.messages,
-              [sessionId]: (state.messages[sessionId] || []).filter((message) => message.id !== nextMessage.id),
-            },
-            messageQueue: {
-              ...state.messageQueue,
-              [sessionId]: [nextMessage, ...(state.messageQueue[sessionId] || [])],
-            },
-          }));
-
-          if (!get().isStreaming[sessionId]) {
-            console.log('[SessionStore] Stream already ended after injection error - sending queued message as a new turn');
-            set((state) => ({
-              messageQueue: {
-                ...state.messageQueue,
-                [sessionId]: (state.messageQueue[sessionId] || []).slice(1),
-              },
-            }));
-            setTimeout(() => {
-              get().sendMessage(sessionId, nextMessage.message, nextMessage.attachments, {
-                suppressUserMessage: nextMessage.suppressUserMessage,
-              });
-            }, 0);
-          }
-        }
+        console.log(`[SessionStore] Tool completed with ${queue.length} queued message(s); main queue owns injection`);
       }
     });
 

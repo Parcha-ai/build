@@ -50,10 +50,14 @@ class MessageQueueService extends EventEmitter {
     }
     this.emitStateChange(sessionId);
 
-    // If not streaming, drain immediately. Deferred drains are allowed to poll
-    // through the IPC handler because stale/remote processes may not produce a
-    // matching stream-end event in this renderer.
-    if (!this.streaming.get(sessionId) && !this.processing.get(sessionId)) {
+    // If not streaming, drain immediately. Claude can also accept queued input
+    // mid-stream via streamInput; keep that drain in main so queue state and
+    // injection are updated atomically.
+    const isStreaming = this.streaming.get(sessionId) || false;
+    const harness = this.activeHarness.get(sessionId);
+    const caps = getHarnessCapabilities(harness);
+    const canDrainActiveStream = isStreaming && Boolean(harness) && caps.supportsAsyncInjection;
+    if ((!isStreaming || canDrainActiveStream) && !this.processing.get(sessionId)) {
       this.scheduleDrain(sessionId, 0);
     }
     return msg;
@@ -229,7 +233,11 @@ class MessageQueueService extends EventEmitter {
 
     const timer = setTimeout(() => {
       this.drainTimers.delete(sessionId);
-      if (!this.streaming.get(sessionId) && this.hasMessages(sessionId)) {
+      const isStreaming = this.streaming.get(sessionId) || false;
+      const harness = this.activeHarness.get(sessionId);
+      const caps = getHarnessCapabilities(harness);
+      const canDrainActiveStream = isStreaming && Boolean(harness) && caps.supportsAsyncInjection;
+      if ((!isStreaming || canDrainActiveStream) && this.hasMessages(sessionId)) {
         // Emit drain-ready event -- the IPC handler will dequeue and send
         this.emit('drain-ready', sessionId);
       }

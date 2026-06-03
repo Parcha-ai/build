@@ -96,6 +96,7 @@ const mainMarkers = [
   'label:"New Session",accelerator:"CommandOrControl+N"',
   'Overrode stale Auto Build plan permission for direct model turn',
   'Persisted restored permission mode',
+  'Persisted Auto Build forced plan restore mode',
 ];
 
 const rendererMarkers = [
@@ -107,6 +108,8 @@ const rendererMarkers = [
   'Build transcript',
   'merged',
   'Failed to persist permission mode changed from main',
+  'main queue owns injection',
+  'Secure-key scan failed; sending original text',
 ];
 
 for (const marker of mainMarkers) {

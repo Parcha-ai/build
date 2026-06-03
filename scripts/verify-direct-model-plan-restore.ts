@@ -18,8 +18,34 @@ assert.match(
 );
 assert.match(
   service,
+  /getPersistedAutoBuildPrePlanMode\(sessionId: string\): string \| undefined/,
+  'Claude service must read persisted Auto Build-forced plan mode across relaunches',
+);
+assert.match(
+  service,
+  /persistAutoBuildForcedPlanMode\(sessionId: string, prePlanMode: string\): void/,
+  'Claude service must persist Auto Build-forced plan mode restore state',
+);
+
+const routePlanBlock = service.match(
+  /if \(routingDecision\.tier === 'plan'\) \{[\s\S]*?this\.persistAutoBuildForcedPlanMode\(sessionId, prePlanMode\);[\s\S]*?\n {12}\}/,
+)?.[0] || '';
+
+assert.ok(routePlanBlock, 'Auto Build plan routes must handle forced plan mode');
+assert.match(
+  routePlanBlock,
+  /if \(sdkPermissionMode !== 'plan'\) \{/,
+  'Auto Build plan routes must only mark forced plan mode when the original mode was not already plan',
+);
+assert.match(
+  routePlanBlock,
   /this\.autoBuildForcedPlanSessions\.add\(sessionId\)/,
-  'Auto Build plan routes must mark the session as Auto Build-forced plan mode',
+  'Auto Build plan routes must mark forced plan mode in memory',
+);
+assert.match(
+  routePlanBlock,
+  /this\.persistAutoBuildForcedPlanMode\(sessionId, prePlanMode\)/,
+  'Auto Build plan routes must persist forced plan mode for relaunch recovery',
 );
 
 const restoreBlock = service.match(
@@ -29,8 +55,18 @@ const restoreBlock = service.match(
 assert.ok(restoreBlock, 'direct-model sends must clear Auto Build plan mode');
 assert.match(
   restoreBlock,
-  /storedPlanMode === 'plan' && this\.autoBuildForcedPlanSessions\.has\(sessionId\) && this\.prePlanPermissionModes\.has\(sessionId\)/,
-  'direct-model plan restore must only run when Auto Build forced plan mode',
+  /const persistedAutoBuildPrePlanMode = this\.getPersistedAutoBuildPrePlanMode\(sessionId\)/,
+  'direct-model plan restore must inspect persisted forced plan mode',
+);
+assert.match(
+  restoreBlock,
+  /const autoBuildForcedPlanMode = this\.autoBuildForcedPlanSessions\.has\(sessionId\) \|\| Boolean\(persistedAutoBuildPrePlanMode\)/,
+  'direct-model plan restore must support in-memory and persisted forced plan markers',
+);
+assert.match(
+  restoreBlock,
+  /const shouldRestoreAutoBuildPlanMode = autoBuildForcedPlanMode && \(storedPlanMode === 'plan' \|\| effectivePermissionMode === 'plan'\)/,
+  'direct-model plan restore must only run when a forced plan marker and plan mode are both present',
 );
 assert.match(
   restoreBlock,
@@ -56,6 +92,11 @@ assert.match(
   service,
   /this\.persistSessionPermissionMode\(sessionId, 'bypassPermissions'\);[\s\S]*?Plan approved/,
   'plan approval must persist the backend-restored bypass permission mode',
+);
+assert.match(
+  service,
+  /setSessionPermissionMode\(sessionId: string, mode: string\): void \{[\s\S]*?this\.autoBuildForcedPlanSessions\.delete\(sessionId\);[\s\S]*?this\.clearPersistedAutoBuildForcedPlanMode\(sessionId\);/,
+  'user-driven permission changes must clear Auto Build-forced plan markers',
 );
 
 assert.match(

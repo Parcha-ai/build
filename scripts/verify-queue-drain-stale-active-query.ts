@@ -6,6 +6,7 @@ const root = path.resolve(__dirname, '..');
 const queueService = fs.readFileSync(path.join(root, 'src/main/services/message-queue.service.ts'), 'utf8');
 const claudeService = fs.readFileSync(path.join(root, 'src/main/services/claude.service.ts'), 'utf8');
 const claudeIpc = fs.readFileSync(path.join(root, 'src/main/ipc/claude.ipc.ts'), 'utf8');
+const sessionStore = fs.readFileSync(path.join(root, 'src/renderer/stores/session.store.ts'), 'utf8');
 
 assert.match(queueService, /private drainDeferredSince = new Map<string, number>\(\);/);
 assert.match(queueService, /opts\?\.deferDrain/);
@@ -39,8 +40,16 @@ assert.match(getDrainDeferredMsMethod, /return startedAt \? Date\.now\(\) - star
 
 const scheduleDrainMethod = queueService.match(/private scheduleDrain\(sessionId: string, delayMs: number\): void \{[\s\S]*?\n {2}\}/)?.[0] || '';
 assert.match(scheduleDrainMethod, /if \(!this\.hasMessages\(sessionId\)\) return/);
-assert.match(scheduleDrainMethod, /if \(!this\.streaming\.get\(sessionId\) && this\.hasMessages\(sessionId\)\) \{/);
+assert.match(scheduleDrainMethod, /const isStreaming = this\.streaming\.get\(sessionId\) \|\| false/);
+assert.match(scheduleDrainMethod, /const harness = this\.activeHarness\.get\(sessionId\)/);
+assert.match(scheduleDrainMethod, /const caps = getHarnessCapabilities\(harness\)/);
+assert.match(scheduleDrainMethod, /const canDrainActiveStream = isStreaming && Boolean\(harness\) && caps\.supportsAsyncInjection/);
+assert.match(scheduleDrainMethod, /if \(\(!isStreaming \|\| canDrainActiveStream\) && this\.hasMessages\(sessionId\)\) \{/);
 assert.match(scheduleDrainMethod, /this\.emit\('drain-ready', sessionId\)/);
+
+const enqueueMethod = queueService.match(/enqueue\(sessionId: string, text: string, attachments\?: unknown\[\], opts\?: \{[\s\S]*?\n {2}\}/)?.[0] || '';
+assert.match(enqueueMethod, /const canDrainActiveStream = isStreaming && Boolean\(harness\) && caps\.supportsAsyncInjection/);
+assert.match(enqueueMethod, /if \(\(!isStreaming \|\| canDrainActiveStream\) && !this\.processing\.get\(sessionId\)\) \{/);
 
 assert.match(claudeService, /private activeQueryStartedAt: Map<string, number> = new Map\(\);/);
 assert.match(claudeService, /private activeQueryLastEventAt: Map<string, number> = new Map\(\);/);
@@ -101,5 +110,8 @@ assert.ok(newTurnDequeueIndex > remoteActiveIndex, 'new-turn queue drain must ha
 assert.match(drainHandler, /if \(!canTreatAsStale\) \{[\s\S]*?return;[\s\S]*?\}/);
 assert.match(drainHandler, /Clearing stale active query before drain/);
 assert.match(drainHandler, /Deferring drain for \$\{sessionId\}; remote process is still active/);
+
+assert.doesNotMatch(sessionStore, /window\.electronAPI\.claude\.injectMessage\(\s*sessionId,\s*nextMessage\.message/);
+assert.match(sessionStore, /main queue owns injection/);
 
 console.log('queue stale active-query verifier passed');

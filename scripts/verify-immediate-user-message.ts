@@ -5,11 +5,18 @@ import path from 'path';
 const root = path.resolve(__dirname, '..');
 const sessionStore = fs.readFileSync(path.join(root, 'src/renderer/stores/session.store.ts'), 'utf8');
 
-const sendMessageMethod = sessionStore.match(
-  /sendMessage: async \(sessionId, message, attachments, opts\) => \{[\s\S]*?\n {4}\},\n\n {2}handleStreamEvent:/,
-)?.[0] || '';
+const sendMessageStart = sessionStore.indexOf('sendMessage: async (sessionId, message, attachments, opts) => {');
+const loadMessagesStart = sessionStore.indexOf('\n  loadMessages:', sendMessageStart);
+const sendMessageMethod = sendMessageStart >= 0 && loadMessagesStart > sendMessageStart
+  ? sessionStore.slice(sendMessageStart, loadMessagesStart)
+  : '';
 
 assert.ok(sendMessageMethod, 'must find renderer sendMessage implementation');
+assert.doesNotMatch(
+  sendMessageMethod,
+  /hasActiveRemoteProcess|hasActiveQuery/,
+  'renderer sendMessage must not block on backend or remote active-process probes',
+);
 
 const normalSendStart = sendMessageMethod.indexOf('const { addMessage, setStreaming, permissionMode, thinkingMode, selectedModel, gstackMode } = state;');
 const optimisticComment = sendMessageMethod.indexOf('pressing\n    // Enter always produces immediate visible feedback');
