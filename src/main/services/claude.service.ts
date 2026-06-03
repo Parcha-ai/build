@@ -38,8 +38,14 @@ import { findUsableLocalExecutable } from '../utils/local-executable';
 import { transcriptEntriesToChatMessages, transcriptService, type TranscriptEntry } from './transcript.service';
 import { filterInternalPromptEchoes, hasRecoverableOutput, mergeRecoveredStreamMessages } from '../../shared/utils/message-recovery';
 import { translateHarnessPolicy } from './harness-policy.service';
+import { sanitizeSessionTitle } from './session-title.service';
 
 const STREAM_DEBUG = process.env.GREP_DEBUG_STREAMING === '1';
+const ANSI_ESCAPE = String.fromCharCode(27);
+const ANSI_BELL = String.fromCharCode(7);
+const ANSI_COLOR_CODE_RE = new RegExp(`${ANSI_ESCAPE}\\[[0-9;]*m`, 'g');
+const ANSI_M_CODE_RE = new RegExp(`${ANSI_ESCAPE}\\[[^m]*m`, 'g');
+const OSC8_LINK_RE = new RegExp(`${ANSI_ESCAPE}\\]8;;[^${ANSI_BELL}${ANSI_ESCAPE}]*(${ANSI_BELL}|${ANSI_ESCAPE}\\\\)`, 'g');
 
 interface HarnessContextLimits {
   maxConversationChars?: number;
@@ -50,6 +56,8 @@ interface HarnessContextLimits {
 
 /** Recent transcript slice used for Auto Build routing and harness context (not full history). */
 const ROUTING_TRANSCRIPT_LIMIT = 40;
+const SUPPLEMENTAL_CONTEXT_MAX_MESSAGES = 80;
+const SUPPLEMENTAL_CONTEXT_MAX_BYTES = 160 * 1024;
 
 const CLI_HARNESS_CONTEXT_LIMITS: Partial<Record<Harness, HarnessContextLimits>> = {
   cursor: {
@@ -114,6 +122,8 @@ interface StreamEvent {
   resolvedModel?: string;
 }
 
+const CLAUDE_SDK_RESUME_CONTEXT_LIMIT_PERCENT = 95;
+
 interface PendingQuestion {
   resolve: (answers: Record<string, string>) => void;
   reject: (error: Error) => void;
@@ -141,6 +151,8 @@ export class ClaudeService {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private messageCacheStore: any;
   private activeQueries: Map<string, AbortController> = new Map();
+  private activeQueryStartedAt: Map<string, number> = new Map();
+  private activeQueryLastEventAt: Map<string, number> = new Map();
   private activeQueryObjects: Map<string, Query> = new Map(); // Store Query objects for streamInput
   private sessionPermissionModes: Map<string, string> = new Map(); // Track current permission mode per session
   private prePlanPermissionModes: Map<string, string> = new Map(); // Track pre-plan mode for restoration after plan approval
@@ -154,18 +166,17 @@ export class ClaudeService {
   private onSessionNameChanged: (() => void) | null = null;
   private browserMcpServers: Map<string, any> = new Map();
 
-  // Proactive compaction: track context usage per session and compact idle sessions in background
+  // Track Claude SDK context usage so over-full native transcripts are not resumed.
   private sessionContextPercentage: Map<string, number> = new Map();
-  private sessionLastMessageTime: Map<string, number> = new Map();
-  private sessionsBeingCompacted: Set<string> = new Set();
 
   // Performance optimization: Cache parsed messages and transcript paths
   private messageCache = new Map<string, {
     messages: ChatMessage[];
     loadedAt: number;
     fileHash: string;
+    transcriptPath: string;
   }>();
-  private transcriptPathCache = new Map<string, string>();
+  private transcriptPathCache = new Map<string, { sdkSessionId: string; transcriptPath: string }>();
   private remoteProjectContextCache = new Map<string, {
     context: string;
     loadedAt: number;
@@ -291,6 +302,65 @@ export class ClaudeService {
     return this.activeQueryObjects.get(sessionId);
   }
 
+  private setActiveQuery(sessionId: string, abortController: AbortController): void {
+    const now = Date.now();
+    this.activeQueries.set(sessionId, abortController);
+    this.activeQueryStartedAt.set(sessionId, now);
+    this.activeQueryLastEventAt.set(sessionId, now);
+  }
+
+  private clearActiveQuery(sessionId: string, abortController?: AbortController): boolean {
+    if (abortController && this.activeQueries.get(sessionId) !== abortController) {
+      return false;
+    }
+    const hadActiveQuery = this.activeQueries.delete(sessionId);
+    this.activeQueryStartedAt.delete(sessionId);
+    this.activeQueryLastEventAt.delete(sessionId);
+    this.activeQueryObjects.delete(sessionId);
+    return hadActiveQuery;
+  }
+
+  noteActiveQueryEvent(sessionId: string): void {
+    if (this.activeQueries.has(sessionId)) {
+      this.activeQueryLastEventAt.set(sessionId, Date.now());
+    }
+  }
+
+  getActiveQueryState(sessionId: string): {
+    active: boolean;
+    aborted: boolean;
+    injectable: boolean;
+    ageMs: number;
+    idleMs: number;
+  } {
+    const controller = this.activeQueries.get(sessionId);
+    if (!controller) {
+      return { active: false, aborted: false, injectable: false, ageMs: 0, idleMs: 0 };
+    }
+
+    const now = Date.now();
+    const startedAt = this.activeQueryStartedAt.get(sessionId) || now;
+    const lastEventAt = this.activeQueryLastEventAt.get(sessionId) || startedAt;
+    if (controller.signal.aborted) {
+      this.clearActiveQuery(sessionId, controller);
+      return {
+        active: false,
+        aborted: true,
+        injectable: false,
+        ageMs: now - startedAt,
+        idleMs: now - lastEventAt,
+      };
+    }
+
+    return {
+      active: true,
+      aborted: false,
+      injectable: this.activeQueryObjects.has(sessionId),
+      ageMs: now - startedAt,
+      idleMs: now - lastEventAt,
+    };
+  }
+
   /**
    * Trigger manual compaction for a session by sending /compact command
    * This proactively compacts the conversation history before it gets too large
@@ -326,39 +396,6 @@ export class ClaudeService {
     } catch (error) {
       console.error('[Claude Service] Failed to trigger compaction:', error);
       return false;
-    }
-  }
-
-  /**
-   * Proactive compaction: when the user sends a message to one session,
-   * compact any OTHER sessions that are above 60% context and idle (>30s since last message).
-   * This runs compaction invisibly while the user is focused elsewhere.
-   */
-  private compactIdleSessions(activeSessionId: string): void {
-    // Only proactively compact when context is genuinely filling up.
-    // On 1M windows, 60% (600k) still has massive runway. 85% is the new floor.
-    const COMPACT_THRESHOLD = 85; // percentage
-    const IDLE_THRESHOLD = 30_000; // 30 seconds
-    const now = Date.now();
-
-    for (const [sessionId, percentage] of this.sessionContextPercentage.entries()) {
-      if (sessionId === activeSessionId) continue;
-      if (percentage < COMPACT_THRESHOLD) continue;
-      if (this.sessionsBeingCompacted.has(sessionId)) continue;
-      if (!this.activeQueryObjects.has(sessionId)) continue;
-
-      const lastMessage = this.sessionLastMessageTime.get(sessionId) || 0;
-      if (now - lastMessage < IDLE_THRESHOLD) continue; // user was recently active here
-
-      console.log(`[Claude Service] Proactive compaction: session ${sessionId.substring(0, 8)} at ${percentage}%, idle for ${Math.round((now - lastMessage) / 1000)}s`);
-      this.sessionsBeingCompacted.add(sessionId);
-      this.triggerManualCompaction(sessionId).catch(err => {
-        console.warn(`[Claude Service] Proactive compaction failed for ${sessionId.substring(0, 8)}:`, err.message);
-        this.sessionsBeingCompacted.delete(sessionId);
-      });
-
-      // Only compact one session at a time to avoid overloading
-      break;
     }
   }
 
@@ -502,6 +539,7 @@ export class ClaudeService {
     let cursorModelsFetched = false;
     if (cursorKey) {
       try {
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
         const { Cursor } = require('@cursor/sdk');
         const cursorModels = await Cursor.models.list({ apiKey: cursorKey });
         if (cursorModels?.length) {
@@ -661,7 +699,7 @@ Cookies from the user's local browser session are synced to \`/tmp/grep-build-co
       if (session.setupOutput) {
         // Clean up ANSI codes from the output
         const cleanOutput = session.setupOutput
-          .replace(/\x1b\[[0-9;]*m/g, '') // Remove ANSI color codes
+          .replace(ANSI_COLOR_CODE_RE, '') // Remove ANSI color codes
           .replace(/___WORKDIR_END___/g, '') // Remove our internal marker
           .trim();
 
@@ -683,6 +721,7 @@ ${cleanOutput}
     const settings = this.store.get('settings', {}) as Record<string, unknown>;
     const gstackEnabled = settings.gstackEnabled as boolean | undefined;
     if (gstackEnabled) {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
       const { getGStackRoutingPrompt } = require('./gstack.service');
       const routingPrompt = getGStackRoutingPrompt();
       if (routingPrompt) {
@@ -912,12 +951,39 @@ Read or source that file if you need the actual values. Do not print secret valu
       return [];
     }
 
-    return messages
+    const normalized = messages
       .map((message) => ({
         ...message,
         timestamp: message.timestamp instanceof Date ? message.timestamp : new Date(message.timestamp),
       }))
-      .filter((message) => !Number.isNaN(message.timestamp.getTime()));
+      .filter((message) => !Number.isNaN(message.timestamp.getTime()))
+      .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+
+    return this.capSupplementalMessagesForContext(normalized);
+  }
+
+  private capSupplementalMessagesForContext(messages: ChatMessage[]): ChatMessage[] {
+    const capped: ChatMessage[] = [];
+    let approxBytes = 0;
+
+    for (let i = messages.length - 1; i >= 0 && capped.length < SUPPLEMENTAL_CONTEXT_MAX_MESSAGES; i--) {
+      const message = messages[i];
+      const approxMessageBytes = (
+        (message.content || '').length
+        + JSON.stringify(message.toolCalls || []).length
+        + JSON.stringify(message.contentBlocks || []).length
+        + 256
+      );
+      if (capped.length > 0 && approxBytes + approxMessageBytes > SUPPLEMENTAL_CONTEXT_MAX_BYTES) break;
+      approxBytes += approxMessageBytes;
+      capped.unshift(message);
+    }
+
+    if (messages.length > capped.length) {
+      console.log(`[Claude Service] Capped supplemental model context from ${messages.length} to ${capped.length} messages`);
+    }
+
+    return capped;
   }
 
   private buildSupplementalClaudeContext(transcriptMessages: ChatMessage[], supplementalMessages: ChatMessage[], userMessage: string): string {
@@ -1088,6 +1154,174 @@ Read or source that file if you need the actual values. Do not print secret valu
     return rawSdkSessionId && rawSdkSessionId !== 'new' ? rawSdkSessionId : undefined;
   }
 
+  private isCanonicalSdkSessionSystemMessage(systemMsg: { subtype?: string; session_id?: string }): boolean {
+    return !!systemMsg.session_id && (!systemMsg.subtype || systemMsg.subtype === 'init');
+  }
+
+  private rememberCanonicalSdkSessionId(
+    sessionId: string,
+    systemMsg: { subtype?: string; session_id?: string },
+    source: string
+  ): string | undefined {
+    if (!systemMsg.session_id) return undefined;
+
+    if (!this.isCanonicalSdkSessionSystemMessage(systemMsg)) {
+      console.log(`[Claude SDK] Ignoring non-conversation session_id from ${source}:${systemMsg.subtype || 'unknown'} for ${sessionId}`);
+      return undefined;
+    }
+
+    this.sessionStore.set(`sdkSessionMappings.${sessionId}`, systemMsg.session_id);
+    return systemMsg.session_id;
+  }
+
+  private clearSdkSessionId(sessionId: string): void {
+    this.sessionStore.delete(`sessions.${sessionId}.sdkSessionId`);
+    this.sessionStore.delete(`sdkSessionMappings.${sessionId}`);
+  }
+
+  private getSessionContextPercentage(sessionId: string): number | undefined {
+    const livePercentage = this.sessionContextPercentage.get(sessionId);
+    if (typeof livePercentage === 'number') return livePercentage;
+
+    const stored = this.sessionStore.get(`contextUsage.${sessionId}`) as { percentage?: unknown } | undefined;
+    return typeof stored?.percentage === 'number' ? stored.percentage : undefined;
+  }
+
+  private getContextWindowSize(model?: string): number {
+    const currentModel = model || '';
+    const hasLargeContext = currentModel.includes('opus-4-8')
+      || currentModel.includes('opus-4-7')
+      || currentModel.includes('opus-4-6')
+      || currentModel.includes('sonnet-4-6')
+      || currentModel.includes('sonnet-4-5');
+    return hasLargeContext ? 1000000 : 200000;
+  }
+
+  private extractContextUsageFromTranscriptContent(content: string, fallbackModel?: string): {
+    inputTokens: number;
+    contextWindowSize: number;
+    percentage: number;
+  } | undefined {
+    const lines = content.trim().split('\n');
+    for (let i = lines.length - 1; i >= 0; i--) {
+      try {
+        const entry = JSON.parse(lines[i]) as {
+          model?: string;
+          usage?: {
+            input_tokens?: number;
+            cache_creation_input_tokens?: number;
+            cache_read_input_tokens?: number;
+          };
+          message?: {
+            model?: string;
+            usage?: {
+              input_tokens?: number;
+              cache_creation_input_tokens?: number;
+              cache_read_input_tokens?: number;
+            };
+          };
+        };
+        const usage = entry.usage || entry.message?.usage;
+        if (!usage) continue;
+
+        const inputTokens = (usage.input_tokens || 0)
+          + (usage.cache_creation_input_tokens || 0)
+          + (usage.cache_read_input_tokens || 0);
+        if (inputTokens <= 0) continue;
+
+        const contextWindowSize = this.getContextWindowSize(entry.model || entry.message?.model || fallbackModel);
+        return {
+          inputTokens,
+          contextWindowSize,
+          percentage: Math.round((inputTokens / contextWindowSize) * 100),
+        };
+      } catch {
+        // Skip malformed transcript lines.
+      }
+    }
+    return undefined;
+  }
+
+  private readLocalTranscriptTail(transcriptPath: string, maxBytes = 512 * 1024): string {
+    const stats = fs.statSync(transcriptPath);
+    const bytesToRead = Math.min(stats.size, maxBytes);
+    const start = Math.max(0, stats.size - bytesToRead);
+    const fd = fs.openSync(transcriptPath, 'r');
+    try {
+      const buffer = Buffer.alloc(bytesToRead);
+      fs.readSync(fd, buffer, 0, bytesToRead, start);
+      return buffer.toString('utf8');
+    } finally {
+      fs.closeSync(fd);
+    }
+  }
+
+  private async inferSessionContextPercentageFromSdkTranscript(
+    sessionId: string,
+    session: Session,
+    sdkSessionId: string,
+    model?: string,
+  ): Promise<number | undefined> {
+    try {
+      let content: string | null = null;
+      if (session.sshConfig) {
+        const remoteWorkdir = session.worktreePath || session.sshConfig.remoteWorkdir || session.repoPath || '';
+        content = await sshService.fetchRemoteTranscript(
+          sessionId,
+          session.sshConfig,
+          sdkSessionId,
+          remoteWorkdir,
+          { full: false },
+        );
+      } else {
+        const transcriptPath = this.findTranscriptPath(sessionId, sdkSessionId);
+        if (transcriptPath) {
+          content = this.readLocalTranscriptTail(transcriptPath);
+        }
+      }
+
+      if (!content) return undefined;
+      const usage = this.extractContextUsageFromTranscriptContent(content, model);
+      if (!usage) return undefined;
+
+      this.rememberSessionContextUsage(sessionId, usage.inputTokens, usage.contextWindowSize, usage.percentage);
+      console.log(
+        `[Claude Service] Inferred SDK transcript context for ${sessionId.substring(0, 8)}: ` +
+        `${usage.inputTokens}/${usage.contextWindowSize} (${usage.percentage}%)`
+      );
+      return usage.percentage;
+    } catch (error) {
+      console.warn('[Claude Service] Could not infer SDK transcript context usage:', error);
+      return undefined;
+    }
+  }
+
+  private async resolveSessionContextPercentage(
+    sessionId: string,
+    session: Session,
+    sdkSessionId: string,
+    model?: string,
+  ): Promise<number | undefined> {
+    const storedPercentage = this.getSessionContextPercentage(sessionId);
+    if (typeof storedPercentage === 'number') return storedPercentage;
+    return this.inferSessionContextPercentageFromSdkTranscript(sessionId, session, sdkSessionId, model);
+  }
+
+  private rememberSessionContextUsage(
+    sessionId: string,
+    inputTokens: number,
+    contextWindowSize: number,
+    percentage: number,
+  ): void {
+    this.sessionContextPercentage.set(sessionId, percentage);
+    this.sessionStore.set(`contextUsage.${sessionId}`, {
+      inputTokens,
+      contextWindowSize,
+      percentage,
+      updatedAt: new Date().toISOString(),
+    });
+  }
+
   private buildAutoBuildHandoffReferences(
     sessionId: string,
     session: Session,
@@ -1190,23 +1424,23 @@ Read or source that file if you need the actual values. Do not print secret valu
     supplementalMessages: ChatMessage[],
     prefetchedTranscriptMessages?: ChatMessage[],
   ): Promise<Harness | undefined> {
-    const stored = this.sessionStore.get(`harnessState.${sessionId}.lastAssistantHarness`) as Harness | undefined;
-    if (stored) return stored;
-
     const fromSupplemental = this.getLastAssistantHarness(supplementalMessages);
     if (fromSupplemental) return fromSupplemental;
 
     if (prefetchedTranscriptMessages) {
-      return this.getLastAssistantHarness(supplementalMessages, prefetchedTranscriptMessages);
+      const fromPrefetched = this.getLastAssistantHarness(supplementalMessages, prefetchedTranscriptMessages);
+      if (fromPrefetched) return fromPrefetched;
+    } else {
+      try {
+        const transcriptPeek = await this.getCanonicalMessages(sessionId, ROUTING_TRANSCRIPT_LIMIT);
+        const fromTranscript = this.getLastAssistantHarness(supplementalMessages, transcriptPeek);
+        if (fromTranscript) return fromTranscript;
+      } catch (error) {
+        console.warn('[Claude Service] Could not peek transcript for last assistant harness:', error);
+      }
     }
 
-    try {
-      const transcriptPeek = await this.getCanonicalMessages(sessionId, ROUTING_TRANSCRIPT_LIMIT);
-      return this.getLastAssistantHarness(supplementalMessages, transcriptPeek);
-    } catch (error) {
-      console.warn('[Claude Service] Could not peek transcript for last assistant harness:', error);
-      return undefined;
-    }
+    return this.sessionStore.get(`harnessState.${sessionId}.lastAssistantHarness`) as Harness | undefined;
   }
 
   private canAutoBuildStageEdit(stage: OrchestrationStage, sdkPermissionMode?: string): boolean {
@@ -2349,16 +2583,26 @@ ${leadContent.slice(0, leadContextLimit)}
       async (args) => {
         try {
           const { name } = args;
-          console.log('[Claude Service] Updating session name:', sessionId, '→', name);
+          const sanitizedName = sanitizeSessionTitle(name);
+          if (!sanitizedName) {
+            console.warn('[Claude Service] Rejected vague session name:', sessionId, '→', name);
+            return {
+              content: [{
+                type: 'text',
+                text: `Session name "${name}" was too vague; keeping the current name.`,
+              }],
+            };
+          }
+          console.log('[Claude Service] Updating session name:', sessionId, '→', sanitizedName);
 
           // Store the custom name
-          this.sessionStore.set(`sessionNames.${sessionId}`, name);
+          this.sessionStore.set(`sessionNames.${sessionId}`, sanitizedName);
           this.onSessionNameChanged?.();
 
           return {
             content: [{
               type: 'text',
-              text: `Session name updated to: "${name}"`,
+              text: `Session name updated to: "${sanitizedName}"`,
             }],
           };
         } catch (error) {
@@ -3432,11 +3676,11 @@ ${leadContent.slice(0, leadContextLimit)}
     child.stdout?.on('data', (data: Buffer) => {
       const text = data.toString();
       outputBuffer += text;
-      console.log('[Claude Service] RC stdout:', text.replace(/\x1b\[[^m]*m/g, '').trim());
+      console.log('[Claude Service] RC stdout:', text.replace(ANSI_M_CODE_RE, '').trim());
 
       // Look for the URL in the output (strip ANSI escape sequences first)
       if (!urlEmitted) {
-        const cleanBuffer = outputBuffer.replace(/\x1b\]8;;[^\x07\x1b]*(\x07|\x1b\\)/g, '').replace(/\x1b\[[^m]*m/g, '');
+        const cleanBuffer = outputBuffer.replace(OSC8_LINK_RE, '').replace(ANSI_M_CODE_RE, '');
         const urlMatch = cleanBuffer.match(/https:\/\/claude\.ai\/code\?environment=[^\s]+/)
           || cleanBuffer.match(/https:\/\/claude\.ai\/code\?bridge=[^\s]+/)
           || cleanBuffer.match(/https:\/\/claude\.ai\/code\/[^\s]+/);
@@ -3513,11 +3757,11 @@ ${leadContent.slice(0, leadContextLimit)}
         channel.on('data', (data: Buffer) => {
           const text = data.toString();
           outputBuffer += text;
-          const clean = text.replace(/\x1b\[[^m]*m/g, '').replace(/\[\d+[A-Z]/g, '').trim();
+          const clean = text.replace(ANSI_M_CODE_RE, '').replace(/\[\d+[A-Z]/g, '').trim();
           if (clean) console.log('[Claude Service] SSH RC stdout:', clean);
 
           if (!urlEmitted) {
-            const cleanBuffer = outputBuffer.replace(/\x1b\]8;;[^\x07\x1b]*(\x07|\x1b\\)/g, '').replace(/\x1b\[[^m]*m/g, '');
+            const cleanBuffer = outputBuffer.replace(OSC8_LINK_RE, '').replace(ANSI_M_CODE_RE, '');
             const urlMatch = cleanBuffer.match(/https:\/\/claude\.ai\/code\?environment=[^\s]+/)
               || cleanBuffer.match(/https:\/\/claude\.ai\/code\?bridge=[^\s]+/)
               || cleanBuffer.match(/https:\/\/claude\.ai\/code\/[^\s]+/);
@@ -3705,31 +3949,35 @@ ${leadContent.slice(0, leadContextLimit)}
       return;
     }
 
-    // Track when user last interacted with this session (for proactive compaction)
-    this.sessionLastMessageTime.set(sessionId, Date.now());
+    // Do not compact other sessions from a foreground send. That made the app
+    // start hidden Claude work in unrelated tabs, and it can steal/abort the
+    // visible stream when a user switches back to that tab.
 
-    // Proactive compaction: compact OTHER idle sessions that are above 60% context
-    this.compactIdleSessions(sessionId);
-
-    // Cancel any existing query for this session before starting a new one.
-    // Without this, the old SSH process keeps running and the UI gets stuck
-    // showing "thinking" from the orphaned query that never sends STREAM_END.
+    // Cancel any existing runtime for this session before starting a new
+    // foreground turn. `activeQueries` is cleared after Claude emits a result,
+    // but a background task listener can keep the same remote Claude process
+    // alive. If we do not cancel that listener here, the next user turn can
+    // start a second remote Claude against the same worktree.
     const existingController = this.activeQueries.get(sessionId);
-    if (existingController) {
-      console.log(`[Claude Service] Aborting existing query for session ${sessionId.substring(0, 8)} before starting new one`);
-      existingController.abort();
+    const existingBackgroundListener = this.backgroundListeners.get(sessionId);
+    const hadPriorRuntime = Boolean(existingController || existingBackgroundListener);
+    if (hadPriorRuntime) {
+      console.log(`[Claude Service] Aborting existing runtime for session ${sessionId.substring(0, 8)} before starting new one`);
+      existingController?.abort();
       this.backgroundListeners.get(sessionId)?.abort();
+      this.backgroundListeners.delete(sessionId);
       codexService.cancel(sessionId);
       openclawService.cancel(sessionId);
       getCursorService().cancel(sessionId);
       getCursorCliService().cancel(sessionId);
       getGeminiService().cancel(sessionId);
       getOpenCodeService().cancel(sessionId);
+    }
 
-      // Kill orphaned remote processes from the old query
-      if (session?.sshConfig) {
-        sshService.killRemoteProcesses(sessionId, session.sshConfig).catch(() => {});
-      }
+    if (session.sshConfig) {
+      await sshService.cleanupDetachedBridgeProcessesForNewTurn(sessionId, session.sshConfig, {
+        killActive: hadPriorRuntime,
+      });
     }
 
     // Rate limit auto-retry flag — set in rate_limit_event, checked in result handler
@@ -3737,7 +3985,7 @@ ${leadContent.slice(0, leadContextLimit)}
 
     // Create abort controller for cancellation
     const abortController = new AbortController();
-    this.activeQueries.set(sessionId, abortController);
+    this.setActiveQuery(sessionId, abortController);
     if (!existingController) powerService.sessionStarted(); // Only increment if not replacing
 
     // Resolve the remote SDK session ID before invalidating transcript caches.
@@ -3775,7 +4023,7 @@ ${leadContent.slice(0, leadContextLimit)}
     let routingDecisionForAnalytics: RoutingDecision | undefined;
     const normalizedSupplementalMessages = this.normalizeConversationMessages(supplementalMessages);
     const explicitGoalCommand = this.parseGoalCommand(userMessage);
-    let goalOrchestration: { objective: string; source: 'slash-command' | 'ralph-loop' } | undefined = explicitGoalCommand;
+    const goalOrchestration: { objective: string; source: 'slash-command' } | undefined = explicitGoalCommand;
     if (explicitGoalCommand) {
       userMessage = explicitGoalCommand.objective;
       selectedModel = 'auto';
@@ -3791,13 +4039,6 @@ ${leadContent.slice(0, leadContextLimit)}
         ? (permissionMode as SDKPermissionMode)
         : 'acceptEdits';
       let autoBuildLeadPermissionMode: SDKPermissionMode = sdkPermissionMode;
-      const audioSettingsForGoals = this.store.get('audioSettings') as Record<string, unknown> | undefined;
-      if (!goalOrchestration && selectedModel === 'auto' && audioSettingsForGoals?.ralphLoopEnabled && sdkPermissionMode === 'bypassPermissions') {
-        goalOrchestration = {
-          objective: userMessage.trim(),
-          source: 'ralph-loop',
-        };
-      }
 
       // Store the initial permission mode for this session (can be updated mid-stream via GREP IT!)
       this.sessionPermissionModes.set(sessionId, sdkPermissionMode);
@@ -4043,10 +4284,11 @@ ${leadContent.slice(0, leadContextLimit)}
         console.log(`[Claude Service] Routing to Codex model=${codexModel} ssh=${!!session.sshConfig}`);
         const projectPath = session.worktreePath || session.repoPath || session.sshConfig?.remoteWorkdir || process.cwd();
 
-        const ralphWithGoals = !routingDecisionForAnalytics?.goal && audioSettingsForGoals?.ralphLoopEnabled && autoBuildLeadPermissionMode === 'bypassPermissions';
-        const nativeCodexGoalObjective = ralphWithGoals ? userMessage.trim() : undefined;
+        const nativeCodexGoalObjective = routingDecisionForAnalytics?.goal?.source === 'slash-command'
+          ? routingDecisionForAnalytics.goal.objective
+          : undefined;
         if (nativeCodexGoalObjective) {
-          this.ensureCodexGoalsEnabled('Ralph Loop');
+          this.ensureCodexGoalsEnabled('explicit /goal');
         }
 
         let conversationContext = '';
@@ -4069,14 +4311,9 @@ ${leadContent.slice(0, leadContextLimit)}
 
         const codexContext = [secureEnvContext, conversationContext].filter(Boolean).join('\n\n');
 
-        const claudeMdInstruction = [
-          'Before starting work, read all CLAUDE.md files in the project — the root CLAUDE.md,',
-          '~/.claude/CLAUDE.md (user instructions), and any .claude/ directory files.',
-          'These contain critical project conventions, build commands, and constraints you must follow.',
-        ].join(' ');
         const codexPrompt = nativeCodexGoalObjective
           ? `/goal ${nativeCodexGoalObjective}`
-          : `${claudeMdInstruction}\n\n${userMessage}`;
+          : userMessage;
 
         const codexEvents = codexService.streamAsChat(sessionId, codexPrompt, projectPath, session.sshConfig, codexContext, codexModel, attachments, autoBuildLeadPermissionMode, leadHarnessPolicy) as AsyncIterable<StreamEvent>;
         for await (const event of this.streamLeadWithAutoBuildStages(
@@ -4341,16 +4578,32 @@ ${leadContent.slice(0, leadContextLimit)}
         return;
       }
 
-      // If the last turn was handled by a different harness (Codex, Cursor, etc.)
-      // AND we're in Auto Build mode, don't resume the stale Claude SDK session.
-      // When the user explicitly selects a direct model (not auto), ALWAYS resume
-      // — they're continuing a conversation and expect full context.
+      // If the last turn was handled by a different harness (Codex, Cursor, etc.),
+      // don't resume the stale Claude SDK session. Build's transcript is canonical
+      // across harnesses; resuming Claude's native transcript after a non-Claude
+      // turn can drag in unrelated old context.
       let effectiveSdkSessionId = sdkSessionId;
-      if (sdkSessionId && model === 'auto') {
+      if (sdkSessionId) {
         const lastHarness = await this.resolveLastAssistantHarness(
           sessionId, normalizedSupplementalMessages, prefetchedRoutingMessages);
         if (lastHarness && lastHarness !== 'claude') {
-          console.log(`[Claude Service] Auto Build: last turn was ${lastHarness}, not Claude — skipping SDK resume`);
+          console.log(`[Claude Service] Last turn was ${lastHarness}, not Claude — skipping Claude SDK resume and using Build transcript context`);
+          effectiveSdkSessionId = undefined;
+        }
+      }
+      if (effectiveSdkSessionId) {
+        const contextPercentage = await this.resolveSessionContextPercentage(
+          sessionId,
+          session,
+          effectiveSdkSessionId,
+          selectedModel,
+        );
+        if (typeof contextPercentage === 'number' && contextPercentage >= CLAUDE_SDK_RESUME_CONTEXT_LIMIT_PERCENT) {
+          console.warn(
+            `[Claude Service] Claude SDK context is ${contextPercentage}% for ${sessionId.substring(0, 8)}; ` +
+            'clearing SDK resume and using Build transcript context'
+          );
+          this.clearSdkSessionId(sessionId);
           effectiveSdkSessionId = undefined;
         }
       }
@@ -4436,7 +4689,7 @@ ${leadContent.slice(0, leadContextLimit)}
       // Capture `this` for use inside the generator function
       const resizeImage = this.resizeImageIfNeeded.bind(this);
       const normalizeBase64ImageData = this.normalizeBase64ImageData.bind(this);
-      async function* createPromptWithImages(): AsyncIterable<SDKUserMessage> {
+      const createPromptWithImages = async function* (): AsyncIterable<SDKUserMessage> {
         const content: (TextBlockParam | ImageBlockParam)[] = [
           { type: 'text', text: fullTextMessage }
         ];
@@ -4471,7 +4724,7 @@ ${leadContent.slice(0, leadContextLimit)}
           parent_tool_use_id: null,
           session_id: effectiveSdkSessionId || '',
         } as SDKUserMessage;
-      }
+      };
 
       const prompt = hasImages ? createPromptWithImages() : fullTextMessage;
       console.log('[Claude Service] Using prompt type:', hasImages ? 'multimodal (async generator)' : 'text string');
@@ -5294,17 +5547,43 @@ Begin by creating the task structure now.
               tools?: string[];
               model?: string;
               status?: string | null;
+              attempt?: number;
+              max_retries?: number;
+              retry_delay_ms?: number;
+              error?: string;
+              error_status?: string | number;
               compact_metadata?: {
                 trigger: 'manual' | 'auto';
                 pre_tokens: number;
               };
             };
 
+            // Claude SDK emits api_retry while it is waiting on 529/rate-limit
+            // backoff. Surface it through the visible thinking stream; systemInfo
+            // messages are not rendered in chat.
+            if (systemMsg.subtype === 'api_retry') {
+              const retryDelaySeconds = typeof systemMsg.retry_delay_ms === 'number'
+                ? Math.ceil(systemMsg.retry_delay_ms / 1000)
+                : undefined;
+              const attemptLabel = systemMsg.attempt && systemMsg.max_retries
+                ? `${systemMsg.attempt}/${systemMsg.max_retries}`
+                : systemMsg.attempt
+                  ? `${systemMsg.attempt}`
+                  : 'pending';
+              const cause = systemMsg.error_status || systemMsg.error || 'API retry';
+              const wait = retryDelaySeconds ? `; retrying in ${retryDelaySeconds}s` : '';
+              const retryMessage = `Claude API retry ${attemptLabel} (${cause})${wait}.\n`;
+              console.warn(`[Claude SDK] ${retryMessage.trim()}`);
+              yield { type: 'thinking_delta', content: retryMessage };
+              break;
+            }
+
             // Handle compaction status changes (subtype: 'status')
             if (systemMsg.subtype === 'status') {
               // "requesting" = waiting for API slot (rate limited or queued)
               if (systemMsg.status === 'requesting') {
                 console.log('[Claude SDK] Status: requesting (waiting for API)');
+                yield { type: 'thinking_delta', content: 'Claude is waiting for an API slot.\n' };
                 break;
               }
               const isCompacting = systemMsg.status === 'compacting';
@@ -5331,13 +5610,11 @@ Begin by creating the task structure now.
             if (systemMsg.subtype === 'compact_boundary' && systemMsg.compact_metadata) {
               console.log('[Claude SDK] Compaction complete:', systemMsg.compact_metadata);
 
-              // Clear the cached context percentage so compactIdleSessions()
-              // doesn't re-trigger on stale pre-compaction values. The real
+              // Clear the cached context percentage so future turns do not skip
+              // SDK resume based on stale pre-compaction values. The real
               // percentage will be set on the next turn's result message.
-              // Without this, the map holds the pre-compaction 85%+ value and
-              // every subsequent compactIdleSessions() call re-compacts.
               this.sessionContextPercentage.delete(sessionId);
-              this.sessionsBeingCompacted.delete(sessionId);
+              this.sessionStore.delete(`contextUsage.${sessionId}`);
               console.log(`[Claude SDK] Cleared context percentage for ${sessionId.substring(0, 8)} after compaction`);
 
               const compactionComplete: CompactionComplete = {
@@ -5456,19 +5733,21 @@ Begin by creating the task structure now.
 
             // Default system message handling (tool/model info)
             // Store the SDK session ID for future resume calls in separate mappings object
-            if (systemMsg.session_id) {
-              this.sessionStore.set(`sdkSessionMappings.${sessionId}`, systemMsg.session_id);
+            const canonicalSdkSessionId = this.rememberCanonicalSdkSessionId(sessionId, systemMsg, 'stream');
+            if (canonicalSdkSessionId) {
 
               // Fetch session summary from SDK and use as display name.
               // Fire-and-forget — NEVER await inside the streaming generator or it
               // blocks the entire real-time pipeline while reading remote state.
               (async () => {
                 try {
+                  // eslint-disable-next-line @typescript-eslint/no-var-requires
                   const { getSessionInfo } = require('@anthropic-ai/claude-agent-sdk') as { getSessionInfo: (id: string, opts?: { dir?: string }) => Promise<{ summary?: string } | undefined> };
-                  const info = await getSessionInfo(systemMsg.session_id!, { dir: projectPath || process.cwd() });
-                  if (info?.summary) {
-                    this.sessionStore.set(`sessionNames.${sessionId}`, info.summary);
-                    console.log(`[Claude SDK] Session name from SDK: "${info.summary}"`);
+                  const info = await getSessionInfo(canonicalSdkSessionId, { dir: projectPath || process.cwd() });
+                  const summary = sanitizeSessionTitle(info?.summary);
+                  if (summary) {
+                    this.sessionStore.set(`sessionNames.${sessionId}`, summary);
+                    console.log(`[Claude SDK] Session name from SDK: "${summary}"`);
                     this.onSessionNameChanged?.();
                   }
                 } catch { /* non-fatal */ }
@@ -5480,8 +5759,8 @@ Begin by creating the task structure now.
               const currentSession = this.sessionStore.get(`sessions.${sessionId}`) as Session | undefined;
               if (currentSession && (currentSession as any).forkFromSdkSessionId) {
                 const { forkFromSdkSessionId: _, ...cleanSession } = currentSession as any;
-                this.sessionStore.set(`sessions.${sessionId}`, { ...cleanSession, sdkSessionId: systemMsg.session_id });
-                console.log(`[Claude SDK] SSH fork complete — cleared forkFromSdkSessionId, new SDK ID: ${systemMsg.session_id}`);
+                this.sessionStore.set(`sessions.${sessionId}`, { ...cleanSession, sdkSessionId: canonicalSdkSessionId });
+                console.log(`[Claude SDK] SSH fork complete — cleared forkFromSdkSessionId, new SDK ID: ${canonicalSdkSessionId}`);
               }
             }
 
@@ -5865,8 +6144,7 @@ Begin by creating the task structure now.
               } else {
                 // Repair failed (e.g. SSH session where transcript is remote) — clear SDK session to start fresh
                 console.log('[Claude SDK] Repair failed, clearing SDK session to start fresh for:', sessionId);
-                this.sessionStore.delete(`sessions.${sessionId}.sdkSessionId`);
-                this.sessionStore.delete(`sdkSessionMappings.${sessionId}`);
+                this.clearSdkSessionId(sessionId);
                 yield {
                   type: 'error',
                   error: '⚠️ An image in the conversation history was too large. Starting fresh conversation — please try your message again.'
@@ -5880,8 +6158,7 @@ Begin by creating the task structure now.
             // fresh session so the user never sees a failure.
             if (resultMsg.is_error && resultMsg.result?.includes('No conversation found with session ID')) {
               console.error('[Claude SDK] Stale session ID — auto-healing:', resultMsg.result);
-              this.sessionStore.delete(`sessions.${sessionId}.sdkSessionId`);
-              this.sessionStore.delete(`sdkSessionMappings.${sessionId}`);
+              this.clearSdkSessionId(sessionId);
               yield { type: 'text_delta', content: '⚠️ Remote session expired — reconnecting automatically...\n\n' };
               // Retry with clean state — yield* delegates to a fresh generator
               yield* this.streamMessage(sessionId, userMessage, attachments, permissionMode, thinkingMode, model, gstackMode, supplementalMessages);
@@ -5930,12 +6207,25 @@ Begin by creating the task structure now.
                 + (successResult.usage.cache_read_input_tokens || 0);
               const outputTokens = successResult.usage.output_tokens || 0;
               const currentModel = successResult.model || selectedModel || 'claude-opus-4-6';
-              const hasLargeContext = currentModel.includes('opus-4-8') || currentModel.includes('opus-4-7') || currentModel.includes('opus-4-6') || currentModel.includes('sonnet-4-6') || currentModel.includes('sonnet-4-5');
-              const contextWindowSize = hasLargeContext ? 1000000 : 200000;
+              const contextWindowSize = this.getContextWindowSize(currentModel);
               const percentage = Math.round((inputTokens / contextWindowSize) * 100);
 
+              if (
+                effectiveSdkSessionId
+                && inputTokens === 0
+                && outputTokens === 0
+                && !fullContent.trim()
+                && toolCalls.length === 0
+              ) {
+                console.warn(`[Claude SDK] Resume ${effectiveSdkSessionId} completed with empty zero-token result — clearing stale SDK session and retrying fresh`);
+                this.clearSdkSessionId(sessionId);
+                yield { type: 'text_delta', content: '⚠️ Remote session handle was stale — reconnecting automatically...\n\n' };
+                yield* this.streamMessage(sessionId, userMessage, attachments, permissionMode, thinkingMode, model, gstackMode, supplementalMessages);
+                return;
+              }
+
               console.log(`[Claude SDK] Conversation tokens: ${inputTokens}/${contextWindowSize} (${percentage}%)`);
-              this.sessionContextPercentage.set(sessionId, percentage);
+              this.rememberSessionContextUsage(sessionId, inputTokens, contextWindowSize, percentage);
 
               if (inputTokens >= contextWindowSize * 0.75) {
                 console.warn(`[Claude SDK] ⚠️ Conversation approaching context limit: ${percentage}%`);
@@ -6168,8 +6458,7 @@ Begin by creating the task structure now.
           };
         } else {
           // If repair failed, clear SDK session ID to start fresh
-          this.sessionStore.delete(`sessions.${sessionId}.sdkSessionId`);
-          this.sessionStore.delete(`sdkSessionMappings.${sessionId}`);
+          this.clearSdkSessionId(sessionId);
           yield {
             type: 'error',
             error: '⚠️ Session had corrupted thinking data. Starting fresh session - please try your message again.'
@@ -6177,8 +6466,7 @@ Begin by creating the task structure now.
         }
       } else if (errorMessage.includes('No conversation found with session ID')) {
         console.error('[Claude SDK] Stale session ID (exception) — auto-healing:', errorMessage);
-        this.sessionStore.delete(`sessions.${sessionId}.sdkSessionId`);
-        this.sessionStore.delete(`sdkSessionMappings.${sessionId}`);
+        this.clearSdkSessionId(sessionId);
         yield { type: 'text_delta', content: '⚠️ Remote session expired — reconnecting automatically...\n\n' };
         yield* this.streamMessage(sessionId, userMessage, attachments, permissionMode, thinkingMode, model, gstackMode, supplementalMessages);
         return;
@@ -6209,12 +6497,12 @@ Begin by creating the task structure now.
         yield { type: 'error', error: errorMessage };
       }
     } finally {
-      this.activeQueries.delete(sessionId);
-      this.activeQueryObjects.delete(sessionId);
-      // Stop health-checking this session's SSH connection now that it's idle.
-      const sess = this.sessionStore.get(`sessions.${sessionId}`) as Session | undefined;
-      if (sess?.sshConfig) sshService.markSessionInactive(sessionId);
-      powerService.sessionEnded();
+      if (this.clearActiveQuery(sessionId, abortController)) {
+        // Stop health-checking this session's SSH connection now that it's idle.
+        const sess = this.sessionStore.get(`sessions.${sessionId}`) as Session | undefined;
+        if (sess?.sshConfig) sshService.markSessionInactive(sessionId);
+        powerService.sessionEnded();
+      }
     }
   }
 
@@ -6236,7 +6524,7 @@ Begin by creating the task structure now.
     }
 
     const abortController = new AbortController();
-    this.activeQueries.set(sessionId, abortController);
+    this.setActiveQuery(sessionId, abortController);
     powerService.sessionStarted();
     sshService.markSessionActive(sessionId);
 
@@ -6353,12 +6641,12 @@ Begin by creating the task structure now.
               };
             };
 
-            if (systemMsg.session_id) {
-              this.sessionStore.set(`sdkSessionMappings.${sessionId}`, systemMsg.session_id);
+            const canonicalSdkSessionId = this.rememberCanonicalSdkSessionId(sessionId, systemMsg, 'resume');
+            if (canonicalSdkSessionId) {
               const currentSession = this.sessionStore.get(`sessions.${sessionId}`) as Session | undefined;
               if (currentSession && (currentSession as any).forkFromSdkSessionId) {
                 const { forkFromSdkSessionId: _, ...cleanSession } = currentSession as any;
-                this.sessionStore.set(`sessions.${sessionId}`, { ...cleanSession, sdkSessionId: systemMsg.session_id });
+                this.sessionStore.set(`sessions.${sessionId}`, { ...cleanSession, sdkSessionId: canonicalSdkSessionId });
               }
             }
 
@@ -6377,7 +6665,7 @@ Begin by creating the task structure now.
 
             if (systemMsg.subtype === 'compact_boundary' && systemMsg.compact_metadata) {
               this.sessionContextPercentage.delete(sessionId);
-              this.sessionsBeingCompacted.delete(sessionId);
+              this.sessionStore.delete(`contextUsage.${sessionId}`);
               events.push({
                 type: 'compaction_complete',
                 compactionComplete: {
@@ -6568,14 +6856,13 @@ Begin by creating the task structure now.
                 + (resultMsg.usage.cache_read_input_tokens || 0);
               const outputTokens = resultMsg.usage.output_tokens || 0;
               const currentModel = resultMsg.model || selectedModel || 'claude-sonnet-4-6';
-              const hasLargeContext = currentModel.includes('opus-4-8') || currentModel.includes('opus-4-7') || currentModel.includes('opus-4-6') || currentModel.includes('sonnet-4-6') || currentModel.includes('sonnet-4-5');
-              const contextWindowSize = hasLargeContext ? 1000000 : 200000;
+              const contextWindowSize = this.getContextWindowSize(currentModel);
               const percentage = Math.round((inputTokens / contextWindowSize) * 100);
               const cacheReadTokens = resultMsg.usage.cache_read_input_tokens || 0;
               const cacheWriteTokens = resultMsg.usage.cache_creation_input_tokens || 0;
               const cost = estimateCost(currentModel, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens);
 
-              this.sessionContextPercentage.set(sessionId, percentage);
+              this.rememberSessionContextUsage(sessionId, inputTokens, contextWindowSize, percentage);
               events.push({
                 type: 'context_usage',
                 inputTokens,
@@ -6672,10 +6959,10 @@ Begin by creating the task structure now.
     } catch (error) {
       yield { type: 'error', error: error instanceof Error ? error.message : String(error) };
     } finally {
-      this.activeQueries.delete(sessionId);
-      this.activeQueryObjects.delete(sessionId);
-      sshService.markSessionInactive(sessionId);
-      powerService.sessionEnded();
+      if (this.clearActiveQuery(sessionId, abortController)) {
+        sshService.markSessionInactive(sessionId);
+        powerService.sessionEnded();
+      }
     }
   }
 
@@ -6749,6 +7036,10 @@ Begin by creating the task structure now.
         }
       } catch (err) {
         if (!controller.signal.aborted && !parentSignal.aborted) {
+          const message = err instanceof Error ? err.message : String(err);
+          if (message.includes('No conversation found with session ID')) {
+            this.clearSdkSessionId(sessionId);
+          }
           console.warn(`[Claude SDK] Background listener error (${sessionId.slice(0, 8)}):`, err);
         }
       } finally {
@@ -6769,15 +7060,14 @@ Begin by creating the task structure now.
       controller.abort();
       powerService.sessionEnded();
     }
-    this.activeQueries.delete(sessionId);
-    this.activeQueryObjects.delete(sessionId);
+    this.clearActiveQuery(sessionId);
     this.backgroundListeners.get(sessionId)?.abort();
     this.backgroundListeners.delete(sessionId);
 
     // Kill remote processes if this is an SSH session
     const session = (this.sessionStore.get(`sessions.${sessionId}`) as Session | undefined);
     if (session?.sshConfig) {
-      sshService.killRemoteProcesses(sessionId, session.sshConfig).catch(() => {});
+      sshService.killRemoteProcesses(sessionId, session.sshConfig).catch(() => undefined);
     }
 
     // Clear OpenClaw conversation history
@@ -6787,8 +7077,7 @@ Begin by creating the task structure now.
     this.sessionPermissionModes.delete(sessionId);
     this.prePlanPermissionModes.delete(sessionId);
     this.sessionContextPercentage.delete(sessionId);
-    this.sessionLastMessageTime.delete(sessionId);
-    this.sessionsBeingCompacted.delete(sessionId);
+    this.sessionStore.delete(`contextUsage.${sessionId}`);
     this.sessionPlanFiles.delete(sessionId);
     this.browserMcpServers.delete(sessionId);
 
@@ -6805,14 +7094,15 @@ Begin by creating the task structure now.
 
   cancelQuery(sessionId: string): void {
     const controller = this.activeQueries.get(sessionId);
+    const backgroundListener = this.backgroundListeners.get(sessionId);
     if (controller) {
       controller.abort();
-      this.activeQueries.delete(sessionId);
-      this.activeQueryObjects.delete(sessionId);
+      this.clearActiveQuery(sessionId, controller);
       powerService.sessionEnded();
     }
     // Stop background task listener
-    this.backgroundListeners.get(sessionId)?.abort();
+    backgroundListener?.abort();
+    this.backgroundListeners.delete(sessionId);
     // Also kill any active external harness process for this session.
     codexService.cancel(sessionId);
     openclawService.cancel(sessionId);
@@ -6820,6 +7110,12 @@ Begin by creating the task structure now.
     getCursorCliService().cancel(sessionId);
     getGeminiService().cancel(sessionId);
     getOpenCodeService().cancel(sessionId);
+
+    const session = (this.sessionStore.get(`sessions.${sessionId}`) as Session | undefined)
+      || (this.sessionStore.get(`discoveredSessions.${sessionId}`) as Session | undefined);
+    if (session?.sshConfig) {
+      sshService.cleanupDetachedBridgeProcessesForNewTurn(sessionId, session.sshConfig, { killActive: true }).catch(() => undefined);
+    }
 
     // Reject pending permissions — the query that requested them is dead
     for (const [reqId, pending] of this.pendingPermissions.entries()) {
@@ -6859,7 +7155,7 @@ Begin by creating the task structure now.
       // Create an async generator that yields a single user message
       // Capture `this` for use inside the generator function
       const resizeImage = this.resizeImageIfNeeded.bind(this);
-      async function* createMessageStream(): AsyncIterable<SDKUserMessage> {
+      const createMessageStream = async function* (): AsyncIterable<SDKUserMessage> {
         // Build content with any image attachments
         const imageAttachments = attachments?.filter(a => a.type === 'image') || [];
         const hasImagesLocal = imageAttachments.length > 0;
@@ -6909,7 +7205,7 @@ Begin by creating the task structure now.
             session_id: '',
           } as SDKUserMessage;
         }
-      }
+      };
 
       await queryObj.streamInput(createMessageStream());
       console.log('[Claude Service] injectMessage: Message injected successfully');
@@ -6926,7 +7222,7 @@ Begin by creating the task structure now.
    * of streamMessage, including before the SDK Query object is created.
    */
   hasActiveQuery(sessionId: string): boolean {
-    return this.activeQueries.has(sessionId);
+    return this.getActiveQueryState(sessionId).active;
   }
 
   /**
@@ -6982,7 +7278,7 @@ Begin by creating the task structure now.
     attachments?: Attachment[],
     sshConfig?: import('../../shared/types').SSHConfig,
   ): Promise<{ message: string; cleanup: () => Promise<void> }> {
-    const noop = async () => {};
+    const noop = async () => undefined;
     if (!attachments || attachments.length === 0) return { message, cleanup: noop };
 
     let result = message;
@@ -7015,7 +7311,9 @@ Begin by creating the task structure now.
       console.log(`[Claude Service] Wrote ${localPaths.length} image(s) to ${localTempDir} for CLI harness`);
       return {
         message: result,
-        cleanup: async () => { await fs.promises.rm(localTempDir, { recursive: true, force: true }).catch(() => {}); },
+        cleanup: async () => {
+          await fs.promises.rm(localTempDir, { recursive: true, force: true }).catch(() => undefined);
+        },
       };
     }
 
@@ -7057,7 +7355,7 @@ Begin by creating the task structure now.
         remotePaths.push(...uploaded);
       } finally {
         try { sftp.end(); } catch { /* ignore */ }
-        await fs.promises.rm(localTempDir, { recursive: true, force: true }).catch(() => {});
+        await fs.promises.rm(localTempDir, { recursive: true, force: true }).catch(() => undefined);
       }
 
       const imageRef = remotePaths.map((p, i) => `[Attached screenshot ${i + 1}: ${p}]`).join('\n');
@@ -7079,9 +7377,9 @@ Begin by creating the task structure now.
         },
       };
     } catch (err) {
-      await fs.promises.rm(localTempDir, { recursive: true, force: true }).catch(() => {});
+      await fs.promises.rm(localTempDir, { recursive: true, force: true }).catch(() => undefined);
       console.error(`[Claude Service] Failed to upload images to remote ${sshConfig.host}:`, err);
-      return { message, cleanup: async () => {} };
+      return { message, cleanup: async () => undefined };
     }
   }
 
@@ -7525,6 +7823,10 @@ Begin by creating the task structure now.
   ): Promise<ChatMessage[] | null> {
     const cached = this.messageCache.get(sessionId);
     if (!cached) return null;
+    if (cached.transcriptPath !== transcriptPath) {
+      console.log('[Claude] Cache invalidated - transcript path changed:', sessionId);
+      return null;
+    }
 
     // Check if file changed (compare mtime + size for quick hash)
     try {
@@ -7561,6 +7863,7 @@ Begin by creating the task structure now.
         messages,
         loadedAt: Date.now(),
         fileHash,
+        transcriptPath,
       });
       console.log('[Claude] Cached messages for', sessionId, `(${messages.length} messages)`);
     } catch (error) {
@@ -7575,10 +7878,10 @@ Begin by creating the task structure now.
     // Check cache first
     if (this.transcriptPathCache.has(sessionId)) {
       const cached = this.transcriptPathCache.get(sessionId)!;
-      if (fs.existsSync(cached)) {
-        return cached;
+      if (cached.sdkSessionId === sdkSessionId && path.basename(cached.transcriptPath) === `${sdkSessionId}.jsonl` && fs.existsSync(cached.transcriptPath)) {
+        return cached.transcriptPath;
       }
-      // Path no longer valid, remove from cache
+      // Path no longer valid, or belongs to a different SDK session.
       this.transcriptPathCache.delete(sessionId);
       console.log('[Claude] Transcript path cache invalidated:', sessionId);
     }
@@ -7597,7 +7900,7 @@ Begin by creating the task structure now.
         const transcriptPath = path.join(claudeDir, projectDir, transcriptFilename);
         if (fs.existsSync(transcriptPath)) {
           // Cache for next time
-          this.transcriptPathCache.set(sessionId, transcriptPath);
+          this.transcriptPathCache.set(sessionId, { sdkSessionId, transcriptPath });
           console.log('[Claude] Cached transcript path for', sessionId);
           return transcriptPath;
         }
@@ -7668,17 +7971,20 @@ Begin by creating the task structure now.
       }
     });
 
-    return Array.from(new Set([...preferredIds, ...candidateIds]));
+    return Array.from(new Set([sessionId, ...preferredIds, ...candidateIds]));
   }
 
   private loadBuildTranscriptForSession(sessionId: string): { sessionId: string; entries: TranscriptEntry[]; exists: boolean } {
     const candidateIds = this.getCanonicalTranscriptCandidateIds(sessionId);
-    const fallbackId = candidateIds[0] || sessionId;
+    const fallbackId = sessionId;
     let firstExistingTranscript: { sessionId: string; entries: TranscriptEntry[]; exists: boolean } | null = null;
 
     for (const candidateId of candidateIds) {
       if (!transcriptService.hasTranscript(candidateId)) continue;
       const entries = transcriptService.loadMessages(candidateId);
+      if (candidateId === sessionId && entries.length > 0) {
+        return { sessionId: candidateId, entries, exists: true };
+      }
       if (!firstExistingTranscript) {
         firstExistingTranscript = { sessionId: candidateId, entries, exists: true };
       }
@@ -7987,7 +8293,8 @@ Begin by creating the task structure now.
           targetFile = sessionFile;
           console.log('[Claude] Loading specific session transcript:', sessionFile);
         } else {
-          console.log('[Claude] Session transcript not found, will use most recent:', sdkSessionId);
+          console.warn('[Claude] Requested SDK transcript not found; refusing to load a different transcript:', sdkSessionId);
+          return [];
         }
       }
 

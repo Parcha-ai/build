@@ -3,6 +3,7 @@ import { useSessionStore } from '../../stores/session.store';
 import { useUIStore } from '../../stores/ui.store';
 import { useSessionSwitcher } from '../../hooks/useSessionSwitcher';
 import { GitBranch, Circle, LayoutGrid } from 'lucide-react';
+import { getSessionDisplayName } from '../../utils/session-display';
 
 // Generate a consistent color from session ID
 function getSessionColor(sessionId: string): string {
@@ -36,7 +37,8 @@ function getStatusColor(status: string): string {
 
 export default function SessionSwitcher() {
   const { isOpen, selectedIndex, orderedSessionIds, closeSwitcher } = useSessionSwitcher();
-  const { sessions, activeSessionId } = useSessionStore();
+  const sessions = useSessionStore((s) => s.sessions);
+  const activeSessionId = useSessionStore((s) => s.activeSessionId);
 
   if (!isOpen) return null;
 
@@ -67,6 +69,7 @@ export default function SessionSwitcher() {
             const isSelected = index === selectedIndex;
             const isCurrent = sessionId === activeSessionId;
             const sessionColor = getSessionColor(sessionId);
+            const displayName = getSessionDisplayName(session);
 
             return (
               <div
@@ -92,7 +95,7 @@ export default function SessionSwitcher() {
                     className="w-16 h-16 flex items-center justify-center text-2xl font-bold text-white"
                     style={{ backgroundColor: sessionColor }}
                   >
-                    {session.name.charAt(0).toUpperCase()}
+                    {displayName.charAt(0).toUpperCase()}
                   </div>
                 </div>
 
@@ -105,7 +108,7 @@ export default function SessionSwitcher() {
                       color={getStatusColor(session.status)}
                     />
                     <span className="text-sm font-mono text-claude-text truncate flex-1">
-                      {session.name.split(' - ')[0]}
+                      {displayName.split(' - ')[0]}
                     </span>
                     {isCurrent && (
                       <span className="text-[10px] px-1 bg-claude-accent text-white">

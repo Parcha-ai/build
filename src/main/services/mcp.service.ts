@@ -22,6 +22,8 @@ import type {
 // MCP Registry API endpoint
 const MCP_REGISTRY_API = 'https://registry.modelcontextprotocol.io/v0/servers';
 const MCP_REMOTE_PACKAGE = 'mcp-remote@0.1.38';
+const LINEAR_LEGACY_SSE_URL = 'https://mcp.linear.app/sse';
+const LINEAR_CURRENT_MCP_URL = 'https://mcp.linear.app/mcp';
 
 // Cache for marketplace servers (refresh every 5 minutes)
 let marketplaceCache: MarketplaceMCPServer[] | null = null;
@@ -107,6 +109,13 @@ function isMcpRemotePackageArg(arg: string): boolean {
   return arg === 'mcp-remote' || /^mcp-remote@/.test(arg);
 }
 
+function normalizeRemoteMcpUrl(url: string): string {
+  if (url === LINEAR_LEGACY_SSE_URL) {
+    return LINEAR_CURRENT_MCP_URL;
+  }
+  return url;
+}
+
 /**
  * Returns true if the config describes a native stdio MCP server — i.e. one
  * that spawns a local binary (command + args) and is NOT an mcp-remote wrapper
@@ -132,7 +141,9 @@ function pinMcpRemotePackageArg(args: string[]): string[] {
 }
 
 function normalizeMcpRemoteArgs(args: string[]): string[] {
-  const normalized = pinMcpRemotePackageArg(args);
+  const normalized = pinMcpRemotePackageArg(args).map((arg) => (
+    /^https?:\/\//.test(arg) ? normalizeRemoteMcpUrl(arg) : arg
+  ));
   const remoteUrl = normalized.find((arg) => /^https?:\/\//.test(arg));
   if (remoteUrl?.startsWith('http://') && !normalized.includes('--allow-http')) {
     normalized.push('--allow-http');
@@ -151,10 +162,11 @@ function buildMcpRemoteConfig(
   config: MCPServerConfig,
   headers?: Record<string, string>,
 ): MCPServerConfig {
-  const args = ['-y', MCP_REMOTE_PACKAGE, config.url || ''];
+  const remoteUrl = normalizeRemoteMcpUrl(config.url || '');
+  const args = ['-y', MCP_REMOTE_PACKAGE, remoteUrl];
   const env: Record<string, string> = {};
 
-  if (config.url?.startsWith('http://')) {
+  if (remoteUrl.startsWith('http://')) {
     args.push('--allow-http');
   }
 
@@ -201,18 +213,23 @@ export function normalizeMcpServerForClaude(
   serverId = 'server'
 ): MCPServerConfig {
   if (config.url) {
+    const normalizedUrl = normalizeRemoteMcpUrl(config.url);
     if (options.preferNativeRemoteTransports) {
-      return cloneServerConfig(config);
+      return {
+        ...cloneServerConfig(config),
+        url: normalizedUrl,
+      };
     }
 
-    return buildMcpRemoteConfig(serverId, config, sanitizeStringMap(config.headers) || sanitizeStringMap(config.env));
+    return buildMcpRemoteConfig(serverId, { ...config, url: normalizedUrl }, sanitizeStringMap(config.headers) || sanitizeStringMap(config.env));
   }
 
   const cloned = cloneServerConfig(config);
-  const remoteUrl = getMcpRemoteUrl(cloned);
+  const rawRemoteUrl = getMcpRemoteUrl(cloned);
+  const remoteUrl = rawRemoteUrl ? normalizeRemoteMcpUrl(rawRemoteUrl) : null;
 
   if (!remoteUrl || !options.preferNativeRemoteTransports) {
-    if (remoteUrl && cloned.args) {
+    if (rawRemoteUrl && cloned.args) {
       cloned.args = normalizeMcpRemoteArgs(cloned.args);
     }
     return cloned;
@@ -295,6 +312,9 @@ function sanitizeHarnessConfig(config: MCPServerConfig, serverId: string): MCPSe
 
 function normalizeStoredMcpServerConfig(config: MCPServerConfig): MCPServerConfig {
   const normalized = cloneServerConfig(config);
+  if (normalized.url) {
+    normalized.url = normalizeRemoteMcpUrl(normalized.url);
+  }
   if (normalized.args?.some(isMcpRemotePackageArg)) {
     normalized.args = normalizeMcpRemoteArgs(normalized.args);
   }

@@ -7,6 +7,7 @@ import TeleportDialog from './TeleportDialog';
 import DownloadSessionDialog from './DownloadSessionDialog';
 import { useUIStore } from '../../stores/ui.store';
 import { useTaskStore } from '../../stores/task.store';
+import { getFirstVisibleTabSession, getSidebarSessionDisplayName } from '../../utils/session-display';
 import type { Session } from '../../../shared/types';
 
 interface ProjectGroup {
@@ -20,7 +21,12 @@ interface ProjectGroup {
 }
 
 export default function SessionList() {
-  const { sessions, activeSessionId, setActiveSession: rawSetActiveSession, isLoadingSessions, loadSessions, startSession } = useSessionStore();
+  const sessions = useSessionStore((s) => s.sessions);
+  const activeSessionId = useSessionStore((s) => s.activeSessionId);
+  const rawSetActiveSession = useSessionStore((s) => s.setActiveSession);
+  const isLoadingSessions = useSessionStore((s) => s.isLoadingSessions);
+  const loadSessions = useSessionStore((s) => s.loadSessions);
+  const startSession = useSessionStore((s) => s.startSession);
 
   // When clicking a session in the sidebar, deactivate Command Center
   const setActiveSession = useCallback((sessionId: string) => {
@@ -29,6 +35,21 @@ export default function SessionList() {
     }
     rawSetActiveSession(sessionId);
   }, [rawSetActiveSession]);
+
+  const setActiveSidebarSession = useCallback((session: Session) => {
+    const targetSession = getFirstVisibleTabSession(session, useSessionStore.getState().sessions);
+    setActiveSession(targetSession.id);
+  }, [setActiveSession]);
+
+  const isSidebarSessionActive = useCallback((session: Session) => {
+    if (!activeSessionId) return false;
+    const activeSession = sessions.find(s => s.id === activeSessionId);
+    const targetSession = getFirstVisibleTabSession(session, sessions);
+    if (activeSessionId === targetSession.id) return true;
+    if (!activeSession) return false;
+    const rootId = session.parentSessionId || session.id;
+    return activeSession.id === rootId || activeSession.parentSessionId === rootId;
+  }, [activeSessionId, sessions]);
 
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set());
   const [newSessionDialogOpen, setNewSessionDialogOpen] = useState(false);
@@ -351,8 +372,9 @@ export default function SessionList() {
             </div>
             <SessionCard
               session={focusSession}
-              isActive={focusSession.id === activeSessionId}
-              onClick={() => setActiveSession(focusSession.id)}
+              isActive={isSidebarSessionActive(focusSession)}
+              onClick={() => setActiveSidebarSession(focusSession)}
+              displayName={getSidebarSessionDisplayName(focusSession, sessions)}
             />
           </div>
         );
@@ -422,9 +444,10 @@ export default function SessionList() {
               >
                 <SessionCard
                   session={session}
-                  isActive={session.id === activeSessionId}
-                  onClick={() => setActiveSession(session.id)}
+                  isActive={isSidebarSessionActive(session)}
+                  onClick={() => setActiveSidebarSession(session)}
                   isFork={session.isWorktree}
+                  displayName={getSidebarSessionDisplayName(session, sessions)}
                   onTeleportRequest={setTeleportSession}
                   onDownload={setDownloadSession}
                 />
@@ -448,9 +471,10 @@ export default function SessionList() {
               <SessionCard
                 key={session.id}
                 session={session}
-                isActive={session.id === activeSessionId}
-                onClick={() => setActiveSession(session.id)}
+                isActive={isSidebarSessionActive(session)}
+                onClick={() => setActiveSidebarSession(session)}
                 isFork={session.isWorktree}
+                displayName={getSidebarSessionDisplayName(session, sessions)}
                 onTeleportRequest={setTeleportSession}
                 onDownload={setDownloadSession}
               />
@@ -569,9 +593,10 @@ export default function SessionList() {
                               <div className="ml-5">
                                 <SessionCard
                                   session={session}
-                                  isActive={session.id === activeSessionId}
-                                  onClick={() => setActiveSession(session.id)}
+                                  isActive={isSidebarSessionActive(session)}
+                                  onClick={() => setActiveSidebarSession(session)}
                                   isFork={true}
+                                  displayName={getSidebarSessionDisplayName(session, sessions)}
                                   onTeleportRequest={setTeleportSession}
                                   onDownload={setDownloadSession}
                                 />
@@ -587,8 +612,9 @@ export default function SessionList() {
                       <SessionCard
                         key={session.id}
                         session={session}
-                        isActive={session.id === activeSessionId}
-                        onClick={() => setActiveSession(session.id)}
+                        isActive={isSidebarSessionActive(session)}
+                        onClick={() => setActiveSidebarSession(session)}
+                        displayName={getSidebarSessionDisplayName(session, sessions)}
                         onTeleportRequest={setTeleportSession}
                         onDownload={setDownloadSession}
                       />

@@ -12,6 +12,9 @@ import { truncateMiddlePreservingTail } from '../../shared/utils/prompt-truncati
 import { mcpService } from './mcp.service';
 import { findUsableLocalExecutable, isUsableLocalExecutable } from '../utils/local-executable';
 import { prependPolicyPreamble, type HarnessPolicyTranslation, type CodexReasoningEffort } from './harness-policy.service';
+import { buildProjectInstructionContext, formatProjectInstructionContextFiles } from './codex-context';
+
+const STREAM_DEBUG = process.env.GREP_DEBUG_STREAMING === '1';
 
 // Stream event types for Codex (parallel to Claude's StreamEvent but separate)
 export interface CodexStreamEvent {
@@ -137,6 +140,7 @@ interface CodexExecutionMode {
 class CodexServiceImpl {
   private activeProcesses: Map<string, { process: ChildProcess; abortController: AbortController }> = new Map();
   private codexBinaryPath: string | null = null;
+  private readonly CODEX_INSTRUCTION_CONTEXT_CHAR_LIMIT = 30000;
 
   getOpenAiApiKey(): string | undefined {
     const userKey = settingsStore.get('openAiApiKey') as string | undefined;
@@ -186,6 +190,31 @@ class CodexServiceImpl {
     }
 
     return undefined;
+  }
+
+  private async buildCodexInstructionContext(sessionId: string, workingDir: string, sshConfig?: SSHConfig): Promise<string> {
+    const context = sshConfig
+      ? formatProjectInstructionContextFiles(
+          await sshService.scanRemoteHarnessContextFiles(sessionId, sshConfig, workingDir),
+          {
+            maxChars: this.CODEX_INSTRUCTION_CONTEXT_CHAR_LIMIT,
+            maxFiles: 48,
+          },
+        )
+      : buildProjectInstructionContext(workingDir, {
+          maxChars: this.CODEX_INSTRUCTION_CONTEXT_CHAR_LIMIT,
+          maxFiles: 48,
+        });
+    if (context) {
+      console.log(`[Codex Service] Injecting shared harness instruction context for Codex (${context.length} chars)`);
+    }
+    return context;
+  }
+
+  private async prependCodexInstructionContext(sessionId: string, prompt: string, workingDir: string, sshConfig?: SSHConfig): Promise<string> {
+    if (prompt.includes('<project_harness_context>')) return prompt;
+    const instructionContext = await this.buildCodexInstructionContext(sessionId, workingDir, sshConfig);
+    return instructionContext ? `${instructionContext}\n\n${prompt}` : prompt;
   }
 
   /**
@@ -330,11 +359,12 @@ class CodexServiceImpl {
    */
   async runForTool(sessionId: string, prompt: string, workingDir: string, sshConfig?: SSHConfig, codexModel?: string): Promise<CodexToolResult> {
     const apiKey = this.getOpenAiApiKey();
+    const promptWithInstructions = await this.prependCodexInstructionContext(sessionId, prompt, workingDir, sshConfig);
 
     const MAX_PROMPT_CHARS = 50000;
-    const safePrompt = prompt.length > MAX_PROMPT_CHARS
-      ? truncateMiddlePreservingTail(prompt, MAX_PROMPT_CHARS)
-      : prompt;
+    const safePrompt = promptWithInstructions.length > MAX_PROMPT_CHARS
+      ? truncateMiddlePreservingTail(promptWithInstructions, MAX_PROMPT_CHARS)
+      : promptWithInstructions;
 
     let summary = '';
     let reasoning = '';
@@ -594,7 +624,9 @@ class CodexServiceImpl {
         try {
           const event = JSON.parse(line) as CodexJsonEvent;
           eventCount++;
-          console.log(`[Codex Service] SSH Event ${eventCount}: ${event.type} ${event.item?.type || ''}`);
+          if (STREAM_DEBUG) {
+            console.log(`[Codex Service] SSH Event ${eventCount}: ${event.type} ${event.item?.type || ''}`);
+          }
           yield event;
         } catch {
           // Non-JSON output from remote (e.g. shell messages) — skip
@@ -640,7 +672,8 @@ class CodexServiceImpl {
     }
 
     const executionMode = this.getExecutionMode(permissionMode, policy);
-    const promptWithModeContext = this.buildPromptWithExecutionMode(prompt, executionMode);
+    const promptWithInstructions = await this.prependCodexInstructionContext(sessionId, prompt, workingDir, sshConfig);
+    const promptWithModeContext = this.buildPromptWithExecutionMode(promptWithInstructions, executionMode);
     const MAX_PROMPT_CHARS = 50000;
     let safePrompt = prompt;
     if (promptWithModeContext.length > MAX_PROMPT_CHARS) {

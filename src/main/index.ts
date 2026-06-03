@@ -11,14 +11,28 @@ if (!DEV_INSTANCE_NAME) {
   try {
     const logDir = path.join(app.getPath('userData'));
     const logPath = path.join(logDir, 'main.log');
+    const maxLogBytes = 25 * 1024 * 1024;
+    if (fs.existsSync(logPath) && fs.statSync(logPath).size > maxLogBytes) {
+      fs.renameSync(logPath, `${logPath}.bak-${new Date().toISOString().replace(/[:.]/g, '-')}`);
+    }
     const logStream = fs.createWriteStream(logPath, { flags: 'a' });
     const origLog = console.log;
     const origWarn = console.warn;
     const origError = console.error;
     const ts = () => new Date().toISOString();
-    console.log = (...args: unknown[]) => { const msg = `${ts()} [LOG] ${args.join(' ')}\n`; logStream.write(msg); origLog(...args); };
-    console.warn = (...args: unknown[]) => { const msg = `${ts()} [WARN] ${args.join(' ')}\n`; logStream.write(msg); origWarn(...args); };
-    console.error = (...args: unknown[]) => { const msg = `${ts()} [ERROR] ${args.join(' ')}\n`; logStream.write(msg); origError(...args); };
+    const formatArg = (arg: unknown): string => {
+      if (arg instanceof Error) return arg.stack || arg.message;
+      if (typeof arg === 'string') return arg;
+      try { return JSON.stringify(arg); } catch { return String(arg); }
+    };
+    const write = (level: 'LOG' | 'WARN' | 'ERROR', args: unknown[]): void => {
+      const body = args.map(formatArg).join(' ');
+      const capped = body.length > 6000 ? `${body.slice(0, 6000)}...[truncated ${body.length - 6000} chars]` : body;
+      logStream.write(`${ts()} [${level}] ${capped}\n`);
+    };
+    console.log = (...args: unknown[]) => { write('LOG', args); origLog(...args); };
+    console.warn = (...args: unknown[]) => { write('WARN', args); origWarn(...args); };
+    console.error = (...args: unknown[]) => { write('ERROR', args); origError(...args); };
   } catch {
     // Non-fatal — logging is best-effort
   }
@@ -88,6 +102,7 @@ import { IPC_CHANNELS } from '../shared/constants/channels';
 import { cdpProxyService } from './services/cdp-proxy.service';
 import { powerService } from './services/power.service';
 import { maybeRunRendererCdpScript } from './services/renderer-cdp.service';
+import { updateService } from './services/update.service';
 
 // Global error handlers to prevent crashes from broken pipes and other uncaught errors
 process.on('uncaughtException', (error: Error) => {
@@ -151,6 +166,73 @@ declare const MAIN_WINDOW_PRELOAD_WEBPACK_ENTRY: string;
 
 let mainWindow: BrowserWindow | null = null;
 const allWindows = new Set<BrowserWindow>();
+const isMac = process.platform === 'darwin';
+const BROWSER_PARTITION_PREFIX = 'browser-';
+const BROWSER_PARTITION_KEEP_COUNT = 32;
+const BROWSER_PARTITION_RECENT_MS = 6 * 60 * 60 * 1000;
+
+function scheduleBrowserPartitionCleanup(): void {
+  const timer = setTimeout(() => {
+    void cleanupOldBrowserPartitions();
+  }, 30_000);
+  timer.unref?.();
+}
+
+async function cleanupOldBrowserPartitions(): Promise<void> {
+  const partitionsDir = path.join(app.getPath('userData'), 'Partitions');
+  let entries: fs.Dirent[];
+  try {
+    entries = await fs.promises.readdir(partitionsDir, { withFileTypes: true });
+  } catch (error: any) {
+    if (error?.code !== 'ENOENT') {
+      console.warn('[Main] Failed to read browser partitions:', error);
+    }
+    return;
+  }
+
+  const partitions = (
+    await Promise.all(entries
+      .filter(entry => entry.isDirectory() && entry.name.startsWith(BROWSER_PARTITION_PREFIX))
+      .map(async entry => {
+        const fullPath = path.join(partitionsDir, entry.name);
+        try {
+          const stat = await fs.promises.stat(fullPath);
+          return { name: entry.name, fullPath, mtimeMs: stat.mtimeMs };
+        } catch {
+          return null;
+        }
+      }))
+  ).filter((entry): entry is { name: string; fullPath: string; mtimeMs: number } => !!entry);
+
+  if (partitions.length <= BROWSER_PARTITION_KEEP_COUNT) return;
+
+  const now = Date.now();
+  const sorted = [...partitions].sort((a, b) => b.mtimeMs - a.mtimeMs);
+  const keep = new Set(sorted.slice(0, BROWSER_PARTITION_KEEP_COUNT).map(entry => entry.name));
+  let removed = 0;
+  let failed = 0;
+
+  for (const entry of sorted.slice(BROWSER_PARTITION_KEEP_COUNT)) {
+    if (keep.has(entry.name)) continue;
+    if (now - entry.mtimeMs < BROWSER_PARTITION_RECENT_MS) continue;
+    try {
+      await fs.promises.rm(entry.fullPath, { recursive: true, force: true });
+      removed += 1;
+    } catch (error) {
+      failed += 1;
+      console.warn('[Main] Failed to remove old browser partition:', entry.name, error);
+    }
+  }
+
+  if (removed > 0 || failed > 0) {
+    console.log('[Main] Browser partition cleanup complete:', {
+      scanned: partitions.length,
+      keptNewest: BROWSER_PARTITION_KEEP_COUNT,
+      removed,
+      failed,
+    });
+  }
+}
 
 if (process.env.GREP_DISABLE_SINGLE_INSTANCE !== '1') {
   const gotSingleInstanceLock = app.requestSingleInstanceLock();
@@ -299,8 +381,6 @@ const createWindow = (): void => {
   mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription) => {
     console.error('[Main] Renderer failed to load:', errorCode, errorDescription);
   });
-
-  const isMac = process.platform === 'darwin';
 
   const sendShortcutToRenderer = (action: string) => {
     mainWindow?.webContents.send(IPC_CHANNELS.APP_SHORTCUT_TRIGGERED, { action });
@@ -489,10 +569,15 @@ const createWindow = (): void => {
   // Open DevTools for debugging (disabled for production builds)
   // Capture renderer console + crash info in main process logs
   mainWindow.webContents.on('console-message', (_e, level, message) => {
-    if (level >= 2) console.log(`[Renderer Console] ${message.substring(0, 500)}`);
+    if (level >= 3) console.log(`[Renderer Console] ${message.substring(0, 500)}`);
   });
   mainWindow.webContents.on('render-process-gone', (_e, details) => {
     console.error(`[RENDERER CRASHED] reason=${details.reason} exitCode=${details.exitCode}`);
+  });
+  mainWindow.on('focus', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      claudeService.setMainWindow(mainWindow);
+    }
   });
   if (process.env.GREP_DEV_USER_DATA) mainWindow.webContents.openDevTools();
 
@@ -524,11 +609,141 @@ function createNewWindow(): void {
     },
   });
 
+  (win as any).__preloadPath = MAIN_WINDOW_PRELOAD_WEBPACK_ENTRY;
   allWindows.add(win);
+
+  win.webContents.once('did-finish-load', () => {
+    void maybeRunRendererCdpScript(win);
+  });
 
   win.once('ready-to-show', () => {
     win.show();
     win.focus();
+  });
+
+  setTimeout(() => {
+    if (!win.isDestroyed() && !win.isVisible()) {
+      console.log('[Main] Forcing new window to show (ready-to-show timeout)');
+      win.show();
+      win.center();
+      win.focus();
+    }
+  }, 3000);
+
+  const sendShortcutToRenderer = (action: string) => {
+    if (!win.isDestroyed()) {
+      win.webContents.send(IPC_CHANNELS.APP_SHORTCUT_TRIGGERED, { action });
+    }
+  };
+
+  win.webContents.on('before-input-event', (event, input) => {
+    if (input.type !== 'keyDown') return;
+
+    const key = (input.key || '').toLowerCase();
+    const primaryModifier = isMac ? input.meta : input.control;
+    if (!primaryModifier || input.alt) return;
+
+    let action: string | null = null;
+    if (!input.shift && key === 'r') {
+      action = 'browser-refresh';
+    } else if (input.shift && key === 'g') {
+      action = 'toggle-command-center';
+    } else if (input.shift && key === 'f') {
+      action = 'toggle-file-search';
+    } else if (!input.shift && key === 'k') {
+      action = 'toggle-quick-search';
+    } else if (!input.shift && key === 's') {
+      action = 'save-or-new-session';
+    } else if (!input.shift && key === 'w') {
+      action = 'close-editor-tab';
+    } else if (!input.shift && key === 't') {
+      action = 'fork-empty';
+    } else if (!input.shift && key === '[') {
+      action = 'prev-fork';
+    } else if (!input.shift && key === ']') {
+      action = 'next-fork';
+    } else if (!input.shift && key === 'b') {
+      action = 'background-task';
+    }
+
+    if (action) {
+      event.preventDefault();
+      sendShortcutToRenderer(action);
+      if (action === 'browser-refresh') {
+        win.webContents.send(IPC_CHANNELS.APP_CMD_R_PRESSED);
+      }
+    }
+  });
+
+  win.webContents.on('will-attach-webview', (_event, webPreferences, params) => {
+    console.log('[Main] Attaching webview with partition:', params.partition);
+    webPreferences.nodeIntegration = false;
+    webPreferences.contextIsolation = false;
+    webPreferences.sandbox = false;
+    webPreferences.webSecurity = false;
+    webPreferences.partition = params.partition || 'persist:browser';
+    webPreferences.enableWebSQL = false;
+    webPreferences.experimentalFeatures = true;
+  });
+
+  win.webContents.on('did-attach-webview', (_event, webviewContents) => {
+    console.log('[Main] Webview attached, id:', webviewContents.id);
+
+    webviewContents.on('before-input-event', (evt, input) => {
+      const k = (input.key || '').toLowerCase();
+      if (input.type === 'keyDown' && input.control && k === 'tab') {
+        evt.preventDefault();
+        win.webContents.send('session-switcher', { action: input.shift ? 'prev' : 'next' });
+      }
+      if (input.type === 'keyUp' && k === 'control') {
+        win.webContents.send('session-switcher', { action: 'confirm' });
+      }
+    });
+
+    webviewContents.on('did-finish-load', () => {
+      console.log('[Main] Webview finished loading:', webviewContents.getURL());
+    });
+
+    webviewContents.setWindowOpenHandler(({ url }) => {
+      console.log('[Main] Webview popup requested:', url);
+      if (url.includes('google.com') || url.includes('accounts.google') || url.includes('auth')) {
+        return {
+          action: 'allow',
+          overrideBrowserWindowOptions: {
+            webPreferences: {
+              partition: 'persist:browser',
+              webSecurity: false,
+            }
+          }
+        };
+      }
+      return { action: 'deny' };
+    });
+  });
+
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    console.log('[Main] Window open requested:', url);
+    if (url.includes('google.com') || url.includes('accounts.google') || url.includes('auth')) {
+      return {
+        action: 'allow',
+        overrideBrowserWindowOptions: {
+          webPreferences: {
+            partition: 'persist:browser'
+          }
+        }
+      };
+    }
+    return { action: 'deny' };
+  });
+
+  win.webContents.on('console-message', (_e, level, message) => {
+    if (level >= 3) console.log(`[Renderer Console] ${message.substring(0, 500)}`);
+  });
+  win.webContents.on('render-process-gone', (_e, details) => {
+    console.error(`[RENDERER CRASHED] reason=${details.reason} exitCode=${details.exitCode}`);
+  });
+  win.on('focus', () => {
+    claudeService.setMainWindow(win);
   });
 
   win.on('closed', () => {
@@ -610,6 +825,7 @@ function registerIPCHandlers(): void {
 
   // Wakeup scheduler — fires timers for ScheduleWakeup/CronCreate and sends
   // the prompt back to the renderer so it flows through the normal sendMessage path.
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
   const { wakeupScheduler } = require('./services/wakeup.service');
   wakeupScheduler.on('wakeup', ({ sessionId, prompt, reason }: { sessionId: string; prompt: string; reason: string }) => {
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -623,11 +839,18 @@ function registerIPCHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.GSTACK_IS_INSTALLED, () => isGStackInstalled());
   ipcMain.handle(IPC_CHANNELS.GSTACK_INSTALL, async () => installGStack());
   ipcMain.handle(IPC_CHANNELS.GSTACK_UPGRADE, async () => upgradeGStack());
+
+  // Update check (manual trigger from renderer)
+  ipcMain.handle(IPC_CHANNELS.UPDATE_CHECK, async () => {
+    return updateService.checkForUpdates();
+  });
 }
 
 // Migrate data from old "Grep Build" or "G-Build" app directories to new "Build" on first launch
 function migrateFromGrepBuild(): void {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
   const fs = require('fs');
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
   const pathModule = require('path');
   const newDir = app.getPath('userData'); // Now points to Build
   const parentDir = pathModule.dirname(newDir);
@@ -692,6 +915,7 @@ app.on('ready', async () => {
     console.warn('[Main] Failed to sync local MCP harness configs on startup:', error);
   });
   createWindow();
+  scheduleBrowserPartitionCleanup();
 
   // Start CDP proxy for Stagehand webview integration
   try {
@@ -700,11 +924,17 @@ app.on('ready', async () => {
   } catch (error) {
     console.error('[Main] Failed to start CDP proxy:', error);
   }
+
+  // Start update checker (checks GitHub releases for newer versions)
+  if (mainWindow) {
+    updateService.start(mainWindow);
+  }
 });
 
 // Clean up power management on quit
 app.on('will-quit', () => {
   // Flush all cached stores to disk before quitting so no data is lost
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
   const { CachedStore } = require('./cached-store');
   CachedStore.flushAll();
 
@@ -716,9 +946,13 @@ app.on('will-quit', () => {
 
   // Clean up wakeup timers
   try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { wakeupScheduler } = require('./services/wakeup.service');
     wakeupScheduler.destroy();
   } catch { /* ignore */ }
+
+  // Clean up update checker
+  updateService.stop();
 });
 
 // Quit when all windows are closed, except on macOS.

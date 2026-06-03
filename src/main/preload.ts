@@ -176,8 +176,8 @@ const electronAPI = {
 
   // Claude
   claude: {
-    sendMessage: (sessionId: string, message: string, attachments?: unknown[], permissionMode?: string, thinkingMode?: string, model?: string, gstackMode?: string, supplementalMessages?: ChatMessage[], fastMode?: boolean, suppressUserMessage?: boolean): Promise<void> =>
-      ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_SEND_MESSAGE, sessionId, message, attachments, permissionMode, thinkingMode, model, gstackMode, supplementalMessages, fastMode, suppressUserMessage),
+    sendMessage: (sessionId: string, message: string, attachments?: unknown[], permissionMode?: string, thinkingMode?: string, model?: string, gstackMode?: string, supplementalMessages?: ChatMessage[], fastMode?: boolean, suppressUserMessage?: boolean, userMessageId?: string): Promise<void> =>
+      ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_SEND_MESSAGE, sessionId, message, attachments, permissionMode, thinkingMode, model, gstackMode, supplementalMessages, fastMode, suppressUserMessage, userMessageId),
     resumeRemoteTurn: (sessionId: string, model?: string): Promise<void> =>
       ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_RESUME_REMOTE_TURN, sessionId, model),
     getMessages: (sessionId: string, limit?: number): Promise<ChatMessage[]> =>
@@ -375,7 +375,7 @@ const electronAPI = {
 
   // Message Queue (main-process queue management)
   queue: {
-    enqueue: (sessionId: string, text: string, attachments?: unknown[], opts?: { model?: string; suppressUserMessage?: boolean }) =>
+    enqueue: (sessionId: string, text: string, attachments?: unknown[], opts?: { id?: string; model?: string; suppressUserMessage?: boolean; deferDrain?: boolean }) =>
       ipcRenderer.invoke('queue:enqueue', sessionId, text, attachments, opts),
     remove: (sessionId: string, messageId: string) =>
       ipcRenderer.invoke('queue:remove', sessionId, messageId),
@@ -427,8 +427,8 @@ const electronAPI = {
     sendActionResult: (result: { requestId: string; success: boolean; data?: any; error?: string }) => {
       ipcRenderer.send('browser:action-result', result);
     },
-    clearStorage: (): Promise<{ success: boolean }> =>
-      ipcRenderer.invoke(IPC_CHANNELS.BROWSER_CLEAR_STORAGE),
+    clearStorage: (sessionId?: string): Promise<{ success: boolean }> =>
+      ipcRenderer.invoke(IPC_CHANNELS.BROWSER_CLEAR_STORAGE, sessionId),
     registerWebview: (sessionId: string, webContentsId: number) => {
       ipcRenderer.send('browser:register-webview', { sessionId, webContentsId });
     },
@@ -1134,6 +1134,17 @@ const electronAPI = {
   openclaw: {
     createSession: (data: { name: string; openclawConfig: OpenClawConfig }): Promise<Session> =>
       ipcRenderer.invoke(IPC_CHANNELS.OPENCLAW_CREATE_SESSION, data),
+  },
+
+  // Update notifications (GitHub release check)
+  update: {
+    onUpdateAvailable: (callback: (info: { version: string; downloadUrl: string; releaseNotes?: string }) => void) => {
+      const handler = (_: IpcRendererEvent, info: { version: string; downloadUrl: string; releaseNotes?: string }) => callback(info);
+      ipcRenderer.on(IPC_CHANNELS.UPDATE_AVAILABLE, handler);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.UPDATE_AVAILABLE, handler);
+    },
+    checkForUpdates: (): Promise<{ version: string; downloadUrl: string; releaseNotes?: string } | null> =>
+      ipcRenderer.invoke(IPC_CHANNELS.UPDATE_CHECK),
   },
 
   // GStack workflow skills

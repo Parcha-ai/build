@@ -15,11 +15,13 @@ import { mainConfig } from './webpack.main.config';
 import { rendererConfig } from './webpack.renderer.config';
 
 // Get version for output directory
+// eslint-disable-next-line @typescript-eslint/no-var-requires
 const packageJson = require('./package.json');
 const version = packageJson.version || '0.0.0';
 const offlineElectronZipDir = process.env.GREP_ELECTRON_ZIP_DIR || null;
 const offlineElectronCacheRoot = process.env.GREP_ELECTRON_CACHE_ROOT || path.join(os.homedir(), 'Library', 'Caches', 'electron');
 const skipElectronChecksums = process.env.GREP_SKIP_ELECTRON_CHECKSUMS === '1';
+const skipNotarization = process.env.GREP_SKIP_NOTARIZE === '1';
 
 const config: ForgeConfig = {
   // Output to versioned folder
@@ -50,7 +52,9 @@ const config: ForgeConfig = {
   rebuildConfig: {},
   hooks: {
     postPackage: async (forgeConfig, options) => {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
       const fs = require('fs-extra');
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
       const path = require('path');
 
       for (const outputPath of options.outputPaths) {
@@ -67,7 +71,7 @@ const config: ForgeConfig = {
 
         // Recursively resolve and copy a package and all its production dependencies
         const copied = new Set<string>();
-        async function copyWithDeps(pkgName: string) {
+        const copyWithDeps = async (pkgName: string): Promise<void> => {
           if (copied.has(pkgName)) return;
           copied.add(pkgName);
 
@@ -95,7 +99,7 @@ const config: ForgeConfig = {
               await copyWithDeps(dep);
             }
           }
-        }
+        };
 
         // Externalized packages (must match webpack.main.config.ts externals)
         const externalPackages = [
@@ -105,6 +109,8 @@ const config: ForgeConfig = {
           '@anthropic-ai/sdk',
           '@cursor/sdk',
           '@cursor/sdk-darwin-arm64',
+          '@flue/runtime',
+          'valibot',
           'docx',
           'monaco-editor',
         ];
@@ -138,7 +144,9 @@ const config: ForgeConfig = {
 
           // Sign with Developer ID certificate (after all file copies)
           if (process.env.APPLE_ID && process.env.APPLE_PASSWORD && process.env.APPLE_TEAM_ID) {
+            // eslint-disable-next-line @typescript-eslint/no-var-requires
             const { signAsync } = require('@electron/osx-sign');
+            // eslint-disable-next-line @typescript-eslint/no-var-requires
             const { notarize } = require('@electron/notarize');
 
             console.log('[Packaging] Signing app with Developer ID certificate...');
@@ -152,15 +160,20 @@ const config: ForgeConfig = {
             });
             console.log('[Packaging] App signed with Developer ID');
 
-            console.log('[Packaging] Submitting for Apple notarization (this may take several minutes)...');
-            await notarize({
-              appPath,
-              appleId: process.env.APPLE_ID,
-              appleIdPassword: process.env.APPLE_PASSWORD,
-              teamId: process.env.APPLE_TEAM_ID,
-            });
-            console.log('[Packaging] App notarized and stapled successfully');
+            if (skipNotarization) {
+              console.log('[Packaging] Skipping Apple notarization because GREP_SKIP_NOTARIZE=1');
+            } else {
+              console.log('[Packaging] Submitting for Apple notarization (this may take several minutes)...');
+              await notarize({
+                appPath,
+                appleId: process.env.APPLE_ID,
+                appleIdPassword: process.env.APPLE_PASSWORD,
+                teamId: process.env.APPLE_TEAM_ID,
+              });
+              console.log('[Packaging] App notarized and stapled successfully');
+            }
           } else {
+            // eslint-disable-next-line @typescript-eslint/no-var-requires
             const { execSync } = require('child_process');
             console.log('[Packaging] No Apple credentials — falling back to adhoc signature');
             try {

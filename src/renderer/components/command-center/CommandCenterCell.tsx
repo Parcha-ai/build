@@ -7,6 +7,8 @@ import PermissionDialog from '../chat/PermissionDialog';
 import QuestionDialog from '../chat/QuestionDialog';
 import InputArea from '../chat/InputArea';
 import type { Session } from '../../../shared/types';
+import { canSendMessageToSession } from '../../utils/session-input';
+import { getSessionDisplayName } from '../../utils/session-display';
 
 // Stable empty arrays to avoid reference changes
 const EMPTY_MESSAGES: never[] = [];
@@ -55,18 +57,21 @@ export default function CommandCenterCell({ session, forks, isFocused }: Command
 
   const setFocused = useUIStore((s) => s.setCommandCenterFocusedSession);
   const toggleCommandCenter = useUIStore((s) => s.toggleCommandCenter);
+  const loadedMessageSessionIds = useRef(new Set<string>());
 
   // Refs for auto-scroll
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const hasScrolledInitially = useRef(false);
 
-  // Load messages for ALL forks when cell mounts
+  // Load only the visible tab's messages, once. Loading every fork whenever
+  // the fork array identity changes makes Command Center expensive during
+  // active streaming.
   useEffect(() => {
-    for (const fork of forks) {
-      loadMessages(fork.id);
-    }
-  }, [forks, loadMessages]);
+    if (loadedMessageSessionIds.current.has(displayId)) return;
+    loadedMessageSessionIds.current.add(displayId);
+    loadMessages(displayId);
+  }, [displayId, loadMessages]);
 
   // Start the session if it's stopped when first added to Command Center
   const initialStatusRef = useRef(session.status);
@@ -106,6 +111,7 @@ export default function CommandCenterCell({ session, forks, isFocused }: Command
     e.stopPropagation();
     removeFromCommandCenter(session.id);
   }, [session.id, removeFromCommandCenter]);
+  const headerLabel = getSessionDisplayName(displaySession);
 
   const getStatusColor = (status: string) => {
     switch (status) {
@@ -134,7 +140,7 @@ export default function CommandCenterCell({ session, forks, isFocused }: Command
         <div className="flex items-center gap-1.5 min-w-0 flex-shrink-0">
           <div className={`w-1.5 h-1.5 flex-shrink-0 ${getStatusColor(displaySession.status)}`} style={{ borderRadius: 0 }} />
           <span className="text-[10px] font-bold text-claude-text truncate uppercase" style={{ letterSpacing: '0.05em' }}>
-            {session.forkName || session.name}
+            {headerLabel}
           </span>
           {isSessionStreaming && (
             <span className="text-[9px] font-bold text-green-400 flex-shrink-0" style={{ letterSpacing: '0.05em' }}>
@@ -149,7 +155,7 @@ export default function CommandCenterCell({ session, forks, isFocused }: Command
             {forks.map((fork) => {
               const isActive = fork.id === activeTabId;
               const isRoot = !fork.parentSessionId;
-              const label = isRoot ? 'ROOT' : (fork.aiGeneratedName || fork.forkName || fork.name);
+              const label = isRoot ? 'ROOT' : getSessionDisplayName(fork);
               return (
                 <button
                   key={fork.id}
@@ -160,7 +166,7 @@ export default function CommandCenterCell({ session, forks, isFocused }: Command
                       : 'text-claude-text-secondary hover:text-claude-text'
                   }`}
                   style={{ letterSpacing: '0.05em' }}
-                  title={fork.name}
+                  title={getSessionDisplayName(fork)}
                 >
                   {label}
                 </button>
@@ -227,7 +233,7 @@ export default function CommandCenterCell({ session, forks, isFocused }: Command
       {/* Full input area — same as chat view */}
       <InputArea
         sessionId={displayId}
-        disabled={displaySession.status !== 'running'}
+        disabled={!canSendMessageToSession(displaySession)}
         isStreaming={isSessionStreaming}
       />
     </div>

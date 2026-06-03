@@ -156,7 +156,7 @@ export default function MessageList({
         <div className="flex-1 flex items-center justify-center text-claude-text-secondary">
           <div className="text-center max-w-md px-4">
             <div className="text-4xl mb-4">$_</div>
-            <p className="text-lg mb-2 font-bold text-claude-text">Ready to grep</p>
+            <p className="text-lg mb-2 font-bold text-claude-text">Ready to Build</p>
             <p className="text-sm text-claude-text-secondary">
               Ask questions, request code changes, or get help debugging.
             </p>

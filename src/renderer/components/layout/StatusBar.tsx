@@ -6,7 +6,8 @@ import CostBadge from '../analytics/CostBadge';
 import type { Branch } from '../../../shared/types';
 
 // Dev instance name from environment variable (set by scripts/dev.sh, passed via preload)
-const DEV_INSTANCE_NAME: string | null = (window as any).electronAPI?.devInstanceName || null;
+const DEV_INSTANCE_NAME: string | null =
+  (window as unknown as { electronAPI?: { devInstanceName?: string | null } }).electronAPI?.devInstanceName || null;
 
 // Extract subagent type from Task tool input
 function getSubagentType(input: Record<string, unknown>): string | null {
@@ -47,6 +48,7 @@ export default function StatusBar() {
   const [loadingBranches, setLoadingBranches] = useState(false);
   const [switchingBranch, setSwitchingBranch] = useState(false);
   const [appVersion, setAppVersion] = useState('0.0.0');
+  const [updateInfo, setUpdateInfo] = useState<{ version: string; downloadUrl: string; releaseNotes?: string } | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
   // Fetch app version on mount
@@ -54,11 +56,24 @@ export default function StatusBar() {
     window.electronAPI?.app.getVersion().then(setAppVersion).catch(() => undefined);
   }, []);
 
+  // Listen for update available notifications from main process
+  useEffect(() => {
+    const unsubscribe = window.electronAPI?.update?.onUpdateAvailable((info) => {
+      console.log(`[StatusBar] Update available: v${info.version}`);
+      setUpdateInfo(info);
+    });
+    return () => { unsubscribe?.(); };
+  }, []);
+
   const activeSession = sessions.find((s) => s.id === activeSessionId);
 
   // Watch for branch changes via file system events (not polling)
   useEffect(() => {
     if (!activeSessionId) return;
+    if (activeSession?.sshConfig) {
+      refreshSessionBranch(activeSessionId);
+      return;
+    }
 
     const startBranchWatcher = async () => {
       let result = await window.electronAPI.git.watchBranch(activeSessionId);
@@ -78,7 +93,7 @@ export default function StatusBar() {
     return () => {
       window.electronAPI.git.unwatchBranch(activeSessionId).catch(console.error);
     };
-  }, [activeSessionId, refreshSessionBranch]);
+  }, [activeSession?.sshConfig, activeSessionId, refreshSessionBranch]);
 
   // Listen for branch change events from the file system watcher
   useEffect(() => {
@@ -295,7 +310,20 @@ export default function StatusBar() {
         )}
 
         <div className="flex items-center gap-1.5">
-          <span style={{ letterSpacing: '0.05em' }}>G-BUILD v{appVersion}</span>
+          {updateInfo ? (
+            <button
+              onClick={() => window.electronAPI?.app.openExternal(updateInfo.downloadUrl)}
+              className="flex items-center gap-1.5 hover:text-white transition-colors"
+              title={`v${updateInfo.version} available — click to download${updateInfo.releaseNotes ? '\n\n' + updateInfo.releaseNotes.slice(0, 200) : ''}`}
+            >
+              <div className="w-1.5 h-1.5 bg-green-400 animate-pulse" style={{ borderRadius: 0 }} />
+              <span style={{ letterSpacing: '0.05em' }} className="text-green-400">
+                UPDATE v{updateInfo.version}
+              </span>
+            </button>
+          ) : (
+            <span style={{ letterSpacing: '0.05em' }}>G-BUILD v{appVersion}</span>
+          )}
           {isDevMode && (
             <span className="text-amber-400 font-bold ml-1" style={{ letterSpacing: '0.05em' }}>
               [{DEV_INSTANCE_NAME}]

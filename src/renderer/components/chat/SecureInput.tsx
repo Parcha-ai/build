@@ -66,7 +66,7 @@ function calculateEntropy(str: string): number {
  */
 function detectGenericHighEntropyKeys(text: string, alreadyDetected: Set<string>): Array<{ match: string; index: number }> {
   const results: Array<{ match: string; index: number }> = [];
-  const genericPattern = /(?:^|[\s=:"'`,;({\[])([a-zA-Z0-9][a-zA-Z0-9_-]{18,126}[a-zA-Z0-9])(?=$|[\s:"'`,;)}\]])/g;
+  const genericPattern = /(?:^|[\s=:"'`,;({[])([a-zA-Z0-9][a-zA-Z0-9_-]{18,126}[a-zA-Z0-9])(?=$|[\s:"'`,;)}\]])/g;
 
   let m;
   while ((m = genericPattern.exec(text)) !== null) {

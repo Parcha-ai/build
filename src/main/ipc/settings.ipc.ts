@@ -1,4 +1,5 @@
 import { IpcMain, app, shell, dialog, BrowserWindow } from 'electron';
+import { exec } from 'child_process';
 import { IPC_CHANNELS } from '../../shared/constants/channels';
 import { SettingsService } from '../services/settings.service';
 
@@ -46,7 +47,6 @@ export function registerSettingsHandlers(ipcMain: IpcMain): void {
       await shell.openExternal(url);
     } catch (err) {
       console.error('[Settings IPC] shell.openExternal failed, falling back to open command:', err);
-      const { exec } = require('child_process');
       exec(`open "${url.replace(/"/g, '\\"')}"`);
     }
   });
@@ -117,6 +117,7 @@ export function registerSettingsHandlers(ipcMain: IpcMain): void {
 
   // Docker status
   ipcMain.handle(IPC_CHANNELS.DOCKER_STATUS, async () => {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
     const Docker = require('dockerode');
     const docker = new Docker();
     try {

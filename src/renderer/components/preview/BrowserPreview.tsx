@@ -85,13 +85,20 @@ interface BrowserPreviewProps {
   isVisible?: boolean; // Controls visibility without unmounting
 }
 
+const DEBUG_BROWSER_PREVIEW = false;
+const logBrowserPreview = (...args: unknown[]) => {
+  if (DEBUG_BROWSER_PREVIEW) {
+    console.log(...args);
+  }
+};
+
 export default function BrowserPreview({ session, isVisible = true }: BrowserPreviewProps) {
   const webviewRef = useRef<Electron.WebviewTag>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const updateSession = useSessionStore((s) => s.updateSession);
 
   // Smart URL detection: use last browser URL, or find last localhost URL in transcript
-  const getSessionUrl = () => {
+  const getSessionUrl = useCallback(() => {
     if (session.lastBrowserUrl) {
       return session.lastBrowserUrl;
     }
@@ -105,7 +112,7 @@ export default function BrowserPreview({ session, isVisible = true }: BrowserPre
       if (msg.content) {
         const matches = msg.content.match(localhostRegex);
         if (matches && matches.length > 0) {
-          console.log('[BrowserPreview] Found localhost URL in transcript:', matches[matches.length - 1]);
+          logBrowserPreview('[BrowserPreview] Found localhost URL in transcript:', matches[matches.length - 1]);
           return matches[matches.length - 1];
         }
       }
@@ -114,12 +121,12 @@ export default function BrowserPreview({ session, isVisible = true }: BrowserPre
     // Fallback to session's web port, or default to 3000 if not set
     const port = session.ports?.web || 3000;
     return `http://localhost:${port}`;
-  };
+  }, [session.id, session.lastBrowserUrl, session.ports?.web]);
 
   const [url, setUrl] = useState(() => {
     try {
       const initialUrl = getSessionUrl();
-      console.log('[BrowserPreview] Initial URL:', initialUrl);
+      logBrowserPreview('[BrowserPreview] Initial URL:', initialUrl);
       return initialUrl;
     } catch (err) {
       console.error('[BrowserPreview] Error getting initial URL:', err);
@@ -141,6 +148,7 @@ export default function BrowserPreview({ session, isVisible = true }: BrowserPre
   const lastLoadedUrl = useRef<string>(url);
   // Initial URL for webview src - only used once, then loadURL is used for navigation
   const initialUrl = useRef<string>(url);
+  const initializedSessionId = useRef<string>(session.id);
 
   // Retry state for failed loads
   const retryCount = useRef(0);
@@ -187,14 +195,20 @@ export default function BrowserPreview({ session, isVisible = true }: BrowserPre
     [session.id, setSessionSelectedElement]
   );
 
-  // Initialize URL on mount (each BrowserPreview is now dedicated to one session)
+  // Initialize URL for this tab/session.
   useEffect(() => {
+    if (initializedSessionId.current === session.id) {
+      return;
+    }
+    initializedSessionId.current = session.id;
     const newUrl = getSessionUrl();
-    console.log('[BrowserPreview] Initializing browser for session:', session.id, '->', newUrl);
+    logBrowserPreview('[BrowserPreview] Initializing browser for session:', session.id, '->', newUrl);
+    initialUrl.current = newUrl;
+    lastLoadedUrl.current = '';
+    retryCount.current = 0;
     setUrl(newUrl);
     setInputUrl(newUrl);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // Only run once on mount - session won't change for this instance
+  }, [getSessionUrl, session.id]);
 
   // Navigate webview whenever url state changes and differs from what's currently loaded
   useEffect(() => {
@@ -204,12 +218,12 @@ export default function BrowserPreview({ session, isVisible = true }: BrowserPre
     // Only call loadURL if url differs from last loaded — avoids redundant reloads
     // when handleDidNavigate updates url state to reflect where the webview already is
     if (url !== lastLoadedUrl.current) {
-      console.log('[BrowserPreview] URL changed, calling loadURL:', url, '(was:', lastLoadedUrl.current, ')');
+      logBrowserPreview('[BrowserPreview] URL changed, calling loadURL:', url, '(was:', lastLoadedUrl.current, ')');
       lastLoadedUrl.current = url;
       // loadURL returns a Promise that rejects on ERR_ABORTED (-3) during redirects.
       // This is normal for SPAs — the page cancels initial load and redirects.
       webview.loadURL(url).catch((e: Error) => {
-        console.log('[BrowserPreview] loadURL rejected (usually harmless redirect):', e.message);
+        logBrowserPreview('[BrowserPreview] loadURL rejected (usually harmless redirect):', e.message);
       });
     }
   }, [url, webviewReady]);
@@ -226,7 +240,7 @@ export default function BrowserPreview({ session, isVisible = true }: BrowserPre
       // Get webContentsId and register with main process for CDP
       const webContentsId = (webview as any).getWebContentsId?.();
       if (webContentsId) {
-        console.log('[BrowserPreview] Registering webview for CDP:', session.id, '->', webContentsId);
+        logBrowserPreview('[BrowserPreview] Registering webview for CDP:', session.id, '->', webContentsId);
         window.electronAPI.browser.registerWebview(session.id, webContentsId);
       }
 
@@ -251,20 +265,20 @@ export default function BrowserPreview({ session, isVisible = true }: BrowserPre
       return;
     }
 
-    console.log('[BrowserPreview] Setting up webview, initial URL:', url);
+    logBrowserPreview('[BrowserPreview] Setting up webview, initial URL:', url);
 
     const handleDidStartLoading = () => {
-      console.log('[BrowserPreview] Started loading');
+      logBrowserPreview('[BrowserPreview] Started loading');
       setIsLoading(true);
     };
     const handleDidStopLoading = () => {
-      console.log('[BrowserPreview] Stopped loading');
+      logBrowserPreview('[BrowserPreview] Stopped loading');
       setIsLoading(false);
       setCanGoBack(webview.canGoBack());
       setCanGoForward(webview.canGoForward());
     };
     const handleDidNavigate = (e: Electron.DidNavigateEvent) => {
-      console.log('[BrowserPreview] handleDidNavigate fired with e.url:', e.url);
+      logBrowserPreview('[BrowserPreview] handleDidNavigate fired with e.url:', e.url);
       // Successful navigation — reset retry counter
       retryCount.current = 0;
       // Sync lastLoadedUrl so the navigation effect doesn't re-trigger loadURL
@@ -286,12 +300,12 @@ export default function BrowserPreview({ session, isVisible = true }: BrowserPre
       const retryableCodes = [-102, -105, -106];
       if (retryableCodes.includes(e.errorCode) && retryCount.current < 3) {
         retryCount.current++;
-        console.log(`[BrowserPreview] Scheduling retry ${retryCount.current}/3 in 3 seconds...`);
+        logBrowserPreview(`[BrowserPreview] Scheduling retry ${retryCount.current}/3 in 3 seconds...`);
         if (retryTimer.current) clearTimeout(retryTimer.current);
         retryTimer.current = setTimeout(() => {
           const wv = webviewRef.current;
           if (wv) {
-            console.log(`[BrowserPreview] Retrying navigation (attempt ${retryCount.current})...`);
+            logBrowserPreview(`[BrowserPreview] Retrying navigation (attempt ${retryCount.current})...`);
             wv.reload();
           }
         }, 3000);
@@ -320,7 +334,7 @@ export default function BrowserPreview({ session, isVisible = true }: BrowserPre
       const { sessionId: reqSessionId, url: targetUrl } = data;
       if (reqSessionId !== session.id) return;
 
-      console.log('[BrowserPreview] Navigation request from main process:', targetUrl);
+      logBrowserPreview('[BrowserPreview] Navigation request from main process:', targetUrl);
       navigate(targetUrl);
     });
 
@@ -336,7 +350,7 @@ export default function BrowserPreview({ session, isVisible = true }: BrowserPre
     const handleBrowserRefresh = () => {
       const webview = webviewRef.current;
       if (webview && isVisible) {
-        console.log('[BrowserPreview] CMD+R hard refresh triggered');
+        logBrowserPreview('[BrowserPreview] CMD+R hard refresh triggered');
         webview.reloadIgnoringCache();
       }
     };
@@ -347,15 +361,15 @@ export default function BrowserPreview({ session, isVisible = true }: BrowserPre
 
   // Handle automation events from main process (CDP-based automation visual feedback)
   useEffect(() => {
-    console.log('[BrowserPreview] Setting up automation event listener for session:', session.id);
+    logBrowserPreview('[BrowserPreview] Setting up automation event listener for session:', session.id);
     const unsubscribe = window.electronAPI.browser.onAutomationEvent((data: { sessionId: string; type: string; action: string; data?: Record<string, unknown> }) => {
-      console.log('[BrowserPreview] Received automation event:', data, 'current session:', session.id);
+      logBrowserPreview('[BrowserPreview] Received automation event:', data, 'current session:', session.id);
       if (data.sessionId !== session.id) {
-        console.log('[BrowserPreview] Ignoring event - session mismatch');
+        logBrowserPreview('[BrowserPreview] Ignoring event - session mismatch');
         return;
       }
 
-      console.log('[BrowserPreview] Processing automation event:', data);
+      logBrowserPreview('[BrowserPreview] Processing automation event:', data);
 
       if (data.type === 'start') {
         setIsAutomationActive(true);
@@ -393,13 +407,13 @@ export default function BrowserPreview({ session, isVisible = true }: BrowserPre
 
   // Handle Stagehand browser updates — navigate webview to match Stagehand's URL
   useEffect(() => {
-    console.log('[BrowserPreview] Setting up Stagehand update listener for session:', session.id);
+    logBrowserPreview('[BrowserPreview] Setting up Stagehand update listener for session:', session.id);
     const unsubscribe = window.electronAPI.browser.onBrowserUpdate((data: { sessionId: string; screenshot: string; url?: string; timestamp: string }) => {
       if (data.sessionId !== session.id) {
         return;
       }
 
-      console.log('[BrowserPreview] Stagehand update received:', data.url || 'unknown URL');
+      logBrowserPreview('[BrowserPreview] Stagehand update received:', data.url || 'unknown URL');
 
       // Navigate the webview to match Stagehand's current URL
       if (data.url) {
@@ -461,7 +475,7 @@ export default function BrowserPreview({ session, isVisible = true }: BrowserPre
         return;
       }
 
-      console.log('[BrowserPreview] Action request:', action, params);
+      logBrowserPreview('[BrowserPreview] Action request:', action, params);
 
       // Show automation active state
       setIsAutomationActive(true);
@@ -645,7 +659,7 @@ export default function BrowserPreview({ session, isVisible = true }: BrowserPre
           requestId, // Include requestId for proper matching
         });
 
-        console.log('[BrowserPreview] Snapshot captured successfully');
+        logBrowserPreview('[BrowserPreview] Snapshot captured successfully');
       } catch (error) {
         console.error('[BrowserPreview] Error capturing snapshot:', error);
         // Send error snapshot so main process doesn't timeout
@@ -670,7 +684,7 @@ export default function BrowserPreview({ session, isVisible = true }: BrowserPre
   useEffect(() => {
     const handleRefresh = (e: CustomEvent<{ sessionId: string }>) => {
       if (e.detail.sessionId === session.id) {
-        console.log('[BrowserPreview] Hard refreshing browser via Cmd+R');
+        logBrowserPreview('[BrowserPreview] Hard refreshing browser via Cmd+R');
         webviewRef.current?.reloadIgnoringCache();
       }
     };
@@ -683,7 +697,7 @@ export default function BrowserPreview({ session, isVisible = true }: BrowserPre
   useEffect(() => {
     const handleTextEditReload = (e: CustomEvent<{ sessionId: string }>) => {
       if (e.detail.sessionId === session.id) {
-        console.log('[BrowserPreview] Hard reloading browser after text replacement edit');
+        logBrowserPreview('[BrowserPreview] Hard reloading browser after text replacement edit');
         webviewRef.current?.reloadIgnoringCache();
       }
     };
@@ -695,11 +709,11 @@ export default function BrowserPreview({ session, isVisible = true }: BrowserPre
   const injectInspector = useCallback(async () => {
     const webview = webviewRef.current;
     if (!webview) return;
-    console.log('[BrowserPreview] injectInspector called');
+    logBrowserPreview('[BrowserPreview] injectInspector called');
 
     // Listen for console messages (our communication channel)
     const handleConsoleMessage = async (event: Electron.ConsoleMessageEvent) => {
-      console.log('[BrowserPreview] Console message received:', event.message.slice(0, 100));
+      logBrowserPreview('[BrowserPreview] Console message received:', event.message.slice(0, 100));
 
       // Handle text edit start/end to blur/focus chat input
       if (event.message.startsWith('GREP_TEXT_EDIT_START:')) {
@@ -718,7 +732,7 @@ export default function BrowserPreview({ session, isVisible = true }: BrowserPre
       if (event.message.startsWith('GREP_INSPECTOR:')) {
         try {
           const data = JSON.parse(event.message.replace('GREP_INSPECTOR:', ''));
-          console.log('[BrowserPreview] Inspector data parsed:', data);
+          logBrowserPreview('[BrowserPreview] Inspector data parsed:', data);
 
           // Handle inline text replacement
           if (data.type === 'text_replacement') {
@@ -768,10 +782,10 @@ Use the Edit tool to make the change. The page will reload automatically once yo
             };
 
             try {
-              console.log('[BrowserPreview] Capturing screenshot of rect:', rect);
+              logBrowserPreview('[BrowserPreview] Capturing screenshot of rect:', rect);
               const image = await webview.capturePage(rect as Electron.Rectangle);
               screenshotBase64 = image.toDataURL().split(',')[1] || '';
-              console.log('[BrowserPreview] Screenshot captured, size:', screenshotBase64.length);
+              logBrowserPreview('[BrowserPreview] Screenshot captured, size:', screenshotBase64.length);
             } catch (screenshotError) {
               console.error('[BrowserPreview] Failed to capture screenshot:', screenshotError);
             }
@@ -801,7 +815,7 @@ ${data.textContent ? `**Text Content:** "${data.textContent.slice(0, 100)}${data
 **Your instruction:**
 `;
 
-          console.log('[BrowserPreview] Element selected - populating chat input');
+          logBrowserPreview('[BrowserPreview] Element selected - populating chat input');
 
           // Dispatch event to populate chat input with element context (as attachments only, no text)
           const insertEvent = new CustomEvent('grep-insert-chat', {
@@ -1313,7 +1327,7 @@ ${data.textContent ? `**Text Content:** "${data.textContent.slice(0, 100)}${data
           console.log('[GREP] Inspector initialized successfully');
         })();
       `);
-      console.log('[BrowserPreview] Inspector injected successfully');
+      logBrowserPreview('[BrowserPreview] Inspector injected successfully');
     } catch (error) {
       console.error('[BrowserPreview] Failed to inject inspector:', error);
     }
@@ -1322,10 +1336,10 @@ ${data.textContent ? `**Text Content:** "${data.textContent.slice(0, 100)}${data
   // Handle inspector mode - inject when active, cleanup when inactive
   useEffect(() => {
     const webview = webviewRef.current;
-    console.log('[BrowserPreview] Inspector effect running, isInspectorActive:', isInspectorActive, 'webview:', !!webview);
+    logBrowserPreview('[BrowserPreview] Inspector effect running, isInspectorActive:', isInspectorActive, 'webview:', !!webview);
 
     if (isInspectorActive && webview) {
-      console.log('[BrowserPreview] Calling injectInspector...');
+      logBrowserPreview('[BrowserPreview] Calling injectInspector...');
       injectInspector();
     } else if (!isInspectorActive && webview) {
       // Cleanup when inspector is disabled
@@ -1339,7 +1353,9 @@ ${data.textContent ? `**Text Content:** "${data.textContent.slice(0, 100)}${data
           document.body.style.cursor = '';
           document.getElementById('grep-inspector')?.remove();
           document.getElementById('grep-inspector-tooltip')?.remove();
-        `).catch(() => {}); // Ignore promise rejection if page not loaded
+        `).catch(() => {
+          // Ignore promise rejection if page not loaded.
+        });
       } catch {
         // Ignore synchronous error if webview not ready
       }
@@ -1378,11 +1394,11 @@ ${data.textContent ? `**Text Content:** "${data.textContent.slice(0, 100)}${data
   };
 
   const navigate = (targetUrl: string) => {
-    console.log('[BrowserPreview] navigate() called with:', targetUrl);
+    logBrowserPreview('[BrowserPreview] navigate() called with:', targetUrl);
     if (!targetUrl.startsWith('http') && !targetUrl.startsWith('file://')) {
       targetUrl = 'http://' + targetUrl;
     }
-    console.log('[BrowserPreview] navigate() setting URL to:', targetUrl);
+    logBrowserPreview('[BrowserPreview] navigate() setting URL to:', targetUrl);
     // Setting url state triggers the navigation effect, which calls loadURL
     // if the URL differs from lastLoadedUrl
     setUrl(targetUrl);
@@ -1400,7 +1416,7 @@ ${data.textContent ? `**Text Content:** "${data.textContent.slice(0, 100)}${data
 
     try {
       // First, clear storage at the Electron session level (cookies, etc.)
-      await window.electronAPI.browser.clearStorage();
+      await window.electronAPI.browser.clearStorage(session.id);
 
       // Then clear storage in the page context (localStorage, sessionStorage, IndexedDB)
       await webview.executeJavaScript(`
@@ -1416,7 +1432,7 @@ ${data.textContent ? `**Text Content:** "${data.textContent.slice(0, 100)}${data
         }
       `);
 
-      console.log('[BrowserPreview] All storage cleared successfully');
+      logBrowserPreview('[BrowserPreview] All storage cleared successfully');
 
       // Hard reload the page to start fresh
       webview.reloadIgnoringCache();
@@ -1532,7 +1548,7 @@ ${data.textContent ? `**Text Content:** "${data.textContent.slice(0, 100)}${data
                   content: '',
                 },
               }));
-              console.log('[BrowserPreview] Screenshot captured and attached to input');
+              logBrowserPreview('[BrowserPreview] Screenshot captured and attached to input');
             } catch (err) {
               console.error('[BrowserPreview] Screenshot capture failed:', err);
             }
@@ -1594,7 +1610,7 @@ ${data.textContent ? `**Text Content:** "${data.textContent.slice(0, 100)}${data
       >
         {/* Live webview — always visible. Stagehand controls this same webview via CDP,
             so the user sees automation happening in real time. */}
-        {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions */}
+        {/* eslint-disable-next-line */}
         <div
           className="absolute inset-0 w-full h-full"
           onClick={() => webviewRef.current?.focus()}
@@ -1787,7 +1803,7 @@ ${data.textContent ? `**Text Content:** "${data.textContent.slice(0, 100)}${data
                   },
                 }));
 
-                console.log('[BrowserPreview] Region captured:', { width: Math.round(width), height: Math.round(height), elements: elements.length, reactComponents: uniqueComponents });
+                logBrowserPreview('[BrowserPreview] Region captured:', { width: Math.round(width), height: Math.round(height), elements: elements.length, reactComponents: uniqueComponents });
               } catch (err) {
                 console.error('[BrowserPreview] Region capture failed:', err);
               }

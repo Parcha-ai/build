@@ -75,7 +75,7 @@ async function downloadFile(url: string, dest: string): Promise<void> {
           resolve();
         });
       }).on('error', (err) => {
-        fs.unlink(dest, () => {});
+      fs.unlink(dest, () => undefined);
         reject(err);
       });
     };

@@ -365,7 +365,17 @@ function addUniqueContextFile(files: ProjectInstructionContextFile[], seen: Set<
 export function buildProjectInstructionContext(projectPath?: string, options: ProjectInstructionContextOptions = {}): string {
   const files: ProjectInstructionContextFile[] = [];
   const seen = new Set<string>();
-  const instructionNames = new Set(['CLAUDE.md', 'AGENTS.md', 'AGENT.md']);
+  const instructionNames = new Set([
+    'CLAUDE.md',
+    'AGENTS.md',
+    'AGENT.md',
+    'Agent.md',
+    'agent.md',
+    'agents.md',
+    'GEMINI.md',
+    'OPENCODE.md',
+    'MEMORY.md',
+  ]);
 
   const addInstructionFile = (filePath: string, scope: string) => {
     addUniqueContextFile(
@@ -417,6 +427,7 @@ export function buildProjectInstructionContext(projectPath?: string, options: Pr
 
   const userClaudeDir = path.join(os.homedir(), '.claude');
   addUniqueContextFile(files, seen, readContextFile(path.join(userClaudeDir, 'CLAUDE.md'), 'user CLAUDE.md', PROJECT_CONTEXT_FILE_MAX_CHARS));
+  addUniqueContextFile(files, seen, readContextFile(path.join(userClaudeDir, 'MEMORY.md'), 'user MEMORY.md', PROJECT_CONTEXT_FILE_MAX_CHARS));
 
   const userAgentsDir = path.join(userClaudeDir, 'agents');
   for (const filePath of collectFilesByPredicate(userAgentsDir, (name) => name.endsWith('.md'), 8)) {
@@ -434,6 +445,15 @@ export function buildProjectInstructionContext(projectPath?: string, options: Pr
     const skillName = path.basename(path.dirname(filePath));
     addUniqueContextFile(files, seen, readContextFile(filePath, `user skill: ${skillName}`, SKILL_CONTEXT_FILE_MAX_CHARS));
   }
+
+  const userCodexDir = path.join(os.homedir(), '.codex');
+  for (const name of ['AGENTS.md', 'AGENT.md', 'agent.md']) {
+    addUniqueContextFile(files, seen, readContextFile(path.join(userCodexDir, name), `user codex ${name}`, PROJECT_CONTEXT_FILE_MAX_CHARS));
+  }
+
+  addUniqueContextFile(files, seen, readContextFile(path.join(os.homedir(), '.gemini', 'GEMINI.md'), 'user GEMINI.md', PROJECT_CONTEXT_FILE_MAX_CHARS));
+  addUniqueContextFile(files, seen, readContextFile(path.join(os.homedir(), '.config', 'opencode', 'OPENCODE.md'), 'user OPENCODE.md', PROJECT_CONTEXT_FILE_MAX_CHARS));
+  addUniqueContextFile(files, seen, readContextFile(path.join(os.homedir(), '.config', 'opencode', 'AGENTS.md'), 'user opencode AGENTS.md', PROJECT_CONTEXT_FILE_MAX_CHARS));
 
   return formatProjectInstructionContextFiles(files, options);
 }
@@ -461,10 +481,14 @@ export function formatProjectInstructionContextFiles(files: ProjectInstructionCo
   if (blocks.length === 0) return '';
 
   return `<project_harness_context>
-  Build injected the following project and user instructions so this harness has
-  the same operating context Claude Code, Codex, Cursor, and other coding
-  harnesses would normally discover. Treat nearer project instructions as higher
-  priority than user-level agents, commands, or skills.
+Build injected the following project and user instructions so this harness has
+the same operating context Claude Code, Codex, Cursor, Gemini, OpenCode, and
+other coding harnesses would normally discover. Treat nearer project
+instructions as higher priority than user-level agents, commands, or skills.
+When an instruction says "Claude", "Claude Code", or "claude.ai/code", apply it
+to the active Build coding harness unless it is explicitly about
+Anthropic-specific APIs, models, or commands. Preserve persona, tone, workflow,
+permissions, testing, and repository conventions from these files.
 
 ${blocks.join('\n')}
 </project_harness_context>`;

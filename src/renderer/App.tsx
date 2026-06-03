@@ -19,10 +19,70 @@ import BedtimeLockModal from './components/layout/BedtimeLockModal';
 import DailyReviewModal from './components/tasks/DailyReviewModal';
 import BedtimeTaskReviewModal from './components/tasks/BedtimeTaskReviewModal';
 import { Terminal, Globe, PanelRight, Settings, PanelLeftClose, Monitor, AlertTriangle, Package, FileText, FileCode, ClipboardList, GitBranch } from 'lucide-react';
+import { getSessionDisplayName } from './utils/session-display';
 
 // Check if we're running in Electron (has electronAPI) or browser preview mode
 const isElectron = typeof window !== 'undefined' && !!window.electronAPI;
 const PRIMARY_MODIFIER_KEY: 'metaKey' | 'ctrlKey' = /mac/i.test(navigator.platform) ? 'metaKey' : 'ctrlKey';
+const DAILY_REVIEW_DONE_KEY = 'daily-review-date';
+const DAILY_REVIEW_CLAIM_KEY = 'daily-review-active-window';
+const DAILY_REVIEW_WINDOW_ID_KEY = 'daily-review-window-id';
+const DAILY_REVIEW_CLAIM_TTL_MS = 6 * 60 * 60 * 1000;
+
+function getDailyReviewWindowId() {
+  try {
+    const existing = window.sessionStorage.getItem(DAILY_REVIEW_WINDOW_ID_KEY);
+    if (existing) return existing;
+    const id = `window-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    window.sessionStorage.setItem(DAILY_REVIEW_WINDOW_ID_KEY, id);
+    return id;
+  } catch {
+    return `window-${Date.now()}`;
+  }
+}
+
+function claimDailyReviewWindow(today: string, windowId: string) {
+  try {
+    const raw = localStorage.getItem(DAILY_REVIEW_CLAIM_KEY);
+    if (raw) {
+      const claim = JSON.parse(raw) as { date?: string; windowId?: string; claimedAt?: number };
+      const isCurrentDay = claim.date === today;
+      const isFresh = typeof claim.claimedAt === 'number' && Date.now() - claim.claimedAt < DAILY_REVIEW_CLAIM_TTL_MS;
+      if (isCurrentDay && isFresh && claim.windowId && claim.windowId !== windowId) {
+        return false;
+      }
+    }
+
+    localStorage.setItem(DAILY_REVIEW_CLAIM_KEY, JSON.stringify({
+      date: today,
+      windowId,
+      claimedAt: Date.now(),
+    }));
+    return true;
+  } catch {
+    return true;
+  }
+}
+
+function releaseDailyReviewWindow(windowId: string) {
+  try {
+    const raw = localStorage.getItem(DAILY_REVIEW_CLAIM_KEY);
+    if (!raw) return;
+    const claim = JSON.parse(raw) as { windowId?: string };
+    if (claim.windowId === windowId) {
+      localStorage.removeItem(DAILY_REVIEW_CLAIM_KEY);
+    }
+  } catch {
+    localStorage.removeItem(DAILY_REVIEW_CLAIM_KEY);
+  }
+}
+
+function parseTimeParts(value: string | undefined, fallbackHour: number, fallbackMinute: number) {
+  const [rawHour, rawMinute] = (value || '').split(':').map(Number);
+  const hour = Number.isFinite(rawHour) ? rawHour : fallbackHour;
+  const minute = Number.isFinite(rawMinute) ? rawMinute : fallbackMinute;
+  return { hour, minute };
+}
 
 // Preview Mode Component - shown when running outside Electron
 function PreviewMode() {
@@ -211,25 +271,26 @@ const StatusBarClock = memo(function StatusBarClock({
 // Main App component that requires Electron
 function ElectronApp() {
   const { user, isLoading, isDevMode } = useAuthStore();
-  const { activeSessionId, sessions } = useSessionStore();
-  const {
-    isSidebarOpen,
-    isTerminalPanelOpen,
-    isBrowserPanelOpen,
-    isExtensionsPanelOpen,
-    isPlanPanelOpen,
-    isGitPanelOpen,
-    toggleSidebar,
-    toggleTerminalPanel,
-    toggleBrowserPanel,
-    toggleExtensionsPanel,
-    togglePlanPanel,
-    toggleGitPanel,
-    cycleSplitRatio,
-    openSettings,
-    hasApiKey,
-  } = useUIStore();
-  const { isEditorOpen, openEditor, closeEditor } = useEditorStore();
+  const activeSessionId = useSessionStore((s) => s.activeSessionId);
+  const sessions = useSessionStore((s) => s.sessions);
+  const isSidebarOpen = useUIStore((s) => s.isSidebarOpen);
+  const isTerminalPanelOpen = useUIStore((s) => s.isTerminalPanelOpen);
+  const isBrowserPanelOpen = useUIStore((s) => s.isBrowserPanelOpen);
+  const isExtensionsPanelOpen = useUIStore((s) => s.isExtensionsPanelOpen);
+  const isPlanPanelOpen = useUIStore((s) => s.isPlanPanelOpen);
+  const isGitPanelOpen = useUIStore((s) => s.isGitPanelOpen);
+  const toggleSidebar = useUIStore((s) => s.toggleSidebar);
+  const toggleTerminalPanel = useUIStore((s) => s.toggleTerminalPanel);
+  const toggleBrowserPanel = useUIStore((s) => s.toggleBrowserPanel);
+  const toggleExtensionsPanel = useUIStore((s) => s.toggleExtensionsPanel);
+  const togglePlanPanel = useUIStore((s) => s.togglePlanPanel);
+  const toggleGitPanel = useUIStore((s) => s.toggleGitPanel);
+  const cycleSplitRatio = useUIStore((s) => s.cycleSplitRatio);
+  const openSettings = useUIStore((s) => s.openSettings);
+  const hasApiKey = useUIStore((s) => s.hasApiKey);
+  const isEditorOpen = useEditorStore((s) => s.isEditorOpen);
+  const openEditor = useEditorStore((s) => s.openEditor);
+  const closeEditor = useEditorStore((s) => s.closeEditor);
 
   // Toggle editor panel
   const toggleEditorPanel = () => {
@@ -250,6 +311,7 @@ function ElectronApp() {
   const [bedtimeTime, setBedtimeTime] = useState('23:00');
   const [showDailyReviewModal, setShowDailyReviewModal] = useState(false);
   const [showBedtimeTaskReviewModal, setShowBedtimeTaskReviewModal] = useState(false);
+  const dailyReviewWindowId = useMemo(() => getDailyReviewWindowId(), []);
 
   const activeSession = sessions.find((s) => s.id === activeSessionId);
 
@@ -391,13 +453,16 @@ function ElectronApp() {
 
       const now = new Date();
       const hour = now.getHours();
+      const min = now.getMinutes();
+      const today = now.toDateString();
+      const reviewTime = parseTimeParts((settings as any).dailyReviewTime, 9, 0);
 
-      // Show if: after 5 AM, before 6 PM, not yet reviewed today
-      const isAfterMorning = hour >= 5;
+      // Show if: after configured review time, before 6 PM, not yet reviewed today.
+      const isPastReviewTime = hour > reviewTime.hour || (hour === reviewTime.hour && min >= reviewTime.minute);
       const isBeforeEvening = hour < 18;
-      const reviewedToday = localStorage.getItem('daily-review-date') === now.toDateString();
+      const reviewedToday = localStorage.getItem(DAILY_REVIEW_DONE_KEY) === today;
 
-      if (isAfterMorning && isBeforeEvening && !reviewedToday) {
+      if (isPastReviewTime && isBeforeEvening && !reviewedToday && claimDailyReviewWindow(today, dailyReviewWindowId)) {
         setShowDailyReviewModal(true);
       }
     };
@@ -405,7 +470,11 @@ function ElectronApp() {
     const interval = setInterval(checkDailyReview, 60000);
     checkDailyReview();
     return () => clearInterval(interval);
-  }, []);
+  }, [dailyReviewWindowId]);
+
+  useEffect(() => {
+    return () => releaseDailyReviewWindow(dailyReviewWindowId);
+  }, [dailyReviewWindowId]);
 
   // Bedtime task review check — fires 30min before bedtime
   useEffect(() => {
@@ -442,7 +511,8 @@ function ElectronApp() {
   }, []);
 
   const handleDailyReviewDismiss = () => {
-    localStorage.setItem('daily-review-date', new Date().toDateString());
+    localStorage.setItem(DAILY_REVIEW_DONE_KEY, new Date().toDateString());
+    releaseDailyReviewWindow(dailyReviewWindowId);
     setShowDailyReviewModal(false);
   };
 
@@ -540,19 +610,17 @@ function ElectronApp() {
 
           const sessionState = useSessionStore.getState();
           const activeId = sessionState.activeSessionId;
-          if (!activeId) {
+          const targetId = uiState.isCommandCenterActive
+            ? uiState.commandCenterFocusedSessionId
+            : uiState.isAgentViewActive
+              ? uiState.agentViewSelectedSessionId
+              : activeId;
+          if (!targetId) {
             return;
           }
 
-          let rootId = activeId;
-          let session = sessionState.sessions.find((candidate) => candidate.id === rootId);
-          while (session?.parentSessionId) {
-            rootId = session.parentSessionId;
-            session = sessionState.sessions.find((candidate) => candidate.id === rootId);
-          }
-
           window.dispatchEvent(new CustomEvent('grep-browser-refresh', {
-            detail: { sessionId: rootId },
+            detail: { sessionId: targetId },
           }));
           return;
         }
@@ -830,8 +898,11 @@ function ElectronApp() {
 
 // Browser-only mode — rendered in the pop-out browser window
 function BrowserOnlyApp() {
-  const { sessions, activeSessionId, commandCenterSessionIds } = useSessionStore();
-  const { commandCenterFocusedSessionId, setCommandCenterFocusedSession, enableSessionBrowser } = useUIStore();
+  const sessions = useSessionStore((s) => s.sessions);
+  const activeSessionId = useSessionStore((s) => s.activeSessionId);
+  const commandCenterSessionIds = useSessionStore((s) => s.commandCenterSessionIds);
+  const commandCenterFocusedSessionId = useUIStore((s) => s.commandCenterFocusedSessionId);
+  const setCommandCenterFocusedSession = useUIStore((s) => s.setCommandCenterFocusedSession);
 
   const [ready, setReady] = useState(false);
   useEffect(() => {
@@ -849,15 +920,6 @@ function BrowserOnlyApp() {
       .map(id => sessions.find(s => s.id === id))
       .filter((s): s is NonNullable<typeof s> => !!s);
   }, [commandCenterSessionIds, sessions]);
-
-  // Auto-enable browsers for all command center sessions
-  useEffect(() => {
-    if (ready) {
-      for (const s of ccSessions) {
-        enableSessionBrowser(s.id);
-      }
-    }
-  }, [ready, ccSessions, enableSessionBrowser]);
 
   // Active tab follows focused session
   const activeSessionForBrowser = commandCenterFocusedSessionId
@@ -900,33 +962,21 @@ function BrowserOnlyApp() {
                     className={`w-1.5 h-1.5 flex-shrink-0 ${s.status === 'running' ? 'bg-green-500' : 'bg-gray-500'}`}
                     style={{ borderRadius: 0 }}
                   />
-                  <span className="truncate max-w-[140px]">{s.forkName || s.name}</span>
+                  <span className="truncate max-w-[140px]">{getSessionDisplayName(s)}</span>
                 </button>
               );
             })}
           </div>
         ) : (
           <span className="text-[10px] font-mono font-bold text-claude-text-secondary uppercase px-4" style={{ letterSpacing: '0.1em' }}>
-            Browser — {activeSessionForBrowser.forkName || activeSessionForBrowser.name}
+            Browser — {getSessionDisplayName(activeSessionForBrowser)}
           </span>
         )}
       </div>
-      {/* Browser views — all mounted, only active visible */}
+      {/* Browser view — keep only the focused session mounted. */}
       <div className="flex-1 overflow-hidden relative">
         <React.Suspense fallback={<div className="flex-1 flex items-center justify-center"><p className="text-claude-text-secondary">Loading...</p></div>}>
-          {ccSessions.length > 1 ? (
-            ccSessions.map(s => (
-              <div
-                key={s.id}
-                className="absolute inset-0"
-                style={{ display: s.id === activeSessionForBrowser.id ? 'block' : 'none' }}
-              >
-                <BrowserPreview session={s} isVisible={s.id === activeSessionForBrowser.id} />
-              </div>
-            ))
-          ) : (
-            <BrowserPreview session={activeSessionForBrowser} isVisible={true} />
-          )}
+          <BrowserPreview key={activeSessionForBrowser.id} session={activeSessionForBrowser} isVisible={true} />
         </React.Suspense>
       </div>
     </div>

@@ -21,7 +21,7 @@ const settingsStore: any = new Store({ name: 'claudette-settings' });
  * Get the last N path segments from a path (truncate from left)
  * e.g., "/home/ubuntu/dev/parcha/grep3" with 2 segments -> "parcha/grep3"
  */
-function getPathTail(path: string, segments: number = 2): string {
+function getPathTail(path: string, segments = 2): string {
   const parts = path.split('/').filter(Boolean);
   if (parts.length <= segments) {
     return parts.join('/');

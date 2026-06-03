@@ -1,8 +1,9 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { Play, Square, Trash2, GitBranch, GitFork, Server, Upload, Pencil, Star, Download, RefreshCw, LayoutGrid } from 'lucide-react';
 import { useSessionStore } from '../../stores/session.store';
 import type { Session } from '../../../shared/types';
 import { GSTACK_MODE_META } from '../../../shared/types';
+import { getSessionDisplayName } from '../../utils/session-display';
 
 /**
  * Truncate a file path to show at most the last N segments.
@@ -36,15 +37,25 @@ interface SessionCardProps {
   isActive: boolean;
   onClick: () => void;
   isFork?: boolean;
+  displayName?: string;
   onTeleportRequest?: (session: Session) => void;
   onDownload?: (session: Session) => void;
 }
 
-export default function SessionCard({ session, isActive, onClick, isFork = false, onTeleportRequest, onDownload }: SessionCardProps) {
-  const { sessions, startSession, stopSession, deleteSession, updateSession, addToCommandCenter, removeFromCommandCenter, commandCenterSessionIds, loadMessages } = useSessionStore();
+export default function SessionCard({ session, isActive, onClick, isFork = false, displayName, onTeleportRequest, onDownload }: SessionCardProps) {
+  const sessions = useSessionStore((s) => s.sessions);
+  const startSession = useSessionStore((s) => s.startSession);
+  const stopSession = useSessionStore((s) => s.stopSession);
+  const deleteSession = useSessionStore((s) => s.deleteSession);
+  const updateSession = useSessionStore((s) => s.updateSession);
+  const addToCommandCenter = useSessionStore((s) => s.addToCommandCenter);
+  const removeFromCommandCenter = useSessionStore((s) => s.removeFromCommandCenter);
+  const commandCenterSessionIds = useSessionStore((s) => s.commandCenterSessionIds);
+  const loadMessages = useSessionStore((s) => s.loadMessages);
   const activity = useSessionStore((s) => s.sessionActivity[session.id]);
+  const resolvedDisplayName = displayName || getSessionDisplayName(session);
   // Check if this session (or its root) is in the command center
-  const isInCommandCenter = (() => {
+  const isInCommandCenter = useMemo(() => {
     let rootId = session.id;
     let s = sessions.find(x => x.id === rootId);
     while (s?.parentSessionId) {
@@ -52,7 +63,7 @@ export default function SessionCard({ session, isActive, onClick, isFork = false
       s = sessions.find(x => x.id === rootId);
     }
     return commandCenterSessionIds.includes(rootId);
-  })();
+  }, [commandCenterSessionIds, session.id, sessions]);
   const [isRenaming, setIsRenaming] = useState(false);
   const [editedName, setEditedName] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
@@ -163,7 +174,7 @@ export default function SessionCard({ session, isActive, onClick, isFork = false
   };
 
   const startRenaming = () => {
-    setEditedName(session.forkName || session.name);
+    setEditedName(resolvedDisplayName);
     setIsRenaming(true);
   };
 
@@ -199,17 +210,17 @@ export default function SessionCard({ session, isActive, onClick, isFork = false
     }
   }, [isRenaming]);
 
-  // Periodic branch refresh for SSH sessions (every 30s)
+  // Periodic branch refresh for the active SSH session only.
   const refreshSessionBranch = useSessionStore((s) => s.refreshSessionBranch);
   useEffect(() => {
-    if (!isSSH) return;
+    if (!isSSH || !isActive) return;
     // Initial refresh
     refreshSessionBranch(session.id);
     const interval = setInterval(() => {
       refreshSessionBranch(session.id);
     }, 30000);
     return () => clearInterval(interval);
-  }, [isSSH, session.id, refreshSessionBranch]);
+  }, [isSSH, isActive, session.id, refreshSessionBranch]);
 
   // Get the appropriate icon based on session type
   const getSessionIcon = () => {
@@ -285,7 +296,7 @@ export default function SessionCard({ session, isActive, onClick, isFork = false
                 className={`text-xs font-bold truncate ${isActive ? 'text-claude-text' : 'text-claude-text-secondary'} cursor-text`}
                 onDoubleClick={handleDoubleClick}
               >
-                {session.aiGeneratedName || session.forkName || session.name}
+                {resolvedDisplayName}
               </h4>
               {/* Activity indicator: green pulse = active/streaming, amber = waiting for input */}
               {activity === 'active' && (

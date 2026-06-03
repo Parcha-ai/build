@@ -464,6 +464,8 @@ function WriteView({ content, filePath, toolCallId, priority = false }: { conten
 function DiffView({ oldString, newString, filePath, toolCallId, priority = false }: { oldString: string; newString: string; filePath: string; toolCallId: string; priority?: boolean }) {
   const language = getLanguageFromPath(filePath);
   const openFile = useEditorStore((state) => state.openFile);
+  const lineCount = Math.max(oldString.split('\n').length, newString.split('\n').length);
+  const editorHeight = `${Math.min(priority ? 280 : 220, Math.max(88, lineCount * 22 + 44))}px`;
 
   const handleDiffClick = async () => {
     console.log('[DiffView] Opening file from diff click:', filePath);
@@ -498,7 +500,7 @@ function DiffView({ oldString, newString, filePath, toolCallId, priority = false
         <ClickableFilePath filePath={filePath} />
       </div>
 
-      {/* Monaco Diff Editor - side by side, lazy loaded - click to open file */}
+      {/* Monaco Diff Editor - bounded in transcript and clickable to open file */}
       <div
         className="border border-claude-border overflow-hidden cursor-pointer hover:border-blue-400 transition-colors"
         style={{ borderRadius: 0 }}
@@ -510,7 +512,7 @@ function DiffView({ oldString, newString, filePath, toolCallId, priority = false
         </div>
         <LazyDiffEditor
           editorId={`diff-${toolCallId}`}
-          height="400px"
+          height={editorHeight}
           language={language}
           original={oldString}
           modified={newString}
@@ -519,7 +521,7 @@ function DiffView({ oldString, newString, filePath, toolCallId, priority = false
             readOnly: true,
             minimap: { enabled: false },
             scrollBeyondLastLine: false,
-            fontSize: 13,
+            fontSize: 12,
             lineNumbers: 'on',
             contextmenu: false,
             renderLineHighlight: 'all',
@@ -527,6 +529,13 @@ function DiffView({ oldString, newString, filePath, toolCallId, priority = false
             renderSideBySide: true,
             enableSplitViewResizing: false,
             renderOverviewRuler: false,
+            wordWrap: 'on',
+            diffWordWrap: 'on',
+            scrollbar: {
+              vertical: 'auto',
+              horizontal: 'hidden',
+              alwaysConsumeMouseWheel: false,
+            },
           }}
         />
       </div>

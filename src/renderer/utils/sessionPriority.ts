@@ -1,4 +1,4 @@
-import type { Session, ChatMessage } from '../../shared/types';
+import type { Session } from '../../shared/types';
 
 export type SessionPriority = 'needs-input' | 'error' | 'active' | 'idle';
 
@@ -37,44 +37,54 @@ const PRIORITY_RANK: Record<SessionPriority, number> = {
 
 export function prioritizeSessions(
   sessions: Session[],
-  messages: Record<string, ChatMessage[]>,
   pendingPermission: Record<string, unknown>,
   pendingQuestion: Record<string, unknown>,
   isStreaming: Record<string, boolean>,
-  filterHours: number = 24,
+  filterHours = 24,
 ): PrioritizedSession[] {
   const cutoff = Date.now() - filterHours * 60 * 60 * 1000;
+  const roots = sessions.filter(s => !s.parentSessionId);
+  const childrenByRoot = new Map<string, Session[]>();
+  for (const session of sessions) {
+    if (!session.parentSessionId) continue;
+    const children = childrenByRoot.get(session.parentSessionId) || [];
+    children.push(session);
+    childrenByRoot.set(session.parentSessionId, children);
+  }
 
-  return sessions
-    .filter(s => !s.parentSessionId) // Only root sessions (not forks)
-    .filter(s => {
-      // Always show sessions that need attention right now
-      if (isStreaming[s.id] || pendingPermission[s.id] || pendingQuestion[s.id]) return true;
+  return roots
+    .map(root => {
+      const group = [root, ...(childrenByRoot.get(root.id) || [])];
+      const latestUpdatedAt = Math.max(...group.map(s => new Date(s.updatedAt).getTime()).filter(Number.isFinite));
+      const shouldShow = group.some(s => {
+        // Always show sessions that need attention right now
+        if (isStreaming[s.id] || pendingPermission[s.id] || pendingQuestion[s.id]) return true;
 
-      // Show sessions updated within the filter window
-      if (new Date(s.updatedAt).getTime() > cutoff) return true;
+        // Show sessions updated within the filter window
+        if (new Date(s.updatedAt).getTime() > cutoff) return true;
 
-      // Check last message timestamp
-      const sessionMessages = messages[s.id];
-      if (sessionMessages && sessionMessages.length > 0) {
-        const lastMessage = sessionMessages[sessionMessages.length - 1];
-        if (new Date(lastMessage.timestamp).getTime() > cutoff) return true;
-      }
+        // Show running SSH sessions even if their stored updatedAt is stale.
+        if (s.status === 'running' && (s as any).sshConfig) return true;
 
-      // Show running SSH sessions whose messages haven't loaded yet —
-      // they'll get filtered on the next render once messages arrive
-      if (s.status === 'running' && (s as any).sshConfig && !sessionMessages) return true;
+        return false;
+      });
+      if (!shouldShow) return null;
 
-      return false;
+      const priority = group
+        .map(session => getSessionPriority(session.id, pendingPermission, pendingQuestion, isStreaming, session.status))
+        .sort((a, b) => PRIORITY_RANK[a] - PRIORITY_RANK[b])[0];
+      return {
+        session: root,
+        priority,
+        priorityRank: PRIORITY_RANK[priority],
+        latestUpdatedAt,
+      };
     })
-    .map(session => {
-      const priority = getSessionPriority(session.id, pendingPermission, pendingQuestion, isStreaming, session.status);
-      return { session, priority, priorityRank: PRIORITY_RANK[priority] };
-    })
+    .filter((entry): entry is PrioritizedSession & { latestUpdatedAt: number } => Boolean(entry))
     .sort((a, b) => {
       if (a.priorityRank !== b.priorityRank) return a.priorityRank - b.priorityRank;
       // Within same priority, sort by most recently updated
-      return new Date(b.session.updatedAt).getTime() - new Date(a.session.updatedAt).getTime();
+      return b.latestUpdatedAt - a.latestUpdatedAt;
     });
 }
 

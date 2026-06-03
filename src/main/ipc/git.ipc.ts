@@ -1,5 +1,4 @@
 import { IpcMain, BrowserWindow } from 'electron';
-import Store from 'electron-store';
 import { CachedStore } from '../cached-store';
 import { IPC_CHANNELS } from '../../shared/constants/channels';
 import { GitService } from '../services/git.service';
@@ -11,6 +10,11 @@ const gitService = new GitService();
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const sessionStore = new CachedStore({ name: getSessionStoreName() }) as any;
 
+const getStoredSession = (sessionId: string): Session | undefined => {
+  return (sessionStore.get(`sessions.${sessionId}`)
+    || sessionStore.get(`discoveredSessions.${sessionId}`)) as Session | undefined;
+};
+
 // Set up branch change callback to emit to all windows
 gitService.onBranchChange((sessionId, branch) => {
   BrowserWindow.getAllWindows().forEach((window) => {
@@ -20,6 +24,18 @@ gitService.onBranchChange((sessionId, branch) => {
 
 export function registerGitHandlers(ipcMain: IpcMain): void {
   ipcMain.handle(IPC_CHANNELS.GIT_STATUS, async (_, sessionId: string) => {
+    const session = getStoredSession(sessionId);
+    if (session?.sshConfig) {
+      const branch = await sshService.getRemoteBranch(sessionId, session.sshConfig).catch(() => null);
+      return {
+        current: branch || session.branch || null,
+        tracking: null,
+        files: [],
+        ahead: 0,
+        behind: 0,
+      };
+    }
+
     return gitService.getStatus(sessionId);
   });
 
@@ -57,14 +73,19 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
 
   // Get current branch for SSH sessions (runs git rev-parse on the remote)
   ipcMain.handle(IPC_CHANNELS.GIT_REMOTE_BRANCH, async (_, sessionId: string) => {
-    const session = (sessionStore.get(`sessions.${sessionId}`)
-      || sessionStore.get(`discoveredSessions.${sessionId}`)) as Session | undefined;
+    const session = getStoredSession(sessionId);
     if (!session?.sshConfig) return null;
     return sshService.getRemoteBranch(sessionId, session.sshConfig);
   });
 
   // Branch watching handlers
   ipcMain.handle(IPC_CHANNELS.GIT_WATCH_BRANCH, async (_, sessionId: string) => {
+    const session = getStoredSession(sessionId);
+    if (session?.sshConfig) {
+      const branch = await sshService.getRemoteBranch(sessionId, session.sshConfig).catch(() => null);
+      return { success: true, branch: branch || undefined };
+    }
+
     return gitService.watchBranch(sessionId);
   });
 

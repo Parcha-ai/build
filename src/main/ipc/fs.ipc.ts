@@ -6,6 +6,11 @@ import { spawn } from 'child_process';
 import { sessionService } from './session.ipc';
 import { sshService } from '../services/ssh.service';
 
+const FS_DEBUG = process.env.GREP_DEBUG_FS === '1';
+function debugFs(...args: unknown[]): void {
+  if (FS_DEBUG) console.log(...args);
+}
+
 export interface FileEntry {
   name: string;
   path: string;
@@ -134,17 +139,17 @@ function parseGrepOutput(output: string, basePath: string, maxResults: number): 
 export function registerFsHandlers(ipcMain: IpcMain): void {
   // List files in session working directory
   ipcMain.handle(IPC_CHANNELS.FS_LIST_FILES, async (_event, sessionId: string, query?: string) => {
-    console.log('[FS] listFiles called for session:', sessionId, 'query:', query);
+    debugFs('[FS] listFiles called for session:', sessionId, 'query:', query);
     const session = await sessionService.getSession(sessionId);
-    console.log('[FS] Session found:', session?.id, 'worktreePath:', session?.worktreePath, 'isSSH:', !!session?.sshConfig);
+    debugFs('[FS] Session found:', session?.id, 'worktreePath:', session?.worktreePath, 'isSSH:', !!session?.sshConfig);
     if (!session?.worktreePath) {
-      console.log('[FS] No worktreePath - returning empty array');
+      debugFs('[FS] No worktreePath - returning empty array');
       return [];
     }
 
     // Check if this is an SSH session
     if (session.sshConfig) {
-      console.log('[FS] SSH session detected - using remote file listing');
+      debugFs('[FS] SSH session detected - using remote file listing');
       try {
         const files = await sshService.listRemoteFilesRecursive(
           sessionId,
@@ -152,7 +157,7 @@ export function registerFsHandlers(ipcMain: IpcMain): void {
           session.worktreePath,
           session.worktreePath
         );
-        console.log('[FS] Found', files.length, 'remote files');
+        debugFs('[FS] Found', files.length, 'remote files');
 
         // Filter by query if provided
         if (query && query.trim()) {
@@ -173,7 +178,7 @@ export function registerFsHandlers(ipcMain: IpcMain): void {
 
     // Local file listing
     const files = await listFilesRecursive(session.worktreePath, session.worktreePath);
-    console.log('[FS] Found', files.length, 'local files');
+    debugFs('[FS] Found', files.length, 'local files');
 
     // Filter by query if provided
     if (query && query.trim()) {
@@ -191,22 +196,22 @@ export function registerFsHandlers(ipcMain: IpcMain): void {
 
   // Read file content - supports both local and SSH sessions
   ipcMain.handle(IPC_CHANNELS.FS_READ_FILE, async (_event, filePath: string, sessionId?: string) => {
-    console.log('[FS] FS_READ_FILE called, filePath:', filePath, 'sessionId:', sessionId);
+    debugFs('[FS] FS_READ_FILE called, filePath:', filePath, 'sessionId:', sessionId);
     try {
       // If sessionId provided, check if it's an SSH session
       if (sessionId) {
         const session = await sessionService.getSession(sessionId);
-        console.log('[FS] Session found:', !!session, 'has sshConfig:', !!session?.sshConfig);
+        debugFs('[FS] Session found:', !!session, 'has sshConfig:', !!session?.sshConfig);
         if (session?.sshConfig) {
-          console.log('[FS] Reading file from SSH session:', filePath);
+          debugFs('[FS] Reading file from SSH session:', filePath);
           const remoteContent = await sshService.readRemoteFile(sessionId, session.sshConfig, filePath);
-          console.log('[FS] SSH read successful, content length:', remoteContent.length);
+          debugFs('[FS] SSH read successful, content length:', remoteContent.length);
           return { success: true, content: remoteContent };
         }
       }
 
       // Local file read
-      console.log('[FS] Reading local file:', filePath);
+      debugFs('[FS] Reading local file:', filePath);
       // Read images as base64, everything else as UTF-8
       const isImage = /\.(png|jpe?g|gif|svg|webp|ico|bmp)$/i.test(filePath);
       if (isImage) {
@@ -226,16 +231,16 @@ export function registerFsHandlers(ipcMain: IpcMain): void {
 
   // Write file content (creates parent directories if needed) - supports SSH sessions via sessionId
   ipcMain.handle(IPC_CHANNELS.FS_WRITE_FILE, async (_event, filePath: string, content: string, sessionId?: string) => {
-    console.log('[FS] FS_WRITE_FILE called, filePath:', filePath, 'sessionId:', sessionId);
+    debugFs('[FS] FS_WRITE_FILE called, filePath:', filePath, 'sessionId:', sessionId);
     try {
       // If sessionId provided, check if it's an SSH session
       if (sessionId) {
         const session = await sessionService.getSession(sessionId);
-        console.log('[FS] Session found:', !!session, 'has sshConfig:', !!session?.sshConfig);
+        debugFs('[FS] Session found:', !!session, 'has sshConfig:', !!session?.sshConfig);
         if (session?.sshConfig) {
-          console.log('[FS] Writing file to remote SSH session:', filePath);
+          debugFs('[FS] Writing file to remote SSH session:', filePath);
           await sshService.writeRemoteFile(sessionId, session.sshConfig, filePath, content);
-          console.log('[FS] Remote write successful');
+          debugFs('[FS] Remote write successful');
           return { success: true };
         }
       }
@@ -253,7 +258,7 @@ export function registerFsHandlers(ipcMain: IpcMain): void {
         }
       }
 
-      console.log('[FS] Writing local file:', resolvedPath);
+      debugFs('[FS] Writing local file:', resolvedPath);
       const dir = path.dirname(resolvedPath);
       await fs.mkdir(dir, { recursive: true });
       await fs.writeFile(resolvedPath, content, 'utf-8');
@@ -302,7 +307,9 @@ export function registerFsHandlers(ipcMain: IpcMain): void {
 
       let output = '';
       grep.stdout.on('data', (chunk: Buffer) => { output += chunk.toString(); });
-      grep.stderr.on('data', () => {}); // ignore binary file warnings etc
+      grep.stderr.on('data', (chunk: Buffer) => {
+        debugFs('[FS] grep stderr:', chunk.toString().slice(0, 200));
+      });
 
       grep.on('close', () => {
         const results = parseGrepOutput(output, session.worktreePath, maxResults);

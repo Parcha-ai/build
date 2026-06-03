@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { GitBranch } from 'lucide-react';
+import { GitBranch, Image, Target, FileCode } from 'lucide-react';
 import ToolCallCard from './ToolCallCard';
 import HtmlContentBlock from './HtmlContentBlock';
 import { SpeakerButton } from './SpeakerButton';
@@ -246,7 +246,8 @@ function MessageBubble({ message, isStreaming, streamingToolCalls, isLatestMessa
   const isSystem = message.role === 'system';
   const [isRewinding, setIsRewinding] = useState(false);
   const openFile = useEditorStore((state) => state.openFile);
-  const { toggleBrowserPanel, isBrowserPanelOpen } = useUIStore();
+  const toggleBrowserPanel = useUIStore((state) => state.toggleBrowserPanel);
+  const isBrowserPanelOpen = useUIStore((state) => state.isBrowserPanelOpen);
   // Note: activeSessionId, updateSession, sessions accessed via getState() in click handlers only
 
   // Show rewind button for user messages that aren't the most recent one
@@ -315,6 +316,53 @@ function MessageBubble({ message, isStreaming, streamingToolCalls, isLatestMessa
             <p className="whitespace-pre-wrap text-claude-text font-mono text-base pr-8">
               {message.content}
             </p>
+            {message.attachments && message.attachments.length > 0 && (
+              <div className="flex flex-wrap gap-2 mt-2">
+                {message.attachments.map((attachment, index) => {
+                  const imageData = attachment.type === 'image' ? attachment.content
+                    : attachment.type === 'dom_element' && attachment.screenshot ? attachment.screenshot
+                    : null;
+                  if (imageData) {
+                    const src = imageData.startsWith('data:') ? imageData : `data:image/png;base64,${imageData}`;
+                    return (
+                      <div key={index} className="border border-blue-500/20 overflow-hidden" style={{ borderRadius: 0 }}>
+                        <img
+                          src={src}
+                          alt={attachment.name}
+                          className="max-h-40 max-w-xs object-contain bg-black/20"
+                        />
+                        <div className="flex items-center gap-1.5 px-2 py-1 bg-blue-500/10 border-t border-blue-500/20">
+                          {attachment.type === 'dom_element' ? (
+                            <Target size={10} className="text-blue-400 flex-shrink-0" />
+                          ) : (
+                            <Image size={10} className="text-green-400 flex-shrink-0" />
+                          )}
+                          <span className="truncate font-mono text-[10px] text-claude-text-secondary">
+                            {attachment.name}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  }
+                  return (
+                    <div
+                      key={index}
+                      className="flex items-center gap-1.5 px-2 py-1 text-xs bg-blue-500/10 border border-blue-500/20"
+                      style={{ borderRadius: 0 }}
+                    >
+                      {attachment.type === 'dom_element' ? (
+                        <Target size={12} className="text-blue-400" />
+                      ) : (
+                        <FileCode size={12} className="text-purple-400" />
+                      )}
+                      <span className="truncate max-w-[200px] font-mono text-xs text-claude-text-secondary">
+                        {attachment.name}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         ) : (
           // Assistant messages - render content blocks in order when available

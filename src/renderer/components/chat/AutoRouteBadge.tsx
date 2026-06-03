@@ -50,6 +50,7 @@ export function formatModelId(model?: string): string | undefined {
 function normalizeModelLabel(label?: string): string | undefined {
   return label
     ?.replace(/ \((Claude|Cursor|Codex|Gemini|OpenCode|Custom)\)$/i, '')
+    .replace(/ \[(Claude|Cursor|Codex|Gemini|OpenCode|Custom)\]$/i, '')
     .trim();
 }
 
@@ -69,28 +70,27 @@ function formatRouteTitle(tier: string, domain?: string, harness?: string, model
 export const AutoRouteBadge: React.FC<AutoRouteBadgeProps> = ({ tier, domain, resolvedHarness, modelLabel, compact }) => {
   const colors = TIER_COLORS[tier] || TIER_COLORS.build;
   const agentLabel = formatHarnessModelLabel(resolvedHarness, undefined, modelLabel);
-  const scopeLabel = domain && domain !== 'general' ? `${tier}:${domain}` : tier;
   const title = formatRouteTitle(tier, domain, resolvedHarness, modelLabel);
 
   if (compact) {
     return (
       <span
-        className={`inline-flex items-center gap-1 px-1.5 py-0.5 text-[9px] font-mono uppercase tracking-wider ${colors.bg} ${colors.text} border ${colors.border} rounded`}
+        className={`inline-flex min-w-0 max-w-[180px] items-center gap-1 px-1.5 py-0.5 text-[9px] font-mono uppercase tracking-wider ${colors.bg} ${colors.text} border ${colors.border} rounded`}
         title={title}
       >
-        <span className="font-bold">{scopeLabel}</span>
-        {agentLabel && <span className="opacity-70">→ {agentLabel}</span>}
+        <span className="font-bold">AUTO</span>
+        {agentLabel && <span className="min-w-0 truncate opacity-70 normal-case tracking-normal">{agentLabel}</span>}
       </span>
     );
   }
 
   return (
     <span
-      className={`inline-flex items-center gap-1.5 px-2 py-0.5 text-[10px] font-mono ${colors.bg} ${colors.text} border ${colors.border} rounded`}
+      className={`inline-flex min-w-0 max-w-[220px] items-center gap-1.5 px-2 py-0.5 text-[10px] font-mono ${colors.bg} ${colors.text} border ${colors.border} rounded`}
       title={title}
     >
-      <span className="uppercase font-bold tracking-wider">{scopeLabel}</span>
-      {agentLabel && <span className="opacity-70">→ {agentLabel}</span>}
+      <span className="uppercase font-bold tracking-wider">AUTO</span>
+      {agentLabel && <span className="min-w-0 truncate opacity-70">{agentLabel}</span>}
     </span>
   );
 };

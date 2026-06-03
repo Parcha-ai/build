@@ -435,7 +435,6 @@ ${messageSummary || 'No messages yet'}`;
       // Note: We don't send a greeting speak() anymore - let user initiate conversation
       // The initial context is enough for the agent to understand the session state
     }
-    // eslint-disable-next-line react-hooks-exhaustive-deps
   }, [hookConnected]);
 
   // Helper to summarize assistant response for voice announcements
@@ -505,7 +504,6 @@ ${messageSummary || 'No messages yet'}`;
     }
     prevMessagesLengthRef.current = messages.length;
     prevStreamingRef.current = isStreaming;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hookConnected, messages.length, isStreaming, summarizeForVoice, speak]);
 
   // User activity signal ref for preventing "are you there?" prompts

@@ -8,7 +8,9 @@ interface SwitcherState {
 }
 
 export function useSessionSwitcher() {
-  const { sessions, activeSessionId, setActiveSession } = useSessionStore();
+  const sessions = useSessionStore((s) => s.sessions);
+  const activeSessionId = useSessionStore((s) => s.activeSessionId);
+  const setActiveSession = useSessionStore((s) => s.setActiveSession);
   const [state, setState] = useState<SwitcherState>({
     isOpen: false,
     selectedIndex: 0,

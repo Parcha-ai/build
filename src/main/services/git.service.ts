@@ -77,7 +77,20 @@ export class GitService {
     ahead: number;
     behind: number;
   }> {
-    const git = this.getGit(sessionId);
+    const session = (this.store.get(`sessions.${sessionId}`)
+      || this.store.get(`discoveredSessions.${sessionId}`)) as Pick<Session, 'worktreePath' | 'repoPath' | 'branch'> | undefined;
+    const worktreePath = session?.worktreePath || session?.repoPath;
+    if (!worktreePath || !fs.existsSync(worktreePath)) {
+      return {
+        current: session?.branch || null,
+        tracking: null,
+        files: [],
+        ahead: 0,
+        behind: 0,
+      };
+    }
+
+    const git = simpleGit(worktreePath);
     const status = await git.status();
 
     return {

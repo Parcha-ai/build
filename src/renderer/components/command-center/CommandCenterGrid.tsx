@@ -4,6 +4,7 @@ import { useSessionStore } from '../../stores/session.store';
 import { useUIStore } from '../../stores/ui.store';
 import CommandCenterCell from './CommandCenterCell';
 import type { Session } from '../../../shared/types';
+import { getSessionDisplayName } from '../../utils/session-display';
 
 export default function CommandCenterGrid() {
   const sessions = useSessionStore((s) => s.sessions);
@@ -166,7 +167,7 @@ export default function CommandCenterGrid() {
                       style={{ borderRadius: 0 }}
                     />
                     <span className="text-xs font-bold text-claude-text truncate">
-                      {s.forkName || s.name}
+                      {getSessionDisplayName(s)}
                     </span>
                     {s.isStarred && (
                       <span className="text-amber-400 text-[10px]">&#9733;</span>

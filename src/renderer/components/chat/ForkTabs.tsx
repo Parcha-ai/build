@@ -2,6 +2,7 @@ import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react'
 import ReactDOM from 'react-dom';
 import { Plus, MoreHorizontal, GitFork, MessageSquare } from 'lucide-react';
 import { useSessionStore } from '../../stores/session.store';
+import { getSessionDisplayName } from '../../utils/session-display';
 
 interface ForkTabsProps {
   sessionId: string;
@@ -47,7 +48,6 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
     const ps = useSessionStore.getState().getProjectSessions(sessionId);
     const rid = fs.find(f => !f.parentSessionId)?.id || sessionId;
     return { forkSiblings: fs, projectSessions: ps, rootId: rid, sessions: allSessions };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, sessionCount, sessionNamesKey]);
 
   // Auto-scan remote transcripts on mount for SSH sessions.
@@ -214,7 +214,9 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
         next.delete(activeSessionId);
         return next;
       });
-      window.electronAPI.sessions.update(activeSessionId, { tabHidden: false } as any).catch(() => {});
+      window.electronAPI.sessions.update(activeSessionId, { tabHidden: false } as any).catch((error) => {
+        console.warn('[ForkTabs] Failed to unhide active tab:', error);
+      });
     }
   }, [activeSessionId, overflowIds]);
 
@@ -241,7 +243,9 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
     e.stopPropagation();
     setOverflowIds(prev => new Set(prev).add(forkId));
     // Persist to backend so it survives restart
-    window.electronAPI.sessions.update(forkId, { tabHidden: true } as any).catch(() => {});
+    window.electronAPI.sessions.update(forkId, { tabHidden: true } as any).catch((error) => {
+      console.warn('[ForkTabs] Failed to hide tab:', error);
+    });
 
     if (forkId === activeSessionId) {
       const remaining = forkSiblings.filter(f => f.id !== forkId && !overflowIds.has(f.id));
@@ -258,7 +262,9 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
       return next;
     });
     // Clear backend hidden flag
-    window.electronAPI.sessions.update(forkId, { tabHidden: false } as any).catch(() => {});
+    window.electronAPI.sessions.update(forkId, { tabHidden: false } as any).catch((error) => {
+      console.warn('[ForkTabs] Failed to restore tab:', error);
+    });
     setActiveSession(forkId);
     setShowOverflow(false);
   }, [setActiveSession]);
@@ -317,7 +323,7 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
       <div className="flex items-center px-3 py-1 overflow-x-auto">
         {visibleForks.map((fork, index) => {
           const isActive = fork.id === activeSessionId;
-          const displayName = fork.aiGeneratedName || fork.name;
+          const displayName = getSessionDisplayName(fork);
           const isDragOver = fork.id === dragOverId;
           const isRenaming = renamingId === fork.id;
 
@@ -435,7 +441,9 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
                 window.electronAPI.sessions.update(rootId, {
                   childSessionIds: [...(root?.childSessionIds || []), newSession.id],
                   isRoot: true,
-                } as any).catch(() => {});
+                } as any).catch((error) => {
+                  console.warn('[ForkTabs] Failed to attach new tab to root:', error);
+                });
               }
             } catch (err) {
               console.error('[ForkTabs] Failed to create new tab:', err);
@@ -485,7 +493,7 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
                     className="w-full text-left px-3 py-1.5 hover:bg-claude-bg transition-colors flex items-center gap-2"
                   >
                     <GitFork size={10} className="text-claude-accent flex-shrink-0" />
-                    <span className="text-xs truncate flex-1">{fork.aiGeneratedName || fork.forkName || fork.name}</span>
+                    <span className="text-xs truncate flex-1">{getSessionDisplayName(fork)}</span>
                     <span className="text-[9px] text-claude-text-secondary flex-shrink-0">
                       {formatRelativeDate(fork.updatedAt)}
                     </span>
@@ -530,7 +538,9 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
                         // Persist to backend in background
                         window.electronAPI.sessions.update(session.id, {
                           parentSessionId: rootId, isRoot: false, tabHidden: false,
-                        } as any).catch(() => {});
+                        } as any).catch((error) => {
+                          console.warn('[ForkTabs] Failed to promote session to tab:', error);
+                        });
                         const root = forkSiblings.find(f => f.id === rootId);
                         if (root) {
                           const children = [...(root.childSessionIds || [])];
@@ -538,7 +548,9 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
                             children.push(session.id);
                             window.electronAPI.sessions.update(rootId, {
                               childSessionIds: children, isRoot: true,
-                            } as any).catch(() => {});
+                            } as any).catch((error) => {
+                              console.warn('[ForkTabs] Failed to update root tab children:', error);
+                            });
                           }
                         }
                       }}
@@ -548,7 +560,7 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
                         ? <GitFork size={10} className="text-purple-400 flex-shrink-0" />
                         : <MessageSquare size={10} className="text-claude-text-secondary flex-shrink-0" />
                       }
-                      <span className="text-xs truncate flex-1">{session.aiGeneratedName || session.forkName || session.name}</span>
+                      <span className="text-xs truncate flex-1">{getSessionDisplayName(session)}</span>
                       <span className="text-[9px] text-claude-text-secondary flex-shrink-0">
                         {formatRelativeDate(session.updatedAt)}
                       </span>

@@ -224,6 +224,19 @@ export function LazyDiffEditor({
 
     monaco.editor.setTheme('vs-dark');
 
+    requestAnimationFrame(() => {
+      const width = containerRef.current?.clientWidth || 0;
+      try {
+        if (width > 0) {
+          editor.layout({ width, height: boundedHeight });
+        } else {
+          editor.layout();
+        }
+      } catch {
+        // Ignore first-paint layout races inside virtualized transcript content.
+      }
+    });
+
     if (props.onMount) {
       props.onMount(editor, monaco);
     }
@@ -232,6 +245,28 @@ export function LazyDiffEditor({
   const numericHeight = typeof height === 'string'
     ? parseInt(height.replace('px', ''), 10) || 400
     : height;
+  const boundedHeight = Math.min(480, Math.max(80, numericHeight));
+  const editorHeight = `${boundedHeight}px`;
+
+  useEffect(() => {
+    if (!isVisible || !editorRef.current) return;
+
+    const frame = requestAnimationFrame(() => {
+      const width = containerRef.current?.clientWidth || 0;
+      try {
+        if (width > 0) {
+          editorRef.current.layout({ width, height: boundedHeight });
+        } else {
+          editorRef.current.layout();
+        }
+      } catch {
+        // Monaco can throw during transcript remount races; the next automatic
+        // layout tick will recover.
+      }
+    });
+
+    return () => cancelAnimationFrame(frame);
+  }, [boundedHeight, isVisible]);
 
   // Don't render editor until first visible (lazy load)
   // But once rendered, keep it mounted and just hide with CSS to avoid disposal errors
@@ -241,9 +276,12 @@ export function LazyDiffEditor({
         ref={containerRef}
         className="bg-claude-bg border border-claude-border flex items-center justify-center"
         style={{
-          height: numericHeight,
+          height: boundedHeight,
           borderRadius: 0,
-          minHeight: numericHeight,
+          minHeight: boundedHeight,
+          maxHeight: boundedHeight,
+          maxWidth: '100%',
+          overflow: 'hidden',
         }}
       >
         <div className="text-claude-text-secondary text-xs font-mono flex items-center gap-2">
@@ -257,14 +295,27 @@ export function LazyDiffEditor({
   // Once mounted, keep the editor alive but hide when not visible
   // This prevents the Monaco disposal race condition errors
   return (
-    <div ref={containerRef}>
+    <div
+      ref={containerRef}
+      style={{
+        height: boundedHeight,
+        minHeight: boundedHeight,
+        maxHeight: boundedHeight,
+        maxWidth: '100%',
+        overflow: 'hidden',
+        contain: 'layout paint',
+      }}
+    >
       {!isVisible && (
         <div
           className="bg-claude-bg border border-claude-border flex items-center justify-center"
           style={{
-            height: numericHeight,
+            height: boundedHeight,
             borderRadius: 0,
-            minHeight: numericHeight,
+            minHeight: boundedHeight,
+            maxHeight: boundedHeight,
+            maxWidth: '100%',
+            overflow: 'hidden',
           }}
         >
           <div className="text-claude-text-secondary text-xs font-mono flex items-center gap-2">
@@ -273,9 +324,17 @@ export function LazyDiffEditor({
           </div>
         </div>
       )}
-      <div style={{ display: isVisible ? 'block' : 'none' }}>
+      <div
+        style={{
+          display: isVisible ? 'block' : 'none',
+          height: boundedHeight,
+          maxHeight: boundedHeight,
+          maxWidth: '100%',
+          overflow: 'hidden',
+        }}
+      >
         <DiffEditor
-          height={height}
+          height={editorHeight}
           original={original}
           modified={modified}
           language={language}
@@ -283,7 +342,7 @@ export function LazyDiffEditor({
           loading={
             <div
               className="bg-claude-bg flex items-center justify-center text-claude-text-secondary text-xs"
-              style={{ height: numericHeight }}
+              style={{ height: boundedHeight }}
             >
               <Loader2 size={14} className="animate-spin mr-2" />
               Loading diff editor...

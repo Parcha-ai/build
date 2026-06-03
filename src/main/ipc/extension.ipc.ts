@@ -1,6 +1,5 @@
 import { type IpcMain } from 'electron';
 import { spawn } from 'child_process';
-import Store from 'electron-store';
 import { CachedStore } from '../cached-store';
 import { getSessionStoreName } from '../store-names';
 import { extensionService } from '../services/extension.service';
@@ -10,6 +9,7 @@ import type { Session } from '../../shared/types';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const sessionStore: any = new CachedStore({ name: getSessionStoreName() });
+const EXTENSION_SCAN_DEBUG = process.env.GREP_DEBUG_EXTENSION_SCANS === '1';
 
 /**
  * Get a session by ID from the store
@@ -42,7 +42,7 @@ export function registerExtensionHandlers(ipcMain: IpcMain): void {
       if (sessionId) {
         const session = getSession(sessionId);
         if (session?.sshConfig) {
-          console.log('[Extension IPC] Scanning commands on remote SSH session:', sessionId);
+          if (EXTENSION_SCAN_DEBUG) console.log('[Extension IPC] Scanning commands on remote SSH session:', sessionId);
           const commands = await sshService.scanRemoteCommands(
             sessionId,
             session.sshConfig,
@@ -72,7 +72,7 @@ export function registerExtensionHandlers(ipcMain: IpcMain): void {
       if (sessionId) {
         const session = getSession(sessionId);
         if (session?.sshConfig) {
-          console.log('[Extension IPC] Scanning skills on remote SSH session:', sessionId);
+          if (EXTENSION_SCAN_DEBUG) console.log('[Extension IPC] Scanning skills on remote SSH session:', sessionId);
           const skills = await sshService.scanRemoteSkills(
             sessionId,
             session.sshConfig,
@@ -102,7 +102,7 @@ export function registerExtensionHandlers(ipcMain: IpcMain): void {
       if (sessionId) {
         const session = getSession(sessionId);
         if (session?.sshConfig) {
-          console.log('[Extension IPC] Scanning agents on remote SSH session:', sessionId);
+          if (EXTENSION_SCAN_DEBUG) console.log('[Extension IPC] Scanning agents on remote SSH session:', sessionId);
           const agents = await sshService.scanRemoteAgents(
             sessionId,
             session.sshConfig,

@@ -112,6 +112,12 @@ class CursorCliService {
     return !value || value === '~' ? '$HOME' : this.quoteForRemoteShell(value);
   }
 
+  private remoteWorkdirCheckForShell(value: string): string {
+    const displayPath = value || '~';
+    const remotePath = this.remotePathForShell(value);
+    return `test -d ${remotePath} || { echo "Remote workdir not found on remote: ${displayPath}" >&2; exit 66; }`;
+  }
+
   private getRemotePathPrefix(): string {
     return [
       'export PATH="$HOME/.local/bin:$HOME/.cursor/bin:$HOME/.bun/bin:$HOME/.npm-global/bin:$HOME/bin:$HOME/.cargo/bin:/usr/local/bin:/usr/bin:$PATH"',
@@ -167,6 +173,7 @@ class CursorCliService {
   async createSshChat(sshConfig: SSHConfig, remoteDir: string): Promise<string | null> {
     try {
       const remoteCmd = [
+        this.remoteWorkdirCheckForShell(remoteDir),
         `cd ${this.remotePathForShell(remoteDir)}`,
         this.getRemotePathPrefix(),
         'agent_bin="$(command -v cursor-agent || command -v agent)" || { echo "Cursor Agent CLI not found on remote. Install it with: curl https://cursor.com/install -fsS | bash" >&2; exit 127; }',
@@ -426,6 +433,7 @@ class CursorCliService {
       }
 
       const remoteCmd = [
+        this.remoteWorkdirCheckForShell(remoteDir),
         `cd ${this.remotePathForShell(remoteDir)}`,
         this.getRemotePathPrefix(),
         apiKey ? `export CURSOR_API_KEY=${this.quoteForRemoteShell(apiKey)}` : '',

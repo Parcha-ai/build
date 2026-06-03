@@ -84,7 +84,7 @@ export default function TeleportDialog({ session, onClose, onTeleported }: Telep
             <SSHConfigForm
               teleportSource={session}
               onBack={onClose}
-              onConnect={async () => {}} // Not used in teleport mode
+              onConnect={async () => undefined} // Not used in teleport mode
               onTeleport={handleTeleport}
             />
           )}

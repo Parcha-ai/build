@@ -127,7 +127,7 @@ export default function EditorPanel({ onClose }: EditorPanelProps) {
             }
           });
         });
-      }).catch(() => {});
+      }).catch(() => undefined);
     }
 
     prevTabsRef.current = tabs;

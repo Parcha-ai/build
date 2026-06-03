@@ -6,6 +6,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { execSync } from 'child_process';
 
 export interface GStackSkillInfo {
   id: string;        // skill directory name (e.g., 'review', 'qa', 'ship')
@@ -242,7 +243,6 @@ export async function installGStack(): Promise<{ success: boolean; error?: strin
     console.log('[GStack] Already installed at', targetDir);
     // Run setup to ensure it's up to date
     try {
-      const { execSync } = require('child_process');
       execSync('./setup', { cwd: targetDir, timeout: 120_000, stdio: 'pipe' });
       cachedSkills = null; // Invalidate cache
       return { success: true };
@@ -253,8 +253,6 @@ export async function installGStack(): Promise<{ success: boolean; error?: strin
 
   // Clone from GitHub
   try {
-    const { execSync } = require('child_process');
-
     // Ensure parent directory exists
     fs.mkdirSync(path.join(os.homedir(), '.claude', 'skills'), { recursive: true });
 
@@ -285,7 +283,6 @@ export async function upgradeGStack(): Promise<{ success: boolean; error?: strin
   }
 
   try {
-    const { execSync } = require('child_process');
     execSync('git pull --depth 1', { cwd: gstackDir, timeout: 60_000, stdio: 'pipe' });
     execSync('./setup', { cwd: gstackDir, timeout: 120_000, stdio: 'pipe' });
     cachedSkills = null;

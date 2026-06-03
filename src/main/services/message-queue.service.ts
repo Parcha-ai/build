@@ -15,11 +15,23 @@ class MessageQueueService extends EventEmitter {
   private streaming = new Map<string, boolean>();
   // Drain timers
   private drainTimers = new Map<string, NodeJS.Timeout>();
+  // When a drain is being deferred because another runtime still appears active.
+  private drainDeferredSince = new Map<string, number>();
 
   // Enqueue a message for a session
-  enqueue(sessionId: string, text: string, attachments?: unknown[], opts?: { model?: string; suppressUserMessage?: boolean }): QueuedMessage {
+  enqueue(sessionId: string, text: string, attachments?: unknown[], opts?: { id?: string; model?: string; suppressUserMessage?: boolean; deferDrain?: boolean }): QueuedMessage {
+    const existingQueue = this.queues.get(sessionId) || [];
+    const normalizedText = text.trim();
+    const existing = existingQueue.find(m =>
+      (opts?.id && m.id === opts.id) ||
+      (normalizedText.length > 0 && m.text.trim() === normalizedText && Date.now() - m.timestamp < 10_000)
+    );
+    if (existing) {
+      return existing;
+    }
+
     const msg: QueuedMessage = {
-      id: randomUUID(),
+      id: opts?.id || randomUUID(),
       sessionId,
       text,
       attachments,
@@ -27,13 +39,21 @@ class MessageQueueService extends EventEmitter {
       model: opts?.model,
       suppressUserMessage: opts?.suppressUserMessage,
     };
-    const queue = this.queues.get(sessionId) || [];
+    const queue = existingQueue;
     queue.push(msg);
     this.queues.set(sessionId, queue);
+    if (opts?.deferDrain) {
+      this.processing.set(sessionId, true);
+      this.emitStateChange(sessionId);
+      this.scheduleDrain(sessionId, 250);
+      return msg;
+    }
     this.emitStateChange(sessionId);
 
-    // If not streaming, drain immediately
-    if (!this.streaming.get(sessionId)) {
+    // If not streaming, drain immediately. Deferred drains are allowed to poll
+    // through the IPC handler because stale/remote processes may not produce a
+    // matching stream-end event in this renderer.
+    if (!this.streaming.get(sessionId) && !this.processing.get(sessionId)) {
       this.scheduleDrain(sessionId, 0);
     }
     return msg;
@@ -70,6 +90,8 @@ class MessageQueueService extends EventEmitter {
   // Clear the entire queue for a session
   clear(sessionId: string): void {
     this.queues.set(sessionId, []);
+    this.processing.set(sessionId, false);
+    this.drainDeferredSince.delete(sessionId);
     const timer = this.drainTimers.get(sessionId);
     if (timer) { clearTimeout(timer); this.drainTimers.delete(sessionId); }
     this.emitStateChange(sessionId);
@@ -87,14 +109,22 @@ class MessageQueueService extends EventEmitter {
   // Called when a stream starts for a session
   onStreamStart(sessionId: string, harness?: string): void {
     this.streaming.set(sessionId, true);
+    this.processing.set(sessionId, false);
+    this.drainDeferredSince.delete(sessionId);
     if (harness) this.activeHarness.set(sessionId, harness);
     this.emitStateChange(sessionId);
   }
 
-  // Called when a stream ends for a session -- triggers drain
-  onStreamEnd(sessionId: string): void {
+  // Called when a stream ends for a session -- triggers drain by default.
+  onStreamEnd(sessionId: string, opts?: { drain?: boolean }): void {
     this.streaming.set(sessionId, false);
     this.processing.set(sessionId, false);
+    if (opts?.drain === false) {
+      const timer = this.drainTimers.get(sessionId);
+      if (timer) { clearTimeout(timer); this.drainTimers.delete(sessionId); }
+      this.emitStateChange(sessionId);
+      return;
+    }
     const harness = this.activeHarness.get(sessionId);
     const caps = getHarnessCapabilities(harness);
     const delay = caps.minTurnGapMs || 100;
@@ -119,6 +149,45 @@ class MessageQueueService extends EventEmitter {
     return msg;
   }
 
+  // Drain every pending message as a single ordered turn.
+  dequeueForDrain(sessionId: string): QueuedMessage | undefined {
+    const queue = this.queues.get(sessionId) || [];
+    if (queue.length === 0) return undefined;
+
+    this.queues.set(sessionId, []);
+    this.processing.set(sessionId, true);
+    this.drainDeferredSince.delete(sessionId);
+    this.emitStateChange(sessionId);
+
+    if (queue.length === 1) {
+      return {
+        ...queue[0],
+        sourceIds: [queue[0].id],
+        sourceCount: 1,
+      };
+    }
+
+    const firstVisible = queue.find((message) => !message.suppressUserMessage);
+    const primary = firstVisible || queue[0];
+    const attachments = queue.flatMap((message) => message.attachments || []);
+    const text = queue
+      .map((message) => message.text.trim())
+      .filter(Boolean)
+      .join('\n\n');
+
+    return {
+      ...primary,
+      id: primary.id,
+      text,
+      attachments: attachments.length > 0 ? attachments : undefined,
+      timestamp: queue[0].timestamp,
+      model: queue[queue.length - 1].model || primary.model,
+      suppressUserMessage: queue.every((message) => message.suppressUserMessage),
+      sourceIds: queue.map((message) => message.id),
+      sourceCount: queue.length,
+    };
+  }
+
   // Check if there are queued messages
   hasMessages(sessionId: string): boolean {
     return (this.queues.get(sessionId)?.length || 0) > 0;
@@ -135,8 +204,21 @@ class MessageQueueService extends EventEmitter {
     this.processing.delete(sessionId);
     this.activeHarness.delete(sessionId);
     this.streaming.delete(sessionId);
+    this.drainDeferredSince.delete(sessionId);
     const timer = this.drainTimers.get(sessionId);
     if (timer) { clearTimeout(timer); this.drainTimers.delete(sessionId); }
+  }
+
+  deferDrain(sessionId: string, delayMs: number): void {
+    if (!this.drainDeferredSince.has(sessionId)) {
+      this.drainDeferredSince.set(sessionId, Date.now());
+    }
+    this.scheduleDrain(sessionId, delayMs);
+  }
+
+  getDrainDeferredMs(sessionId: string): number {
+    const startedAt = this.drainDeferredSince.get(sessionId);
+    return startedAt ? Date.now() - startedAt : 0;
   }
 
   private scheduleDrain(sessionId: string, delayMs: number): void {

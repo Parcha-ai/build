@@ -106,6 +106,27 @@ interface SystemInfo {
   model: string;
 }
 
+type SlashCommandItem = {
+  name: string;
+  description: string;
+  scope: string;
+  itemType: string;
+  gstackId?: string | null;
+};
+
+type ExtensionScanResult = {
+  commands: SlashCommandItem[];
+  skills: any[];
+  agents: any[];
+  gstackCommands: SlashCommandItem[];
+};
+
+const EXTENSION_SCAN_CACHE_TTL_MS = 5 * 60 * 1000;
+const extensionScanCache = new Map<string, {
+  expiresAt: number;
+  promise: Promise<ExtensionScanResult>;
+}>();
+
 // GStack skill launcher — discovers real gstack skills from disk and invokes them via /command messages
 function GStackLauncher({ sessionId, onClose }: { sessionId: string; onClose: () => void }) {
   const menuRef = useRef<HTMLDivElement>(null);
@@ -341,7 +362,6 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
   const sendMessage = useSessionStore((s) => s.sendMessage);
   const askBtw = useSessionStore((s) => s.askBtw);
   const remoteControl = useSessionStore(useCallback((s) => s.remoteControl[sessionId] || null, [sessionId]));
-  const interruptAndSend = useSessionStore((s) => s.interruptAndSend);
   const pendingPlanApproval = useSessionStore(useCallback((s) => s.pendingPlanApproval[sessionId] || null, [sessionId]));
   const rejectPlan = useSessionStore((s) => s.rejectPlan);
   const cyclePermissionMode = useSessionStore((s) => s.cyclePermissionMode);
@@ -423,22 +443,26 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
     const model = availableModels.find(m => m.id === currentModel);
     return model || { id: currentModel, name: currentModel.split('-').slice(1, 3).join(' ').toUpperCase(), description: '' };
   }, [availableModels, currentModel]);
+  const isAutoRouteActive = Boolean(
+    autoRouteDecision?.resolvedModel &&
+    (currentModel === 'auto' || activeStreamModel === autoRouteDecision.resolvedModel),
+  );
   const autoRouteModelInfo = useMemo(() => {
-    if (!autoRouteDecision?.resolvedModel) return undefined;
+    if (!isAutoRouteActive || !autoRouteDecision?.resolvedModel) return undefined;
     return availableModels.find(m => m.id === autoRouteDecision.resolvedModel);
-  }, [availableModels, autoRouteDecision?.resolvedModel]);
+  }, [availableModels, autoRouteDecision?.resolvedModel, isAutoRouteActive]);
   const actualActiveModel = useMemo(() => {
     if (!isSending) return currentModel === 'auto' ? undefined : currentModel;
     if (activeStreamModel && activeStreamModel !== 'auto') return activeStreamModel;
-    if (autoRouteDecision?.resolvedModel) return autoRouteDecision.resolvedModel;
+    if (isAutoRouteActive && autoRouteDecision?.resolvedModel) return autoRouteDecision.resolvedModel;
     if (systemInfo?.model && systemInfo.model !== 'auto') return systemInfo.model;
     return currentModel === 'auto' ? undefined : currentModel;
-  }, [activeStreamModel, autoRouteDecision?.resolvedModel, currentModel, isSending, systemInfo?.model]);
+  }, [activeStreamModel, autoRouteDecision?.resolvedModel, currentModel, isAutoRouteActive, isSending, systemInfo?.model]);
   const actualActiveModelInfo = useMemo(() => {
     if (!actualActiveModel) return undefined;
     return availableModels.find(m => m.id === actualActiveModel);
   }, [actualActiveModel, availableModels]);
-  const actualActiveHarness = autoRouteDecision?.resolvedModel === actualActiveModel && autoRouteDecision?.resolvedHarness
+  const actualActiveHarness = isAutoRouteActive && autoRouteDecision?.resolvedModel === actualActiveModel && autoRouteDecision?.resolvedHarness
     ? autoRouteDecision.resolvedHarness
     : inferHarnessFromModel(actualActiveModel);
   const actualActiveModelLabel = formatHarnessModelLabel(
@@ -450,7 +474,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
     ? 'AUTO'
     : formatHarnessModelLabel(inferHarnessFromModel(currentModel), currentModel, currentModelInfo.name) || currentModelInfo.name;
   const modelButtonTitle = isSending && actualActiveModelLabel
-    ? `Using ${actualActiveModelLabel}${autoRouteDecision ? `. Auto Build scope: ${autoRouteDecision.domain && autoRouteDecision.domain !== 'general' ? `${autoRouteDecision.tier}:${autoRouteDecision.domain}` : autoRouteDecision.tier}` : ''}`
+    ? `Using ${actualActiveModelLabel}${isAutoRouteActive && autoRouteDecision ? `. Auto Build scope: ${autoRouteDecision.domain && autoRouteDecision.domain !== 'general' ? `${autoRouteDecision.tier}:${autoRouteDecision.domain}` : autoRouteDecision.tier}` : ''}`
     : `${currentModelInfo.description || selectedModelLabel} (click to change)`;
 
   // Load available models on mount
@@ -460,16 +484,31 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
     }
   }, []);
 
-  // Load message history from localStorage on mount
+  // Load message history for the active tab/session.
   useEffect(() => {
+    let nextHistory: string[] = [];
     try {
       const stored = localStorage.getItem(`grep-history-${sessionId}`);
       if (stored) {
-        setMessageHistory(JSON.parse(stored));
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed)) {
+          nextHistory = parsed.filter((item): item is string => typeof item === 'string');
+        }
       }
     } catch {
       // Ignore parse errors
     }
+    setMessage('');
+    setAttachments([]);
+    setShowMentions(false);
+    setMentionQuery('');
+    setMentionStartIndex(-1);
+    setShowCommands(false);
+    setCommandQuery('');
+    setCommandStartIndex(-1);
+    setMessageHistory(nextHistory);
+    setShowHistory(false);
+    setHistoryIndex(-1);
   }, [sessionId]);
 
   // Close history dropdown on outside click
@@ -697,7 +736,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
     // Always seed the builtin commands so the autocomplete works even if
     // session lookup or extensions IPC fails (e.g. SSH session before worktree
     // is set up). These are the always-available items.
-    const builtinCommands = [
+    const builtinCommands: SlashCommandItem[] = [
       { name: 'codex', description: 'Get a second opinion from OpenAI Codex', scope: 'builtin', itemType: 'codex' },
       { name: 'monitor', description: '[Claude Code] Watch a long-running process and stream events', scope: 'builtin', itemType: 'claude-code' },
       { name: 'loop', description: '[Claude Code] Run a prompt on a recurring interval', scope: 'builtin', itemType: 'claude-code' },
@@ -708,37 +747,58 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
     if (!currentSession) return;
 
     const projectPath = currentSession.worktreePath;
+    const cacheKey = `${sessionId}:${projectPath || ''}`;
+    const now = Date.now();
+    const cached = extensionScanCache.get(cacheKey);
 
-    // Load all extensions (pass sessionId for SSH remote scanning)
-    Promise.all([
-      window.electronAPI.extensions.scanCommands({ sessionId, projectPath }),
-      window.electronAPI.extensions.scanSkills({ sessionId, projectPath }),
-      window.electronAPI.extensions.scanAgents({ sessionId, projectPath }),
-      window.electronAPI.gstack.getModes(),
-    ]).then(([cmds, skls, agts, gstackModes]) => {
-      // Inject GStack modes as slash commands (e.g. /ceo, /eng, /qa)
-      const gstackCommands: Array<{ name: string; description: string; scope: string; itemType: string; gstackId: string | null }> = (gstackModes || []).map((mode: { id: string; shortName: string; description: string }) => ({
-        name: mode.shortName.toLowerCase(),
-        description: `[GStack] ${mode.description}`,
-        scope: 'gstack',
-        itemType: 'gstack',
-        gstackId: mode.id,
-      }));
-      // Add /gstack-off to deactivate any active mode
-      gstackCommands.push({
-        name: 'gstack-off',
-        description: '[GStack] Deactivate current workflow mode',
-        scope: 'gstack',
-        itemType: 'gstack',
-        gstackId: null,
+    let cancelled = false;
+    let entry = cached && cached.expiresAt > now ? cached : null;
+    if (!entry) {
+      const promise = Promise.all([
+        window.electronAPI.extensions.scanCommands({ sessionId, projectPath }),
+        window.electronAPI.extensions.scanSkills({ sessionId, projectPath }),
+        window.electronAPI.extensions.scanAgents({ sessionId, projectPath }),
+        window.electronAPI.gstack.getModes(),
+      ]).then(([cmds, skls, agts, gstackModes]) => {
+        const gstackCommands: SlashCommandItem[] = (gstackModes || []).map((mode: { id: string; shortName: string; description: string }) => ({
+          name: mode.shortName.toLowerCase(),
+          description: `[GStack] ${mode.description}`,
+          scope: 'gstack',
+          itemType: 'gstack',
+          gstackId: mode.id,
+        }));
+        gstackCommands.push({
+          name: 'gstack-off',
+          description: '[GStack] Deactivate current workflow mode',
+          scope: 'gstack',
+          itemType: 'gstack',
+          gstackId: null,
+        });
+        return {
+          commands: cmds || [],
+          skills: skls || [],
+          agents: agts || [],
+          gstackCommands,
+        };
       });
-      setCommands([...cmds, ...gstackCommands, ...builtinCommands] as any);
-      setSkills(skls);
-      setAgents(agts);
-      console.log('[InputArea] Loaded extensions for session:', sessionId, '- Commands:', cmds.length, 'Skills:', skls.length, 'Agents:', agts.length, 'GStack:', gstackCommands.length);
+      entry = { expiresAt: now + EXTENSION_SCAN_CACHE_TTL_MS, promise };
+      extensionScanCache.set(cacheKey, entry);
+    }
+
+    entry.promise.then(({ commands: loadedCommands, skills: loadedSkills, agents: loadedAgents, gstackCommands }) => {
+      if (cancelled) return;
+      setCommands([...loadedCommands, ...gstackCommands, ...builtinCommands] as any);
+      setSkills(loadedSkills);
+      setAgents(loadedAgents);
     }).catch(err => {
+      extensionScanCache.delete(cacheKey);
+      if (cancelled) return;
       console.error('[InputArea] Error loading extensions:', err);
     });
+
+    return () => {
+      cancelled = true;
+    };
   }, [sessionId]);
 
   // Detect @ mentions, slash commands, and @agent mentions in text
@@ -1227,25 +1287,20 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
 
     // Cmd+F: Let system handle (find in editor/page) — don't intercept
 
-    // Cmd+Enter: Force send — interrupt current stream and send immediately
-    if (e.key === 'Enter' && e.metaKey && !e.shiftKey && !e.altKey) {
+    // Cmd/Ctrl+Enter: Force send — interrupt current stream and send immediately
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey) {
       e.preventDefault();
       const trimmedMessage = message.trim();
       if (!trimmedMessage && attachments.length === 0) return;
-      if (isSending) {
-        // Interrupt and send
-        const { interruptAndSend } = useSessionStore.getState();
-        setMessage('');
-        setAttachments([]);
-        interruptAndSend(sessionId, trimmedMessage, attachments);
-      } else {
-        handleSubmit();
-      }
+      const { interruptAndSend } = useSessionStore.getState();
+      setMessage('');
+      setAttachments([]);
+      interruptAndSend(sessionId, trimmedMessage, attachments);
       return;
     }
 
     // Regular Enter (without Alt): Send message (queues if streaming)
-    if (e.key === 'Enter' && !e.shiftKey && !e.altKey) {
+    if (e.key === 'Enter' && !e.shiftKey && !e.altKey && !e.metaKey && !e.ctrlKey) {
       e.preventDefault();
       handleSubmit();
     }

@@ -15,40 +15,43 @@ import CommandCenterGrid from '../command-center/CommandCenterGrid';
 import AgentView from '../agent-view/AgentView';
 import EmptyState from './EmptyState';
 import { X, GripVertical, GripHorizontal, Smartphone, Monitor } from 'lucide-react';
+import { getSessionDisplayName } from '../../utils/session-display';
 
 const PRIMARY_MODIFIER_KEY: 'metaKey' | 'ctrlKey' = /mac/i.test(navigator.platform) ? 'metaKey' : 'ctrlKey';
 
 export default function MainContent() {
-  const { activeSessionId, sessions, setupProgress, commandCenterSessionIds } = useSessionStore();
-  const {
-    isTerminalPanelOpen,
-    isBrowserPanelOpen,
-    isGitPanelOpen,
-    isExtensionsPanelOpen,
-    isPlanPanelOpen,
-    terminalHeight,
-    toggleBrowserPanel,
-    toggleGitPanel,
-    toggleExtensionsPanel,
-    togglePlanPanel,
-    setTerminalHeight,
-    splitRatio,
-    viewportMode,
-    toggleViewportMode,
-    mobileBrowserHeight,
-    setMobileBrowserHeight,
-    // Multi-session browser support
-    sessionBrowsersEnabled,
-    enableSessionBrowser,
-    disableSessionBrowser,
-    // Command Center
-    isCommandCenterActive,
-    commandCenterFocusedSessionId,
-    setCommandCenterFocusedSession,
-    // Agent View
-    isAgentViewActive,
-  } = useUIStore();
-  const { isEditorOpen, closeEditor } = useEditorStore();
+  const activeSessionId = useSessionStore((s) => s.activeSessionId);
+  const sessions = useSessionStore((s) => s.sessions);
+  const commandCenterSessionIds = useSessionStore((s) => s.commandCenterSessionIds);
+  const setActiveSession = useSessionStore((s) => s.setActiveSession);
+  const activeSetupProgress = useSessionStore(useCallback(
+    (s) => activeSessionId ? s.setupProgress[activeSessionId] || null : null,
+    [activeSessionId],
+  ));
+  const isTerminalPanelOpen = useUIStore((s) => s.isTerminalPanelOpen);
+  const isBrowserPanelOpen = useUIStore((s) => s.isBrowserPanelOpen);
+  const isGitPanelOpen = useUIStore((s) => s.isGitPanelOpen);
+  const isExtensionsPanelOpen = useUIStore((s) => s.isExtensionsPanelOpen);
+  const isPlanPanelOpen = useUIStore((s) => s.isPlanPanelOpen);
+  const terminalHeight = useUIStore((s) => s.terminalHeight);
+  const toggleBrowserPanel = useUIStore((s) => s.toggleBrowserPanel);
+  const toggleGitPanel = useUIStore((s) => s.toggleGitPanel);
+  const toggleExtensionsPanel = useUIStore((s) => s.toggleExtensionsPanel);
+  const setTerminalHeight = useUIStore((s) => s.setTerminalHeight);
+  const splitRatio = useUIStore((s) => s.splitRatio);
+  const viewportMode = useUIStore((s) => s.viewportMode);
+  const toggleViewportMode = useUIStore((s) => s.toggleViewportMode);
+  const mobileBrowserHeight = useUIStore((s) => s.mobileBrowserHeight);
+  const setMobileBrowserHeight = useUIStore((s) => s.setMobileBrowserHeight);
+  const sessionBrowsersEnabled = useUIStore((s) => s.sessionBrowsersEnabled);
+  const enableSessionBrowser = useUIStore((s) => s.enableSessionBrowser);
+  const isCommandCenterActive = useUIStore((s) => s.isCommandCenterActive);
+  const commandCenterFocusedSessionId = useUIStore((s) => s.commandCenterFocusedSessionId);
+  const setCommandCenterFocusedSession = useUIStore((s) => s.setCommandCenterFocusedSession);
+  const isAgentViewActive = useUIStore((s) => s.isAgentViewActive);
+  const agentViewSelectedSessionId = useUIStore((s) => s.agentViewSelectedSessionId);
+  const isEditorOpen = useEditorStore((s) => s.isEditorOpen);
+  const closeEditor = useEditorStore((s) => s.closeEditor);
   const [isTerminalResizing, setIsTerminalResizing] = useState(false);
   const [isPanelResizing, setIsPanelResizing] = useState(false);
   const [isMobileBrowserResizing, setIsMobileBrowserResizing] = useState(false);
@@ -70,11 +73,16 @@ export default function MainContent() {
         e.stopPropagation();
 
         // If browser panel is open, refresh the browser instead
-        if (isBrowserPanelOpen && activeSessionId) {
-          // Dispatch custom event for BrowserPreview to handle (use root session ID)
-          const rootId = sessions.find(s => s.id === activeSessionId)?.parentSessionId || activeSessionId;
+        const targetSessionId = isCommandCenterActive
+          ? commandCenterFocusedSessionId
+          : isAgentViewActive
+            ? agentViewSelectedSessionId
+            : activeSessionId;
+
+        if (isBrowserPanelOpen && targetSessionId) {
+          // Browser previews are keyed by the active tab/session, not the root session.
           window.dispatchEvent(new CustomEvent('grep-browser-refresh', {
-            detail: { sessionId: rootId }
+            detail: { sessionId: targetSessionId }
           }));
         }
         // Otherwise, just do nothing (CMD+R is disabled)
@@ -84,25 +92,20 @@ export default function MainContent() {
     // Use capture phase to intercept before Electron's default handler
     window.addEventListener('keydown', handleKeyDown, true);
     return () => window.removeEventListener('keydown', handleKeyDown, true);
-  }, [isBrowserPanelOpen, activeSessionId]);
+  }, [isBrowserPanelOpen, activeSessionId, agentViewSelectedSessionId, commandCenterFocusedSessionId, isAgentViewActive, isCommandCenterActive]);
 
   const activeSession = sessions.find((s) => s.id === activeSessionId);
-  const activeSetupProgress = activeSessionId ? setupProgress[activeSessionId] : null;
+  const browserTargetSessionId = isCommandCenterActive
+    ? commandCenterFocusedSessionId
+    : isAgentViewActive
+      ? agentViewSelectedSessionId
+      : activeSessionId;
+  const browserTargetSession = browserTargetSessionId
+    ? sessions.find((s) => s.id === browserTargetSessionId) || null
+    : null;
   const isSessionSetup = activeSession?.status === 'setup' || activeSetupProgress?.status === 'running';
 
-  // Helper: get root session ID (walk up parentSessionId chain)
-  const getRootSessionId = useCallback((sessionId: string): string => {
-    let rootId = sessionId;
-    let session = sessions.find(s => s.id === rootId);
-    while (session?.parentSessionId) {
-      rootId = session.parentSessionId;
-      session = sessions.find(s => s.id === rootId);
-    }
-    return rootId;
-  }, [sessions]);
-
   // When Command Center is deactivated, restore activeSessionId from the last focused cell
-  const { setActiveSession } = useSessionStore();
   const prevCommandCenterActive = React.useRef(isCommandCenterActive);
   useEffect(() => {
     if (prevCommandCenterActive.current && !isCommandCenterActive && commandCenterFocusedSessionId) {
@@ -128,47 +131,20 @@ export default function MainContent() {
     return unsubscribe;
   }, []);
 
-  // When Command Center is active and browser panel is open, auto-enable browsers for ALL command center sessions
+  // Auto-enable browser for the visible tab/session when browser panel is opened.
   useEffect(() => {
-    if (isCommandCenterActive && isBrowserPanelOpen) {
-      for (const id of commandCenterSessionIds) {
-        const rootId = getRootSessionId(id);
-        if (!sessionBrowsersEnabled[rootId]) {
-          enableSessionBrowser(rootId);
-        }
+    if (isBrowserPanelOpen && browserTargetSessionId) {
+      if (!sessionBrowsersEnabled[browserTargetSessionId]) {
+        enableSessionBrowser(browserTargetSessionId);
       }
     }
-  }, [isCommandCenterActive, isBrowserPanelOpen, commandCenterSessionIds, getRootSessionId, sessionBrowsersEnabled, enableSessionBrowser]);
+  }, [isBrowserPanelOpen, browserTargetSessionId, sessionBrowsersEnabled, enableSessionBrowser]);
 
-  // Auto-enable browser for active session's ROOT when browser panel is opened
-  useEffect(() => {
-    if (isBrowserPanelOpen && activeSessionId) {
-      const rootId = getRootSessionId(activeSessionId);
-      if (!sessionBrowsersEnabled[rootId]) {
-        enableSessionBrowser(rootId);
-      }
-    }
-  }, [isBrowserPanelOpen, activeSessionId, sessionBrowsersEnabled, enableSessionBrowser, getRootSessionId]);
-
-  // Get unique root sessions that have browsers enabled (one BrowserPreview per root, shared across forks)
-  const sessionsWithBrowsers = useMemo(() => {
-    const enabledRootIds = new Set<string>();
-    const result: typeof sessions = [];
-    for (const s of sessions) {
-      if (sessionBrowsersEnabled[s.id]) {
-        // Already a root or has no parent — add directly
-        const rootId = s.parentSessionId
-          ? (sessions.find(p => p.id === s.parentSessionId)?.id || s.id)
-          : s.id;
-        if (!enabledRootIds.has(rootId)) {
-          enabledRootIds.add(rootId);
-          const rootSession = sessions.find(p => p.id === rootId) || s;
-          result.push(rootSession);
-        }
-      }
-    }
-    return result;
-  }, [sessions, sessionBrowsersEnabled]);
+  const commandCenterSessions = useMemo(() => {
+    return commandCenterSessionIds
+      .map((id) => sessions.find((session) => session.id === id))
+      .filter((session): session is NonNullable<typeof session> => Boolean(session));
+  }, [commandCenterSessionIds, sessions]);
 
   // Calculate flex basis percentages based on split ratio
   const getFlexBasis = () => {
@@ -384,16 +360,16 @@ export default function MainContent() {
             >
               {/* Left side of side panel: Browser, Git, Editor (stacked vertically) */}
               <div className={`flex flex-col overflow-hidden ${isExtensionsPanelOpen && isBrowserPanelOpen ? 'flex-1' : 'w-full h-full'}`}>
-                {/* Browser panel - renders multiple BrowserPreview instances for multi-session support */}
+                {/* Browser panel - render only the focused session's webview. */}
                 {isBrowserPanelOpen && (
                   <div className={`flex flex-col overflow-hidden ${isGitPanelOpen || isEditorOpen ? 'flex-1' : 'h-full'}`}>
                     <div className="h-10 flex items-center justify-between border-b border-claude-border bg-claude-surface">
                       {/* Command Center mode: session tabs */}
-                      {isCommandCenterActive && sessionsWithBrowsers.length > 1 ? (
+                      {isCommandCenterActive && commandCenterSessions.length > 1 ? (
                         <div className="flex-1 flex items-center overflow-x-auto">
-                          {sessionsWithBrowsers.map(session => {
+                          {commandCenterSessions.map(session => {
                             const isFocused = commandCenterFocusedSessionId
-                              ? getRootSessionId(commandCenterFocusedSessionId) === session.id
+                              ? commandCenterFocusedSessionId === session.id
                               : false;
                             return (
                               <button
@@ -410,7 +386,7 @@ export default function MainContent() {
                                   style={{ borderRadius: 0 }}
                                 />
                                 <span className="truncate max-w-[120px]">
-                                  {session.forkName || session.name}
+                                  {getSessionDisplayName(session)}
                                 </span>
                               </button>
                             );
@@ -422,11 +398,6 @@ export default function MainContent() {
                           {viewportMode === 'mobile' && (
                             <span className="text-xs text-purple-400 font-medium">
                               375 × {mobileBrowserHeight}
-                            </span>
-                          )}
-                          {sessionsWithBrowsers.length > 1 && (
-                            <span className="text-xs text-claude-text-secondary">
-                              ({sessionsWithBrowsers.length} browsers)
                             </span>
                           )}
                         </div>
@@ -445,35 +416,9 @@ export default function MainContent() {
                         className={`${viewportMode === 'mobile' ? 'relative rounded-xl overflow-hidden shadow-2xl border-4 border-gray-700' : 'absolute inset-0'}`}
                         style={viewportMode === 'mobile' ? { width: 375, height: mobileBrowserHeight } : undefined}
                       >
-                        {/* Render a BrowserPreview for each session with browser enabled */}
-                        {/* Only the active session's browser is visible, others stay mounted but hidden */}
-                        {sessionsWithBrowsers.map(session => {
-                          // In Command Center mode, browser follows the focused cell
-                          const effectiveSessionId = isCommandCenterActive
-                            ? commandCenterFocusedSessionId
-                            : activeSessionId;
-                          const activeRootId = effectiveSessionId ? getRootSessionId(effectiveSessionId) : null;
-                          const isActive = session.id === activeRootId;
-                          return (
-                            <div
-                              key={session.id}
-                              className="absolute inset-0"
-                              style={{ display: isActive ? 'block' : 'none' }}
-                            >
-                              <BrowserPreview
-                                session={session}
-                                isVisible={isActive}
-                              />
-                            </div>
-                          );
-                        })}
-                        {/* Fallback for active session if its root isn't in sessionsWithBrowsers yet */}
-                        {activeSession && (() => {
-                          const rootId = getRootSessionId(activeSession.id);
-                          return !sessionBrowsersEnabled[rootId] ? (
-                            <BrowserPreview session={sessions.find(s => s.id === rootId) || activeSession} isVisible={true} />
-                          ) : null;
-                        })()}
+                        {browserTargetSession ? (
+                          <BrowserPreview key={browserTargetSession.id} session={browserTargetSession} isVisible={true} />
+                        ) : null}
                       </div>
                       {/* Vertical resize handle for mobile browser - only in mobile mode */}
                       {viewportMode === 'mobile' && (

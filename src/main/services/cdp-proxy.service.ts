@@ -53,8 +53,7 @@ export class CdpProxyService {
     return new Promise((resolve, reject) => {
       try {
         // Create HTTP server for /json endpoints
-        const requestHandler = (req: any, res: any) => this.handleHttpRequest(req, res);
-        // @ts-ignore - Electron's TS config doesn't resolve Node http types properly
+        const requestHandler: http.RequestListener = (req, res) => this.handleHttpRequest(req, res);
         this.httpServer = http.createServer(requestHandler);
 
         // Create WebSocket server attached to HTTP server
@@ -282,7 +281,7 @@ export class CdpProxyService {
           }
           break;
 
-        case 'Target.getTargets':
+        case 'Target.getTargets': {
           const targetList = this.getTargets().map(t => ({
             targetId: t.id,
             type: 'page',
@@ -293,8 +292,9 @@ export class CdpProxyService {
           }));
           result = { targetInfos: targetList };
           break;
+        }
 
-        case 'Target.attachToTarget':
+        case 'Target.attachToTarget': {
           const targetId = params?.targetId;
           const flatten = params?.flatten ?? true;
 
@@ -395,8 +395,9 @@ export class CdpProxyService {
 
           result = { sessionId: sessionIdStr };
           break;
+        }
 
-        case 'Target.detachFromTarget':
+        case 'Target.detachFromTarget': {
           const detachSessionId = params?.sessionId;
           if (detachSessionId) {
             for (const [tid, session] of this.attachedSessions) {
@@ -408,6 +409,7 @@ export class CdpProxyService {
           }
           result = {};
           break;
+        }
 
         case 'Target.createBrowserContext':
           // We only have one context (the webview)
@@ -418,7 +420,7 @@ export class CdpProxyService {
           result = {};
           break;
 
-        case 'Target.createTarget':
+        case 'Target.createTarget': {
           // Can't create new targets, return existing one
           const existingTargets = this.getTargets();
           if (existingTargets.length > 0) {
@@ -427,6 +429,7 @@ export class CdpProxyService {
             throw new Error('No webview available');
           }
           break;
+        }
 
         case 'Target.closeTarget':
           // Can't close the webview from here
@@ -567,7 +570,7 @@ export class CdpProxyService {
           break;
 
         // Forward other commands to the page if we have a session
-        default:
+        default: {
           // Check if this is a session-specific command (flattened or in params)
           const sessionId = messageSessionId || params?.sessionId;
           if (sessionId) {
@@ -582,6 +585,7 @@ export class CdpProxyService {
             }
           }
           break;
+        }
       }
 
       this.sendResponse(ws, id, result);

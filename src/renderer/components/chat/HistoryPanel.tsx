@@ -55,7 +55,7 @@ export default function HistoryPanel({ sessionId }: HistoryPanelProps) {
       .then((msgs: ChatMessage[]) => {
         if (msgs && msgs.length > 0) setFullMessages(msgs);
       })
-      .catch(() => {});
+      .catch(() => undefined);
   }, [sessionId]);
 
   // Use full history if available, otherwise fall back to in-memory

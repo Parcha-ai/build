@@ -20,6 +20,8 @@ import TokenDashboard from '../analytics/TokenDashboard';
 import { ArrowDown, History, GitBranch, Circle, ExternalLink } from 'lucide-react';
 import type { Session, ToolCall } from '../../../shared/types';
 import { GSTACK_MODE_META } from '../../../shared/types';
+import { canSendMessageToSession } from '../../utils/session-input';
+import { getSessionDisplayName } from '../../utils/session-display';
 
 function SessionGitInfo({ sessionId }: { sessionId: string }) {
   const [gitInfo, setGitInfo] = useState<{
@@ -154,8 +156,14 @@ export default function ChatContainer({ session }: ChatContainerProps) {
   // Codex overlay actions removed — Codex runs as a model in the existing chat
   // clearRemoteControl removed — stopRemoteControl handles both IPC kill + state clear
 
-  const { audioModeActive, ttsStates } = useAudioStore();
-  const { toggleTerminalPanel, isTerminalPanelOpen, isHistoryPanelOpen, toggleHistoryPanel, isAnalyticsPanelOpen, toggleAnalyticsPanel } = useUIStore();
+  const audioModeActive = useAudioStore((s) => s.audioModeActive);
+  const ttsStates = useAudioStore((s) => s.ttsStates);
+  const toggleTerminalPanel = useUIStore((s) => s.toggleTerminalPanel);
+  const isTerminalPanelOpen = useUIStore((s) => s.isTerminalPanelOpen);
+  const isHistoryPanelOpen = useUIStore((s) => s.isHistoryPanelOpen);
+  const toggleHistoryPanel = useUIStore((s) => s.toggleHistoryPanel);
+  const isAnalyticsPanelOpen = useUIStore((s) => s.isAnalyticsPanelOpen);
+  const toggleAnalyticsPanel = useUIStore((s) => s.toggleAnalyticsPanel);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const [isAtBottom, setIsAtBottom] = useState(true);
@@ -168,10 +176,6 @@ export default function ChatContainer({ session }: ChatContainerProps) {
   const fastScrollCount = useRef(0);
   const fastScrollResetTimer = useRef<NodeJS.Timeout | null>(null);
 
-  // Debug: Log thinking content
-  if (thinkingContent) {
-    console.log('[ChatContainer] thinkingContent length:', thinkingContent.length, 'isStreaming:', isSessionStreaming);
-  }
   const isAudioMode = audioModeActive[session.id] || false;
   const currentPermissionRequest = currentPermission;
   const currentQuestionRequest = currentQuestion;
@@ -644,7 +648,7 @@ export default function ChatContainer({ session }: ChatContainerProps) {
       <div className="h-10 border-b border-claude-border flex items-center justify-between px-4 bg-claude-surface/50">
         <div className="flex items-center gap-2 min-w-0">
           <h2 className="text-sm font-bold text-claude-text uppercase truncate" style={{ letterSpacing: '0.1em' }}>
-            {session.name}
+            {getSessionDisplayName(session)}
           </h2>
           {session.status === 'running' && (
             <span
@@ -871,7 +875,7 @@ export default function ChatContainer({ session }: ChatContainerProps) {
       {/* Input */}
       <InputArea
         sessionId={session.id}
-        disabled={session.status !== 'running'}
+        disabled={!canSendMessageToSession(session)}
         systemInfo={systemInfo}
         isStreaming={isSessionStreaming}
       />

@@ -2,6 +2,7 @@ import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { Square } from 'lucide-react';
 import { useSessionStore, type PermissionMode } from '../../stores/session.store';
 import CommandAutocomplete from '../chat/CommandAutocomplete';
+import type { AgentDefinition, Command, Skill } from '../../../shared/types';
 
 const PERMISSION_PROMPTS: Record<PermissionMode, { prompt: string; color: string }> = {
   auto: { prompt: '⚡', color: 'text-cyan-400' },
@@ -18,11 +19,24 @@ interface CompactInputAreaProps {
   isStreaming: boolean;
 }
 
+type ExtensionScanResult = {
+  commands: Command[];
+  skills: Skill[];
+  agents: AgentDefinition[];
+};
+
+const EXTENSION_SCAN_CACHE_TTL_MS = 5 * 60 * 1000;
+const extensionScanCache = new Map<string, {
+  expiresAt: number;
+  promise: Promise<ExtensionScanResult>;
+}>();
+
 export default function CompactInputArea({ sessionId, disabled, isStreaming }: CompactInputAreaProps) {
   const [input, setInput] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const sendMessage = useSessionStore((s) => s.sendMessage);
+  const interruptAndSend = useSessionStore((s) => s.interruptAndSend);
   const cancelStream = useSessionStore((s) => s.cancelStream);
   const permissionMode = useSessionStore(useCallback((s) => s.permissionMode[sessionId] || 'bypassPermissions', [sessionId]));
 
@@ -32,32 +46,63 @@ export default function CompactInputArea({ sessionId, disabled, isStreaming }: C
   const [commandType, setCommandType] = useState<'command' | 'skill' | 'agent'>('command');
   const [commandPosition, setCommandPosition] = useState({ top: 0, left: 0 });
   const [commandStartIndex, setCommandStartIndex] = useState(-1);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const [commands, setCommands] = useState<any[]>([]);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const [skills, setSkills] = useState<any[]>([]);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const [agents, setAgents] = useState<any[]>([]);
+  const [commands, setCommands] = useState<Command[]>([]);
+  const [skills, setSkills] = useState<Skill[]>([]);
+  const [agents, setAgents] = useState<AgentDefinition[]>([]);
 
   // Load commands/skills/agents for this session
   useEffect(() => {
     const currentSession = useSessionStore.getState().sessions.find(s => s.id === sessionId);
     if (!currentSession) return;
     const projectPath = currentSession.worktreePath;
-    Promise.all([
-      window.electronAPI.extensions.scanCommands({ sessionId, projectPath }),
-      window.electronAPI.extensions.scanSkills({ sessionId, projectPath }),
-      window.electronAPI.extensions.scanAgents({ sessionId, projectPath }),
-    ]).then(([cmds, skls, agts]) => {
-      setCommands(cmds);
-      setSkills(skls);
-      setAgents(agts);
+
+    const cacheKey = `${sessionId}:${projectPath || ''}`;
+    const now = Date.now();
+    const cached = extensionScanCache.get(cacheKey);
+    let cancelled = false;
+    let entry = cached && cached.expiresAt > now ? cached : null;
+
+    if (!entry) {
+      const promise = Promise.all([
+        window.electronAPI.extensions.scanCommands({ sessionId, projectPath }),
+        window.electronAPI.extensions.scanSkills({ sessionId, projectPath }),
+        window.electronAPI.extensions.scanAgents({ sessionId, projectPath }),
+      ]).then(([cmds, skls, agts]) => ({
+        commands: cmds || [],
+        skills: skls || [],
+        agents: agts || [],
+      }));
+      entry = { expiresAt: now + EXTENSION_SCAN_CACHE_TTL_MS, promise };
+      extensionScanCache.set(cacheKey, entry);
+    }
+
+    entry.promise.then(({ commands, skills, agents }) => {
+      if (cancelled) return;
+      setCommands(commands);
+      setSkills(skills);
+      setAgents(agents);
     }).catch(err => {
+      extensionScanCache.delete(cacheKey);
+      if (cancelled) return;
       console.error('[CompactInputArea] Error loading extensions:', err);
     });
+
+    return () => {
+      cancelled = true;
+    };
   }, [sessionId]);
 
   const config = PERMISSION_PROMPTS[permissionMode];
+
+  useEffect(() => {
+    setInput('');
+    setShowCommands(false);
+    setCommandQuery('');
+    setCommandStartIndex(-1);
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'auto';
+    }
+  }, [sessionId]);
 
   const handleSend = useCallback(() => {
     const trimmed = input.trim();
@@ -70,14 +115,31 @@ export default function CompactInputArea({ sessionId, disabled, isStreaming }: C
   }, [input, disabled, sessionId, sendMessage]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    const primaryEnter = e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey;
+    if (primaryEnter) {
+      e.preventDefault();
+      const trimmed = input.trim();
+      if (!trimmed || disabled) return;
+      setInput('');
+      if (textareaRef.current) {
+        textareaRef.current.style.height = 'auto';
+      }
+      if (isStreaming) {
+        interruptAndSend(sessionId, trimmed);
+      } else {
+        sendMessage(sessionId, trimmed);
+      }
+      return;
+    }
+
+    if (e.key === 'Enter' && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
       e.preventDefault();
       handleSend();
     }
     if (e.key === 'Escape' && showCommands) {
       setShowCommands(false);
     }
-  }, [handleSend, showCommands]);
+  }, [disabled, handleSend, input, interruptAndSend, isStreaming, sendMessage, sessionId, showCommands]);
 
   const handleInput = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const value = e.target.value;

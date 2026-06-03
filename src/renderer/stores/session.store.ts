@@ -6,6 +6,7 @@ import { contentBlockSignature, filterInternalPromptEchoes, hasRecoverableOutput
 import { buildCompletedStreamMessage } from '../../shared/utils/stream-finalization';
 import { extractContentBlockText, stringifyToolResultForDisplay } from '../../shared/utils/content-block-text';
 import { useAudioStore } from './audio.store';
+import { getSessionDisplayName } from '../utils/session-display';
 
 // Check if running in Electron environment
 const hasElectronAPI = typeof window !== 'undefined' && !!window.electronAPI;
@@ -48,7 +49,29 @@ const CODEX_PERMISSION_MODES: PermissionMode[] = ALL_PERMISSION_MODES.filter(
 const SUPPLEMENTAL_MESSAGES_STORAGE_PREFIX = 'grep-supplemental-messages-';
 const AUTO_BUILD_SECTION_MARKERS = ['\n\n---\n\nFollow-up ', '\n\n---\n\nAuto Build '];
 const queueDrainSuppressedUntil: Record<string, number> = {};
+const messageLoadGenerations = new Map<string, number>();
+const DEBUG_SESSION_SEND = false;
 type HarnessSelectionTrigger = 'model-picker' | 'plan-nudge' | 'compaction-handoff' | 'api' | 'other';
+
+function hasSameSessionListIdentity(current: Session[], next: Session[]): boolean {
+  if (current.length !== next.length) return false;
+  for (let i = 0; i < current.length; i++) {
+    const a = current[i];
+    const b = next[i];
+    if (
+      a.id !== b.id ||
+      a.status !== b.status ||
+      a.updatedAt !== b.updatedAt ||
+      a.branch !== b.branch ||
+      a.name !== b.name ||
+      a.forkName !== b.forkName ||
+      a.lastBrowserUrl !== b.lastBrowserUrl
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
 
 type AutoRouteDecisionState = {
   tier: string;
@@ -325,7 +348,7 @@ interface SessionState {
   toggleFastMode: () => void;
   setSelectedModel: (sessionId: string, model: string, trigger?: HarnessSelectionTrigger) => void;
   loadAvailableModels: () => Promise<void>;
-  sendMessage: (sessionId: string, message: string, attachments?: unknown[], opts?: { existingMessageId?: string; suppressUserMessage?: boolean }) => Promise<void>;
+  sendMessage: (sessionId: string, message: string, attachments?: unknown[], opts?: { existingMessageId?: string; suppressUserMessage?: boolean; fromQueueDrain?: boolean }) => Promise<void>;
   loadMessages: (sessionId: string, options?: LoadMessagesOptions) => Promise<void>;
   subscribeToClaude: () => () => void;
   // Permission handling
@@ -531,35 +554,6 @@ function startRemoteProcessMonitor(
             // the streamed content.
             await new Promise(resolve => setTimeout(resolve, 2000));
             await loadMessages(sessionId);
-
-            const queue = getState().messageQueue[sessionId] || [];
-            if (queue.length > 0) {
-              if (isQueueDrainSuppressed(sessionId)) {
-                console.log(`[SessionStore] Remote process finished after cancel; clearing ${queue.length} queued message(s)`);
-                setState((state: SessionState) => ({
-                  isProcessingQueue: { ...state.isProcessingQueue, [sessionId]: false },
-                  messageQueue: {
-                    ...state.messageQueue,
-                    [sessionId]: [],
-                  },
-                }));
-                break;
-              }
-
-              const nextMsg = queue[0];
-              setState((state: SessionState) => ({
-                messageQueue: {
-                  ...state.messageQueue,
-                  [sessionId]: (state.messageQueue[sessionId] || []).slice(1),
-                },
-              }));
-              setTimeout(() => {
-                getState().sendMessage(sessionId, nextMsg.message, nextMsg.attachments, {
-                  existingMessageId: nextMsg.id,
-                  suppressUserMessage: nextMsg.suppressUserMessage,
-                });
-              }, 100);
-            }
             break;
           }
         } catch (error) {
@@ -747,6 +741,36 @@ function isCloseReloadDuplicate(a: ChatMessage, b: ChatMessage): boolean {
   const normalizedB = normalizeChatMessageTimestamp(b);
   return isCloseTimelineDuplicate(normalizedA, normalizedB)
     || isCloseContentDuplicate(normalizedA, normalizedB);
+}
+
+function latestMessageTime(messages: ChatMessage[]): number {
+  return messages.reduce((latest, message) => {
+    const timestamp = normalizeChatMessageTimestamp(message).timestamp.getTime();
+    return Number.isNaN(timestamp) ? latest : Math.max(latest, timestamp);
+  }, 0);
+}
+
+function mergeLoadedMessagesWithExisting(loadedMessages: ChatMessage[], existingMessages: ChatMessage[]): ChatMessage[] {
+  const existing = filterInternalPromptEchoes(existingMessages || [])
+    .filter((message) => message.role !== 'assistant' || hasRecoverableOutput(message));
+  if (existing.length === 0) return loadedMessages;
+
+  const loadedLatest = latestMessageTime(loadedMessages);
+  const preserved = existing.filter((message) => {
+    const normalized = normalizeChatMessageTimestamp(message);
+    if (normalized.timestamp.getTime() > loadedLatest) return true;
+    if (message.harness && message.harness !== 'claude') return true;
+    return !loadedMessages.some((loadedMessage) => isCloseReloadDuplicate(loadedMessage, message));
+  });
+
+  if (preserved.length === 0) return loadedMessages;
+
+  const existingLatest = latestMessageTime(existing);
+  console.warn(
+    `[SessionStore] Preserving ${preserved.length} in-memory messages during transcript hydration`
+    + ` (loaded=${loadedMessages.length}, existing=${existing.length}, loadedLatest=${loadedLatest}, existingLatest=${existingLatest})`
+  );
+  return mergeTimelineMessages(loadedMessages, preserved);
 }
 
 function isAutoBuildAssistantMessage(message: ChatMessage): boolean {
@@ -975,26 +999,104 @@ async function hasBuildTranscriptForHydration(sessionId: string): Promise<boolea
   return window.electronAPI.claude.hasBuildTranscript(sessionId).catch(() => false);
 }
 
-const SUPPLEMENTAL_MAX_MESSAGES = 500;
-const SUPPLEMENTAL_MAX_BYTES = 5 * 1024 * 1024;
+const SUPPLEMENTAL_MAX_MESSAGES = 200;
+const SUPPLEMENTAL_MAX_BYTES = 512 * 1024;
+const SUPPLEMENTAL_RETRY_MAX_MESSAGES = 60;
+const SUPPLEMENTAL_RETRY_MAX_BYTES = 128 * 1024;
+const SUPPLEMENTAL_CONTEXT_MAX_MESSAGES = 40;
+const SUPPLEMENTAL_CONTEXT_MAX_BYTES = 96 * 1024;
+
+function serializeSupplementalMessages(messages: ChatMessage[], maxMessages: number, maxBytes: number): string {
+  let serialized = messages
+    .slice(-maxMessages)
+    .map(serializeChatMessage)
+    .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+  let json = JSON.stringify(serialized);
+
+  while (json.length > maxBytes && serialized.length > 1) {
+    serialized = serialized.slice(1);
+    json = JSON.stringify(serialized);
+  }
+
+  return json;
+}
+
+function isStorageQuotaExceeded(error: unknown): boolean {
+  const err = error as { name?: string; code?: number } | undefined;
+  return err?.name === 'QuotaExceededError' || err?.code === 22 || err?.code === 1014;
+}
+
+function pruneSupplementalLocalStorageForQuota(currentSessionId: string): void {
+  if (typeof window === 'undefined') return;
+
+  for (let i = window.localStorage.length - 1; i >= 0; i--) {
+    const key = window.localStorage.key(i);
+    if (!key?.startsWith(SUPPLEMENTAL_MESSAGES_STORAGE_PREFIX)) continue;
+    if (key === getSupplementalStorageKey(currentSessionId)) continue;
+
+    try {
+      const raw = window.localStorage.getItem(key);
+      if (!raw) continue;
+      const parsed = JSON.parse(raw) as PersistedChatMessage[];
+      if (!Array.isArray(parsed)) {
+        window.localStorage.removeItem(key);
+        continue;
+      }
+      const messages = parsed
+        .map(deserializeChatMessage)
+        .filter((message): message is ChatMessage => !!message);
+      window.localStorage.setItem(
+        key,
+        serializeSupplementalMessages(messages, SUPPLEMENTAL_RETRY_MAX_MESSAGES, SUPPLEMENTAL_RETRY_MAX_BYTES),
+      );
+    } catch {
+      window.localStorage.removeItem(key);
+    }
+  }
+}
+
+function capMessagesForModelContext(messages: ChatMessage[]): ChatMessage[] {
+  const capped: ChatMessage[] = [];
+  let approxBytes = 0;
+
+  for (let i = messages.length - 1; i >= 0 && capped.length < SUPPLEMENTAL_CONTEXT_MAX_MESSAGES; i--) {
+    const message = messages[i];
+    const serialized = JSON.stringify(serializeChatMessage(message));
+    if (capped.length > 0 && approxBytes + serialized.length > SUPPLEMENTAL_CONTEXT_MAX_BYTES) break;
+    approxBytes += serialized.length;
+    capped.unshift(message);
+  }
+
+  return capped;
+}
+
+function loadSupplementalMessagesForModelContext(sessionId: string): ChatMessage[] {
+  return capMessagesForModelContext(filterInternalPromptEchoes(loadSupplementalMessages(sessionId)));
+}
 
 function saveSupplementalMessages(sessionId: string, messages: ChatMessage[]): void {
   if (typeof window === 'undefined') return;
 
+  const storageKey = getSupplementalStorageKey(sessionId);
   try {
-    const capped = messages.slice(-SUPPLEMENTAL_MAX_MESSAGES);
-    let serialized = capped
-      .map(serializeChatMessage)
-      .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
-    let json = JSON.stringify(serialized);
-
-    while (json.length > SUPPLEMENTAL_MAX_BYTES && serialized.length > 1) {
-      serialized = serialized.slice(1);
-      json = JSON.stringify(serialized);
-    }
-
-    window.localStorage.setItem(getSupplementalStorageKey(sessionId), json);
+    window.localStorage.setItem(
+      storageKey,
+      serializeSupplementalMessages(messages, SUPPLEMENTAL_MAX_MESSAGES, SUPPLEMENTAL_MAX_BYTES),
+    );
   } catch (error) {
+    if (isStorageQuotaExceeded(error)) {
+      try {
+        pruneSupplementalLocalStorageForQuota(sessionId);
+        window.localStorage.setItem(
+          storageKey,
+          serializeSupplementalMessages(messages, SUPPLEMENTAL_RETRY_MAX_MESSAGES, SUPPLEMENTAL_RETRY_MAX_BYTES),
+        );
+        console.warn('[SessionStore] Pruned supplemental localStorage after quota pressure');
+        return;
+      } catch (retryError) {
+        console.warn('[SessionStore] Failed to save pruned supplemental messages:', retryError);
+      }
+    }
     console.warn('[SessionStore] Failed to save supplemental messages:', error);
   }
 }
@@ -1471,6 +1573,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     // Subscribe to full session list updates (from background discovery)
     const unsubscribeList = window.electronAPI.sessions.onListUpdated((sessions) => {
+      const current = get();
+      if (hasSameSessionListIdentity(current.sessions, sessions)) {
+        if (current.isLoadingSessions) {
+          set({ isLoadingSessions: false });
+        }
+        return;
+      }
       console.log('[SessionStore] Received sessions update from background discovery:', sessions.length);
       set({ sessions, isLoadingSessions: false });
     });
@@ -1858,12 +1967,26 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   setSelectedModel: (sessionId, model, trigger = 'model-picker') => {
     const state = get();
     const previousModel = getSessionModel(state, sessionId);
+    const isManualPickerChange = trigger === 'model-picker' && previousModel !== model;
+    const hasLocalActiveWork = Boolean(
+      state.isStreaming[sessionId] ||
+      state.isProcessingQueue[sessionId] ||
+      state.activeStreamModel[sessionId] ||
+      state.activeUserPrompt[sessionId] ||
+      (state.messageQueue[sessionId]?.length ?? 0) > 0,
+    );
 
-    // If currently streaming, cancel the active stream before switching models
-    // This prevents Codex processes from running orphaned after switching to Claude
-    if (state.isStreaming[sessionId]) {
-      console.log(`[SessionStore] Model switch while streaming — cancelling current stream for ${sessionId}`);
+    // A manual picker change is a hard boundary: any previously routed Auto
+    // harness must not keep running or drain queued prompts under the old model.
+    if (isManualPickerChange && hasLocalActiveWork) {
+      console.log(`[SessionStore] Model switch with active work — cancelling current stream for ${sessionId}`);
       state.cancelStream(sessionId);
+    } else if (isManualPickerChange && hasElectronAPI) {
+      void window.electronAPI.claude.cancel(sessionId).then(() => {
+        console.log(`[SessionStore] Model switch sent backend cancel for ${sessionId}`);
+      }).catch((err: Error) => {
+        console.warn('[SessionStore] Failed to cancel backend work during model switch:', err);
+      });
     }
 
     const normalizedPermissionMode = normalizePermissionModeForModel(model, state.permissionMode[sessionId]);
@@ -1877,6 +2000,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         ...state.permissionMode,
         [sessionId]: normalizedPermissionMode,
       },
+      autoRouteDecision: model === 'auto'
+        ? state.autoRouteDecision
+        : { ...state.autoRouteDecision, [sessionId]: null },
+      activeStreamModel: model === 'auto'
+        ? state.activeStreamModel
+        : { ...state.activeStreamModel, [sessionId]: undefined },
+      activeMetaGoals: model === 'auto'
+        ? state.activeMetaGoals
+        : { ...state.activeMetaGoals, [sessionId]: null },
       compactionSwitch: state.compactionSwitch[sessionId]
         ? { ...state.compactionSwitch, [sessionId]: null }
         : state.compactionSwitch,
@@ -1933,8 +2065,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   sendMessage: async (sessionId, message, attachments, opts) => {
     if (!hasElectronAPI) return;
-    const state = get();
+    let state = get();
     const suppressUserMessage = Boolean(opts?.suppressUserMessage);
+    const fromQueueDrain = Boolean(opts?.fromQueueDrain);
     const goalObjective = parseGoalSlashCommand(message);
     if (!suppressUserMessage) {
       set((state) => ({
@@ -1958,19 +2091,62 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     const currentIsProcessingQueue = state.isProcessingQueue[sessionId];
 
-    console.log(`[SessionStore] sendMessage called for session ${sessionId}`);
-    console.log(`[SessionStore] isStreaming: ${currentIsStreaming}, isProcessingQueue: ${currentIsProcessingQueue}, queueLength: ${currentQueueLength}`);
-    console.log(`[SessionStore] Message: "${message.slice(0, 80)}..."`);
+    if (DEBUG_SESSION_SEND) {
+      console.log(`[SessionStore] sendMessage called for session ${sessionId}`);
+      console.log(`[SessionStore] isStreaming: ${currentIsStreaming}, isProcessingQueue: ${currentIsProcessingQueue}, queueLength: ${currentQueueLength}`);
+      console.log(`[SessionStore] Message: "${message.slice(0, 80)}..."`);
+    }
 
-    if (!currentIsStreaming && !currentIsProcessingQueue) {
-      console.warn(`[SessionStore] ⚠️ isStreaming is FALSE — message will be sent as NEW query instead of queued!`);
-      console.warn(`[SessionStore] Stack trace:`, new Error().stack);
+    if (!fromQueueDrain && (state.isStreaming[sessionId] || state.isProcessingQueue[sessionId])) {
+      const streamAge = Date.now() - (state.streamStartTime[sessionId] || 0);
+      const oldEnoughToProbe = streamAge > 1500 || state.isProcessingQueue[sessionId];
+      if (oldEnoughToProbe) {
+        const [backendActive, remoteActive] = await Promise.all([
+          window.electronAPI.claude.hasActiveQuery(sessionId).catch(() => false),
+          window.electronAPI.ssh.hasActiveRemoteProcess(sessionId).catch(() => false),
+        ]);
+        if (!backendActive && !remoteActive) {
+          console.warn(`[SessionStore] Clearing stale stream/queue state before send for ${sessionId}`);
+          await (window.electronAPI.queue?.clear(sessionId) || Promise.resolve()).catch(() => undefined);
+          set((state) => ({
+            isStreaming: { ...state.isStreaming, [sessionId]: false },
+            isProcessingQueue: { ...state.isProcessingQueue, [sessionId]: false },
+            sessionActivity: { ...state.sessionActivity, [sessionId]: 'idle' },
+            messageQueue: { ...state.messageQueue, [sessionId]: [] },
+            activeStreamModel: { ...state.activeStreamModel, [sessionId]: undefined },
+            activeUserPrompt: { ...state.activeUserPrompt, [sessionId]: null },
+            currentStreamContent: { ...state.currentStreamContent, [sessionId]: '' },
+            currentThinkingContent: { ...state.currentThinkingContent, [sessionId]: '' },
+            currentToolCalls: { ...state.currentToolCalls, [sessionId]: [] },
+            currentSystemInfo: { ...state.currentSystemInfo, [sessionId]: null },
+          }));
+          state = get();
+        }
+      }
+    }
+
+    let backendOrRemoteActiveWhileRendererIdle = false;
+    if (!fromQueueDrain && !state.isStreaming[sessionId] && !state.isProcessingQueue[sessionId]) {
+      const [backendActive, remoteActive] = await Promise.all([
+        window.electronAPI.claude.hasActiveQuery(sessionId).catch(() => false),
+        window.electronAPI.ssh.hasActiveRemoteProcess(sessionId).catch(() => false),
+      ]);
+      backendOrRemoteActiveWhileRendererIdle = backendActive || remoteActive;
+      if (backendOrRemoteActiveWhileRendererIdle) {
+        console.warn(`[SessionStore] Backend/remote still active for ${sessionId}; queueing instead of starting a new turn`);
+        set((state) => ({
+          isProcessingQueue: { ...state.isProcessingQueue, [sessionId]: true },
+          sessionActivity: { ...state.sessionActivity, [sessionId]: 'active' },
+        }));
+        state = get();
+      }
     }
 
     // If the user sends a quick follow-up before the agent has visibly started,
     // restart the turn with both prompts together instead of making the second
     // prompt wait behind a doomed first draft.
     if (
+      !fromQueueDrain &&
       !suppressUserMessage &&
       state.isStreaming[sessionId] &&
       !state.isProcessingQueue[sessionId] &&
@@ -2045,7 +2221,17 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
 
     // If already streaming or queue handoff is in progress, queue the message.
-    if (state.isStreaming[sessionId] || state.isProcessingQueue[sessionId]) {
+    if (!fromQueueDrain && (state.isStreaming[sessionId] || state.isProcessingQueue[sessionId] || backendOrRemoteActiveWhileRendererIdle)) {
+      const normalizedMessage = message.trim();
+      const existingQueue = state.messageQueue[sessionId] || [];
+      const recentlyQueuedSame = normalizedMessage.length > 0 && existingQueue.some((queuedMessage) =>
+        queuedMessage.message.trim() === normalizedMessage && Date.now() - queuedMessage.timestamp < 10_000
+      );
+      if (recentlyQueuedSame) {
+        console.warn(`[SessionStore] Suppressing duplicate queued message for ${sessionId}`);
+        return;
+      }
+
       const queuedMsg = {
         id: `msg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
         message,
@@ -2063,6 +2249,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         content: message,
         timestamp: new Date(queuedMsg.timestamp),
         harness: harnessFromModel(state.selectedModel[sessionId]),
+        attachments: (attachments as ChatMessage['attachments'])?.length ? attachments as ChatMessage['attachments'] : undefined,
       };
       set((state) => ({
         messages: userMessage ? {
@@ -2082,9 +2269,25 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
       // Also enqueue in main process (source of truth for drain timing)
       const model = state.selectedModel[sessionId] || 'auto';
-      window.electronAPI.queue?.enqueue(sessionId, message, attachments, { model, suppressUserMessage });
+      window.electronAPI.queue?.enqueue(sessionId, message, attachments, {
+        id: queuedMsg.id,
+        model,
+        suppressUserMessage,
+        deferDrain: backendOrRemoteActiveWhileRendererIdle,
+      });
 
       return;
+    }
+
+    if (fromQueueDrain && (state.isStreaming[sessionId] || state.isProcessingQueue[sessionId])) {
+      console.warn(`[SessionStore] queue drain forcing stale stream flags clear for ${sessionId}`);
+      set((state) => ({
+        isStreaming: { ...state.isStreaming, [sessionId]: false },
+        isProcessingQueue: { ...state.isProcessingQueue, [sessionId]: false },
+        sessionActivity: { ...state.sessionActivity, [sessionId]: 'waiting' },
+        activeUserPrompt: { ...state.activeUserPrompt, [sessionId]: null },
+      }));
+      state = get();
     }
 
     const { addMessage, setStreaming, permissionMode, thinkingMode, selectedModel, gstackMode } = state;
@@ -2125,7 +2328,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
 
     const hasAuthoritativeBuildTranscript = await hasBuildTranscriptForHydration(sessionId);
-    const supplementalMessagesForContext = hasAuthoritativeBuildTranscript ? [] : loadSupplementalMessages(sessionId);
+    const supplementalMessagesForContext = hasAuthoritativeBuildTranscript
+      ? []
+      : loadSupplementalMessagesForModelContext(sessionId);
+    if (hasAuthoritativeBuildTranscript && loadSupplementalMessages(sessionId).length > 0) {
+      console.log(`[SessionStore] Build transcript exists for ${sessionId}; not sending supplemental local fallback as model context`);
+    }
 
     // Add user message (with keys replaced by placeholders).
     // If the caller passed `existingMessageId` (e.g. we're re-sending a queued
@@ -2141,6 +2349,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       content: modifiedText, // Use the secured version
       timestamp: new Date(),
       harness: harnessFromModel(model),
+      attachments: (attachments as ChatMessage['attachments'])?.length ? attachments as ChatMessage['attachments'] : undefined,
     };
     if (!suppressUserMessage && !alreadyInChat) {
       addMessage(sessionId, userMessage);
@@ -2192,7 +2401,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         activeGStackMode,
         supplementalMessagesForContext,
         get().fastMode,
-        suppressUserMessage
+        suppressUserMessage,
+        userMessage.id
       );
       console.log('[SessionStore] sendMessage returned:', result);
     } catch (error) {
@@ -2217,16 +2427,40 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     const perfStart = performance.now();
     const RECENT_MESSAGE_LIMIT = 100;
+    const loadGeneration = (messageLoadGenerations.get(sessionId) || 0) + 1;
+    messageLoadGenerations.set(sessionId, loadGeneration);
+    const isCurrentLoad = () => messageLoadGenerations.get(sessionId) === loadGeneration;
+
+    set((state) => ({
+      isLoadingMessages: { ...state.isLoadingMessages, [sessionId]: true },
+    }));
+
     const hasAuthoritativeBuildTranscript = await hasBuildTranscriptForHydration(sessionId);
+    if (!isCurrentLoad()) {
+      console.log(`[SessionStore] loadMessages: Ignoring stale hydration for ${sessionId}`);
+      return;
+    }
 
     const applyLoadedMessages = (transcriptMessages: ChatMessage[]) => {
-      const supplementalMessages = hasAuthoritativeBuildTranscript ? [] : loadSupplementalMessages(sessionId);
+      if (!isCurrentLoad()) {
+        console.log(`[SessionStore] loadMessages: Ignoring stale apply for ${sessionId}`);
+        return [];
+      }
+
+      const supplementalMessages = hasAuthoritativeBuildTranscript
+        ? []
+        : loadSupplementalMessages(sessionId);
       const mergedMessages = filterInternalPromptEchoes(mergeTimelineMessages(transcriptMessages || [], supplementalMessages))
         .filter((message) => message.role !== 'assistant' || hasRecoverableOutput(message));
       console.log(`[Perf] Message load took ${performance.now() - perfStart}ms (${mergedMessages.length} ${hasAuthoritativeBuildTranscript ? 'Build transcript' : 'merged'} messages)`);
 
       if (mergedMessages.length > 0) {
         set((state) => {
+          if (!isCurrentLoad()) {
+            console.log(`[SessionStore] loadMessages: Stale state apply skipped for ${sessionId}`);
+            return {};
+          }
+
           // Normal live streams own their in-memory state. Reconnected SSH
           // sessions have no attached stream reader, so poll the transcript.
           if (state.isStreaming[sessionId] && !options.replaceWhileStreaming) {
@@ -2234,69 +2468,35 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             return { isLoadingMessages: { ...state.isLoadingMessages, [sessionId]: false } };
           }
 
-          if (hasAuthoritativeBuildTranscript) {
-            return {
-              messages: { ...state.messages, [sessionId]: mergedMessages },
-              isLoadingMessages: { ...state.isLoadingMessages, [sessionId]: false },
-            };
-          }
-
-          // Merge: use transcript/supplemental as base but keep any in-memory
-          // messages that arrived after the transcript read. This path must use
-          // the same close-duplicate rules as supplemental recovery because
-          // tool-only/content-block-only harness messages are valid output even
-          // when content is empty.
-          const existing = filterInternalPromptEchoes(state.messages[sessionId] || [])
-            .filter((message) => message.role !== 'assistant' || hasRecoverableOutput(message));
-          if (existing.length > 0 && mergedMessages.length > 0) {
-            // Always preserve non-Claude harness messages from memory —
-            // they're never in the Claude transcript on disk, so the
-            // dedup check must not drop them.
-            const nonClaudeInMemory = existing.filter((message) =>
-              message.harness && message.harness !== 'claude'
-            );
-            const extraInMemory = existing.filter((message) => (
-              !mergedMessages.some((loadedMessage) => isCloseReloadDuplicate(loadedMessage, message))
-            ));
-            // Combine: always include non-Claude + any other non-duplicate in-memory messages
-            const allPreserved = [...extraInMemory];
-            for (const ncMsg of nonClaudeInMemory) {
-              if (!allPreserved.some((m) => m.id === ncMsg.id)) {
-                allPreserved.push(ncMsg);
-              }
-            }
-            const finalMessages = allPreserved.length > 0
-              ? mergeTimelineMessages(mergedMessages, allPreserved)
-              : mergedMessages;
-
-            return {
-              messages: { ...state.messages, [sessionId]: finalMessages },
-              isLoadingMessages: { ...state.isLoadingMessages, [sessionId]: false },
-            };
-          }
+          // Use the transcript as the loaded base, but never let hydration
+          // delete messages that arrived in memory after the read started, or
+          // non-Claude harness messages that may not exist in Claude-native logs.
+          const finalMessages = mergeLoadedMessagesWithExisting(
+            mergedMessages,
+            state.messages[sessionId] || []
+          );
 
           return {
-            messages: { ...state.messages, [sessionId]: mergedMessages },
+            messages: { ...state.messages, [sessionId]: finalMessages },
             isLoadingMessages: { ...state.isLoadingMessages, [sessionId]: false },
           };
         });
       } else {
         // No messages returned — clear loading flag
         set((state) => ({
-          isLoadingMessages: { ...state.isLoadingMessages, [sessionId]: false },
+          isLoadingMessages: isCurrentLoad()
+            ? { ...state.isLoadingMessages, [sessionId]: false }
+            : state.isLoadingMessages,
         }));
       }
 
       return mergedMessages;
     };
 
-    set((state) => ({
-      isLoadingMessages: { ...state.isLoadingMessages, [sessionId]: true },
-    }));
-
     try {
       // Show the newest slice first so the latest messages appear immediately.
       const recentTranscriptMessages = await window.electronAPI.claude.getMessages(sessionId, RECENT_MESSAGE_LIMIT);
+      if (!isCurrentLoad()) return;
       applyLoadedMessages(recentTranscriptMessages || []);
 
       // Then backfill older transcript history above the fold.
@@ -2305,21 +2505,28 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       const BACKFILL_LIMIT = 500;
       if ((recentTranscriptMessages?.length || 0) >= RECENT_MESSAGE_LIMIT) {
         set((state) => ({
-          isLoadingMessages: { ...state.isLoadingMessages, [sessionId]: true },
+          isLoadingMessages: isCurrentLoad()
+            ? { ...state.isLoadingMessages, [sessionId]: true }
+            : state.isLoadingMessages,
         }));
         const fullTranscriptMessages = await window.electronAPI.claude.getMessages(sessionId, BACKFILL_LIMIT);
+        if (!isCurrentLoad()) return;
         if ((fullTranscriptMessages?.length || 0) > (recentTranscriptMessages?.length || 0)) {
           applyLoadedMessages(fullTranscriptMessages || []);
         } else {
           set((state) => ({
-            isLoadingMessages: { ...state.isLoadingMessages, [sessionId]: false },
+            isLoadingMessages: isCurrentLoad()
+              ? { ...state.isLoadingMessages, [sessionId]: false }
+              : state.isLoadingMessages,
           }));
         }
       }
     } catch (error) {
       console.error('Failed to load messages:', error);
       set((state) => ({
-        isLoadingMessages: { ...state.isLoadingMessages, [sessionId]: false },
+        isLoadingMessages: isCurrentLoad()
+          ? { ...state.isLoadingMessages, [sessionId]: false }
+          : state.isLoadingMessages,
       }));
     }
   },
@@ -2713,27 +2920,33 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     });
 
     const unsubAutoRoute = window.electronAPI.claude.onAutoRouteDecision(({ sessionId, decision }) => {
-      set((state) => ({
-        autoRouteDecision: { ...state.autoRouteDecision, [sessionId]: decision },
-        activeStreamModel: decision.resolvedModel
-          ? { ...state.activeStreamModel, [sessionId]: decision.resolvedModel }
-          : state.activeStreamModel,
-        activeMetaGoals: decision.goal?.objective
-          ? {
-            ...state.activeMetaGoals,
-            [sessionId]: {
-              objective: decision.goal.objective,
-              source: decision.goal.source,
-              status: 'active',
-              iterations: state.activeMetaGoals[sessionId]?.objective === decision.goal.objective
-                ? state.activeMetaGoals[sessionId]?.iterations || 0
-                : 0,
-              maxIterations: state.activeMetaGoals[sessionId]?.maxIterations || META_GOAL_MAX_ITERATIONS,
-              updatedAt: Date.now(),
-            },
-          }
-          : state.activeMetaGoals,
-      }));
+      set((state) => {
+        if ((state.selectedModel[sessionId] || 'auto') !== 'auto') {
+          return {};
+        }
+
+        return {
+          autoRouteDecision: { ...state.autoRouteDecision, [sessionId]: decision },
+          activeStreamModel: decision.resolvedModel
+            ? { ...state.activeStreamModel, [sessionId]: decision.resolvedModel }
+            : state.activeStreamModel,
+          activeMetaGoals: decision.goal?.objective && decision.goal.source === 'slash-command'
+            ? {
+              ...state.activeMetaGoals,
+              [sessionId]: {
+                objective: decision.goal.objective,
+                source: decision.goal.source,
+                status: 'active',
+                iterations: state.activeMetaGoals[sessionId]?.objective === decision.goal.objective
+                  ? state.activeMetaGoals[sessionId]?.iterations || 0
+                  : 0,
+                maxIterations: state.activeMetaGoals[sessionId]?.maxIterations || META_GOAL_MAX_ITERATIONS,
+                updatedAt: Date.now(),
+              },
+            }
+            : state.activeMetaGoals,
+        };
+      });
     });
 
     const unsubEnd = window.electronAPI.claude.onStreamEnd(({ sessionId, message }) => {
@@ -2829,7 +3042,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         const activeId = get().activeSessionId;
         if (sessionId !== activeId) {
           const session = get().sessions.find(s => s.id === sessionId);
-          const sessionName = session?.forkName || session?.name || 'Session';
+          const sessionName = session ? getSessionDisplayName(session) : 'Session';
           const preview = finalContent.replace(/\s+/g, ' ').trim().slice(0, 80);
           try {
             const notification = new Notification(sessionName, {
@@ -2913,6 +3126,17 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         }));
         setTimeout(() => {
           const latestState = get();
+          const latestGoal = latestState.activeMetaGoals[sessionId];
+          if (
+            latestGoal?.status !== 'active'
+            || latestGoal.objective !== nextGoal.objective
+            || latestGoal.iterations !== nextGoal.iterations
+            || latestGoal.updatedAt !== nextGoal.updatedAt
+            || isQueueDrainSuppressed(sessionId)
+          ) {
+            console.log(`[SessionStore] Meta-goal continuation suppressed for ${sessionId}`);
+            return;
+          }
           if (latestState.isStreaming[sessionId] || (latestState.messageQueue[sessionId] || []).length > 0) return;
           latestState.sendMessage(sessionId, buildMetaGoalContinuationPrompt(nextGoal), undefined, {
             suppressUserMessage: true,
@@ -3116,27 +3340,79 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // When the main process decides it's time to send the next queued message,
     // remove it from the local queue display and send through the normal flow.
     const unsubQueueSendNext = window.electronAPI.claude.onQueueSendNext((sessionId: string, msg: any) => {
-      console.log(`[SessionStore] queue:send-next received for ${sessionId}, message: "${(msg.text || '').slice(0, 50)}..."`);
+      const sourceIds = Array.isArray(msg.sourceIds) && msg.sourceIds.length > 0
+        ? msg.sourceIds
+        : [msg.id];
+      console.log(`[SessionStore] queue:send-next received for ${sessionId}, ${sourceIds.length} queued message(s), prompt: "${(msg.text || '').slice(0, 50)}..."`);
 
-      // Remove from local queue display
-      set((state) => ({
-        messageQueue: {
-          ...state.messageQueue,
-          [sessionId]: (state.messageQueue[sessionId] || []).filter((m: any) => m.id !== msg.id),
-        },
-      }));
+      if (isQueueDrainSuppressed(sessionId)) {
+        console.log(`[SessionStore] queue:send-next suppressed after cancel for ${sessionId}`);
+        window.electronAPI.queue?.clear(sessionId);
+        set((state) => ({
+          isProcessingQueue: { ...state.isProcessingQueue, [sessionId]: false },
+          messageQueue: { ...state.messageQueue, [sessionId]: [] },
+        }));
+        return;
+      }
 
-      // Send the message through the normal flow
-      get().sendMessage(sessionId, msg.text, msg.attachments, {
-        existingMessageId: msg.id,
-        suppressUserMessage: msg.suppressUserMessage,
-      });
+      const sendDrainedMessage = (attempt = 0) => {
+        const latestState = get();
+        if (latestState.isStreaming[sessionId] && attempt < 10) {
+          setTimeout(() => sendDrainedMessage(attempt + 1), 50);
+          return;
+        }
+
+        const existingMessages = latestState.messages[sessionId] || [];
+        const existingMessageId = sourceIds.find((id: string) =>
+          existingMessages.some((message) => message.id === id)
+        ) || msg.id;
+
+        // Remove every drained message from the local queue display and collapse
+        // visible queued user bubbles into the single prompt we are about to send.
+        set((state) => {
+          const messages = state.messages[sessionId] || [];
+          const collapsedMessages = msg.suppressUserMessage
+            ? messages.filter((message) => !sourceIds.includes(message.id))
+            : messages
+                .filter((message) => message.id === existingMessageId || !sourceIds.includes(message.id))
+                .map((message) => message.id === existingMessageId
+                  ? {
+                    ...message,
+                    content: msg.text,
+                    attachments: msg.attachments as ChatMessage['attachments'],
+                  }
+                  : message);
+
+          return {
+            messages: { ...state.messages, [sessionId]: collapsedMessages },
+            messageQueue: {
+              ...state.messageQueue,
+              [sessionId]: (state.messageQueue[sessionId] || []).filter((m: any) => !sourceIds.includes(m.id)),
+            },
+            isProcessingQueue: { ...state.isProcessingQueue, [sessionId]: false },
+          };
+        });
+
+        // Send the combined prompt through the normal flow. `fromQueueDrain`
+        // prevents stale renderer stream flags from re-enqueuing this same turn.
+        get().sendMessage(sessionId, msg.text, msg.attachments, {
+          existingMessageId,
+          suppressUserMessage: msg.suppressUserMessage,
+          fromQueueDrain: true,
+        });
+      };
+
+      sendDrainedMessage();
     });
 
     // Listen for queue:state-changed to keep the renderer in sync with the
     // main-process queue (source of truth).
     const unsubQueueStateChanged = window.electronAPI.claude.onQueueStateChanged((sessionId: string, state: any) => {
       set((s) => ({
+        isProcessingQueue: {
+          ...s.isProcessingQueue,
+          [sessionId]: Boolean(state.isProcessing),
+        },
         messageQueue: {
           ...s.messageQueue,
           [sessionId]: (state.messages || []).map((m: any) => ({
@@ -3459,6 +3735,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       currentToolCalls: { ...state.currentToolCalls, [sessionId]: [] },
       pendingPermission: { ...state.pendingPermission, [sessionId]: null },
       pendingQuestion: { ...state.pendingQuestion, [sessionId]: null },
+      activeMetaGoals: { ...state.activeMetaGoals, [sessionId]: null },
     }));
 
     console.log(`Stream cancelled for session ${sessionId}`);
@@ -3467,13 +3744,23 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   interruptAndSend: async (sessionId, message, attachments) => {
     const state = get();
     const isCurrentlyStreaming = state.isStreaming[sessionId] || false;
+    const [backendActive, remoteActive] = await Promise.all([
+      window.electronAPI.claude.hasActiveQuery(sessionId).catch(() => false),
+      window.electronAPI.ssh.hasActiveRemoteProcess(sessionId).catch(() => false),
+    ]);
+    const shouldInterrupt = isCurrentlyStreaming || backendActive || remoteActive;
 
-    // Only interrupt if actually streaming
-    if (isCurrentlyStreaming) {
+    // Interrupt if either the renderer is streaming or the backend/remote
+    // process is still unwinding after a manual stop.
+    if (shouldInterrupt) {
       console.log(`[interruptAndSend] Cancelling current stream for session ${sessionId}`);
+      suppressQueueDrain(sessionId, 2500);
 
       // Cancel current streaming and wait for confirmation
-      await window.electronAPI.claude.cancel(sessionId);
+      await window.electronAPI.claude.cancel(sessionId).catch((error: unknown) => {
+        console.warn('[interruptAndSend] Cancel failed before force-send:', error);
+      });
+      await (window.electronAPI.queue?.clear(sessionId) || Promise.resolve()).catch(() => undefined);
       console.log(`[interruptAndSend] Cancel confirmed by backend`);
 
       // Save partial content as an interrupted message before clearing
@@ -3502,11 +3789,22 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // Clear current streaming state
       set((state) => ({
         isStreaming: { ...state.isStreaming, [sessionId]: false },
+        isProcessingQueue: { ...state.isProcessingQueue, [sessionId]: false },
+        sessionActivity: { ...state.sessionActivity, [sessionId]: 'idle' },
+        messageQueue: { ...state.messageQueue, [sessionId]: [] },
+        activeStreamModel: { ...state.activeStreamModel, [sessionId]: undefined },
         activeUserPrompt: { ...state.activeUserPrompt, [sessionId]: null },
+        streamGeneration: {
+          ...state.streamGeneration,
+          [sessionId]: (state.streamGeneration[sessionId] || 0) + 1,
+        },
         streamEvents: { ...state.streamEvents, [sessionId]: [] },
         currentStreamContent: { ...state.currentStreamContent, [sessionId]: '' },
         currentThinkingContent: { ...state.currentThinkingContent, [sessionId]: '' },
         currentToolCalls: { ...state.currentToolCalls, [sessionId]: [] },
+        pendingPermission: { ...state.pendingPermission, [sessionId]: null },
+        pendingQuestion: { ...state.pendingQuestion, [sessionId]: null },
+        activeMetaGoals: { ...state.activeMetaGoals, [sessionId]: null },
       }));
 
       // CRITICAL: Wait for the stale STREAM_END/STREAM_ERROR from the cancelled
@@ -3517,17 +3815,26 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // the new stream with "Claude Code process aborted by user".
       //
       // This was the v0.2.2 fix (commit c5601ec) that got lost in v0.3.x.
-      // 300ms is enough for the backend generator to unwind and the IPC to deliver.
-      console.log(`[interruptAndSend] Streaming state cleared, draining stale events for 300ms`);
-      await new Promise((resolve) => setTimeout(resolve, 300));
+      console.log(`[interruptAndSend] Streaming state cleared, waiting for backend/remote idle`);
+      for (let attempt = 0; attempt < 6; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        const [stillBackendActive, stillRemoteActive] = await Promise.all([
+          window.electronAPI.claude.hasActiveQuery(sessionId).catch(() => false),
+          window.electronAPI.ssh.hasActiveRemoteProcess(sessionId).catch(() => false),
+        ]);
+        if (!stillBackendActive && !stillRemoteActive) break;
+        if (attempt === 5) {
+          console.warn(`[interruptAndSend] Backend/remote still active after force-send wait for ${sessionId}`);
+        }
+      }
       console.log(`[interruptAndSend] Drain complete, sending new message`);
     }
 
     // Clear the main-process queue before sending the new message
-    window.electronAPI.queue?.clear(sessionId);
+    await (window.electronAPI.queue?.clear(sessionId) || Promise.resolve()).catch(() => undefined);
 
     // Send new message (use fresh state, not the stale closure from before cancel)
-    get().sendMessage(sessionId, message, attachments);
+    await get().sendMessage(sessionId, message, attachments);
   },
 
   // Setup progress methods
@@ -3677,7 +3984,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // Desktop notification when a background task finishes
       const activeId = get().activeSessionId;
       const session = get().sessions.find((s) => s.id === data.sessionId);
-      const sessionName = session?.forkName || session?.name || 'Session';
+      const sessionName = session ? getSessionDisplayName(session) : 'Session';
       const statusEmoji = data.status === 'completed' ? '\u2705' : data.status === 'failed' ? '\u274c' : '\u23f9\ufe0f';
       try {
         const notification = new Notification(`${statusEmoji} ${sessionName}`, {

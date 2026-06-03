@@ -9,6 +9,7 @@ import { secureKeysService } from '../services/secure-keys.service';
 import { sshService } from '../services/ssh.service';
 import type { SSHConfig } from '../../shared/types';
 import { getSessionStoreName } from '../store-names';
+import { CachedStore } from '../cached-store';
 
 // Batching helper for smooth text streaming (mirrors claude.ipc.ts pattern)
 class CodexChunkBatcher {
@@ -76,9 +77,7 @@ export function registerCodexHandlers(ipcMain: IpcMain): void {
       console.log('[Codex IPC] Starting Codex run for session:', sessionId);
 
       // Determine working directory from session
-      const Store = (await import('electron-store')).default;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const { CachedStore } = require('../cached-store');
       const sessionsStore = new CachedStore({ name: getSessionStoreName() }) as any;
       const sessionData =
         sessionsStore.get(`sessions.${sessionId}`) as { worktreePath?: string; repoPath?: string; sshConfig?: SSHConfig } | undefined

@@ -1,4 +1,4 @@
-import { type IpcMain } from 'electron';
+import { type IpcMain, session as electronSession } from 'electron';
 import { browserService } from '../services/browser.service';
 import { IPC_CHANNELS } from '../../shared/constants/channels';
 
@@ -36,18 +36,18 @@ export function registerBrowserHandlers(ipcMain: IpcMain): void {
     }
   });
 
-  // Clear all storage (cookies, localStorage, etc.)
-  ipcMain.handle(IPC_CHANNELS.BROWSER_CLEAR_STORAGE, async (_event) => {
+  // Clear all storage (cookies, localStorage, etc.) for the active browser profile.
+  ipcMain.handle(IPC_CHANNELS.BROWSER_CLEAR_STORAGE, async (_event, sessionId?: string) => {
     try {
-      const { session } = require('electron');
-      const webviewSession = session.fromPartition('persist:browser');
+      const partitionName = sessionId ? `persist:browser-${sessionId}` : 'persist:browser';
+      const webviewSession = electronSession.fromPartition(partitionName);
 
       // Clear all cookies
       await webviewSession.clearStorageData({
-        storages: ['cookies', 'localstorage', 'sessionstorage', 'indexdb', 'serviceworkers', 'cachestorage']
+        storages: ['cookies', 'localstorage', 'indexdb', 'serviceworkers', 'cachestorage']
       });
 
-      console.log('[Browser IPC] All storage cleared');
+      console.log('[Browser IPC] Storage cleared for partition:', partitionName);
       return { success: true };
     } catch (error) {
       console.error('[Browser IPC] Error clearing storage:', error);

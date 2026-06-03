@@ -3,6 +3,7 @@ import Store from 'electron-store';
 import { CachedStore } from '../cached-store';
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import * as os from 'os';
 import { v4 as uuid } from 'uuid';
 import { app } from 'electron';
 import simpleGit from 'simple-git';
@@ -12,6 +13,7 @@ import { getSessionStoreName } from '../store-names';
 import type { Session, SessionStatus } from '../../shared/types';
 import Anthropic from '@anthropic-ai/sdk';
 import { transcriptService } from './transcript.service';
+import { sanitizeSessionTitle } from './session-title.service';
 
 interface SessionCreateConfig {
   name: string;
@@ -27,7 +29,7 @@ interface SessionCreateConfig {
 function getClaudeProjectsDir(): string {
   const override = process.env.CLAUDE_PROJECTS_DIR;
   if (override && override.trim()) return override;
-  return path.join(require('os').homedir(), '.claude', 'projects');
+  return path.join(os.homedir(), '.claude', 'projects');
 }
 
 const DEFAULT_SETUP_SCRIPT = `#!/bin/bash
@@ -55,7 +57,9 @@ export class SessionService extends EventEmitter {
   private sessionsPath: string;
   private discoveredSessionsCache: Map<string, Session> = new Map();
   private lastDiscoveryTime = 0;
-  private readonly DISCOVERY_CACHE_TTL = 60000; // 1 minute cache
+  private readonly DISCOVERY_CACHE_TTL = 10 * 60 * 1000;
+  private lastListSessionsLogKey = '';
+  private lastListSessionsLogTime = 0;
   private isInitialLoadDone = false;
   private discoveryInProgress = false;
   private invalidNameGenerationApiKey: string | null = null;
@@ -206,7 +210,7 @@ Only return the title, nothing else.`
           }]
         });
 
-        const title = response.content[0]?.type === 'text' ? response.content[0].text.trim() : '';
+        const title = sanitizeSessionTitle(response.content[0]?.type === 'text' ? response.content[0].text.trim() : '');
         if (title) {
           this.store.set(`sessionNames.${sessionId}`, title);
           console.log('[Session] Generated name:', path.basename(actualPath), '→', title);
@@ -277,7 +281,7 @@ Only return the title, nothing else.`
       session.worktreePath = repoPath;
 
       // If a specific branch was requested and it's different from current, check it out
-      const git = require('simple-git').default(repoPath);
+      const git = simpleGit(repoPath);
       const currentBranch = await git.revparse(['--abbrev-ref', 'HEAD']);
       if (config.branch !== currentBranch.trim()) {
         console.log(`[Session] Checking out branch: ${config.branch}`);
@@ -391,13 +395,11 @@ Only return the title, nothing else.`
       const starredStored = stored.filter(s => s.isStarred && s.sshConfig);
       const merged = this.getMergedSessions();
       const starredMerged = merged.filter(s => s.isStarred && s.sshConfig);
-      console.log(`[Session] listSessions: ${stored.length} stored (${starredStored.length} starred SSH), ${this.discoveredSessionsCache.size} discovered, ${merged.length} merged (${starredMerged.length} starred SSH)`);
-      // Show sessions that are in merged but NOT in stored (came from discoveredSessionsCache)
-      const storedIds = new Set(stored.map(s => s.id));
-      const fromCache = starredMerged.filter(s => !storedIds.has(s.id));
-      if (fromCache.length > 0) {
-        console.log(`[Session]   ${fromCache.length} starred SSH from discoveredCache (not in sessions store):`);
-        fromCache.forEach(s => console.log(`[Session]     ${s.name} (${s.id.substring(0, 8)})`));
+      const logKey = `${stored.length}:${starredStored.length}:${this.discoveredSessionsCache.size}:${merged.length}:${starredMerged.length}`;
+      if (logKey !== this.lastListSessionsLogKey || now - this.lastListSessionsLogTime > 5 * 60 * 1000) {
+        this.lastListSessionsLogKey = logKey;
+        this.lastListSessionsLogTime = now;
+        console.log(`[Session] listSessions: ${stored.length} stored (${starredStored.length} starred SSH), ${this.discoveredSessionsCache.size} discovered, ${merged.length} merged (${starredMerged.length} starred SSH)`);
       }
       return merged;
     }
@@ -633,7 +635,7 @@ Only return the title, nothing else.`
     return Object.values(sessions)
       .filter(s => s.name && s.repoPath)
       .map(s => {
-        const customName = this.store.get(`sessionNames.${s.id}`) as string | undefined;
+        const customName = sanitizeSessionTitle(this.store.get(`sessionNames.${s.id}`) as string | undefined);
         return customName ? { ...s, name: customName, aiGeneratedName: customName } : s;
       });
   }
@@ -773,7 +775,7 @@ Only return the title, nothing else.`
               const sessionId = transcriptSessionId || jsonlFile.replace('.jsonl', '');
 
               // Check if there's a custom name set by Claude (via UpdateSessionName tool)
-              const customName = this.store.get(`sessionNames.${sessionId}`) as string | undefined;
+              const customName = sanitizeSessionTitle(this.store.get(`sessionNames.${sessionId}`) as string | undefined);
               const displayName = customName || `${path.basename(actualPath)} - ${new Date(stats.mtime).toLocaleDateString()}`;
 
               // Queue background name generation for sessions without custom names
@@ -1113,7 +1115,6 @@ Only return the title, nothing else.`
     parentSession: Session,
     userMessage: string
   ): Promise<void> {
-    const { CachedStore } = require('../cached-store');
     const settingsStore = new CachedStore({ name: 'claudette-settings' });
     const apiKey = (settingsStore.get('anthropicApiKey') as string | undefined)?.trim() || undefined;
 
@@ -1145,9 +1146,9 @@ Only return the short name (exactly 3 words), nothing else.`
         }]
       });
 
-      const generatedName = response.content[0]?.type === 'text'
+      const generatedName = sanitizeSessionTitle(response.content[0]?.type === 'text'
         ? response.content[0].text.trim()
-        : null;
+        : null);
 
       if (generatedName) {
         await this.updateSession(forkedSessionId, {
@@ -1265,9 +1266,9 @@ Only return the short name (3 words), nothing else.`
         }]
       });
 
-      const generatedName = response.content[0]?.type === 'text'
+      const generatedName = sanitizeSessionTitle(response.content[0]?.type === 'text'
         ? response.content[0].text.trim()
-        : null;
+        : null);
 
       if (generatedName) {
         await this.updateSession(forkedSessionId, {

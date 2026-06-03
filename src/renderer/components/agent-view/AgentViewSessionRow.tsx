@@ -2,6 +2,7 @@ import React from 'react';
 import type { Session } from '../../../shared/types';
 import type { SessionPriority } from '../../utils/sessionPriority';
 import { PRIORITY_CONFIG } from '../../utils/sessionPriority';
+import { getSessionDisplayName } from '../../utils/session-display';
 
 interface AgentViewSessionRowProps {
   session: Session;
@@ -21,6 +22,7 @@ export default function AgentViewSessionRow({
   onClick,
 }: AgentViewSessionRowProps) {
   const config = PRIORITY_CONFIG[priority];
+  const displayName = getSessionDisplayName(session);
 
   const getRelativeTime = (date: Date) => {
     const diff = Date.now() - new Date(date).getTime();
@@ -44,7 +46,7 @@ export default function AgentViewSessionRow({
     >
       <div className="flex items-center gap-2">
         <span className="text-xs font-bold text-claude-text truncate flex-1">
-          {session.forkName || session.name}
+          {displayName}
         </span>
         {isStreaming && (
           <span className="text-[8px] font-bold text-green-400 flex-shrink-0" style={{ letterSpacing: '0.05em' }}>

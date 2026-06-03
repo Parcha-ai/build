@@ -2,7 +2,7 @@ import { IpcMain, BrowserWindow } from 'electron';
 import { messageQueueService } from '../services/message-queue.service';
 
 export function registerQueueHandlers(ipcMain: IpcMain): void {
-  ipcMain.handle('queue:enqueue', (_e, sessionId: string, text: string, attachments?: unknown[], opts?: { model?: string; suppressUserMessage?: boolean }) => {
+  ipcMain.handle('queue:enqueue', (_e, sessionId: string, text: string, attachments?: unknown[], opts?: { id?: string; model?: string; suppressUserMessage?: boolean; deferDrain?: boolean }) => {
     return messageQueueService.enqueue(sessionId, text, attachments, opts);
   });
 

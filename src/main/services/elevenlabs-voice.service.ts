@@ -253,19 +253,19 @@ export class ElevenLabsVoiceService extends EventEmitter {
 
     this.agentId = agentId;
 
-    return new Promise(async (resolve, reject) => {
-      try {
-        // For public agents, connect directly; for private, get signed URL
-        let wsUrl: string;
-        try {
-          wsUrl = await this.getSignedUrl(agentId);
-          console.log('[ElevenLabsVoice] Got signed URL');
-        } catch {
-          // Fallback to direct connection for public agents
-          wsUrl = `wss://api.elevenlabs.io/v1/convai/conversation?agent_id=${agentId}`;
-          console.log('[ElevenLabsVoice] Using direct connection URL');
-        }
+    // For public agents, connect directly; for private, get signed URL
+    let wsUrl: string;
+    try {
+      wsUrl = await this.getSignedUrl(agentId);
+      console.log('[ElevenLabsVoice] Got signed URL');
+    } catch {
+      // Fallback to direct connection for public agents
+      wsUrl = `wss://api.elevenlabs.io/v1/convai/conversation?agent_id=${agentId}`;
+      console.log('[ElevenLabsVoice] Using direct connection URL');
+    }
 
+    return new Promise((resolve, reject) => {
+      try {
         console.log('[ElevenLabsVoice] Connecting to:', wsUrl);
         this.ws = new WebSocket(wsUrl);
 

@@ -1,7 +1,7 @@
 {
   "name": "build",
   "productName": "Build",
-  "version": "0.5.27",
+  "version": "0.5.28",
   "description": "AI-powered development environment with intelligent code search, multi-session support, and live browser preview",
   "main": ".webpack/main",
   "scripts": {
@@ -26,6 +26,14 @@
     "verify:auto-router:no-legacy-llm-after-controller": "npx ts-node scripts/verify-auto-router-no-legacy-llm-after-controller.ts",
     "verify:auto-router:plan-mode": "npx ts-node scripts/verify-auto-router-plan-mode.ts",
     "verify:auto-router:workflow-metadata": "npx ts-node scripts/verify-auto-router-workflow-metadata.ts",
+    "verify:fixes": "npm run verify:build-transcript-precedence && npm run verify:queue-drain:stale-active-query && npm run verify:session-hygiene && npm run verify:session-display-behavior && npm run verify:ssh-remote-process-guards",
+    "verify:fixes:installed": "npm run verify:fixes && npm run verify:installed-build-fixes",
+    "verify:build-transcript-precedence": "npx ts-node scripts/verify-build-transcript-precedence.ts",
+    "verify:installed-build-fixes": "node scripts/verify-installed-build-fixes.js",
+    "verify:queue-drain:stale-active-query": "npx ts-node scripts/verify-queue-drain-stale-active-query.ts",
+    "verify:session-display-behavior": "npx ts-node scripts/verify-session-display-behavior.ts",
+    "verify:session-hygiene": "npx ts-node scripts/verify-session-hygiene.ts",
+    "verify:ssh-remote-process-guards": "npx ts-node scripts/verify-ssh-remote-process-guards.ts",
     "setup-qmd": "npx ts-node scripts/setup-qmd.ts",
     "setup-qmd:all": "npx ts-node scripts/setup-qmd.ts all"
   },
@@ -75,7 +83,7 @@
     "style-loader": "^3.3.4",
     "tailwindcss": "^3.4.18",
     "ts-loader": "^9.5.4",
-    "typescript": "~4.5.4"
+    "typescript": "~5.6.3"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.143",

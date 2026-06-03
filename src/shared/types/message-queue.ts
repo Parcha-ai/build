@@ -8,6 +8,8 @@ export interface QueuedMessage {
   timestamp: number;
   model?: string;  // model at time of queueing
   suppressUserMessage?: boolean;  // don't show as user bubble (e.g., continue)
+  sourceIds?: string[];  // original queued message ids when multiple messages are drained as one turn
+  sourceCount?: number;
 }
 
 export interface QueueState {

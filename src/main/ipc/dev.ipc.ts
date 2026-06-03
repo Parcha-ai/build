@@ -155,7 +155,7 @@ export function registerDevHandlers(ipcMain: IpcMain): void {
       const git = simpleGit(repoPath);
       await git.init();
       // Create initial commit with .gitignore
-      await git.add('.gitignore').catch(() => {}); // Ignore if no .gitignore
+      await git.add('.gitignore').catch(() => undefined); // Ignore if no .gitignore
       await git.commit('Initial commit', { '--allow-empty': null });
       const branch = await git.revparse(['--abbrev-ref', 'HEAD']);
       return { success: true, branch: branch.trim() };

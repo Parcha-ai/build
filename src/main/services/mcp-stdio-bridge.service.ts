@@ -160,7 +160,7 @@ class McpStdioBridgeService {
   ): Promise<number> {
     const key = bridgeKey(command, args, env);
 
-    let bridge = this.bridges.get(key);
+    const bridge = this.bridges.get(key);
     if (bridge && bridge.alive) {
       // Reuse existing bridge — just add session reference
       bridge.sessions.add(sessionId);

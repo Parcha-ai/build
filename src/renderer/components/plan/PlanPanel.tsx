@@ -6,6 +6,8 @@ import { v4 as uuid } from 'uuid';
 import { useUIStore } from '../../stores/ui.store';
 import { useSessionStore } from '../../stores/session.store';
 
+const EMPTY_CHAT_MESSAGES: never[] = [];
+
 interface PlanComment {
   id: string;
   selectedText: string;
@@ -116,14 +118,27 @@ function SpecMetadataBar({ content }: { content: string }) {
 }
 
 export default function PlanPanel() {
-  const { togglePlanPanel, sessionPlanContent, clearPlanContent, setPlanContent } = useUIStore();
-  const { activeSessionId, pendingPlanApproval, approvePlan, rejectPlan, messages } = useSessionStore();
+  const togglePlanPanel = useUIStore((s) => s.togglePlanPanel);
+  const clearPlanContent = useUIStore((s) => s.clearPlanContent);
+  const setPlanContent = useUIStore((s) => s.setPlanContent);
+  const activeSessionId = useSessionStore((s) => s.activeSessionId);
+  const approvePlan = useSessionStore((s) => s.approvePlan);
+  const rejectPlan = useSessionStore((s) => s.rejectPlan);
+  const planContent = useUIStore(React.useCallback(
+    (s) => activeSessionId ? s.sessionPlanContent[activeSessionId] || null : null,
+    [activeSessionId],
+  ));
+  const pendingApproval = useSessionStore(React.useCallback(
+    (s) => activeSessionId ? s.pendingPlanApproval[activeSessionId] || null : null,
+    [activeSessionId],
+  ));
+  const sessionMessages = useSessionStore(React.useCallback(
+    (s) => activeSessionId ? s.messages[activeSessionId] || EMPTY_CHAT_MESSAGES : EMPTY_CHAT_MESSAGES,
+    [activeSessionId],
+  ));
   const [feedback, setFeedback] = React.useState('');
   const [showFeedback, setShowFeedback] = React.useState(false);
 
-  const planContent = activeSessionId ? sessionPlanContent[activeSessionId] : null;
-  const pendingApproval = activeSessionId ? pendingPlanApproval[activeSessionId] : null;
-  const sessionMessages = activeSessionId ? messages[activeSessionId] : [];
   const isSpecFile = !!(planContent?.startsWith('---\n') && planContent?.includes('[@test]'));
 
   // Inline comment state
@@ -279,15 +294,6 @@ export default function PlanPanel() {
     setCommentInput('');
     window.getSelection()?.removeAllRanges();
   };
-
-  // Debug logging
-  React.useEffect(() => {
-    console.log('[PlanPanel] Active session:', activeSessionId);
-    console.log('[PlanPanel] Plan content exists:', !!planContent);
-    console.log('[PlanPanel] Plan content length:', planContent?.length);
-    console.log('[PlanPanel] Pending approval:', !!pendingApproval);
-    console.log('[PlanPanel] All session plan content keys:', Object.keys(sessionPlanContent));
-  }, [activeSessionId, planContent, pendingApproval, sessionPlanContent]);
 
   // Reset feedback when plan approval changes
   React.useEffect(() => {

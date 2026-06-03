@@ -5,50 +5,41 @@ import { useUIStore } from '../../stores/ui.store';
 import { prioritizeSessions, groupByPriority, PRIORITY_CONFIG } from '../../utils/sessionPriority';
 import type { SessionPriority } from '../../utils/sessionPriority';
 import AgentViewSessionRow from './AgentViewSessionRow';
+import { getFirstVisibleTabSession } from '../../utils/session-display';
 
 const PRIORITY_ORDER: SessionPriority[] = ['needs-input', 'error', 'active', 'idle'];
 
 export default function AgentSidebarContent() {
   const sessions = useSessionStore((s) => s.sessions);
-  const allMessages = useSessionStore((s) => s.messages);
   const pendingPermission = useSessionStore((s) => s.pendingPermission);
   const pendingQuestion = useSessionStore((s) => s.pendingQuestion);
   const isStreamingMap = useSessionStore((s) => s.isStreaming);
   const contextUsage = useSessionStore((s) => s.contextUsage);
-  const loadMessages = useSessionStore((s) => s.loadMessages);
 
-  const {
-    agentViewSelectedSessionId,
-    agentViewTimeFilterHours,
-    setAgentViewSelectedSession,
-    setAgentViewTimeFilterHours,
-  } = useUIStore();
+  const agentViewSelectedSessionId = useUIStore((s) => s.agentViewSelectedSessionId);
+  const agentViewTimeFilterHours = useUIStore((s) => s.agentViewTimeFilterHours);
+  const setAgentViewSelectedSession = useUIStore((s) => s.setAgentViewSelectedSession);
+  const setAgentViewTimeFilterHours = useUIStore((s) => s.setAgentViewTimeFilterHours);
 
   const [showFilterDropdown, setShowFilterDropdown] = useState(false);
   const filterDropdownRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    for (const s of sessions) {
-      if (!s.parentSessionId && !allMessages[s.id]) {
-        loadMessages(s.id);
-      }
-    }
-  }, [sessions, allMessages, loadMessages]);
-
   const prioritizedSessions = useMemo(() => {
-    return prioritizeSessions(sessions, allMessages, pendingPermission, pendingQuestion, isStreamingMap, agentViewTimeFilterHours);
-  }, [sessions, allMessages, pendingPermission, pendingQuestion, isStreamingMap, agentViewTimeFilterHours]);
+    return prioritizeSessions(sessions, pendingPermission, pendingQuestion, isStreamingMap, agentViewTimeFilterHours);
+  }, [sessions, pendingPermission, pendingQuestion, isStreamingMap, agentViewTimeFilterHours]);
 
   const groupedSessions = useMemo(() => {
     return groupByPriority(prioritizedSessions);
   }, [prioritizedSessions]);
 
   useEffect(() => {
-    const selectedStillValid = prioritizedSessions.some((p) => p.session.id === agentViewSelectedSessionId);
+    const selectedStillValid = prioritizedSessions.some((p) => (
+      getFirstVisibleTabSession(p.session, sessions).id === agentViewSelectedSessionId
+    ));
     if (!selectedStillValid && prioritizedSessions.length > 0) {
-      setAgentViewSelectedSession(prioritizedSessions[0].session.id);
+      setAgentViewSelectedSession(getFirstVisibleTabSession(prioritizedSessions[0].session, sessions).id);
     }
-  }, [prioritizedSessions, agentViewSelectedSessionId, setAgentViewSelectedSession]);
+  }, [prioritizedSessions, agentViewSelectedSessionId, sessions, setAgentViewSelectedSession]);
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -133,17 +124,20 @@ export default function AgentSidebarContent() {
                     ({group.length})
                   </span>
                 </div>
-                {group.map(({ session, priority: p }) => (
-                  <AgentViewSessionRow
-                    key={session.id}
-                    session={session}
-                    priority={p}
-                    isSelected={session.id === agentViewSelectedSessionId}
-                    isStreaming={isStreamingMap[session.id] || false}
-                    contextPercentage={contextUsage[session.id]?.percentage}
-                    onClick={() => setAgentViewSelectedSession(session.id)}
-                  />
-                ))}
+                {group.map(({ session, priority: p }) => {
+                  const visibleTabSession = getFirstVisibleTabSession(session, sessions);
+                  return (
+                    <AgentViewSessionRow
+                      key={session.id}
+                      session={visibleTabSession}
+                      priority={p}
+                      isSelected={visibleTabSession.id === agentViewSelectedSessionId}
+                      isStreaming={Boolean(isStreamingMap[visibleTabSession.id] || isStreamingMap[session.id])}
+                      contextPercentage={contextUsage[visibleTabSession.id]?.percentage ?? contextUsage[session.id]?.percentage}
+                      onClick={() => setAgentViewSelectedSession(visibleTabSession.id)}
+                    />
+                  );
+                })}
               </div>
             );
           })

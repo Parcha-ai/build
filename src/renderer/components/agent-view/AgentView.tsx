@@ -5,15 +5,17 @@ import MessageList from '../chat/MessageList';
 import InputArea from '../chat/InputArea';
 import PermissionDialog from '../chat/PermissionDialog';
 import QuestionDialog from '../chat/QuestionDialog';
+import { getSessionDisplayName } from '../../utils/session-display';
 
 const EMPTY_MESSAGES: never[] = [];
 const EMPTY_EVENTS: never[] = [];
 const EMPTY_TOOL_CALLS: never[] = [];
 const EMPTY_QUEUE: never[] = [];
+const noopBackgroundTask = () => undefined;
 
 export default function AgentView() {
   const sessions = useSessionStore((s) => s.sessions);
-  const { agentViewSelectedSessionId: selectedId } = useUIStore();
+  const selectedId = useUIStore((s) => s.agentViewSelectedSessionId);
 
   const approvePermission = useSessionStore((s) => s.approvePermission);
   const denyPermission = useSessionStore((s) => s.denyPermission);
@@ -66,7 +68,7 @@ export default function AgentView() {
           <div className="h-8 flex items-center px-3 bg-claude-surface/50 border-b border-claude-border flex-shrink-0">
             <div className={`w-1.5 h-1.5 flex-shrink-0 mr-2 ${selectedSession.status === 'running' ? 'bg-green-500' : selectedSession.status === 'error' ? 'bg-red-500' : 'bg-gray-500'}`} style={{ borderRadius: 0 }} />
             <span className="text-[11px] font-bold text-claude-text uppercase" style={{ letterSpacing: '0.05em' }}>
-              {selectedSession.forkName || selectedSession.name}
+              {getSessionDisplayName(selectedSession)}
             </span>
             {selectedSession.branch && (
               <span className="text-[10px] text-claude-text-secondary ml-2 truncate">
@@ -91,7 +93,7 @@ export default function AgentView() {
               streamingToolCalls={streamingToolCalls}
               currentToolCalls={streamingToolCalls}
               queuedMessages={queuedMessages}
-              onBackgroundTask={() => {}}
+              onBackgroundTask={noopBackgroundTask}
             />
             <div ref={messagesEndRef} />
           </div>

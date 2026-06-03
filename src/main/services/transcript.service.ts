@@ -172,6 +172,34 @@ class TranscriptService {
   }
 
   /**
+   * Insert or replace a single message in the session transcript.
+   * Used for in-progress assistant turns so a reload can recover the latest
+   * streamed text/tool state without appending duplicate partial rows.
+   */
+  upsertMessage(sessionId: string, entry: TranscriptEntry): { changed: boolean; written: number } {
+    const existingEntries = this.loadMessages(sessionId);
+    const nextEntries = [...existingEntries];
+    const existingIndex = nextEntries.findIndex(existing => existing.id === entry.id);
+    if (existingIndex >= 0) {
+      nextEntries[existingIndex] = {
+        ...nextEntries[existingIndex],
+        ...entry,
+      };
+    } else {
+      nextEntries.push(entry);
+    }
+
+    const previousPayload = existingEntries.map(existing => JSON.stringify(existing)).join('\n');
+    const nextPayload = nextEntries.map(existing => JSON.stringify(existing)).join('\n');
+    if (previousPayload === nextPayload) {
+      return { changed: false, written: nextEntries.length };
+    }
+
+    const result = this.replaceMessages(sessionId, nextEntries);
+    return { changed: true, written: result.written };
+  }
+
+  /**
    * Load all (or the last `limit`) messages from a session's transcript file.
    * Returns an empty array if the file doesn't exist or is unreadable.
    */

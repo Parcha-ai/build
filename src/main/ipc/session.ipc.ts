@@ -9,6 +9,7 @@ import { sshService } from '../services/ssh.service';
 import Store from 'electron-store';
 import { v4 as uuid } from 'uuid';
 import { getSessionStoreName } from '../store-names';
+import { CachedStore } from '../cached-store';
 
 const sessionService = new SessionService();
 
@@ -116,7 +117,6 @@ export function registerSessionHandlers(ipcMain: IpcMain): void {
       const transcripts = await sshService.listRemoteTranscripts(probeId, session.sshConfig, workdir);
 
       // Build set of SDK session IDs we already know about
-      const { CachedStore } = require('../cached-store');
       const sessionStore = new CachedStore({ name: getSessionStoreName() }) as any;
       const mappings = (sessionStore.get('sdkSessionMappings') || {}) as Record<string, string>;
       const knownSdkIds = new Set(Object.values(mappings));

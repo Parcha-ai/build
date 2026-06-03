@@ -146,29 +146,32 @@ export class RealtimeService extends EventEmitter {
     console.log('[RealtimeService] Received event:', event.type, JSON.stringify(event).slice(0, 200));
 
     switch (event.type) {
-      case 'session.created':
+      case 'session.created': {
         const sessionEvent = event as SessionCreated;
         this.sessionId = sessionEvent.session.id;
         console.log('[RealtimeService] Session created:', this.sessionId);
         this.emit('session_created', this.sessionId);
         break;
+      }
 
       case 'session.updated':
         console.log('[RealtimeService] Session updated');
         this.emit('session_updated');
         break;
 
-      case 'conversation.item.input_audio_transcription.delta':
+      case 'conversation.item.input_audio_transcription.delta': {
         const deltaEvent = event as TranscriptionDelta;
         console.log('[RealtimeService] Transcription delta:', deltaEvent.delta);
         this.emit('transcription_delta', deltaEvent.delta);
         break;
+      }
 
-      case 'conversation.item.input_audio_transcription.completed':
+      case 'conversation.item.input_audio_transcription.completed': {
         const completedEvent = event as TranscriptionCompleted;
         console.log('[RealtimeService] Transcription completed:', completedEvent.transcript);
         this.emit('transcription_completed', completedEvent.transcript);
         break;
+      }
 
       case 'input_audio_buffer.speech_started':
         console.log('[RealtimeService] Speech started');
@@ -196,11 +199,12 @@ export class RealtimeService extends EventEmitter {
         console.log('[RealtimeService] Response done');
         break;
 
-      case 'error':
+      case 'error': {
         const errorEvent = event as ErrorEvent;
         console.error('[RealtimeService] Error:', errorEvent.error);
         this.emit('error', errorEvent.error.message);
         break;
+      }
 
       default:
         // Log all other events for debugging

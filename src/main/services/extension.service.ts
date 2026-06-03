@@ -2,6 +2,13 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 
+const EXTENSION_SCAN_DEBUG = process.env.GREP_DEBUG_EXTENSION_SCANS === '1';
+const EXTENSION_SCAN_CACHE_TTL_MS = 5 * 60 * 1000;
+
+function debugExtensionScan(...args: unknown[]): void {
+  if (EXTENSION_SCAN_DEBUG) console.log(...args);
+}
+
 export interface Command {
   name: string;
   path: string;
@@ -28,74 +35,71 @@ export interface AgentDefinition {
 }
 
 export class ExtensionService {
-  // Find all .claude directories recursively within a project
-  private async findClaudeDirs(rootPath: string, maxDepth = 3): Promise<string[]> {
-    const claudeDirs: string[] = [];
+  private scanCache = new Map<string, {
+    expiresAt: number;
+    promise: Promise<unknown>;
+  }>();
 
-    const scan = async (dir: string, depth: number) => {
-      if (depth > maxDepth) return;
+  private cachedScan<T>(kind: string, projectPath: string | undefined, loader: () => Promise<T>): Promise<T> {
+    const cacheKey = `${kind}:${projectPath || ''}`;
+    const now = Date.now();
+    const cached = this.scanCache.get(cacheKey);
+    if (cached && cached.expiresAt > now) {
+      return cached.promise as Promise<T>;
+    }
 
-      try {
-        const entries = await fs.readdir(dir, { withFileTypes: true });
+    const promise = loader().catch((error) => {
+      this.scanCache.delete(cacheKey);
+      throw error;
+    });
+    this.scanCache.set(cacheKey, {
+      expiresAt: now + EXTENSION_SCAN_CACHE_TTL_MS,
+      promise,
+    });
+    return promise;
+  }
 
-        for (const entry of entries) {
-          if (!entry.isDirectory()) continue;
-
-          const fullPath = path.join(dir, entry.name);
-
-          // Skip node_modules, .git, and other common build/cache directories
-          if (entry.name === 'node_modules' || entry.name === '.git' ||
-              entry.name === 'dist' || entry.name === 'build' ||
-              entry.name === '.next' || entry.name === 'target') {
-            continue;
-          }
-
-          // If this is a .claude directory, add it
-          if (entry.name === '.claude') {
-            claudeDirs.push(fullPath);
-          } else {
-            // Otherwise, recurse into subdirectories
-            await scan(fullPath, depth + 1);
-          }
-        }
-      } catch (err) {
-        // Ignore permission errors, etc.
-      }
-    };
-
-    await scan(rootPath, 0);
-    return claudeDirs;
+  // Only scan the project-level .claude directory for autocomplete.
+  // Recursive worktree scans were causing large monorepos to block Electron's
+  // main process; harness context collection has its own broader path.
+  private async findClaudeDirs(rootPath: string): Promise<string[]> {
+    const claudeDir = path.join(rootPath, '.claude');
+    try {
+      const stat = await fs.stat(claudeDir);
+      return stat.isDirectory() ? [claudeDir] : [];
+    } catch {
+      return [];
+    }
   }
 
   async scanCommands(projectPath?: string): Promise<Command[]> {
+    return this.cachedScan('commands', projectPath, async () => {
     const commands: Command[] = [];
 
     // Scan user commands
     const userCommandsDir = path.join(os.homedir(), '.claude', 'commands');
-    console.log('[ExtensionService] Scanning user commands:', userCommandsDir);
+    debugExtensionScan('[ExtensionService] Scanning user commands:', userCommandsDir);
     const userCommands = await this.scanCommandsRec(userCommandsDir, 'user', '');
-    console.log('[ExtensionService] Found user commands:', userCommands.length);
+    debugExtensionScan('[ExtensionService] Found user commands:', userCommands.length);
     commands.push(...userCommands);
 
-    // Scan ALL .claude directories in project tree
+    // Scan project root .claude directory.
     if (projectPath) {
-      console.log('[ExtensionService] Finding all .claude directories in:', projectPath);
       const claudeDirs = await this.findClaudeDirs(projectPath);
-      console.log('[ExtensionService] Found .claude directories:', claudeDirs);
+      debugExtensionScan('[ExtensionService] Found project .claude directories:', claudeDirs);
 
       for (const claudeDir of claudeDirs) {
         const commandsDir = path.join(claudeDir, 'commands');
-        console.log('[ExtensionService] Scanning project commands:', commandsDir);
+        debugExtensionScan('[ExtensionService] Scanning project commands:', commandsDir);
         const projectCommands = await this.scanCommandsRec(commandsDir, 'project', '');
-        console.log('[ExtensionService] Found commands in', commandsDir, ':', projectCommands.length);
+        debugExtensionScan('[ExtensionService] Found commands in', commandsDir, ':', projectCommands.length);
         commands.push(...projectCommands);
       }
-    } else {
-      console.log('[ExtensionService] No projectPath provided for commands scan');
     }
 
-    console.log('[ExtensionService] Total commands:', commands.length, commands.map(c => `${c.name} (${c.scope})`));
+    debugExtensionScan('[ExtensionService] Total commands:', commands.length);
     return commands;
+    });
   }
 
   private async scanCommandsRec(dir: string, scope: 'user' | 'project', namespace: string): Promise<Command[]> {
@@ -133,33 +137,32 @@ export class ExtensionService {
   }
 
   async scanSkills(projectPath?: string): Promise<Skill[]> {
+    return this.cachedScan('skills', projectPath, async () => {
     const skills: Skill[] = [];
 
     const userSkillsDir = path.join(os.homedir(), '.claude', 'skills');
-    console.log('[ExtensionService] Scanning user skills:', userSkillsDir);
+    debugExtensionScan('[ExtensionService] Scanning user skills:', userSkillsDir);
     const userSkills = await this.scanSkillsRec(userSkillsDir, 'user');
-    console.log('[ExtensionService] Found user skills:', userSkills.length);
+    debugExtensionScan('[ExtensionService] Found user skills:', userSkills.length);
     skills.push(...userSkills);
 
-    // Scan ALL .claude directories in project tree
+    // Scan project root .claude directory.
     if (projectPath) {
-      console.log('[ExtensionService] Finding all .claude directories in:', projectPath);
       const claudeDirs = await this.findClaudeDirs(projectPath);
-      console.log('[ExtensionService] Found .claude directories:', claudeDirs);
+      debugExtensionScan('[ExtensionService] Found project .claude directories:', claudeDirs);
 
       for (const claudeDir of claudeDirs) {
         const skillsDir = path.join(claudeDir, 'skills');
-        console.log('[ExtensionService] Scanning project skills:', skillsDir);
+        debugExtensionScan('[ExtensionService] Scanning project skills:', skillsDir);
         const projectSkills = await this.scanSkillsRec(skillsDir, 'project');
-        console.log('[ExtensionService] Found skills in', skillsDir, ':', projectSkills.length);
+        debugExtensionScan('[ExtensionService] Found skills in', skillsDir, ':', projectSkills.length);
         skills.push(...projectSkills);
       }
-    } else {
-      console.log('[ExtensionService] No projectPath provided for skills scan');
     }
 
-    console.log('[ExtensionService] Total skills:', skills.length, skills.map(s => `${s.name} (${s.scope})`));
+    debugExtensionScan('[ExtensionService] Total skills:', skills.length);
     return skills;
+    });
   }
 
   /**
@@ -168,26 +171,28 @@ export class ExtensionService {
    * discovers nested skills dynamically as needed.
    */
   async scanRootSkills(projectPath?: string): Promise<Skill[]> {
+    return this.cachedScan('root-skills', projectPath, async () => {
     const skills: Skill[] = [];
 
     // Scan user skills from ~/.claude/skills
     const userSkillsDir = path.join(os.homedir(), '.claude', 'skills');
-    console.log('[ExtensionService] Scanning user root skills:', userSkillsDir);
+    debugExtensionScan('[ExtensionService] Scanning user root skills:', userSkillsDir);
     const userSkills = await this.scanSkillsRec(userSkillsDir, 'user');
-    console.log('[ExtensionService] Found user root skills:', userSkills.length);
+    debugExtensionScan('[ExtensionService] Found user root skills:', userSkills.length);
     skills.push(...userSkills);
 
     // Scan project skills from {projectPath}/.claude/skills ONLY (not nested)
     if (projectPath) {
       const projectSkillsDir = path.join(projectPath, '.claude', 'skills');
-      console.log('[ExtensionService] Scanning project root skills:', projectSkillsDir);
+      debugExtensionScan('[ExtensionService] Scanning project root skills:', projectSkillsDir);
       const projectSkills = await this.scanSkillsRec(projectSkillsDir, 'project');
-      console.log('[ExtensionService] Found project root skills:', projectSkills.length);
+      debugExtensionScan('[ExtensionService] Found project root skills:', projectSkills.length);
       skills.push(...projectSkills);
     }
 
-    console.log('[ExtensionService] Total root skills:', skills.length, skills.map(s => `${s.name} (${s.scope})`));
+    debugExtensionScan('[ExtensionService] Total root skills:', skills.length);
     return skills;
+    });
   }
 
   private async scanSkillsRec(dir: string, scope: 'user' | 'project'): Promise<Skill[]> {
@@ -237,33 +242,32 @@ export class ExtensionService {
   }
 
   async scanAgents(projectPath?: string): Promise<AgentDefinition[]> {
+    return this.cachedScan('agents', projectPath, async () => {
     const agents: AgentDefinition[] = [];
 
     const userAgentsDir = path.join(os.homedir(), '.claude', 'agents');
-    console.log('[ExtensionService] Scanning user agents:', userAgentsDir);
+    debugExtensionScan('[ExtensionService] Scanning user agents:', userAgentsDir);
     const userAgents = await this.scanAgentsRec(userAgentsDir, 'user');
-    console.log('[ExtensionService] Found user agents:', userAgents.length);
+    debugExtensionScan('[ExtensionService] Found user agents:', userAgents.length);
     agents.push(...userAgents);
 
-    // Scan ALL .claude directories in project tree
+    // Scan project root .claude directory.
     if (projectPath) {
-      console.log('[ExtensionService] Finding all .claude directories in:', projectPath);
       const claudeDirs = await this.findClaudeDirs(projectPath);
-      console.log('[ExtensionService] Found .claude directories:', claudeDirs);
+      debugExtensionScan('[ExtensionService] Found project .claude directories:', claudeDirs);
 
       for (const claudeDir of claudeDirs) {
         const agentsDir = path.join(claudeDir, 'agents');
-        console.log('[ExtensionService] Scanning project agents:', agentsDir);
+        debugExtensionScan('[ExtensionService] Scanning project agents:', agentsDir);
         const projectAgents = await this.scanAgentsRec(agentsDir, 'project');
-        console.log('[ExtensionService] Found agents in', agentsDir, ':', projectAgents.length);
+        debugExtensionScan('[ExtensionService] Found agents in', agentsDir, ':', projectAgents.length);
         agents.push(...projectAgents);
       }
-    } else {
-      console.log('[ExtensionService] No projectPath provided for agents scan');
     }
 
-    console.log('[ExtensionService] Total agents:', agents.length, agents.map(a => `${a.name} (${a.scope})`));
+    debugExtensionScan('[ExtensionService] Total agents:', agents.length);
     return agents;
+    });
   }
 
   private async scanAgentsRec(dir: string, scope: 'user' | 'project'): Promise<AgentDefinition[]> {

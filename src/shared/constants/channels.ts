@@ -310,6 +310,10 @@ export const IPC_CHANNELS = {
 
   // Auto Build mode (intelligent model routing)
   CLAUDE_AUTO_ROUTE_DECISION: 'claude:auto-route-decision',
+
+  // Update channels (GitHub release check)
+  UPDATE_CHECK: 'update:check',
+  UPDATE_AVAILABLE: 'update:available',
 } as const;
 
 export type IPCChannel = typeof IPC_CHANNELS[keyof typeof IPC_CHANNELS];

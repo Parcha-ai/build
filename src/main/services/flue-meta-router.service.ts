@@ -1,5 +1,6 @@
 import type { AutoRouterConfig, ChatMessage, MetaHarnessPolicy, OrchestrationStage, SessionPhase, TaskDomain, TaskTier } from '../../shared/types';
 import * as path from 'path';
+import * as fs from 'fs';
 import { pathToFileURL } from 'url';
 import { createHash } from 'crypto';
 
@@ -133,18 +134,28 @@ let runtimeModulesKey: string | undefined;
 let runtimeModulesPromise: Promise<FlueRuntimeModules> | undefined;
 
 function resolveRuntimeImport(specifier: string): string {
-  const nodeModulesPath = process.env.FLUE_RUNTIME_NODE_MODULES;
-  if (!nodeModulesPath) return specifier;
+  const nodeModulesCandidates = [
+    process.env.FLUE_RUNTIME_NODE_MODULES,
+    process.resourcesPath ? path.join(process.resourcesPath, 'node_modules') : undefined,
+    path.resolve(process.cwd(), 'node_modules'),
+    path.resolve(__dirname, '..', '..', 'node_modules'),
+  ].filter((candidate): candidate is string => Boolean(candidate));
 
-  const packageExports: Record<string, string> = {
-    '@flue/runtime': path.join(nodeModulesPath, '@flue/runtime/dist/index.mjs'),
-    '@flue/runtime/internal': path.join(nodeModulesPath, '@flue/runtime/dist/internal.mjs'),
-    '@flue/runtime/app': path.join(nodeModulesPath, '@flue/runtime/dist/app.mjs'),
-    'valibot': path.join(nodeModulesPath, 'valibot/dist/index.mjs'),
-  };
+  for (const nodeModulesPath of nodeModulesCandidates) {
+    const packageExports: Record<string, string> = {
+      '@flue/runtime': path.join(nodeModulesPath, '@flue/runtime/dist/index.mjs'),
+      '@flue/runtime/internal': path.join(nodeModulesPath, '@flue/runtime/dist/internal.mjs'),
+      '@flue/runtime/app': path.join(nodeModulesPath, '@flue/runtime/dist/app.mjs'),
+      'valibot': path.join(nodeModulesPath, 'valibot/dist/index.mjs'),
+    };
 
-  const resolved = packageExports[specifier];
-  return resolved ? pathToFileURL(resolved).href : specifier;
+    const resolved = packageExports[specifier];
+    if (resolved && fs.existsSync(resolved)) {
+      return pathToFileURL(resolved).href;
+    }
+  }
+
+  return specifier;
 }
 
 function importRuntime(specifier: string): Promise<unknown> {
@@ -152,7 +163,11 @@ function importRuntime(specifier: string): Promise<unknown> {
 }
 
 function loadRuntimeModules(): Promise<FlueRuntimeModules> {
-  const key = process.env.FLUE_RUNTIME_NODE_MODULES || '<default>';
+  const key = [
+    process.env.FLUE_RUNTIME_NODE_MODULES || '',
+    process.resourcesPath || '',
+    process.cwd(),
+  ].join('|');
   if (runtimeModulesPromise && runtimeModulesKey === key) {
     return runtimeModulesPromise;
   }

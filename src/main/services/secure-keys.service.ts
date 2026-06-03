@@ -117,7 +117,7 @@ export class SecureKeysService {
     const detected: DetectedKey[] = [];
 
     // Match standalone tokens: alphanumeric with dashes/underscores, 20-128 chars
-    const genericPattern = /(?:^|[\s=:"'`,;({\[])([a-zA-Z0-9][a-zA-Z0-9_-]{18,126}[a-zA-Z0-9])(?=$|[\s:"'`,;)}\]])/g;
+    const genericPattern = /(?:^|[\s=:"'`,;({[])([a-zA-Z0-9][a-zA-Z0-9_-]{18,126}[a-zA-Z0-9])(?=$|[\s:"'`,;)}\]])/g;
 
     let match;
     while ((match = genericPattern.exec(text)) !== null) {

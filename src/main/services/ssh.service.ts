@@ -2,8 +2,14 @@ import { Client, ClientChannel, ConnectConfig } from 'ssh2';
 import { Readable, Writable, PassThrough } from 'stream';
 import { EventEmitter } from 'events';
 import * as fs from 'fs';
+import * as net from 'net';
+import { BrowserWindow } from 'electron';
 import type { SSHConfig } from '../../shared/types';
+import { IPC_CHANNELS } from '../../shared/constants/channels';
 import { REMOTE_DETACHED_BRIDGE_SCRIPT } from './remote-bridge-script';
+
+const ANSI_ESCAPE = String.fromCharCode(27);
+const ANSI_COLOR_CODE_RE = new RegExp(`${ANSI_ESCAPE}\\[[0-9;]*m`, 'g');
 
 /**
  * Interface matching the Claude Agent SDK's SpawnedProcess
@@ -114,6 +120,10 @@ export interface RemoteCliSetupCommand {
   docsUrl: string;
 }
 
+type RemoteCommandItem = { name: string; path: string; content: string; description?: string; scope: 'user' | 'project' };
+type RemoteSkillItem = { name: string; path: string; content: string; description?: string; scope: 'user' | 'project' };
+type RemoteAgentItem = { name: string; description: string; systemPrompt: string; disallowedTools?: string[]; scope: 'user' | 'project' };
+
 const REMOTE_CLI_SETUP_COMMANDS: Record<keyof RemoteCliCapabilities, RemoteCliSetupCommand> = {
   claude: {
     harness: 'claude',
@@ -179,6 +189,12 @@ export class SSHService {
   private readonly MCP_AUTH_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
   private harnessMcpSyncCache = new Map<string, number>(); // host -> lastSyncedAt
   private readonly HARNESS_MCP_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+  private remoteExtensionScanCache = new Map<string, {
+    fetchedAt: number;
+    value?: unknown;
+    promise?: Promise<unknown>;
+  }>();
+  private readonly REMOTE_EXTENSION_SCAN_TTL_MS = 10 * 60 * 1000; // 10 minutes
 
   private getSafeSessionId(sessionId: string): string {
     return sessionId.replace(/[^a-zA-Z0-9_-]/g, '-');
@@ -186,6 +202,57 @@ export class SSHService {
 
   private getDetachedBridgeSessionDir(sessionId: string): string {
     return `/tmp/claudette-ssh-bridge/${this.getSafeSessionId(sessionId)}`;
+  }
+
+  private getRemoteWorkdirCdCommand(remoteWorkdir: string): string {
+    const quotedWorkdir = this.quoteForShell(remoteWorkdir);
+    const displayWorkdir = this.quoteForShell(remoteWorkdir || '~');
+    return [
+      `workdir=${quotedWorkdir}`,
+      'case "$workdir" in "~") workdir="$HOME" ;; "~/"*) workdir="$HOME/${workdir#~/}" ;; esac',
+      `if ! test -d "$workdir"; then echo "Remote workdir not found: ${displayWorkdir}" >&2; exit 66; fi`,
+      'cd "$workdir"',
+    ].join('; ');
+  }
+
+  private buildSessionEnvProcessLoop(sessionId: string, body: string): string {
+    const safeSessionId = this.quoteForShell(this.getSafeSessionId(sessionId));
+    return [
+      `safe_session=${safeSessionId}`,
+      'for envfile in /proc/[0-9]*/environ; do',
+      'test -r "$envfile" || continue',
+      'pid="${envfile#/proc/}"',
+      'pid="${pid%/environ}"',
+      'grep -azqx "CLAUDETTE_SESSION_ID=$safe_session" "$envfile" 2>/dev/null || continue',
+      body,
+      'done',
+    ].join('; ');
+  }
+
+  private buildKillSessionEnvProcessesCommand(sessionId: string): string {
+    return this.buildSessionEnvProcessLoop(
+      sessionId,
+      [
+        'test "$pid" = "$$" -o "$pid" = "$PPID" && continue',
+        'pkill -P "$pid" 2>/dev/null || true',
+        'kill "$pid" 2>/dev/null || true',
+        'sleep 0.1',
+        'pkill -9 -P "$pid" 2>/dev/null || true',
+        'kill -9 "$pid" 2>/dev/null || true',
+      ].join('; ')
+    );
+  }
+
+  private async assertRemoteWorkdirExists(sessionId: string, config: SSHConfig, remoteWorkdir?: string): Promise<void> {
+    if (!remoteWorkdir || remoteWorkdir === '.') return;
+
+    const client = await this.getConnection(sessionId, config);
+    try {
+      await this.execCommand(client, `${this.getRemoteWorkdirCdCommand(remoteWorkdir)}; printf __claudette_workdir_ok__`);
+    } catch (error) {
+      const detail = error instanceof Error && error.message.trim() ? ` (${error.message.trim()})` : '';
+      throw new Error(`Remote workdir not found on ${config.host}: ${remoteWorkdir}${detail}`);
+    }
   }
 
   private clearActiveTunnels(sessionId: string): void {
@@ -456,7 +523,6 @@ export class SSHService {
       };
 
       if (config.privateKeyPath) {
-        const fs = require('fs');
         connectConfig.privateKey = fs.readFileSync(config.privateKeyPath);
         if (config.passphrase) {
           connectConfig.passphrase = config.passphrase;
@@ -659,8 +725,13 @@ export class SSHService {
         'test -n "$pid" && kill -9 "$pid" 2>/dev/null || true; ' +
         'test -n "$pid" && pkill -9 -P "$pid" 2>/dev/null || true; ' +
         'done; ' +
+        'for proc in $(ps -eo pid=,args= | awk -v dir=' + this.quoteForShell(bridgeDir) + ' \'index($0, dir)>0 {print $1}\'); do ' +
+        'test "$proc" = "$$" -o "$proc" = "$PPID" && continue; ' +
+        'kill "$proc" 2>/dev/null || true; ' +
+        'done; ' +
         `rm -rf ${this.quoteForShell(bridgeDir)}; ` +
         'fi; ' +
+        this.buildKillSessionEnvProcessesCommand(sessionId) + '; ' +
         `tmux kill-session -t ${this.quoteForShell(legacyTmuxName)} 2>/dev/null || true; ` +
         `rm -f ${this.quoteForShell(`${legacyPrefix}-in`)} ${this.quoteForShell(`${legacyPrefix}-out`)} ${this.quoteForShell(`${legacyPrefix}-output.log`)} 2>/dev/null || true; ` +
         'true'
@@ -669,6 +740,75 @@ export class SSHService {
     } catch (error) {
       // Non-fatal — connection might already be dead
       console.warn(`[SSH Service] Failed to kill remote processes for ${sessionId}:`, error);
+    }
+  }
+
+  /**
+   * Reap detached bridge jobs before a foreground turn starts.
+   *
+   * A Claude Code process can emit a `result` and then stay alive for background
+   * task notifications. That is useful while the turn owns the stream, but it is
+   * unsafe once the user starts a new foreground turn: the old process can keep
+   * editing files while the new one edits the same workspace. This cleanup is
+   * intentionally session-scoped and leaves job logs in place for diagnostics.
+   */
+  async cleanupDetachedBridgeProcessesForNewTurn(
+    sessionId: string,
+    config: SSHConfig,
+    options: { killActive?: boolean } = {}
+  ): Promise<void> {
+    try {
+      const client = await this.getConnection(sessionId, config);
+      const bridgeDir = this.getDetachedBridgeSessionDir(sessionId);
+      const killActive = options.killActive ? '1' : '0';
+      const recoveredPayload = JSON.stringify({
+        recoveredAt: new Date().toISOString(),
+        reason: options.killActive ? 'new_foreground_turn' : 'completed_process_reaped',
+      });
+
+      await this.execCommand(client,
+        `bridge_dir=${this.quoteForShell(bridgeDir)}; ` +
+        `kill_active=${this.quoteForShell(killActive)}; ` +
+        `recovered_payload=${this.quoteForShell(recoveredPayload)}; ` +
+        'if test -d "$bridge_dir"; then ' +
+        'for jobdir in "$bridge_dir"/*; do ' +
+        'test -d "$jobdir" || continue; ' +
+        'pid="$(cat "$jobdir/pid" 2>/dev/null || true)"; ' +
+        'active=0; test -n "$pid" && kill -0 "$pid" 2>/dev/null && active=1; ' +
+        'completed=0; ' +
+        'test -f "$jobdir/exit.json" && completed=1; ' +
+        'test -f "$jobdir/stdout.log" && grep -q \'"type":"result"\' "$jobdir/stdout.log" 2>/dev/null && completed=1; ' +
+        'should_kill=0; ' +
+        'if test "$active" = "1" && test "$completed" = "1"; then should_kill=1; fi; ' +
+        'if test "$active" = "1" && test "$kill_active" = "1"; then should_kill=1; fi; ' +
+        'if test "$should_kill" = "1"; then ' +
+        'if test -n "$pid"; then ' +
+        'pkill -P "$pid" 2>/dev/null || true; ' +
+        'kill "$pid" 2>/dev/null || true; ' +
+        'sleep 0.2; ' +
+        'pkill -9 -P "$pid" 2>/dev/null || true; ' +
+        'kill -9 "$pid" 2>/dev/null || true; ' +
+        'fi; ' +
+        'for proc in $(ps -eo pid=,args= | awk -v dir="$jobdir" \'index($0, dir)>0 {print $1}\'); do ' +
+        'test "$proc" = "$$" -o "$proc" = "$PPID" && continue; ' +
+        'kill "$proc" 2>/dev/null || true; ' +
+        'done; ' +
+        'printf %s "$recovered_payload" > "$jobdir/recovered.json" 2>/dev/null || true; ' +
+        'rm -f "$jobdir/stdin.sock" "$jobdir/stdin.eof" 2>/dev/null || true; ' +
+        'fi; ' +
+        'done; ' +
+        'if test "$kill_active" = "1"; then ' +
+        'for proc in $(ps -eo pid=,args= | awk -v dir="$bridge_dir" \'index($0, dir)>0 {print $1}\'); do ' +
+        'test "$proc" = "$$" -o "$proc" = "$PPID" && continue; ' +
+        'kill "$proc" 2>/dev/null || true; ' +
+        'done; ' +
+        this.buildKillSessionEnvProcessesCommand(sessionId) + '; ' +
+        'fi; ' +
+        'fi; true'
+      );
+      console.log(`[SSH Service] Reaped detached bridge processes for ${sessionId} (killActive=${options.killActive ? 'yes' : 'no'})`);
+    } catch (error) {
+      console.warn(`[SSH Service] Failed to reap detached bridge processes for ${sessionId}:`, error);
     }
   }
 
@@ -683,6 +823,7 @@ export class SSHService {
 
       const output = await this.execCommand(client,
         'active=0; ' +
+        this.buildSessionEnvProcessLoop(sessionId, 'kill -0 "$pid" 2>/dev/null && { active=1; break; }') + '; ' +
         `if test "$active" = "0" && tmux has-session -t ${this.quoteForShell(legacyTmuxName)} 2>/dev/null; then active=1; fi; ` +
         'echo "$active"'
       );
@@ -794,11 +935,19 @@ export class SSHService {
   async getRemoteBranch(sessionId: string, config: SSHConfig): Promise<string | null> {
     try {
       const client = await this.getConnection(sessionId, config);
-      const result = await this.execCommand(client, `git -C "${config.remoteWorkdir}" rev-parse --abbrev-ref HEAD`);
+      const quotedWorkdir = this.quoteForShell(config.remoteWorkdir || '~');
+      const result = await this.execCommand(client, `
+workdir=${quotedWorkdir}
+case "$workdir" in
+  "~") workdir="$HOME" ;;
+  "~/"*) workdir="$HOME/\${workdir#~/}" ;;
+esac
+git -C "$workdir" rev-parse --abbrev-ref HEAD 2>/dev/null || true
+`);
       const branch = result.trim();
       return branch || null;
     } catch (error) {
-      console.error(`[SSH Service] Failed to get remote branch for ${sessionId}:`, error);
+      console.warn(`[SSH Service] Failed to get remote branch for ${sessionId}:`, error);
       return null;
     }
   }
@@ -898,11 +1047,9 @@ export class SSHService {
 
         // Notify renderer of connection loss for immediate UI feedback
         try {
-          const { BrowserWindow } = require('electron');
-          const { IPC_CHANNELS: channels } = require('../../shared/constants/channels');
           const windows = BrowserWindow.getAllWindows();
           for (const win of windows) {
-            win.webContents.send(channels.SSH_CONNECTION_LOST, { sessionId, reason: 'SSH connection closed unexpectedly' });
+            win.webContents.send(IPC_CHANNELS.SSH_CONNECTION_LOST, { sessionId, reason: 'SSH connection closed unexpectedly' });
           }
         } catch (e) {
           console.error('[SSH Service] Failed to send connection-lost event:', e);
@@ -968,8 +1115,8 @@ export class SSHService {
               clearTimeout(timeout);
               if (err) return reject(err);
               channel.on('close', () => resolve());
-              channel.on('data', () => {}); // drain
-              channel.stderr.on('data', () => {}); // drain
+              channel.on('data', () => undefined); // drain
+              channel.stderr.on('data', () => undefined); // drain
             });
           });
           return existing.client;
@@ -1218,8 +1365,7 @@ detect_cli gemini gemini
 
     const envExports = Object.entries(options.env || {})
       .filter(([, value]) => value !== undefined)
-      .map(([key, value]) => `export ${key}="${value?.replace(/"/g, '\\"')}"`)
-      .join('; ');
+      .map(([key, value]) => `export ${key}=${this.quoteForShell(value || '')}`);
 
     const escapedArgs = options.args.map((arg) => {
       if (arg.includes(' ') || arg.includes('"') || arg.includes("'") || arg.includes('{')) {
@@ -1228,9 +1374,12 @@ detect_cli gemini gemini
       return arg;
     }).join(' ');
 
-    const cwdCommand = options.cwd ? `cd ${this.quoteForShell(options.cwd)} && ` : '';
-    const exportCommand = envExports ? `${envExports}; ` : '';
-    const command = `${this.getRemoteCommandPathPrefix(config)} && ${cwdCommand}${exportCommand}exec ${options.command} ${escapedArgs}`;
+    const command = [
+      this.getRemoteCommandPathPrefix(config),
+      options.cwd ? this.getRemoteWorkdirCdCommand(options.cwd) : '',
+      ...envExports,
+      `exec ${options.command} ${escapedArgs}`,
+    ].filter(Boolean).join(' && ');
 
     const abortHandler = () => {
       killed = true;
@@ -1729,6 +1878,13 @@ detect_cli gemini gemini
           return;
         }
 
+        if (error instanceof Error && error.message.includes('Remote workdir not found')) {
+          console.warn('[SSH Service] Detached bridge refused missing remote workdir:', error.message);
+          passThrough.stdout.write(Buffer.from(`${error.message}\n`));
+          await finalize(66, null, false);
+          return;
+        }
+
         console.warn('[SSH Service] Detached bridge unavailable, falling back to direct SSH exec:', error);
         const direct = this.createDirectCommandProcess(sessionId, config, options);
         fallbackProcess = direct;
@@ -2076,6 +2232,7 @@ detect_cli gemini gemini
     config: SSHConfig,
     bridge: DetachedRemoteBridgeConfig
   ): Promise<void> {
+    await this.assertRemoteWorkdirExists(sessionId, config, bridge.cwd);
     const install = await this.ensureDetachedRemoteBridge(sessionId, config);
     const client = await this.getConnection(sessionId, config);
 
@@ -2726,7 +2883,7 @@ detect_cli gemini gemini
                 const beforeMarker = stdout.substring(0, markerIndex).trim();
                 // Split into lines, filter out empty lines and ANSI color codes
                 const lines = beforeMarker.split('\n')
-                  .map(l => l.replace(/\x1b\[[0-9;]*m/g, '').trim()) // Strip ANSI codes
+                  .map(l => l.replace(ANSI_COLOR_CODE_RE, '').trim()) // Strip ANSI codes
                   .filter(l => l.length > 0);
                 if (lines.length > 0) {
                   // Get the last line - should be the working directory path
@@ -2937,6 +3094,43 @@ detect_cli gemini gemini
     }
   }
 
+  private getRemoteExtensionScanCacheKey(kind: string, config: SSHConfig, remoteWorkdir: string): string {
+    return [
+      kind,
+      config.username || '',
+      config.host || '',
+      config.port || 22,
+      remoteWorkdir || config.remoteWorkdir || '~',
+    ].join('|');
+  }
+
+  private async cachedRemoteExtensionScan<T>(
+    kind: string,
+    config: SSHConfig,
+    remoteWorkdir: string,
+    loader: () => Promise<T>
+  ): Promise<T> {
+    const key = this.getRemoteExtensionScanCacheKey(kind, config, remoteWorkdir);
+    const existing = this.remoteExtensionScanCache.get(key);
+    const now = Date.now();
+    if (existing?.value !== undefined && now - existing.fetchedAt < this.REMOTE_EXTENSION_SCAN_TTL_MS) {
+      return existing.value as T;
+    }
+    if (existing?.promise) {
+      return existing.promise as Promise<T>;
+    }
+
+    const promise = loader().then((value) => {
+      this.remoteExtensionScanCache.set(key, { fetchedAt: Date.now(), value });
+      return value;
+    }).catch((error) => {
+      this.remoteExtensionScanCache.delete(key);
+      throw error;
+    });
+    this.remoteExtensionScanCache.set(key, { fetchedAt: now, promise });
+    return promise;
+  }
+
   /**
    * Scan for commands on a remote machine via SSH
    */
@@ -2944,15 +3138,16 @@ detect_cli gemini gemini
     sessionId: string,
     config: SSHConfig,
     remoteWorkdir: string
-  ): Promise<Array<{ name: string; path: string; content: string; description?: string; scope: 'user' | 'project' }>> {
-    const commands: Array<{ name: string; path: string; content: string; description?: string; scope: 'user' | 'project' }> = [];
+  ): Promise<RemoteCommandItem[]> {
+    return this.cachedRemoteExtensionScan('commands', config, remoteWorkdir, async () => {
+    const commands: RemoteCommandItem[] = [];
 
     try {
       const client = await this.getConnection(sessionId, config);
 
       // Scan user commands (~/.claude/commands)
       const userCommandsScript = `
-        find ~/.claude/commands -name "*.md" -type f 2>/dev/null | while read f; do
+        find "$HOME/.claude/commands" -maxdepth 4 -name "*.md" -type f 2>/dev/null | head -500 | while read f; do
           echo "___FILE_START___"
           echo "$f"
           cat "$f"
@@ -2962,9 +3157,16 @@ detect_cli gemini gemini
       const userResult = await this.execCommand(client, userCommandsScript);
       commands.push(...this.parseRemoteCommands(userResult, 'user'));
 
+      const quotedWorkdir = this.quoteForShell(remoteWorkdir || config.remoteWorkdir || '~');
+
       // Scan project commands in remoteWorkdir
       const projectCommandsScript = `
-        find "${remoteWorkdir}" -path "*/.claude/commands/*.md" -type f 2>/dev/null | while read f; do
+        ROOT=${quotedWorkdir}
+        case "$ROOT" in
+          "~") ROOT="$HOME" ;;
+          "~/"*) ROOT="$HOME/\${ROOT#~/}" ;;
+        esac
+        find "$ROOT/.claude/commands" -maxdepth 4 -name "*.md" -type f 2>/dev/null | head -500 | while read f; do
           echo "___FILE_START___"
           echo "$f"
           cat "$f"
@@ -2974,12 +3176,12 @@ detect_cli gemini gemini
       const projectResult = await this.execCommand(client, projectCommandsScript);
       commands.push(...this.parseRemoteCommands(projectResult, 'project'));
 
-      console.log('[SSH Service] Found', commands.length, 'remote commands');
       return commands;
     } catch (error) {
       console.error('[SSH Service] Failed to scan remote commands:', error);
       return [];
     }
+    });
   }
 
   /**
@@ -3026,15 +3228,16 @@ detect_cli gemini gemini
     sessionId: string,
     config: SSHConfig,
     remoteWorkdir: string
-  ): Promise<Array<{ name: string; path: string; content: string; description?: string; scope: 'user' | 'project' }>> {
-    const skills: Array<{ name: string; path: string; content: string; description?: string; scope: 'user' | 'project' }> = [];
+  ): Promise<RemoteSkillItem[]> {
+    return this.cachedRemoteExtensionScan('skills', config, remoteWorkdir, async () => {
+    const skills: RemoteSkillItem[] = [];
 
     try {
       const client = await this.getConnection(sessionId, config);
 
       // Scan user skills (~/.claude/skills/*/SKILL.md)
       const userSkillsScript = `
-        find ~/.claude/skills -name "SKILL.md" -type f 2>/dev/null | while read f; do
+        find "$HOME/.claude/skills" -maxdepth 3 -name "SKILL.md" -type f 2>/dev/null | head -500 | while read f; do
           echo "___FILE_START___"
           echo "$f"
           cat "$f"
@@ -3044,9 +3247,16 @@ detect_cli gemini gemini
       const userResult = await this.execCommand(client, userSkillsScript);
       skills.push(...this.parseRemoteSkills(userResult, 'user'));
 
+      const quotedWorkdir = this.quoteForShell(remoteWorkdir || config.remoteWorkdir || '~');
+
       // Scan project skills
       const projectSkillsScript = `
-        find "${remoteWorkdir}" -path "*/.claude/skills/*/SKILL.md" -type f 2>/dev/null | while read f; do
+        ROOT=${quotedWorkdir}
+        case "$ROOT" in
+          "~") ROOT="$HOME" ;;
+          "~/"*) ROOT="$HOME/\${ROOT#~/}" ;;
+        esac
+        find "$ROOT/.claude/skills" -maxdepth 3 -name "SKILL.md" -type f 2>/dev/null | head -500 | while read f; do
           echo "___FILE_START___"
           echo "$f"
           cat "$f"
@@ -3056,12 +3266,12 @@ detect_cli gemini gemini
       const projectResult = await this.execCommand(client, projectSkillsScript);
       skills.push(...this.parseRemoteSkills(projectResult, 'project'));
 
-      console.log('[SSH Service] Found', skills.length, 'remote skills');
       return skills;
     } catch (error) {
       console.error('[SSH Service] Failed to scan remote skills:', error);
       return [];
     }
+    });
   }
 
   /**
@@ -3108,15 +3318,16 @@ detect_cli gemini gemini
     sessionId: string,
     config: SSHConfig,
     remoteWorkdir: string
-  ): Promise<Array<{ name: string; description: string; systemPrompt: string; disallowedTools?: string[]; scope: 'user' | 'project' }>> {
-    const agents: Array<{ name: string; description: string; systemPrompt: string; disallowedTools?: string[]; scope: 'user' | 'project' }> = [];
+  ): Promise<RemoteAgentItem[]> {
+    return this.cachedRemoteExtensionScan('agents', config, remoteWorkdir, async () => {
+    const agents: RemoteAgentItem[] = [];
 
     try {
       const client = await this.getConnection(sessionId, config);
 
       // Scan user agents (~/.claude/agents/*.md)
       const userAgentsScript = `
-        find ~/.claude/agents -name "*.md" -type f 2>/dev/null | while read f; do
+        find "$HOME/.claude/agents" -maxdepth 2 -name "*.md" -type f 2>/dev/null | head -500 | while read f; do
           echo "___FILE_START___"
           echo "$f"
           cat "$f"
@@ -3126,9 +3337,16 @@ detect_cli gemini gemini
       const userResult = await this.execCommand(client, userAgentsScript);
       agents.push(...this.parseRemoteAgents(userResult, 'user'));
 
+      const quotedWorkdir = this.quoteForShell(remoteWorkdir || config.remoteWorkdir || '~');
+
       // Scan project agents
       const projectAgentsScript = `
-        find "${remoteWorkdir}" -path "*/.claude/agents/*.md" -type f 2>/dev/null | while read f; do
+        ROOT=${quotedWorkdir}
+        case "$ROOT" in
+          "~") ROOT="$HOME" ;;
+          "~/"*) ROOT="$HOME/\${ROOT#~/}" ;;
+        esac
+        find "$ROOT/.claude/agents" -maxdepth 2 -name "*.md" -type f 2>/dev/null | head -500 | while read f; do
           echo "___FILE_START___"
           echo "$f"
           cat "$f"
@@ -3138,12 +3356,12 @@ detect_cli gemini gemini
       const projectResult = await this.execCommand(client, projectAgentsScript);
       agents.push(...this.parseRemoteAgents(projectResult, 'project'));
 
-      console.log('[SSH Service] Found', agents.length, 'remote agents');
       return agents;
     } catch (error) {
       console.error('[SSH Service] Failed to scan remote agents:', error);
       return [];
     }
+    });
   }
 
   /**
@@ -3183,7 +3401,7 @@ emit_context_file() {
 if [ -d "$ROOT" ]; then
   find "$ROOT" \\
     \\( -path "*/.git/*" -o -path "*/node_modules/*" -o -path "*/.webpack/*" -o -path "*/out/*" -o -path "*/dist/*" -o -path "*/build/*" -o -path "*/coverage/*" -o -path "*/.claudette-worktrees/*" -o -path "*/worktrees/*" \\) -prune -o \\
-    -type f \\( -name "CLAUDE.md" -o -name "AGENTS.md" -o -name "AGENT.md" -o -name "MEMORY.md" -o -name ".cursorrules" -o -name ".windsurfrules" -o -path "*/.github/copilot-instructions.md" -o -path "*/.cursor/rules/*.md" -o -path "*/.cursor/rules/*.mdc" -o -path "*/.claude/agents/*.md" -o -path "*/.claude/commands/*.md" -o -path "*/.claude/skills/*/SKILL.md" \\) \\
+    -type f \\( -name "CLAUDE.md" -o -name "AGENTS.md" -o -name "AGENT.md" -o -name "Agent.md" -o -name "agent.md" -o -name "agents.md" -o -name "GEMINI.md" -o -name "OPENCODE.md" -o -name "MEMORY.md" -o -name ".cursorrules" -o -name ".windsurfrules" -o -path "*/.github/copilot-instructions.md" -o -path "*/.cursor/rules/*.md" -o -path "*/.cursor/rules/*.mdc" -o -path "*/.claude/agents/*.md" -o -path "*/.claude/commands/*.md" -o -path "*/.claude/skills/*/SKILL.md" \\) \\
     -print 2>/dev/null | head -n 64 | while IFS= read -r f; do
       rel="\${f#$ROOT/}"
       case "$f" in
@@ -3200,6 +3418,12 @@ fi
 
 emit_context_file "remote user CLAUDE.md" "$HOME/.claude/CLAUDE.md"
 emit_context_file "remote user MEMORY.md" "$HOME/.claude/MEMORY.md"
+emit_context_file "remote user codex AGENTS.md" "$HOME/.codex/AGENTS.md"
+emit_context_file "remote user codex AGENT.md" "$HOME/.codex/AGENT.md"
+emit_context_file "remote user codex agent.md" "$HOME/.codex/agent.md"
+emit_context_file "remote user GEMINI.md" "$HOME/.gemini/GEMINI.md"
+emit_context_file "remote user OPENCODE.md" "$HOME/.config/opencode/OPENCODE.md"
+emit_context_file "remote user opencode AGENTS.md" "$HOME/.config/opencode/AGENTS.md"
 
 find "$HOME/.claude/agents" -maxdepth 1 -name "*.md" -type f 2>/dev/null | head -n 12 | while IFS= read -r f; do
   emit_context_file "remote user agent: $(basename "$f")" "$f"
@@ -4065,7 +4289,6 @@ SETTINGS_EOF`);
           if (info.destPort === localPort) {
             const channel = accept();
             // Connect to the local port
-            const net = require('net');
             const socket = net.connect(localPort, '127.0.0.1', () => {
               channel.pipe(socket);
               socket.pipe(channel);
