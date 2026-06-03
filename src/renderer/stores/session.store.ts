@@ -2312,45 +2312,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       addMessage(sessionId, userMessage);
     }
 
-    if (!fromQueueDrain) {
-      const currentSession = get().sessions.find((session) => session.id === sessionId);
-      const remoteActive = currentSession?.sshConfig
-        ? await window.electronAPI.ssh.hasActiveRemoteProcess(sessionId).catch(() => false)
-        : false;
-
-      if (remoteActive) {
-        const queuedMsg = {
-          id: userMessage.id,
-          message,
-          attachments,
-          timestamp: userMessage.timestamp.getTime(),
-          suppressUserMessage,
-        };
-
-        set((state) => ({
-          messageQueue: {
-            ...state.messageQueue,
-            [sessionId]: [
-              ...(state.messageQueue[sessionId] || []),
-              queuedMsg,
-            ],
-          },
-          isProcessingQueue: { ...state.isProcessingQueue, [sessionId]: true },
-          sessionActivity: { ...state.sessionActivity, [sessionId]: 'waiting' },
-          activeUserPrompt: { ...state.activeUserPrompt, [sessionId]: null },
-        }));
-
-        window.electronAPI.queue?.enqueue(sessionId, message, attachments, {
-          id: queuedMsg.id,
-          model,
-          suppressUserMessage,
-          deferDrain: true,
-        });
-        console.log(`[SessionStore] Remote Claude process still active for ${sessionId}; queued message after optimistic send`);
-        return;
-      }
-    }
-
     // Start streaming immediately so the input area moves into queued/send state
     // before remote probes, key scanning, or transcript checks complete.
     setStreaming(sessionId, true);
@@ -2379,6 +2340,47 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         },
       },
     }));
+
+    if (!fromQueueDrain) {
+      const currentSession = get().sessions.find((session) => session.id === sessionId);
+      const remoteActive = currentSession?.sshConfig
+        ? await window.electronAPI.ssh.hasActiveRemoteProcess(sessionId).catch(() => false)
+        : false;
+
+      if (remoteActive) {
+        const queuedMsg = {
+          id: userMessage.id,
+          message,
+          attachments,
+          timestamp: userMessage.timestamp.getTime(),
+          suppressUserMessage,
+        };
+
+        set((state) => ({
+          isStreaming: { ...state.isStreaming, [sessionId]: false },
+          messageQueue: {
+            ...state.messageQueue,
+            [sessionId]: [
+              ...(state.messageQueue[sessionId] || []),
+              queuedMsg,
+            ],
+          },
+          isProcessingQueue: { ...state.isProcessingQueue, [sessionId]: true },
+          sessionActivity: { ...state.sessionActivity, [sessionId]: 'waiting' },
+          activeStreamModel: { ...state.activeStreamModel, [sessionId]: undefined },
+          activeUserPrompt: { ...state.activeUserPrompt, [sessionId]: null },
+        }));
+
+        window.electronAPI.queue?.enqueue(sessionId, message, attachments, {
+          id: queuedMsg.id,
+          model,
+          suppressUserMessage,
+          deferDrain: true,
+        });
+        console.log(`[SessionStore] Remote Claude process still active for ${sessionId}; queued message after optimistic send`);
+        return;
+      }
+    }
 
     // Intercept and secure any API keys/tokens in the message. The chat bubble
     // is already visible, so fall back to the original text if scanning fails.

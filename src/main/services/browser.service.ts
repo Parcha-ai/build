@@ -41,20 +41,24 @@ export interface NetworkRequest {
 
 /**
  * Service for browser automation using Chrome DevTools Protocol
- * Supports multiple simultaneous sessions with independent browsers
+ * Supports multiple simultaneous sessions with independent browsers.
+ * A session can also be visible in multiple app windows; the most recently
+ * registered live webview is used for CDP automation.
  */
 export class BrowserService {
   private webviewSnapshots = new Map<string, BrowserSnapshot>();
   private pendingSnapshots = new Map<string, { resolve: (snapshot: BrowserSnapshot) => void; reject: (error: Error) => void }>();
 
-  // Map sessionId to webContentsId for CDP access
-  private sessionWebContents = new Map<string, number>();
+  // Map sessionId to live webContentsIds for CDP access. Last id is active.
+  private sessionWebContents = new Map<string, number[]>();
   // Reverse map: webContentsId to sessionId (for routing debugger events)
   private webContentsToSession = new Map<number, string>();
   // Track attached debuggers
   private attachedDebuggers = new Set<number>();
   // Track which webContents have debugger event listeners attached
   private debuggerListenersAttached = new Set<number>();
+  // Track webviews that already have lifecycle cleanup listeners attached.
+  private webviewDestroyListenersAttached = new Set<number>();
 
   // Console and network capture storage (keyed by sessionId)
   private consoleLogs = new Map<string, ConsoleMessage[]>();
@@ -84,57 +88,148 @@ export class BrowserService {
       if (wc) {
         console.log('[Browser Service] webContents verified - URL:', wc.getURL?.() || 'unknown');
 
-        // Clean up any existing mapping for this session (in case of re-registration)
-        const oldWebContentsId = this.sessionWebContents.get(data.sessionId);
-        if (oldWebContentsId && oldWebContentsId !== data.webContentsId) {
-          this.webContentsToSession.delete(oldWebContentsId);
-        }
-
-        // Set up new mappings (including reverse mapping for multi-session support)
-        this.sessionWebContents.set(data.sessionId, data.webContentsId);
-        this.webContentsToSession.set(data.webContentsId, data.sessionId);
-        console.log('[Browser Service] Registration successful. Total registered:', this.sessionWebContents.size);
-        console.log('[Browser Service] Active sessions with browsers:', Array.from(this.sessionWebContents.keys()));
+        const hadSessionBrowser = this.hasSessionWebContents(data.sessionId);
+        this.rememberWebview(data.sessionId, data.webContentsId, wc);
+        console.log('[Browser Service] Registration successful. Total registered sessions:', this.getRegisteredSessions().length);
+        console.log('[Browser Service] Active sessions with browsers:', this.getRegisteredSessions());
 
         // Notify CDP proxy that a new target is available — this unblocks Playwright's
         // connectOverCDP if it called Target.setAutoAttach before the webview was ready
-        cdpProxyService.notifyNewTarget(data.sessionId);
+        if (!hadSessionBrowser) {
+          cdpProxyService.notifyNewTarget(data.sessionId);
+        }
       } else {
         console.error('[Browser Service] FAILED - webContents.fromId returned null for ID:', data.webContentsId);
       }
     });
 
     // Listen for webview unregistration
-    ipcMain.on('browser:unregister-webview', (_event, data: { sessionId: string }) => {
-      const webContentsId = this.sessionWebContents.get(data.sessionId);
-      console.log('[Browser Service] Unregistering webview:', data.sessionId, '-> webContentsId:', webContentsId);
-      if (webContentsId) {
-        // Notify CDP proxy to clean up its state BEFORE we detach the debugger
-        // This ensures Playwright is informed of target destruction
-        cdpProxyService.unregisterWebview(data.sessionId, webContentsId);
-
-        this.detachDebugger(webContentsId);
-        this.sessionWebContents.delete(data.sessionId);
-        this.webContentsToSession.delete(webContentsId);
-        // Clean up enabled domains for this session
-        this.enabledDomains.delete(data.sessionId);
-      }
-      console.log('[Browser Service] Remaining sessions with browsers:', Array.from(this.sessionWebContents.keys()));
+    ipcMain.on('browser:unregister-webview', (_event, data: { sessionId: string; webContentsId?: number }) => {
+      console.log('[Browser Service] Unregistering webview:', data.sessionId, '-> webContentsId:', data.webContentsId);
+      this.forgetWebview(data.sessionId, data.webContentsId);
+      console.log('[Browser Service] Remaining sessions with browsers:', this.getRegisteredSessions());
     });
+  }
+
+  private pruneSessionWebContents(sessionId: string): number[] {
+    const ids = this.sessionWebContents.get(sessionId) || [];
+    if (ids.length === 0) {
+      this.sessionWebContents.delete(sessionId);
+      return [];
+    }
+
+    const live: number[] = [];
+    for (const id of ids) {
+      if (webContents.fromId(id)) {
+        live.push(id);
+      } else if (this.webContentsToSession.get(id) === sessionId) {
+        this.webContentsToSession.delete(id);
+      }
+    }
+
+    if (live.length > 0) {
+      this.sessionWebContents.set(sessionId, live);
+    } else {
+      this.sessionWebContents.delete(sessionId);
+      this.enabledDomains.delete(sessionId);
+    }
+
+    return live;
+  }
+
+  private getActiveWebContentsId(sessionId: string): number | undefined {
+    const ids = this.pruneSessionWebContents(sessionId);
+    return ids.length > 0 ? ids[ids.length - 1] : undefined;
+  }
+
+  private hasAnyWebContents(): boolean {
+    return this.getRegisteredSessions().length > 0;
+  }
+
+  private hasSessionWebContents(sessionId: string): boolean {
+    return this.getActiveWebContentsId(sessionId) !== undefined;
+  }
+
+  private rememberWebview(sessionId: string, webContentsId: number, wc: Electron.WebContents): void {
+    const previousSessionId = this.webContentsToSession.get(webContentsId);
+    if (previousSessionId && previousSessionId !== sessionId) {
+      this.forgetWebview(previousSessionId, webContentsId);
+    }
+
+    const previousActiveId = this.getActiveWebContentsId(sessionId);
+    const ids = this.pruneSessionWebContents(sessionId).filter((id) => id !== webContentsId);
+    ids.push(webContentsId);
+    this.sessionWebContents.set(sessionId, ids);
+    this.webContentsToSession.set(webContentsId, sessionId);
+
+    if (previousActiveId !== webContentsId) {
+      this.enabledDomains.delete(sessionId);
+    }
+
+    if (!this.webviewDestroyListenersAttached.has(webContentsId)) {
+      this.webviewDestroyListenersAttached.add(webContentsId);
+      wc.once('destroyed', () => {
+        this.webviewDestroyListenersAttached.delete(webContentsId);
+        const ownerSessionId = this.webContentsToSession.get(webContentsId) || sessionId;
+        this.forgetWebview(ownerSessionId, webContentsId);
+      });
+    }
+  }
+
+  private forgetWebview(sessionId: string, webContentsId?: number): void {
+    const ids = this.pruneSessionWebContents(sessionId);
+    const activeBefore = ids[ids.length - 1];
+    const removed = webContentsId === undefined
+      ? ids
+      : ids.filter((id) => id === webContentsId);
+
+    if (removed.length === 0) {
+      return;
+    }
+
+    const remaining = webContentsId === undefined
+      ? []
+      : ids.filter((id) => id !== webContentsId);
+
+    for (const id of removed) {
+      this.detachDebugger(id);
+      this.debuggerListenersAttached.delete(id);
+      this.attachedDebuggers.delete(id);
+      if (this.webContentsToSession.get(id) === sessionId) {
+        this.webContentsToSession.delete(id);
+      }
+    }
+
+    if (remaining.length > 0) {
+      this.sessionWebContents.set(sessionId, remaining);
+      if (removed.includes(activeBefore)) {
+        this.enabledDomains.delete(sessionId);
+      }
+      return;
+    }
+
+    this.sessionWebContents.delete(sessionId);
+    this.enabledDomains.delete(sessionId);
+
+    const targetDestroyedId = removed[removed.length - 1];
+    if (targetDestroyedId !== undefined) {
+      // Notify CDP proxy only when the session has no visible browser left.
+      cdpProxyService.unregisterWebview(sessionId, targetDestroyedId);
+    }
   }
 
   /**
    * Get webContentsId for a session (public, for CDP proxy)
    */
   getWebContentsId(sessionId: string): number | undefined {
-    return this.sessionWebContents.get(sessionId);
+    return this.getActiveWebContentsId(sessionId);
   }
 
   /**
    * Get all registered session IDs (public, for CDP proxy)
    */
   getRegisteredSessions(): string[] {
-    return Array.from(this.sessionWebContents.keys());
+    return Array.from(this.sessionWebContents.keys()).filter((sessionId) => this.getActiveWebContentsId(sessionId) !== undefined);
   }
 
   /**
@@ -154,21 +249,27 @@ export class BrowserService {
     console.log('[Browser Service] getWebContents called for session:', sessionId);
     console.log('[Browser Service] All registered sessions:', Array.from(this.sessionWebContents.entries()));
 
-    let webContentsId = this.sessionWebContents.get(sessionId);
+    let webContentsId = this.getActiveWebContentsId(sessionId);
 
     if (!webContentsId) {
       console.warn('[Browser Service] No webContentsId found for session:', sessionId);
 
       // Fallback: use any registered session (useful for MCP tools without session context)
-      const allSessions = Array.from(this.sessionWebContents.entries());
+      const allSessions = this.getRegisteredSessions();
       if (allSessions.length > 0) {
-        const [fallbackSessionId, fallbackWebContentsId] = allSessions[0];
+        const fallbackSessionId = allSessions[0];
+        const fallbackWebContentsId = this.getActiveWebContentsId(fallbackSessionId);
         console.log('[Browser Service] Using fallback session:', fallbackSessionId);
         webContentsId = fallbackWebContentsId;
       } else {
         console.error('[Browser Service] No webviews registered at all!');
         return null;
       }
+    }
+
+    if (!webContentsId) {
+      console.error('[Browser Service] No live webContentsId found after fallback lookup');
+      return null;
     }
 
     const wc = webContents.fromId(webContentsId);
@@ -201,9 +302,7 @@ export class BrowserService {
         // Clean up reverse mapping
         const sessionId = this.webContentsToSession.get(wc.id);
         if (sessionId) {
-          this.sessionWebContents.delete(sessionId);
-          this.webContentsToSession.delete(wc.id);
-          this.enabledDomains.delete(sessionId);
+          this.forgetWebview(sessionId, wc.id);
         }
       });
     } catch (err) {
@@ -244,7 +343,7 @@ export class BrowserService {
    */
   async navigate(sessionId: string, url: string): Promise<void> {
     // Check if browser panel is open - if not, silently ignore (might be called during initialization)
-    if (this.sessionWebContents.size === 0) {
+    if (!this.hasAnyWebContents()) {
       console.log('[Browser Service] Navigate called but no browser panels registered yet. Ignoring.');
       return;
     }
@@ -259,8 +358,8 @@ export class BrowserService {
       if (mainWindow) {
         // Use fallback session if original sessionId has no webview
         let targetSessionId = sessionId;
-        if (!this.sessionWebContents.has(sessionId)) {
-          const allSessions = Array.from(this.sessionWebContents.keys());
+        if (!this.hasSessionWebContents(sessionId)) {
+          const allSessions = this.getRegisteredSessions();
           if (allSessions.length > 0) {
             targetSessionId = allSessions[0];
             console.log('[Browser Service] Using fallback session for IPC navigate:', targetSessionId);
@@ -306,7 +405,7 @@ export class BrowserService {
    */
   async click(sessionId: string, selector: string): Promise<{ success: boolean; error?: string; position?: { x: number; y: number } }> {
     // Check if browser panel is open
-    if (this.sessionWebContents.size === 0) {
+    if (!this.hasAnyWebContents()) {
       return { success: false, error: 'Browser panel is not open. Please open the browser panel (use the globe icon in the toolbar) to use browser automation tools.' };
     }
 
@@ -378,7 +477,7 @@ export class BrowserService {
    */
   async type(sessionId: string, selector: string, text: string): Promise<{ success: boolean; error?: string }> {
     // Check if browser panel is open
-    if (this.sessionWebContents.size === 0) {
+    if (!this.hasAnyWebContents()) {
       return { success: false, error: 'Browser panel is not open. Please open the browser panel (use the globe icon in the toolbar) to use browser automation tools.' };
     }
 
@@ -440,7 +539,7 @@ export class BrowserService {
    */
   async extractText(sessionId: string, selector?: string): Promise<{ success: boolean; text?: string; error?: string }> {
     // Check if browser panel is open
-    if (this.sessionWebContents.size === 0) {
+    if (!this.hasAnyWebContents()) {
       return { success: false, error: 'Browser panel is not open. Please open the browser panel (use the globe icon in the toolbar) to use browser automation tools.' };
     }
 
@@ -475,7 +574,7 @@ export class BrowserService {
    */
   async executeScript(sessionId: string, script: string): Promise<{ success: boolean; result?: unknown; error?: string }> {
     // Check if browser panel is open
-    if (this.sessionWebContents.size === 0) {
+    if (!this.hasAnyWebContents()) {
       return { success: false, error: 'Browser panel is not open. Please open the browser panel (use the globe icon in the toolbar) to use browser automation tools.' };
     }
 
@@ -506,7 +605,7 @@ export class BrowserService {
    */
   async getPageInfo(sessionId: string): Promise<{ success: boolean; url?: string; title?: string; error?: string }> {
     // Check if browser panel is open
-    if (this.sessionWebContents.size === 0) {
+    if (!this.hasAnyWebContents()) {
       return { success: false, error: 'Browser panel is not open. Please open the browser panel (use the globe icon in the toolbar) to use browser automation tools.' };
     }
 
@@ -537,7 +636,7 @@ export class BrowserService {
    */
   async captureScreenshotCDP(sessionId: string): Promise<{ success: boolean; screenshot?: string; error?: string }> {
     // Check if browser panel is open
-    if (this.sessionWebContents.size === 0) {
+    if (!this.hasAnyWebContents()) {
       return { success: false, error: 'Browser panel is not open. Please open the browser panel (use the globe icon in the toolbar) to use browser automation tools.' };
     }
 
@@ -563,7 +662,7 @@ export class BrowserService {
    */
   async getDOM(sessionId: string): Promise<{ success: boolean; html?: string; error?: string }> {
     // Check if browser panel is open
-    if (this.sessionWebContents.size === 0) {
+    if (!this.hasAnyWebContents()) {
       return { success: false, error: 'Browser panel is not open. Please open the browser panel (use the globe icon in the toolbar) to use browser automation tools.' };
     }
 
@@ -718,7 +817,7 @@ export class BrowserService {
    */
   async enableConsoleCapture(sessionId: string): Promise<{ success: boolean; error?: string }> {
     // Check if browser panel is open
-    if (this.sessionWebContents.size === 0) {
+    if (!this.hasAnyWebContents()) {
       return { success: false, error: 'Browser panel is not open. Please open the browser panel (use the globe icon in the toolbar) to use browser automation tools.' };
     }
 
@@ -791,7 +890,7 @@ export class BrowserService {
    */
   async enableNetworkCapture(sessionId: string): Promise<{ success: boolean; error?: string }> {
     // Check if browser panel is open
-    if (this.sessionWebContents.size === 0) {
+    if (!this.hasAnyWebContents()) {
       return { success: false, error: 'Browser panel is not open. Please open the browser panel (use the globe icon in the toolbar) to use browser automation tools.' };
     }
 
@@ -872,7 +971,7 @@ export class BrowserService {
    */
   async getResponseBody(sessionId: string, requestId: string): Promise<{ success: boolean; body?: string; base64Encoded?: boolean; error?: string }> {
     // Check if browser panel is open
-    if (this.sessionWebContents.size === 0) {
+    if (!this.hasAnyWebContents()) {
       return { success: false, error: 'Browser panel is not open. Please open the browser panel (use the globe icon in the toolbar) to use browser automation tools.' };
     }
 
@@ -915,7 +1014,7 @@ export class BrowserService {
    * Check if browser automation is available (webview is registered)
    */
   isBrowserAvailable(sessionId: string): boolean {
-    return this.sessionWebContents.size > 0;
+    return this.hasSessionWebContents(sessionId) || this.hasAnyWebContents();
   }
 
   /**
@@ -923,7 +1022,7 @@ export class BrowserService {
    */
   async captureSnapshot(sessionId: string, url: string): Promise<BrowserSnapshot> {
     // Check if any webview is registered
-    if (this.sessionWebContents.size === 0) {
+    if (!this.hasAnyWebContents()) {
       throw new Error('Browser panel is not open. Please open the browser panel (use the globe icon in the toolbar) to use browser automation tools.');
     }
 
@@ -959,8 +1058,8 @@ export class BrowserService {
 
     // Try to use fallback session if original sessionId has no webview registered
     let targetSessionId = sessionId;
-    if (!this.sessionWebContents.has(sessionId)) {
-      const allSessions = Array.from(this.sessionWebContents.keys());
+    if (!this.hasSessionWebContents(sessionId)) {
+      const allSessions = this.getRegisteredSessions();
       if (allSessions.length > 0) {
         targetSessionId = allSessions[0];
         console.log('[Browser Service] Using fallback session for IPC capture:', targetSessionId);
@@ -1000,14 +1099,7 @@ export class BrowserService {
     this.networkRequests.delete(sessionId);
     this.enabledDomains.delete(sessionId);
 
-    const webContentsId = this.sessionWebContents.get(sessionId);
-    if (webContentsId !== undefined) {
-      this.detachDebugger(webContentsId);
-      this.webContentsToSession.delete(webContentsId);
-      this.sessionWebContents.delete(sessionId);
-      this.debuggerListenersAttached.delete(webContentsId);
-      this.attachedDebuggers.delete(webContentsId);
-    }
+    this.forgetWebview(sessionId);
   }
 
   /**

@@ -432,8 +432,8 @@ const electronAPI = {
     registerWebview: (sessionId: string, webContentsId: number) => {
       ipcRenderer.send('browser:register-webview', { sessionId, webContentsId });
     },
-    unregisterWebview: (sessionId: string) => {
-      ipcRenderer.send('browser:unregister-webview', { sessionId });
+    unregisterWebview: (sessionId: string, webContentsId?: number) => {
+      ipcRenderer.send('browser:unregister-webview', { sessionId, webContentsId });
     },
     onAutomationEvent: (callback: (data: { sessionId: string; type: string; action: string; data?: Record<string, unknown> }) => void) => {
       const handler = (_: IpcRendererEvent, data: { sessionId: string; type: string; action: string; data?: Record<string, unknown> }) => callback(data);

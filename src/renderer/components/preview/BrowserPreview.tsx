@@ -95,6 +95,7 @@ const logBrowserPreview = (...args: unknown[]) => {
 export default function BrowserPreview({ session, isVisible = true }: BrowserPreviewProps) {
   const webviewRef = useRef<Electron.WebviewTag>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const registeredWebContentsIdRef = useRef<number | null>(null);
   const updateSession = useSessionStore((s) => s.updateSession);
 
   // Smart URL detection: use last browser URL, or find last localhost URL in transcript
@@ -241,6 +242,7 @@ export default function BrowserPreview({ session, isVisible = true }: BrowserPre
       const webContentsId = (webview as any).getWebContentsId?.();
       if (webContentsId) {
         logBrowserPreview('[BrowserPreview] Registering webview for CDP:', session.id, '->', webContentsId);
+        registeredWebContentsIdRef.current = webContentsId;
         window.electronAPI.browser.registerWebview(session.id, webContentsId);
       }
 
@@ -253,7 +255,9 @@ export default function BrowserPreview({ session, isVisible = true }: BrowserPre
     return () => {
       webview.removeEventListener('dom-ready', handleDomReady);
       // Unregister when unmounting
-      window.electronAPI.browser.unregisterWebview(session.id);
+      const registeredWebContentsId = registeredWebContentsIdRef.current;
+      registeredWebContentsIdRef.current = null;
+      window.electronAPI.browser.unregisterWebview(session.id, registeredWebContentsId ?? undefined);
     };
   }, [session.id]);
 

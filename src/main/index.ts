@@ -308,6 +308,11 @@ const createWindow = (): void => {
       label: 'File',
       submenu: [
         {
+          label: 'New Window',
+          accelerator: 'CommandOrControl+Shift+N',
+          click: () => createNewWindow(),
+        },
+        {
           label: 'New Session',
           accelerator: 'CommandOrControl+N',
           click: () => sendAppShortcutToFocusedWindow('new-session'),
@@ -417,7 +422,11 @@ const createWindow = (): void => {
 
     let action: string | null = null;
 
-    if (!input.shift && key === 'n') {
+    if (input.shift && key === 'n') {
+      event.preventDefault();
+      createNewWindow();
+      return;
+    } else if (!input.shift && key === 'n') {
       action = 'new-session';
     } else if (!input.shift && key === 'r') {
       action = 'browser-refresh';
@@ -526,6 +535,12 @@ const createWindow = (): void => {
     // its own renderer process — keyboard events don't reach the parent.
     webviewContents.on('before-input-event', (evt, input) => {
       const k = (input.key || '').toLowerCase();
+      const primaryModifier = isMac ? input.meta : input.control;
+      if (input.type === 'keyDown' && primaryModifier && input.shift && !input.alt && k === 'n') {
+        evt.preventDefault();
+        createNewWindow();
+        return;
+      }
       if (input.type === 'keyDown' && input.control && k === 'tab') {
         evt.preventDefault();
         mainWindow?.webContents.send('session-switcher', { action: input.shift ? 'prev' : 'next' });
@@ -652,7 +667,11 @@ function createNewWindow(): void {
     if (!primaryModifier || input.alt) return;
 
     let action: string | null = null;
-    if (!input.shift && key === 'n') {
+    if (input.shift && key === 'n') {
+      event.preventDefault();
+      createNewWindow();
+      return;
+    } else if (!input.shift && key === 'n') {
       action = 'new-session';
     } else if (!input.shift && key === 'r') {
       action = 'browser-refresh';
@@ -701,6 +720,12 @@ function createNewWindow(): void {
 
     webviewContents.on('before-input-event', (evt, input) => {
       const k = (input.key || '').toLowerCase();
+      const primaryModifier = isMac ? input.meta : input.control;
+      if (input.type === 'keyDown' && primaryModifier && input.shift && !input.alt && k === 'n') {
+        evt.preventDefault();
+        createNewWindow();
+        return;
+      }
       if (input.type === 'keyDown' && input.control && k === 'tab') {
         evt.preventDefault();
         win.webContents.send('session-switcher', { action: input.shift ? 'prev' : 'next' });

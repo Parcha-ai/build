@@ -93,6 +93,7 @@ const hasActiveQueryMethod = claudeService.match(/hasActiveQuery\(sessionId: str
 assert.match(hasActiveQueryMethod, /return this\.getActiveQueryState\(sessionId\)\.active/);
 
 assert.match(claudeIpc, /const STALE_QUEUE_DRAIN_ACTIVE_QUERY_GRACE_MS = 30_000;/);
+assert.match(claudeIpc, /const STALE_QUEUE_DRAIN_REMOTE_PROCESS_GRACE_MS = 30_000;/);
 assert.ok((claudeIpc.match(/claudeService\.noteActiveQueryEvent\(sessionId\)/g) || []).length >= 2, 'stream and resume loops must refresh active query activity');
 
 const drainHandler = claudeIpc.match(/messageQueueService\.on\('drain-ready'[\s\S]*?\n {2}\}\);/)?.[0] || '';
@@ -110,6 +111,9 @@ const deferActiveIndex = drainHandler.indexOf('messageQueueService.deferDrain(se
 const cancelIndex = drainHandler.indexOf('claudeService.cancelQuery(sessionId)');
 const cleanupCompletedIndex = drainHandler.indexOf('sshService.cleanupDetachedBridgeProcessesForNewTurn(sessionId, session.sshConfig');
 const remoteRecheckIndex = drainHandler.indexOf('remoteActive = await readRemoteActive()', cleanupCompletedIndex);
+const staleRemoteCleanupIndex = drainHandler.indexOf('Clearing stale remote process before drain');
+const killStaleRemoteIndex = drainHandler.indexOf('killActive: true', staleRemoteCleanupIndex);
+const staleRemoteRecheckIndex = drainHandler.indexOf('remoteActive = await readRemoteActive()', killStaleRemoteIndex);
 const finalRemoteActiveIndex = drainHandler.lastIndexOf('if (remoteActive) {');
 const injectableDequeueIndex = drainHandler.indexOf('const next = messageQueueService.dequeueForDrain(sessionId)');
 const newTurnDequeueIndex = drainHandler.lastIndexOf('const next = messageQueueService.dequeueForDrain(sessionId)');
@@ -131,10 +135,14 @@ assert.ok(deferActiveIndex > staleIndex, 'active runtime must be deferred before
 assert.ok(cancelIndex > deferActiveIndex, 'stale active query must be cancelled only after non-stale deferral branch');
 assert.ok(cleanupCompletedIndex > cancelIndex, 'completed remote bridge cleanup must run before final remote-active deferral');
 assert.ok(remoteRecheckIndex > cleanupCompletedIndex, 'remote process state must be rechecked after completed bridge cleanup');
-assert.ok(finalRemoteActiveIndex > remoteRecheckIndex, 'remote process check must run again before new-turn drain');
+assert.ok(staleRemoteCleanupIndex > remoteRecheckIndex, 'stale remote cleanup must run only after completed bridge cleanup cannot clear the remote process');
+assert.ok(killStaleRemoteIndex > staleRemoteCleanupIndex, 'stale remote cleanup must be allowed to kill the stale active process');
+assert.ok(staleRemoteRecheckIndex > killStaleRemoteIndex, 'remote process state must be rechecked after stale remote cleanup');
+assert.ok(finalRemoteActiveIndex > staleRemoteRecheckIndex, 'remote process check must run again before new-turn drain');
 assert.ok(newTurnDequeueIndex > finalRemoteActiveIndex, 'new-turn queue drain must happen only after active and remote process checks');
 assert.match(drainHandler, /if \(!canTreatAsStale\) \{[\s\S]*?return;[\s\S]*?\}/);
 assert.match(drainHandler, /Clearing stale active query before drain/);
+assert.match(drainHandler, /Clearing stale remote process before drain/);
 assert.match(drainHandler, /Deferring drain for \$\{sessionId\}; remote process is still active/);
 assert.match(drainHandler, /supportsActiveInjection=\$\{supportsActiveInjection \? 'yes' : 'no'\}/);
 
@@ -142,13 +150,15 @@ assert.doesNotMatch(sessionStore, /window\.electronAPI\.claude\.injectMessage\(\
 assert.match(sessionStore, /main queue owns injection/);
 
 const optimisticMessageIndex = sessionStore.indexOf('addMessage(sessionId, userMessage)');
+const rendererStreamStartIndex = sessionStore.indexOf('setStreaming(sessionId, true)', optimisticMessageIndex);
 const rendererRemoteProbeIndex = sessionStore.indexOf('window.electronAPI.ssh.hasActiveRemoteProcess(sessionId)', optimisticMessageIndex);
 const rendererQueueIndex = sessionStore.indexOf('window.electronAPI.queue?.enqueue(sessionId, message, attachments', rendererRemoteProbeIndex);
-const rendererStreamStartIndex = sessionStore.indexOf('setStreaming(sessionId, true)', rendererRemoteProbeIndex);
 assert.ok(optimisticMessageIndex >= 0, 'renderer send path must add the user message optimistically');
+assert.ok(rendererStreamStartIndex > optimisticMessageIndex, 'renderer send path must enter submitted state after the visible user message');
+assert.ok(rendererStreamStartIndex < rendererRemoteProbeIndex, 'renderer send path must not block submitted state on the remote-active probe');
 assert.ok(rendererRemoteProbeIndex > optimisticMessageIndex, 'renderer remote-active probe must happen after the visible user message');
 assert.ok(rendererQueueIndex > rendererRemoteProbeIndex, 'renderer must enqueue instead of direct-sending when remote Claude is active');
-assert.ok(rendererStreamStartIndex > rendererQueueIndex, 'renderer remote-active queue branch must run before starting a new stream');
+assert.match(sessionStore, /isStreaming: \{ \.\.\.state\.isStreaming, \[sessionId\]: false \}/);
 assert.match(sessionStore, /deferDrain: true/);
 assert.match(sessionStore, /queued message after optimistic send/);
 
