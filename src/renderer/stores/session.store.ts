@@ -475,6 +475,12 @@ interface LoadMessagesOptions {
 }
 
 const remoteProcessPollers = new Set<string>();
+const MAX_CONCURRENT_SSH_REATTACH_CHECKS = 3;
+const SSH_STARTUP_REATTACH_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+interface StartRemoteProcessMonitorOptions {
+  recoverableKnown?: boolean;
+}
 
 function startRemoteProcessMonitor(
   sessionId: string,
@@ -482,14 +488,23 @@ function startRemoteProcessMonitor(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   setState: any,
   loadMessages: (sessionId: string, options?: LoadMessagesOptions) => Promise<void>,
+  options: StartRemoteProcessMonitorOptions = {},
 ) {
-  const hasRecoverableProcess = window.electronAPI.ssh.hasRecoverableRemoteProcess
-    ? window.electronAPI.ssh.hasRecoverableRemoteProcess(sessionId)
-    : window.electronAPI.ssh.hasActiveRemoteProcess(sessionId);
+  if (remoteProcessPollers.has(sessionId)) return;
+  remoteProcessPollers.add(sessionId);
+
+  const hasRecoverableProcess = options.recoverableKnown
+    ? Promise.resolve(true)
+    : window.electronAPI.ssh.hasRecoverableRemoteProcess
+      ? window.electronAPI.ssh.hasRecoverableRemoteProcess(sessionId, { closeAfter: true })
+      : window.electronAPI.ssh.hasActiveRemoteProcess(sessionId);
 
   hasRecoverableProcess
     .then((recoverable) => {
-      if (!recoverable) return;
+      if (!recoverable) {
+        remoteProcessPollers.delete(sessionId);
+        return;
+      }
 
       console.log(`[SessionStore] SSH session ${sessionId} has recoverable remote Claude process — attaching stream state`);
       setState((state: SessionState) => ({
@@ -508,9 +523,6 @@ function startRemoteProcessMonitor(
           [sessionId]: getSessionModel(state, sessionId),
         },
       }));
-
-      if (remoteProcessPollers.has(sessionId)) return;
-      remoteProcessPollers.add(sessionId);
 
       void (async () => {
         try {
@@ -564,8 +576,55 @@ function startRemoteProcessMonitor(
       })();
     })
     .catch((error) => {
+      remoteProcessPollers.delete(sessionId);
       console.warn('[SessionStore] Failed to check active remote SSH process:', error);
     });
+}
+
+function startRunningSshProcessMonitors(
+  sessions: Session[],
+  getState: () => SessionState,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  setState: any,
+  loadMessages: (sessionId: string, options?: LoadMessagesOptions) => Promise<void>,
+) {
+  if (sessions.length === 0) return;
+
+  console.log('[SessionStore] Auto-reattaching running SSH sessions on startup:', sessions.map((session) => session.id));
+
+  let nextIndex = 0;
+  const workerCount = Math.min(MAX_CONCURRENT_SSH_REATTACH_CHECKS, sessions.length);
+
+  const runWorker = async () => {
+    while (nextIndex < sessions.length) {
+      const session = sessions[nextIndex++];
+      if (remoteProcessPollers.has(session.id)) continue;
+
+      try {
+        const recoverable = window.electronAPI.ssh.hasRecoverableRemoteProcess
+          ? await window.electronAPI.ssh.hasRecoverableRemoteProcess(session.id, { closeAfter: true })
+          : await window.electronAPI.ssh.hasActiveRemoteProcess(session.id);
+        if (!recoverable) continue;
+
+        startRemoteProcessMonitor(session.id, getState, setState, loadMessages, {
+          recoverableKnown: true,
+        });
+      } catch (error) {
+        console.warn('[SessionStore] Failed to check recoverable SSH process during startup reattach:', session.id, error);
+      }
+    }
+  };
+
+  for (let i = 0; i < workerCount; i += 1) {
+    void runWorker();
+  }
+}
+
+function isRecentRunningSshSession(session: Session): boolean {
+  if (session.status !== 'running' || !Boolean((session as any).sshConfig)) return false;
+  const updatedAt = new Date(session.updatedAt).getTime();
+  if (!Number.isFinite(updatedAt)) return false;
+  return Date.now() - updatedAt <= SSH_STARTUP_REATTACH_WINDOW_MS;
 }
 
 function getPreferredCompactionFallbackModel(availableModels: ModelInfo[], sourceModel?: string): string | undefined {
@@ -1449,6 +1508,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         if (activeSession?.sshConfig) {
           startRemoteProcessMonitor(validActiveSessionId, get, set, loadMessages);
         }
+      }
+
+      const runningSshSessions = sessions.filter(isRecentRunningSshSession);
+      if (runningSshSessions.length > 0) {
+        const { loadMessages } = get();
+        setTimeout(() => {
+          startRunningSshProcessMonitors(runningSshSessions, get, set, loadMessages);
+        }, 0);
       }
     } catch (error) {
       console.error('Failed to load sessions:', error);
@@ -4352,7 +4419,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
       if (session.sshConfig) {
         const hasRecoverable = window.electronAPI.ssh.hasRecoverableRemoteProcess
-          ? await window.electronAPI.ssh.hasRecoverableRemoteProcess(sessionId)
+          ? await window.electronAPI.ssh.hasRecoverableRemoteProcess(sessionId, { closeAfter: true })
           : await window.electronAPI.ssh.hasActiveRemoteProcess(sessionId);
 
         if (!hasRecoverable) {
@@ -4365,7 +4432,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         set((s) => ({
           permissionMode: { ...s.permissionMode, [sessionId]: 'bypassPermissions' },
         }));
-        startRemoteProcessMonitor(sessionId, get, set, state.loadMessages);
+        startRemoteProcessMonitor(sessionId, get, set, state.loadMessages, {
+          recoverableKnown: true,
+        });
         return;
       }
 

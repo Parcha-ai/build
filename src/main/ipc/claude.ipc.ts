@@ -1080,10 +1080,13 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
       return null;
     }
 
-    // Local renderer-only auto-resume gets stale quickly. SSH bridge recovery
-    // can safely survive laptop sleep and app restarts for much longer because
-    // the remote job is explicitly checked before reattaching.
-    const staleAfterMs = state.isSSH ? 24 * 60 * 60 * 1000 : 5 * 60 * 1000;
+    if (state.isSSH) {
+      console.log('[Claude IPC] Retrieved SSH auto-resume state for remote reattach:', state.sessionId);
+      return state;
+    }
+
+    // Local renderer-only auto-resume gets stale quickly.
+    const staleAfterMs = 5 * 60 * 1000;
     if (state.timestamp < Date.now() - staleAfterMs) {
       console.log('[Claude IPC] Auto-resume state is stale, ignoring');
       settingsStore.delete('autoResumeState');

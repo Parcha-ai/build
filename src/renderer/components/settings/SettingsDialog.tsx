@@ -337,7 +337,7 @@ export default function SettingsDialog() {
   const [lunchReminderTime, setLunchReminderTime] = useState('12:00');
   const [bedtimeReminderEnabled, setBedtimeReminderEnabled] = useState(false);
   const [bedtimeReminderTime, setBedtimeReminderTime] = useState('23:00');
-  const [dailyReviewEnabled, setDailyReviewEnabled] = useState(true);
+  const [dailyReviewEnabled, setDailyReviewEnabled] = useState(false);
   const [dailyReviewTime, setDailyReviewTime] = useState('09:00');
   const [bedtimeTaskReviewEnabled, setBedtimeTaskReviewEnabled] = useState(true);
 
@@ -497,7 +497,7 @@ export default function SettingsDialog() {
           setLunchReminderTime(appSettings.lunchReminderTime || '12:00');
           setBedtimeReminderEnabled(appSettings.bedtimeReminderEnabled || false);
           setBedtimeReminderTime(appSettings.bedtimeReminderTime || '23:00');
-          setDailyReviewEnabled((appSettings as any).dailyReviewEnabled ?? true);
+          setDailyReviewEnabled((appSettings as any).dailyReviewEnabled ?? false);
           setDailyReviewTime((appSettings as any).dailyReviewTime || '09:00');
           setBedtimeTaskReviewEnabled((appSettings as any).bedtimeTaskReviewEnabled ?? true);
           setFoundryEnabled(appSettings.foundryEnabled || false);
@@ -667,8 +667,6 @@ export default function SettingsDialog() {
   );
 
   // API Key input component
-  if (!isSettingsOpen) return null;
-
   // Render General Tab
   const renderGeneralTab = () => (
     <div className="space-y-6">
@@ -2230,6 +2228,8 @@ export default function SettingsDialog() {
         return null;
     }
   };
+
+  if (!isSettingsOpen) return null;
 
   return (
     <div

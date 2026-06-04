@@ -151,8 +151,6 @@ export default function ApiKeyOnboarding() {
     }
   };
 
-  if (!isOnboardingOpen) return null;
-
   // Auto-poll providers while onboarding is open and something isn't ready
   useEffect(() => {
     if (!isOnboardingOpen || !scanComplete) return;
@@ -170,6 +168,8 @@ export default function ApiKeyOnboarding() {
 
   const anyLoggedIn = providers.claude.loggedIn || providers.codex.loggedIn || providers.cursor.loggedIn || providers.gemini.loggedIn || providers.opencode.loggedIn;
   const showApiKeyOption = scanComplete && (showApiKeyInput || !anyLoggedIn);
+
+  if (!isOnboardingOpen) return null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80">
@@ -201,6 +201,15 @@ export default function ApiKeyOnboarding() {
             phaseActive={scanPhase === 0 && !scanComplete}
             phaseDone={scanPhase > 0 || scanComplete}
             phaseLabel={SCAN_PHASES[0].label}
+            apiKeyConfig={{
+              placeholder: 'sk-ant-...',
+              onSave: async (key) => {
+                await window.electronAPI.settings.setApiKey(key);
+                await checkApiKey();
+                const res = await window.electronAPI.auth?.checkProviders?.();
+                if (res) setProviders(res);
+              },
+            }}
           />
           <ProviderRow
             icon={<CodexIcon />}
@@ -209,6 +218,14 @@ export default function ApiKeyOnboarding() {
             phaseActive={scanPhase === 1 && !scanComplete}
             phaseDone={scanPhase > 1 || scanComplete}
             phaseLabel={SCAN_PHASES[1].label}
+            apiKeyConfig={{
+              placeholder: 'sk-...',
+              onSave: async (key) => {
+                await window.electronAPI.audio.setOpenAiKey(key);
+                const res = await window.electronAPI.auth?.checkProviders?.();
+                if (res) setProviders(res);
+              },
+            }}
           />
           <ProviderRow
             icon={<Terminal size={18} />}
@@ -217,6 +234,14 @@ export default function ApiKeyOnboarding() {
             phaseActive={scanPhase === 2 && !scanComplete}
             phaseDone={scanPhase > 2 || scanComplete}
             phaseLabel={SCAN_PHASES[2].label}
+            apiKeyConfig={{
+              placeholder: 'cur-...',
+              onSave: async (key) => {
+                await window.electronAPI.settings.set({ cursorApiKey: key });
+                const res = await window.electronAPI.auth?.checkProviders?.();
+                if (res) setProviders(res);
+              },
+            }}
           />
           <ProviderRow
             icon={<Terminal size={18} />}
@@ -225,6 +250,14 @@ export default function ApiKeyOnboarding() {
             phaseActive={scanPhase === 3 && !scanComplete}
             phaseDone={scanPhase > 3 || scanComplete}
             phaseLabel={SCAN_PHASES[3].label}
+            apiKeyConfig={{
+              placeholder: 'Gemini API key',
+              onSave: async (key) => {
+                await window.electronAPI.settings.set({ geminiApiKey: key });
+                const res = await window.electronAPI.auth?.checkProviders?.();
+                if (res) setProviders(res);
+              },
+            }}
           />
           <ProviderRow
             icon={<Terminal size={18} />}
@@ -233,6 +266,14 @@ export default function ApiKeyOnboarding() {
             phaseActive={scanPhase === 4 && !scanComplete}
             phaseDone={scanPhase > 4 || scanComplete}
             phaseLabel={SCAN_PHASES[4].label}
+            apiKeyConfig={{
+              placeholder: 'sk-...',
+              onSave: async (key) => {
+                await window.electronAPI.settings.set({ deepseekApiKey: key });
+                const res = await window.electronAPI.auth?.checkProviders?.();
+                if (res) setProviders(res);
+              },
+            }}
           />
           <SessionScanRow
             icon={<SessionsIcon />}
@@ -241,127 +282,17 @@ export default function ApiKeyOnboarding() {
           />
         </div>
 
-        {/* API key (collapsible / conditional) */}
+        {/* Action button */}
         {scanComplete && (
-          <div className="px-6 pb-2">
-            {anyLoggedIn && !showApiKeyInput && (
-              <button
-                onClick={() => setShowApiKeyInput(true)}
-                className="w-full flex items-center justify-between px-3 py-2 text-xs font-mono text-claude-text-secondary hover:text-claude-text border border-claude-border hover:bg-claude-bg/50 transition-colors"
-                style={{ borderRadius: 0 }}
-              >
-                <span className="flex items-center gap-2">
-                  <Key size={12} />
-                  Add an Anthropic API key (optional)
-                </span>
-                <ChevronDown size={12} />
-              </button>
-            )}
-
-            {showApiKeyOption && (
-              <div className="space-y-2 pt-2">
-                {anyLoggedIn && (
-                  <div className="flex items-center justify-between">
-                    <label className="block text-xs font-mono text-claude-text-secondary uppercase tracking-wider">
-                      Anthropic API Key (optional)
-                    </label>
-                    <button
-                      onClick={() => setShowApiKeyInput(false)}
-                      className="text-xs font-mono text-claude-text-secondary hover:text-claude-text flex items-center gap-1"
-                    >
-                      <ChevronUp size={12} /> hide
-                    </button>
-                  </div>
-                )}
-                {!anyLoggedIn && (
-                  <label className="block text-xs font-mono text-claude-text-secondary uppercase tracking-wider">
-                    Anthropic API Key
-                  </label>
-                )}
-                <div className="relative">
-                  <input
-                    type={showApiKey ? 'text' : 'password'}
-                    value={apiKey}
-                    onChange={(e) => {
-                      setApiKey(e.target.value);
-                      setError(null);
-                    }}
-                    onKeyDown={handleKeyDown}
-                    placeholder="sk-ant-..."
-                    autoFocus
-                    className={`w-full px-3 py-3 pr-10 bg-claude-bg border text-claude-text font-mono text-sm placeholder:text-claude-text-secondary focus:outline-none ${
-                      error ? 'border-red-500' : 'border-claude-border focus:border-claude-accent'
-                    }`}
-                    style={{ borderRadius: 0 }}
-                  />
-                  <button
-                    onClick={() => setShowApiKey(!showApiKey)}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-claude-text-secondary hover:text-claude-text"
-                    type="button"
-                  >
-                    {showApiKey ? <EyeOff size={16} /> : <Eye size={16} />}
-                  </button>
-                </div>
-                {error && (
-                  <div className="flex items-center gap-2 text-red-400 text-xs font-mono">
-                    <AlertCircle size={12} />
-                    {error}
-                  </div>
-                )}
-                <a
-                  href="#"
-                  onClick={(e) => {
-                    e.preventDefault();
-                    window.electronAPI.app?.openExternal?.('https://console.anthropic.com/settings/keys');
-                  }}
-                  className="inline-flex items-center gap-1.5 text-xs font-mono text-claude-accent hover:underline"
-                >
-                  <ExternalLink size={10} />
-                  Get an API key
-                </a>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Action buttons */}
-        {scanComplete && (
-          <div className="p-6 pt-4 space-y-3">
-            {anyLoggedIn && !apiKey.trim() ? (
-              <button
-                onClick={handleContinue}
-                className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-claude-accent text-white font-mono text-sm uppercase tracking-wider hover:bg-claude-accent/80 transition-colors"
-                style={{ borderRadius: 0 }}
-              >
-                <Check size={14} />
-                Continue to Build
-              </button>
-            ) : (
-              <button
-                onClick={apiKey.trim() ? handleSave : handleContinue}
-                disabled={isSaving || (!anyLoggedIn && !apiKey.trim())}
-                className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-claude-accent text-white font-mono text-sm uppercase tracking-wider hover:bg-claude-accent/80 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                style={{ borderRadius: 0 }}
-              >
-                {isSaving ? (
-                  <>
-                    <Loader2 size={14} className="animate-spin" />
-                    Saving...
-                  </>
-                ) : (
-                  <>
-                    <Check size={14} />
-                    {apiKey.trim() ? 'Save Key & Continue' : 'Continue to Build'}
-                  </>
-                )}
-              </button>
-            )}
-
+          <div className="p-6 pt-4">
             <button
-              onClick={handleAdvancedSettings}
-              className="w-full px-4 py-2 text-claude-text-secondary font-mono text-xs hover:text-claude-text transition-colors"
+              onClick={handleContinue}
+              disabled={!anyLoggedIn}
+              className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-claude-accent text-white font-mono text-sm uppercase tracking-wider hover:bg-claude-accent/80 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              style={{ borderRadius: 0 }}
             >
-              Advanced Settings →
+              <Check size={14} />
+              Continue to Build
             </button>
           </div>
         )}
@@ -371,7 +302,7 @@ export default function ApiKeyOnboarding() {
           <p className="text-[10px] font-mono text-claude-text-secondary text-center">
             {anyLoggedIn
               ? 'Build uses installed CLI credentials when available and tracks harness readiness locally.'
-              : 'Install or sign in to at least one harness, or add an Anthropic API key to continue.'}
+              : 'Sign in or add an API key to at least one agent to continue.'}
           </p>
         </div>
       </div>
@@ -401,6 +332,7 @@ function ProviderRow({
   phaseActive,
   phaseDone,
   phaseLabel,
+  apiKeyConfig,
 }: {
   icon: React.ReactNode;
   label: string;
@@ -408,7 +340,16 @@ function ProviderRow({
   phaseActive: boolean;
   phaseDone: boolean;
   phaseLabel: string;
+  apiKeyConfig?: {
+    placeholder: string;
+    onSave: (key: string) => Promise<void>;
+  };
 }) {
+  const [showKey, setShowKey] = useState(false);
+  const [keyValue, setKeyValue] = useState('');
+  const [expanded, setExpanded] = useState(false);
+  const [saving, setSaving] = useState(false);
+
   const needsSetup = phaseDone && !phaseActive && !status.loggedIn;
   const missingCli = needsSetup && status.installed === false;
   const needsAuth = needsSetup && status.installed === true;
@@ -431,6 +372,14 @@ function ProviderRow({
     }
   };
   const docsUrl = status.docsUrl;
+  const canShowApiKey = apiKeyConfig && phaseDone && !phaseActive && !status.loggedIn;
+
+  const handleSaveKey = async () => {
+    if (!apiKeyConfig || !keyValue.trim()) return;
+    setSaving(true);
+    await apiKeyConfig.onSave(keyValue.trim());
+    setSaving(false);
+  };
 
   return (
     <div className="px-3 py-2.5 bg-claude-bg/40 border border-claude-border" style={{ borderRadius: 0 }}>
@@ -481,6 +430,59 @@ function ProviderRow({
               <ExternalLink size={12} />
             </button>
           )}
+        </div>
+      )}
+
+      {canShowApiKey && !expanded && (
+        <button
+          type="button"
+          onClick={() => setExpanded(true)}
+          className="mt-2 w-full flex items-center gap-1.5 text-[10px] font-mono text-claude-text-secondary hover:text-claude-text"
+        >
+          <Key size={10} />
+          <span>Or add API key</span>
+          <ChevronDown size={10} />
+        </button>
+      )}
+
+      {canShowApiKey && expanded && (
+        <div className="mt-2 space-y-1.5">
+          <div className="flex items-center gap-1.5">
+            <div className="relative flex-1">
+              <input
+                type={showKey ? 'text' : 'password'}
+                value={keyValue}
+                onChange={(e) => setKeyValue(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter' && keyValue.trim()) handleSaveKey(); }}
+                placeholder={apiKeyConfig.placeholder}
+                className="w-full px-2 py-1.5 pr-8 bg-claude-surface border border-claude-border text-xs font-mono text-claude-text placeholder:text-claude-text-secondary focus:outline-none focus:border-claude-accent"
+                style={{ borderRadius: 0 }}
+              />
+              <button
+                type="button"
+                onClick={() => setShowKey(!showKey)}
+                className="absolute right-1.5 top-1/2 -translate-y-1/2 p-0.5 text-claude-text-secondary hover:text-claude-text"
+              >
+                {showKey ? <EyeOff size={11} /> : <Eye size={11} />}
+              </button>
+            </div>
+            <button
+              type="button"
+              onClick={handleSaveKey}
+              disabled={!keyValue.trim() || saving}
+              className="px-2 py-1.5 text-[10px] font-mono font-bold uppercase bg-claude-accent text-white hover:bg-claude-accent/80 disabled:opacity-40"
+              style={{ borderRadius: 0 }}
+            >
+              {saving ? <Loader2 size={11} className="animate-spin" /> : 'Save'}
+            </button>
+          </div>
+          <button
+            type="button"
+            onClick={() => setExpanded(false)}
+            className="text-[10px] font-mono text-claude-text-secondary hover:text-claude-text"
+          >
+            <ChevronUp size={10} className="inline mr-0.5" />Hide
+          </button>
         </div>
       )}
     </div>

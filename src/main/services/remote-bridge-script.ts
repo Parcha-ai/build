@@ -21,6 +21,15 @@ function parseConfig(configPath) {
   return JSON.parse(raw);
 }
 
+function normalizeCwd(cwd) {
+  if (!cwd || cwd === '.') return cwd;
+  const home = process.env.HOME;
+  if (!home) return cwd;
+  if (cwd === '~') return home;
+  if (cwd.startsWith('~/')) return path.join(home, cwd.slice(2));
+  return cwd;
+}
+
 function runSpawn(configPath) {
   const config = parseConfig(configPath);
   fs.mkdirSync(config.jobDir, { recursive: true });
@@ -31,7 +40,7 @@ function runSpawn(configPath) {
 
   const logStream = fs.createWriteStream(config.logPath, { flags: 'a' });
   const child = spawn(config.command, config.args, {
-    cwd: config.cwd,
+    cwd: normalizeCwd(config.cwd),
     env: { ...process.env, ...config.env },
     stdio: ['pipe', 'pipe', 'pipe'],
   });

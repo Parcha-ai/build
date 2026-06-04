@@ -449,7 +449,8 @@ function ElectronApp() {
   useEffect(() => {
     const checkDailyReview = async () => {
       const settings = await window.electronAPI.settings.get();
-      if ((settings as any).dailyReviewEnabled === false) return;
+      if ((settings as any).dailyReviewEnabled !== true) return;
+      if (!settings?.onboardingSkipped && !await useUIStore.getState().checkApiKey()) return;
 
       const now = new Date();
       const hour = now.getHours();

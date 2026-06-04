@@ -892,8 +892,8 @@ const electronAPI = {
     }> => ipcRenderer.invoke(IPC_CHANNELS.SSH_RECONNECT, sessionId),
     hasActiveRemoteProcess: (sessionId: string): Promise<boolean> =>
       ipcRenderer.invoke(IPC_CHANNELS.SSH_HAS_ACTIVE_REMOTE_PROCESS, sessionId),
-    hasRecoverableRemoteProcess: (sessionId: string): Promise<boolean> =>
-      ipcRenderer.invoke(IPC_CHANNELS.SSH_HAS_RECOVERABLE_REMOTE_PROCESS, sessionId),
+    hasRecoverableRemoteProcess: (sessionId: string, options?: { closeAfter?: boolean }): Promise<boolean> =>
+      ipcRenderer.invoke(IPC_CHANNELS.SSH_HAS_RECOVERABLE_REMOTE_PROCESS, sessionId, options),
     onConnectionLost: (callback: (data: { sessionId: string; reason?: string }) => void) => {
       const handler = (_: IpcRendererEvent, data: { sessionId: string; reason?: string }) => callback(data);
       ipcRenderer.on(IPC_CHANNELS.SSH_CONNECTION_LOST, handler);

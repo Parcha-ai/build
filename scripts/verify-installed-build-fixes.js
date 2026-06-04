@@ -104,6 +104,12 @@ const mainMarkers = [
   'Cleared Auto Build plan marker; session mode remains',
   'Persisted restored permission mode',
   'Persisted Auto Build forced plan restore mode',
+  'Retrieved SSH auto-resume state for remote reattach',
+  'claude:{supportsAsyncInjection:!1,supportsMultiTurn:!0,minTurnGapMs:500',
+  'Repaired SSH Claude SDK resume mapping',
+  'repairSshSdkSessionIdFromBuildTranscript',
+  'Closing one-shot recoverability probe connection',
+  'recoverable-probe',
 ];
 
 const rendererMarkers = [
@@ -120,6 +126,11 @@ const rendererMarkers = [
   'Secure-key scan failed; sending original text',
   'Ignoring permission mode change to',
   'Ignoring permission mode cycle while turn is active or queued',
+  'Auto-reattaching running SSH sessions on startup',
+  'Auto-resuming SSH Build It session by reattaching',
+  'Reattaching to detached SSH turn',
+  'Failed to check recoverable SSH process during startup reattach',
+  'closeAfter',
 ];
 
 for (const marker of mainMarkers) {

@@ -13,11 +13,16 @@ const dotenv = require('dotenv');
 const envPath = path.resolve(__dirname, '.env.production');
 const envConfig = dotenv.config({ path: envPath });
 const env = envConfig.parsed || {};
+const skipForkTsChecker = process.env.GREP_SKIP_FORK_TS_CHECKER === '1';
 
 export const plugins = [
-  new ForkTsCheckerWebpackPlugin({
-    logger: 'webpack-infrastructure',
-  }),
+  ...(!skipForkTsChecker
+    ? [
+        new ForkTsCheckerWebpackPlugin({
+          logger: 'webpack-infrastructure',
+        }),
+      ]
+    : []),
   new MonacoWebpackPlugin({
     languages: ['javascript', 'typescript', 'json', 'html', 'css', 'markdown', 'python', 'yaml', 'shell'],
     features: ['coreCommands', 'find'],

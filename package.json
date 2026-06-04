@@ -1,7 +1,7 @@
 {
   "name": "build",
   "productName": "Build",
-  "version": "0.5.30",
+  "version": "0.5.31",
   "description": "AI-powered development environment with intelligent code search, multi-session support, and live browser preview",
   "main": ".webpack/main",
   "scripts": {
@@ -26,7 +26,7 @@
     "verify:auto-router:no-legacy-llm-after-controller": "npx ts-node scripts/verify-auto-router-no-legacy-llm-after-controller.ts",
     "verify:auto-router:plan-mode": "npx ts-node scripts/verify-auto-router-plan-mode.ts",
     "verify:auto-router:workflow-metadata": "npx ts-node scripts/verify-auto-router-workflow-metadata.ts",
-    "verify:fixes": "npm run verify:build-transcript-precedence && npm run verify:queue-drain:stale-active-query && npm run verify:session-hygiene && npm run verify:session-display-behavior && npm run verify:ssh-remote-process-guards && npm run verify:app-shortcuts && npm run verify:multi-window-browser && npm run verify:direct-model-plan-restore && npm run verify:immediate-user-message && npm run verify:active-permission-mode-guard",
+    "verify:fixes": "npm run verify:build-transcript-precedence && npm run verify:queue-drain:stale-active-query && npm run verify:session-hygiene && npm run verify:session-display-behavior && npm run verify:ssh-remote-process-guards && npm run verify:no-eager-ssh-auto-resume && npm run verify:ssh-sdk-resume-repair && npm run verify:app-shortcuts && npm run verify:multi-window-browser && npm run verify:direct-model-plan-restore && npm run verify:immediate-user-message && npm run verify:active-permission-mode-guard",
     "verify:fixes:installed": "npm run verify:fixes && npm run verify:installed-build-fixes",
     "verify:build-transcript-precedence": "npx ts-node scripts/verify-build-transcript-precedence.ts",
     "verify:app-shortcuts": "npx ts-node scripts/verify-app-shortcuts.ts",
@@ -35,9 +35,11 @@
     "verify:immediate-user-message": "npx ts-node scripts/verify-immediate-user-message.ts",
     "verify:installed-build-fixes": "node scripts/verify-installed-build-fixes.js",
     "verify:multi-window-browser": "npx ts-node scripts/verify-multi-window-browser.ts",
+    "verify:no-eager-ssh-auto-resume": "npx ts-node scripts/verify-no-eager-ssh-auto-resume.ts",
     "verify:queue-drain:stale-active-query": "npx ts-node scripts/verify-queue-drain-stale-active-query.ts",
     "verify:session-display-behavior": "npx ts-node scripts/verify-session-display-behavior.ts",
     "verify:session-hygiene": "npx ts-node scripts/verify-session-hygiene.ts",
+    "verify:ssh-sdk-resume-repair": "npx ts-node scripts/verify-ssh-sdk-resume-repair.ts",
     "verify:ssh-remote-process-guards": "npx ts-node scripts/verify-ssh-remote-process-guards.ts",
     "setup-qmd": "npx ts-node scripts/setup-qmd.ts",
     "setup-qmd:all": "npx ts-node scripts/setup-qmd.ts all"

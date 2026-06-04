@@ -105,6 +105,14 @@ export interface SSHConnectionInfo {
   config: SSHConfig;
 }
 
+export interface RecoverableRemoteProcessOptions {
+  closeAfter?: boolean;
+}
+
+interface RemoteBridgeLookupOptions {
+  connectionSessionId?: string;
+}
+
 export interface RemoteCliCapabilities {
   claude: boolean;
   codex: boolean;
@@ -209,7 +217,7 @@ export class SSHService {
     const displayWorkdir = this.quoteForShell(remoteWorkdir || '~');
     return [
       `workdir=${quotedWorkdir}`,
-      'case "$workdir" in "~") workdir="$HOME" ;; "~/"*) workdir="$HOME/${workdir#~/}" ;; esac',
+      'case "$workdir" in "~") workdir="$HOME" ;; "~/"*) workdir="$HOME/${workdir#\\~/}" ;; esac',
       `if ! test -d "$workdir"; then echo "Remote workdir not found: ${displayWorkdir}" >&2; exit 66; fi`,
       'cd "$workdir"',
     ].join('; ');
@@ -869,9 +877,13 @@ export class SSHService {
       .filter((job): job is DetachedRemoteBridgeJob => Boolean(job));
   }
 
-  async listDetachedBridgeJobs(sessionId: string, config: SSHConfig): Promise<DetachedRemoteBridgeJob[]> {
+  async listDetachedBridgeJobs(
+    sessionId: string,
+    config: SSHConfig,
+    options: RemoteBridgeLookupOptions = {}
+  ): Promise<DetachedRemoteBridgeJob[]> {
     try {
-      const client = await this.getConnection(sessionId, config);
+      const client = await this.getConnection(options.connectionSessionId || sessionId, config);
       const bridgeDir = this.getDetachedBridgeSessionDir(sessionId);
       const output = await this.execCommand(client,
         `if test -d ${this.quoteForShell(bridgeDir)}; then ` +
@@ -899,8 +911,12 @@ export class SSHService {
     }
   }
 
-  async getLatestRecoverableRemoteProcess(sessionId: string, config: SSHConfig): Promise<DetachedRemoteBridgeJob | null> {
-    const jobs = await this.listDetachedBridgeJobs(sessionId, config);
+  async getLatestRecoverableRemoteProcess(
+    sessionId: string,
+    config: SSHConfig,
+    options: RemoteBridgeLookupOptions = {}
+  ): Promise<DetachedRemoteBridgeJob | null> {
+    const jobs = await this.listDetachedBridgeJobs(sessionId, config, options);
     const recentCompletedCutoff = Math.floor((Date.now() - 24 * 60 * 60 * 1000) / 1000);
     return jobs.find((job) => {
       if (job.recovered) return false;
@@ -912,7 +928,28 @@ export class SSHService {
     }) || null;
   }
 
-  async hasRecoverableRemoteProcess(sessionId: string, config: SSHConfig): Promise<boolean> {
+  async hasRecoverableRemoteProcess(
+    sessionId: string,
+    config: SSHConfig,
+    options: RecoverableRemoteProcessOptions = {}
+  ): Promise<boolean> {
+    if (options.closeAfter) {
+      const recoverabilityProbeSessionId = [
+        sessionId,
+        'recoverable-probe',
+        Date.now().toString(),
+        Math.random().toString(16).slice(2),
+      ].join('-');
+      try {
+        return Boolean(await this.getLatestRecoverableRemoteProcess(sessionId, config, {
+          connectionSessionId: recoverabilityProbeSessionId,
+        }));
+      } finally {
+        console.log(`[SSH Service] Closing one-shot recoverability probe connection for ${sessionId}`);
+        this.closeSshConnection(recoverabilityProbeSessionId);
+      }
+    }
+
     return Boolean(await this.getLatestRecoverableRemoteProcess(sessionId, config));
   }
 
@@ -945,7 +982,7 @@ export class SSHService {
 workdir=${quotedWorkdir}
 case "$workdir" in
   "~") workdir="$HOME" ;;
-  "~/"*) workdir="$HOME/\${workdir#~/}" ;;
+  "~/"*) workdir="$HOME/\${workdir#\\~/}" ;;
 esac
 git -C "$workdir" rev-parse --abbrev-ref HEAD 2>/dev/null || true
 `);
@@ -1186,6 +1223,21 @@ git -C "$workdir" rev-parse --abbrev-ref HEAD 2>/dev/null || true
       }
       const fresh = await this.getConnection(sessionId, config);
       return this.execCommand(fresh, command, options);
+    }
+  }
+
+  private closeSshConnection(sessionId: string): void {
+    this.stopHealthCheck(sessionId);
+
+    const conn = this.connections.get(sessionId);
+    if (conn) {
+      try {
+        conn.client.end();
+      } catch (error) {
+        console.error('[SSH Service] Error disconnecting:', error);
+      }
+      this.connections.delete(sessionId);
+      this.clearActiveTunnels(sessionId);
     }
   }
 
@@ -2443,19 +2495,7 @@ detect_cli gemini gemini
    * Disconnect a session's SSH connection
    */
   disconnect(sessionId: string): void {
-    // Stop health check first
-    this.stopHealthCheck(sessionId);
-
-    const conn = this.connections.get(sessionId);
-    if (conn) {
-      try {
-        conn.client.end();
-      } catch (error) {
-        console.error('[SSH Service] Error disconnecting:', error);
-      }
-      this.connections.delete(sessionId);
-      this.clearActiveTunnels(sessionId);
-    }
+    this.closeSshConnection(sessionId);
 
     // Clean up MCP stdio bridges for this session
     import('./mcp-stdio-bridge.service').then(({ mcpStdioBridgeService }) => {

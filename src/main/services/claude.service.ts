@@ -1211,6 +1211,163 @@ Read or source that file if you need the actual values. Do not print secret valu
     return rawSdkSessionId && rawSdkSessionId !== 'new' ? rawSdkSessionId : undefined;
   }
 
+  private normalizeSdkResumeMatchText(value: string): string {
+    return value.replace(/\s+/g, ' ').trim();
+  }
+
+  private isSignificantBuildUserPromptForSdkResume(value: string): boolean {
+    const normalized = this.normalizeSdkResumeMatchText(value);
+    if (normalized.length < 24) return false;
+    if (normalized.startsWith('<')) return false;
+    return !/^(status|status\?|cwd\??|what is your cwd\??|the working tree)$/i.test(normalized);
+  }
+
+  private getBuildUserPromptsForSdkResumeRepair(sessionId: string, currentUserMessage: string): string[] {
+    const currentMessage = this.normalizeSdkResumeMatchText(currentUserMessage);
+    const buildTranscript = this.loadBuildTranscriptForSession(sessionId);
+    if (!buildTranscript.exists) return [];
+
+    const prompts: string[] = [];
+    const seen = new Set<string>();
+    for (let i = buildTranscript.entries.length - 1; i >= 0 && prompts.length < 6; i--) {
+      const entry = buildTranscript.entries[i];
+      if (entry.role !== 'user') continue;
+
+      const normalized = this.normalizeSdkResumeMatchText(entry.content || '');
+      if (!this.isSignificantBuildUserPromptForSdkResume(normalized)) continue;
+      if (currentMessage && normalized === currentMessage) continue;
+      if (seen.has(normalized)) continue;
+
+      seen.add(normalized);
+      prompts.push(normalized.slice(0, 500));
+    }
+
+    return prompts;
+  }
+
+  private getSdkTranscriptPromptMatches(content: string, prompts: string[]): Set<number> {
+    const matches = new Set<number>();
+    if (!content || prompts.length === 0) return matches;
+
+    const transcriptUserText = this.parseTranscriptContent(content)
+      .filter((message) => message.role === 'user')
+      .map((message) => this.normalizeSdkResumeMatchText(message.content || ''))
+      .join('\n');
+    if (!transcriptUserText) return matches;
+
+    prompts.forEach((prompt, index) => {
+      const needle = prompt.length > 180 ? prompt.slice(0, 180) : prompt;
+      if (needle && transcriptUserText.includes(needle)) {
+        matches.add(index);
+      }
+    });
+
+    return matches;
+  }
+
+  private countContiguousRecentPromptMatches(matches: Set<number>, promptCount: number): number {
+    let count = 0;
+    while (count < promptCount && matches.has(count)) {
+      count++;
+    }
+    return count;
+  }
+
+  private async repairSshSdkSessionIdFromBuildTranscript(
+    sessionId: string,
+    session: Session,
+    rawSdkSessionId: string | undefined,
+    currentUserMessage: string,
+  ): Promise<string | undefined> {
+    const currentSdkSessionId = rawSdkSessionId && rawSdkSessionId !== 'new' ? rawSdkSessionId : undefined;
+    if (!session.sshConfig) return currentSdkSessionId;
+
+    const prompts = this.getBuildUserPromptsForSdkResumeRepair(sessionId, currentUserMessage);
+    if (prompts.length === 0) return currentSdkSessionId;
+
+    let requiredScore = Math.min(2, prompts.length);
+    const requiredRecentPrefix = Math.min(3, prompts.length);
+    const remoteWorkdir = session.worktreePath || session.sshConfig.remoteWorkdir || session.repoPath || '';
+    let currentScore = 0;
+    let currentRecentPrefix = 0;
+    let currentTranscriptFound = false;
+
+    if (currentSdkSessionId) {
+      const currentContent = await sshService.fetchRemoteTranscript(
+        sessionId,
+        session.sshConfig,
+        currentSdkSessionId,
+        remoteWorkdir,
+        { full: false },
+      );
+      if (currentContent) {
+        currentTranscriptFound = true;
+        const currentMatches = this.getSdkTranscriptPromptMatches(currentContent, prompts);
+        currentScore = currentMatches.size;
+        currentRecentPrefix = this.countContiguousRecentPromptMatches(currentMatches, prompts.length);
+      }
+      if (currentRecentPrefix >= requiredRecentPrefix) {
+        return currentSdkSessionId;
+      }
+    }
+    if (currentSdkSessionId && !currentTranscriptFound) {
+      requiredScore = 1;
+    }
+
+    const transcripts = await sshService.listRemoteTranscripts(sessionId, session.sshConfig, remoteWorkdir);
+    let bestSdkSessionId: string | undefined;
+    let bestScore = currentScore;
+    let bestMatchedMissingRecentPrompt = false;
+    const missingRecentPromptIndex = currentRecentPrefix < prompts.length ? currentRecentPrefix : undefined;
+
+    for (const transcript of transcripts.slice(0, 12)) {
+      if (transcript.sessionId === currentSdkSessionId) continue;
+      const content = await sshService.fetchRemoteTranscript(
+        sessionId,
+        session.sshConfig,
+        transcript.sessionId,
+        remoteWorkdir,
+        { full: false },
+      );
+      if (!content) continue;
+
+      const matches = this.getSdkTranscriptPromptMatches(content, prompts);
+      const score = matches.size;
+      const matchedMissingRecentPrompt = typeof missingRecentPromptIndex === 'number'
+        && matches.has(missingRecentPromptIndex);
+      if (matchedMissingRecentPrompt) {
+        bestScore = score;
+        bestSdkSessionId = transcript.sessionId;
+        bestMatchedMissingRecentPrompt = true;
+        break;
+      }
+      if (!bestMatchedMissingRecentPrompt && score > bestScore && score >= requiredScore) {
+        bestScore = score;
+        bestSdkSessionId = transcript.sessionId;
+      }
+    }
+
+    if (bestSdkSessionId && (bestMatchedMissingRecentPrompt || bestScore >= requiredScore)) {
+      console.warn(
+        `[Claude Service] Repaired SSH Claude SDK resume mapping for ${sessionId.substring(0, 8)}: ` +
+        `${currentSdkSessionId || rawSdkSessionId || 'none'} -> ${bestSdkSessionId} ` +
+        `(Build transcript match ${bestScore}/${prompts.length}, recent prefix ${currentRecentPrefix}/${prompts.length}, ` +
+        `current transcript ${currentTranscriptFound ? 'found' : 'missing'})`
+      );
+      this.sessionStore.set(`sdkSessionMappings.${sessionId}`, bestSdkSessionId);
+      return bestSdkSessionId;
+    }
+
+    if (currentSdkSessionId) {
+      console.warn(
+        `[Claude Service] SSH Claude SDK resume mapping for ${sessionId.substring(0, 8)} matched only ` +
+        `${currentScore}/${prompts.length} significant Build prompts and ${currentRecentPrefix}/${prompts.length} ` +
+        'recent-prefix prompts; no better remote transcript found'
+      );
+    }
+    return currentSdkSessionId;
+  }
+
   private isCanonicalSdkSessionSystemMessage(systemMsg: { subtype?: string; session_id?: string }): boolean {
     return !!systemMsg.session_id && (!systemMsg.subtype || systemMsg.subtype === 'init');
   }
@@ -4046,9 +4203,16 @@ ${leadContent.slice(0, leadContextLimit)}
     if (!existingController) powerService.sessionStarted(); // Only increment if not replacing
 
     // Resolve the remote SDK session ID before invalidating transcript caches.
+    // For SSH sessions, validate the stored mapping against Build's canonical
+    // transcript so a later native Claude init cannot steal continuity.
     const rawSdkSessionId = this.sessionStore.get(`sdkSessionMappings.${sessionId}`) as string | undefined
       || this.sessionStore.get(`sessions.${sessionId}.sdkSessionId`) as string | undefined;
-    const sdkSessionId = rawSdkSessionId === 'new' ? undefined : rawSdkSessionId;
+    const sdkSessionId = await this.repairSshSdkSessionIdFromBuildTranscript(
+      sessionId,
+      session,
+      rawSdkSessionId,
+      userMessage,
+    );
 
     // Invalidate message cache - new message being sent (performance optimization)
     this.invalidateMessageCache(sessionId);

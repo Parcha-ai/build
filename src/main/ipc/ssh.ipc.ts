@@ -942,11 +942,11 @@ export function registerSSHHandlers(ipcMain: IpcMain): void {
 
   ipcMain.handle(
     IPC_CHANNELS.SSH_HAS_RECOVERABLE_REMOTE_PROCESS,
-    async (_event, sessionId: string) => {
+    async (_event, sessionId: string, options?: { closeAfter?: boolean }) => {
       try {
         const session = sessionStore.get(`sessions.${sessionId}`) as Session | undefined;
         if (!session?.sshConfig) return false;
-        return sshService.hasRecoverableRemoteProcess(sessionId, session.sshConfig);
+        return sshService.hasRecoverableRemoteProcess(sessionId, session.sshConfig, options);
       } catch (error) {
         console.warn('[SSH IPC] Failed to check recoverable remote process:', error);
         return false;

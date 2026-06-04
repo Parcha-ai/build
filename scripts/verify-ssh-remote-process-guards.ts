@@ -5,6 +5,7 @@ import path from 'path';
 const root = path.resolve(__dirname, '..');
 const sshService = fs.readFileSync(path.join(root, 'src/main/services/ssh.service.ts'), 'utf8');
 const cursorCliService = fs.readFileSync(path.join(root, 'src/main/services/cursor-cli.service.ts'), 'utf8');
+const remoteBridgeScript = fs.readFileSync(path.join(root, 'src/main/services/remote-bridge-script.ts'), 'utf8');
 
 assert.match(cursorCliService, /private remoteWorkdirCheckForShell\(value: string\): string \{/);
 
@@ -23,9 +24,18 @@ assert.ok(
 );
 
 assert.match(sshService, /private getRemoteWorkdirCdCommand\(remoteWorkdir: string\): string \{/);
+assert.ok(
+  sshService.includes('${workdir#\\\\~/}'),
+  'SSH workdir preflight must strip literal ~/ before prefixing HOME',
+);
 assert.match(sshService, /Remote workdir not found:/);
 assert.match(sshService, /private async assertRemoteWorkdirExists\(sessionId: string, config: SSHConfig, remoteWorkdir\?: string\): Promise<void> \{/);
 assert.match(sshService, /await this\.assertRemoteWorkdirExists\(sessionId, config, bridge\.cwd\)/);
+
+assert.match(remoteBridgeScript, /function normalizeCwd\(cwd\) \{/);
+assert.match(remoteBridgeScript, /if \(cwd === '~'\) return home;/);
+assert.match(remoteBridgeScript, /if \(cwd\.startsWith\('~\/'\)\) return path\.join\(home, cwd\.slice\(2\)\);/);
+assert.match(remoteBridgeScript, /cwd: normalizeCwd\(config\.cwd\)/);
 
 const directProcessMethod = sshService.match(/private createDirectCommandProcess\([\s\S]*?\n {2}\}/)?.[0] || '';
 assert.match(directProcessMethod, /options\.cwd \? this\.getRemoteWorkdirCdCommand\(options\.cwd\) : ''/);
