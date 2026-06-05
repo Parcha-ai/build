@@ -110,6 +110,11 @@ const mainMarkers = [
   'repairSshSdkSessionIdFromBuildTranscript',
   'Closing one-shot recoverability probe connection',
   'recoverable-probe',
+  'MCP config sync already running for session, reusing promise',
+  'Background MCP sync failed',
+  'Skipping SSH SDK resume repair scan',
+  'cursor-agent --print <prompt:',
+  '--stream-partial-output',
 ];
 
 const rendererMarkers = [

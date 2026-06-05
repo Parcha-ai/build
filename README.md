@@ -114,4 +114,4 @@ Key technologies: Electron 38, React 18, TypeScript, Zustand, Tailwind CSS, Mona
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+Source Available — free for personal and non-commercial use. Commercial use requires a separate license from Parcha, Inc. See [LICENSE](LICENSE) for full terms.

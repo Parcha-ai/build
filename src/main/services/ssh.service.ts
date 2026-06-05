@@ -197,6 +197,7 @@ export class SSHService {
   private readonly MCP_AUTH_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
   private harnessMcpSyncCache = new Map<string, number>(); // host -> lastSyncedAt
   private readonly HARNESS_MCP_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+  private mcpConfigSyncInFlight = new Map<string, Promise<{ success: boolean; error?: string }>>();
   private remoteExtensionScanCache = new Map<string, {
     fetchedAt: number;
     value?: unknown;
@@ -4257,6 +4258,23 @@ SETTINGS_EOF`);
   }
 
   async syncMcpConfigsToRemote(sessionId: string, config: SSHConfig): Promise<{ success: boolean; error?: string }> {
+    const inFlight = this.mcpConfigSyncInFlight.get(sessionId);
+    if (inFlight) {
+      console.log('[SSH Service] MCP config sync already running for session, reusing promise:', sessionId);
+      return inFlight;
+    }
+
+    const syncPromise = this.syncMcpConfigsToRemoteInternal(sessionId, config);
+    this.mcpConfigSyncInFlight.set(sessionId, syncPromise);
+
+    try {
+      return await syncPromise;
+    } finally {
+      this.mcpConfigSyncInFlight.delete(sessionId);
+    }
+  }
+
+  private async syncMcpConfigsToRemoteInternal(sessionId: string, config: SSHConfig): Promise<{ success: boolean; error?: string }> {
     try {
       const client = await this.getConnection(sessionId, config);
       console.log('[SSH Service] Syncing MCP configs to remote:', sessionId);

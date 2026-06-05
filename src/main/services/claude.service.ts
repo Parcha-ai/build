@@ -169,6 +169,8 @@ export class ClaudeService {
 
   // Track Claude SDK context usage so over-full native transcripts are not resumed.
   private sessionContextPercentage: Map<string, number> = new Map();
+  private sshSdkResumeRepairChecks: Map<string, { sdkSessionId?: string; checkedAt: number }> = new Map();
+  private readonly SSH_SDK_RESUME_REPAIR_TTL_MS = 30 * 60 * 1000;
 
   // Performance optimization: Cache parsed messages and transcript paths
   private messageCache = new Map<string, {
@@ -1211,6 +1213,10 @@ Read or source that file if you need the actual values. Do not print secret valu
     return rawSdkSessionId && rawSdkSessionId !== 'new' ? rawSdkSessionId : undefined;
   }
 
+  private getSshSdkResumeRepairCacheKey(sessionId: string, rawSdkSessionId: string | undefined): string {
+    return `${sessionId}:${rawSdkSessionId && rawSdkSessionId !== 'new' ? rawSdkSessionId : 'none'}`;
+  }
+
   private normalizeSdkResumeMatchText(value: string): string {
     return value.replace(/\s+/g, ' ').trim();
   }
@@ -1366,6 +1372,42 @@ Read or source that file if you need the actual values. Do not print secret valu
       );
     }
     return currentSdkSessionId;
+  }
+
+  private async repairSshSdkSessionIdFromBuildTranscriptOnce(
+    sessionId: string,
+    session: Session,
+    rawSdkSessionId: string | undefined,
+    currentUserMessage: string,
+  ): Promise<string | undefined> {
+    const currentSdkSessionId = rawSdkSessionId && rawSdkSessionId !== 'new' ? rawSdkSessionId : undefined;
+    if (!session.sshConfig) return currentSdkSessionId;
+
+    const cacheKey = this.getSshSdkResumeRepairCacheKey(sessionId, rawSdkSessionId);
+    const cached = this.sshSdkResumeRepairChecks.get(cacheKey);
+    const now = Date.now();
+    if (cached && now - cached.checkedAt < this.SSH_SDK_RESUME_REPAIR_TTL_MS) {
+      console.log(`[Claude Service] Skipping SSH SDK resume repair scan for ${sessionId.substring(0, 8)}; mapping checked recently`);
+      return cached.sdkSessionId;
+    }
+
+    const repairedSdkSessionId = await this.repairSshSdkSessionIdFromBuildTranscript(
+      sessionId,
+      session,
+      rawSdkSessionId,
+      currentUserMessage,
+    );
+    this.sshSdkResumeRepairChecks.set(cacheKey, {
+      sdkSessionId: repairedSdkSessionId,
+      checkedAt: now,
+    });
+    if (repairedSdkSessionId && repairedSdkSessionId !== currentSdkSessionId) {
+      this.sshSdkResumeRepairChecks.set(this.getSshSdkResumeRepairCacheKey(sessionId, repairedSdkSessionId), {
+        sdkSessionId: repairedSdkSessionId,
+        checkedAt: now,
+      });
+    }
+    return repairedSdkSessionId;
   }
 
   private isCanonicalSdkSessionSystemMessage(systemMsg: { subtype?: string; session_id?: string }): boolean {
@@ -4202,17 +4244,11 @@ ${leadContent.slice(0, leadContextLimit)}
     this.setActiveQuery(sessionId, abortController);
     if (!existingController) powerService.sessionStarted(); // Only increment if not replacing
 
-    // Resolve the remote SDK session ID before invalidating transcript caches.
-    // For SSH sessions, validate the stored mapping against Build's canonical
-    // transcript so a later native Claude init cannot steal continuity.
+    // Resolve the currently stored SDK session ID cheaply. Expensive SSH repair
+    // scans are guarded and run only on native Claude resume paths below.
     const rawSdkSessionId = this.sessionStore.get(`sdkSessionMappings.${sessionId}`) as string | undefined
       || this.sessionStore.get(`sessions.${sessionId}.sdkSessionId`) as string | undefined;
-    const sdkSessionId = await this.repairSshSdkSessionIdFromBuildTranscript(
-      sessionId,
-      session,
-      rawSdkSessionId,
-      userMessage,
-    );
+    let sdkSessionId = rawSdkSessionId && rawSdkSessionId !== 'new' ? rawSdkSessionId : undefined;
 
     // Invalidate message cache - new message being sent (performance optimization)
     this.invalidateMessageCache(sessionId);
@@ -4837,6 +4873,17 @@ ${leadContent.slice(0, leadContextLimit)}
         if (lastHarness && lastHarness !== 'claude') {
           console.log(`[Claude Service] Last turn was ${lastHarness}, not Claude — skipping Claude SDK resume and using Build transcript context`);
           effectiveSdkSessionId = undefined;
+        } else if (session.sshConfig) {
+          sdkSessionId = await this.repairSshSdkSessionIdFromBuildTranscriptOnce(
+            sessionId,
+            session,
+            rawSdkSessionId,
+            userMessage,
+          );
+          effectiveSdkSessionId = sdkSessionId;
+          if (sdkSessionId) {
+            sshService.invalidateTranscriptCache(sdkSessionId);
+          }
         }
       }
       if (effectiveSdkSessionId) {

@@ -67,15 +67,38 @@ assert.match(
 );
 assert.match(
   service,
-  /const sdkSessionId = await this\.repairSshSdkSessionIdFromBuildTranscript\(/,
-  'streamMessage must repair the SDK session ID before passing resume to the Claude SDK',
+  /private async repairSshSdkSessionIdFromBuildTranscriptOnce\(/,
+  'streamMessage must use a guarded repair wrapper instead of scanning every turn',
+);
+assert.match(
+  service,
+  /private sshSdkResumeRepairChecks: Map<string, \{ sdkSessionId\?: string; checkedAt: number \}> = new Map\(\);/,
+  'repair wrapper must cache recent checks per session/mapping',
+);
+assert.match(
+  service,
+  /SSH_SDK_RESUME_REPAIR_TTL_MS = 30 \* 60 \* 1000/,
+  'repair wrapper must avoid repeated remote transcript scans for ordinary follow-ups',
+);
+assert.match(
+  service,
+  /Skipping SSH SDK resume repair scan/,
+  'repair wrapper must log when a recent check avoids the expensive scan',
+);
+assert.match(
+  service,
+  /sdkSessionId = await this\.repairSshSdkSessionIdFromBuildTranscriptOnce\(/,
+  'native Claude resume path must repair the SDK session ID through the guarded wrapper',
 );
 
-const repairCallIndex = service.indexOf('const sdkSessionId = await this.repairSshSdkSessionIdFromBuildTranscript(');
-const invalidateIndex = service.indexOf('this.invalidateMessageCache(sessionId);', repairCallIndex);
-const resumeOptionIndex = service.indexOf('...(effectiveSdkSessionId ? { resume: effectiveSdkSessionId } : {})', repairCallIndex);
-assert.ok(repairCallIndex >= 0, 'repair call must exist in streamMessage');
-assert.ok(invalidateIndex > repairCallIndex, 'repair must happen before transcript cache invalidation');
-assert.ok(resumeOptionIndex > repairCallIndex, 'repair must happen before Claude SDK resume options are built');
+const streamMessageStart = service.indexOf('async *streamMessage(');
+const cursorRouteIndex = service.indexOf("if (selectedModel?.startsWith('cursor:'))", streamMessageStart);
+const eagerRepairIndex = service.indexOf('await this.repairSshSdkSessionIdFromBuildTranscript(', streamMessageStart);
+const guardedRepairIndex = service.indexOf('sdkSessionId = await this.repairSshSdkSessionIdFromBuildTranscriptOnce(', streamMessageStart);
+const resumeOptionIndex = service.indexOf('...(effectiveSdkSessionId ? { resume: effectiveSdkSessionId } : {})', guardedRepairIndex);
+assert.ok(cursorRouteIndex >= 0, 'Cursor route must exist in streamMessage');
+assert.ok(guardedRepairIndex > cursorRouteIndex, 'repair must be below non-Claude routes, not a top-level send preflight');
+assert.ok(eagerRepairIndex === -1 || eagerRepairIndex > guardedRepairIndex, 'streamMessage must not call the expensive repair implementation directly');
+assert.ok(resumeOptionIndex > guardedRepairIndex, 'repair must happen before Claude SDK resume options are built');
 
 console.log('SSH SDK resume repair verifier passed');

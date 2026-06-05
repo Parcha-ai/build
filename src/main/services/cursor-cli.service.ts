@@ -405,16 +405,21 @@ class CursorCliService {
     const abortController = new AbortController();
 
     if (sshConfig) {
-      const syncResult = await sshService.syncMcpConfigsToRemote(sessionId, sshConfig);
-      if (!syncResult.success) {
-        yield { type: 'error', error: `Failed to sync MCP config to remote: ${syncResult.error}` };
-        return;
-      }
+      void sshService.syncMcpConfigsToRemote(sessionId, sshConfig)
+        .then((syncResult) => {
+          if (!syncResult.success) {
+            console.warn('[Cursor CLI] Background MCP sync failed:', syncResult.error);
+          }
+        })
+        .catch((error) => {
+          console.warn('[Cursor CLI] Background MCP sync failed:', error);
+        });
 
       const remoteDir = workDir || sshConfig.remoteWorkdir || '~';
       const remoteArgs = [
-        '-p', "''",
+        '--print',
         '--output-format', 'stream-json',
+        '--stream-partial-output',
         '--force',
         '--trust',
         '--approve-mcps',
@@ -439,10 +444,11 @@ class CursorCliService {
         apiKey ? `export CURSOR_API_KEY=${this.quoteForRemoteShell(apiKey)}` : '',
         ...Object.entries(policy?.env || {}).map(([key, value]) => `export ${key}=${this.quoteForRemoteShell(value)}`),
         'agent_bin="$(command -v cursor-agent || command -v agent)" || { echo "Cursor Agent CLI not found on remote. Install it with: curl https://cursor.com/install -fsS | bash" >&2; exit 127; }',
-        `"$agent_bin" ${remoteArgs.join(' ')}`,
+        'prompt="$(cat)"',
+        `"$agent_bin" ${remoteArgs.join(' ')} "$prompt"`,
       ].filter(Boolean).join(' && ');
 
-      console.log(`[Cursor CLI] SSH exec on ${sshConfig.host}: cursor-agent -p <stdin:${effectiveMessage.length} chars> --model ${cursorModel}${chatId ? ` --resume ${chatId}` : ' (new chat)'}`);
+      console.log(`[Cursor CLI] SSH exec on ${sshConfig.host}: cursor-agent --print <prompt:${effectiveMessage.length} chars> --model ${cursorModel}${chatId ? ` --resume ${chatId}` : ' (new chat)'}`);
 
       child = spawn('ssh', this.buildSshArgs(sshConfig, remoteCmd), {
         signal: abortController.signal,
@@ -463,8 +469,9 @@ class CursorCliService {
       }
 
       const args = [
-        '-p', '',
+        '--print',
         '--output-format', 'stream-json',
+        '--stream-partial-output',
         '--force',
         '--trust',
         '--approve-mcps',
@@ -481,12 +488,13 @@ class CursorCliService {
       if (cursorModel) {
         args.push('--model', cursorModel);
       }
+      args.push(effectiveMessage);
 
       const env: Record<string, string> = { ...(process.env as Record<string, string>) };
       if (apiKey) env.CURSOR_API_KEY = apiKey;
       Object.assign(env, policy?.env || {});
 
-      console.log(`[Cursor CLI] Local spawn: cursor-agent -p <stdin:${effectiveMessage.length} chars> --model ${cursorModel}${chatId ? ` --resume ${chatId}` : ' (new chat)'}`);
+      console.log(`[Cursor CLI] Local spawn: cursor-agent --print <prompt:${effectiveMessage.length} chars> --model ${cursorModel}${chatId ? ` --resume ${chatId}` : ' (new chat)'}`);
 
       child = spawn(agentBin, args, {
         env,
@@ -494,7 +502,7 @@ class CursorCliService {
         signal: abortController.signal,
         detached: process.platform !== 'win32',
       });
-      child.stdin?.end(effectiveMessage);
+      child.stdin?.end();
     }
     child.once('error', (error: NodeJS.ErrnoException) => {
       if (error.code !== 'ABORT_ERR') {
