@@ -8,6 +8,12 @@ import { execFileSync } from 'child_process';
 import * as os from 'os';
 import * as path from 'path';
 import { findUsableLocalExecutable, hasUsableLocalExecutable } from '../utils/local-executable';
+import {
+  buildLocalModeAutoRouterConfig,
+  getLocalModeModel,
+  isLocalModeEnabled,
+  isLocalOllamaModel,
+} from '../../shared/local-mode';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const settingsStore = new Store({ name: 'claudette-settings' }) as any;
@@ -16,6 +22,7 @@ let cursorCliAvailableCache: boolean | undefined;
 let cursorCliAuthCache: { checkedAt: number; loggedIn: boolean } | undefined;
 let geminiCliAvailableCache: boolean | undefined;
 let openCodeCliAvailableCache: boolean | undefined;
+let openCodeRunnerAvailableCache: boolean | undefined;
 let settingsObjectCache: { expiresAt: number; value: Record<string, unknown> } | undefined;
 
 const DEFAULT_CONFIG: AutoRouterConfig = {
@@ -637,10 +644,26 @@ function hasGeminiCli(): boolean {
   return geminiCliAvailableCache;
 }
 
-function hasOpenCodeRunner(): boolean {
+function hasOpenCodeCli(): boolean {
   if (openCodeCliAvailableCache !== undefined) return openCodeCliAvailableCache;
   const home = os.homedir();
   openCodeCliAvailableCache = binaryExistsInPath(
+    ['opencode'],
+    [
+      `${home}/.local/bin/opencode`,
+      `${home}/.bun/bin/opencode`,
+      `${home}/.npm-global/bin/opencode`,
+      '/usr/local/bin/opencode',
+      '/opt/homebrew/bin/opencode',
+    ],
+  );
+  return openCodeCliAvailableCache;
+}
+
+function hasOpenCodeRunner(): boolean {
+  if (openCodeRunnerAvailableCache !== undefined) return openCodeRunnerAvailableCache;
+  const home = os.homedir();
+  openCodeRunnerAvailableCache = binaryExistsInPath(
     ['opencode', 'npx'],
     [
       `${home}/.local/bin/opencode`,
@@ -652,7 +675,7 @@ function hasOpenCodeRunner(): boolean {
       '/opt/homebrew/bin/npx',
     ],
   );
-  return openCodeCliAvailableCache;
+  return openCodeRunnerAvailableCache;
 }
 
 function hasRemoteCliForModel(model: string, capabilities?: RemoteCliCapabilities): boolean {
@@ -729,6 +752,9 @@ function hasConfiguredCredentialForModel(model: string, options?: ModelAvailabil
   }
 
   if (model.startsWith('opencode:')) {
+    if (isLocalOllamaModel(model)) {
+      return !options?.isSSH && hasOpenCodeCli();
+    }
     return !!(settings.deepseekApiKey || process.env.DEEPSEEK_API_KEY) && (options?.isSSH ? true : hasOpenCodeRunner());
   }
 
@@ -973,6 +999,10 @@ function enforcePermissionMode(
 
 function getConfig(): AutoRouterConfig {
   const settings = getSettingsObject();
+  if (isLocalModeEnabled(settings)) {
+    return buildLocalModeAutoRouterConfig(getLocalModeModel(settings));
+  }
+
   const saved = settings.autoRouterConfig as Record<string, unknown> | undefined;
 
   const config = { ...DEFAULT_CONFIG };

@@ -2,6 +2,8 @@ import { app, BrowserWindow, ipcMain, protocol, session, net, Menu, systemPrefer
 import * as path from 'path';
 import * as fs from 'fs';
 import { pathToFileURL } from 'url';
+import Store from 'electron-store';
+import { isLocalModeEnabled } from '../shared/local-mode';
 
 // Dev instance name from environment variable (set by scripts/dev.sh)
 export const DEV_INSTANCE_NAME = process.env.DEV_INSTANCE_NAME || null;
@@ -50,6 +52,38 @@ const CDP_PORT = process.env.ELECTRON_CDP_PORT
   || (process.env.NODE_ENV === 'development' || DEV_INSTANCE_NAME ? '9223' : '9222');
 app.commandLine.appendSwitch('remote-debugging-port', CDP_PORT);
 console.log(`[Electron] Using CDP port: ${CDP_PORT}`);
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const localModeSettingsStore = new Store({ name: 'claudette-settings' }) as any;
+
+function isLocalhostNetworkUrl(rawUrl: string): boolean {
+  try {
+    const parsed = new URL(rawUrl);
+    const host = parsed.hostname.toLowerCase();
+    return host === 'localhost'
+      || host === '::1'
+      || host === '[::1]'
+      || host.startsWith('127.')
+      || host === '0.0.0.0';
+  } catch {
+    return false;
+  }
+}
+
+function isRemoteNetworkRequest(rawUrl: string): boolean {
+  try {
+    const parsed = new URL(rawUrl);
+    if (!['http:', 'https:', 'ws:', 'wss:'].includes(parsed.protocol)) return false;
+    return !isLocalhostNetworkUrl(rawUrl);
+  } catch {
+    return false;
+  }
+}
+
+function isLocalModeNetworkBlocked(): boolean {
+  const settings = localModeSettingsStore.get('settings', {}) as Record<string, unknown>;
+  return isLocalModeEnabled(settings);
+}
 
 // CRITICAL: Fix PATH for packaged macOS apps launched from Finder
 // Without this, spawned processes (like Claude Code) can't find 'node' because
@@ -460,6 +494,15 @@ const createWindow = (): void => {
         mainWindow?.webContents.send(IPC_CHANNELS.APP_CMD_R_PRESSED);
       }
     }
+  });
+
+  session.defaultSession.webRequest.onBeforeRequest((details, callback) => {
+    if (isLocalModeNetworkBlocked() && isRemoteNetworkRequest(details.url)) {
+      console.warn('[Main] Local Mode blocked renderer network request:', details.url);
+      callback({ cancel: true });
+      return;
+    }
+    callback({ cancel: false });
   });
 
   // Set Content Security Policy

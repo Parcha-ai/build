@@ -39,6 +39,11 @@ import { transcriptEntriesToChatMessages, transcriptService, type TranscriptEntr
 import { filterInternalPromptEchoes, hasRecoverableOutput, mergeRecoveredStreamMessages } from '../../shared/utils/message-recovery';
 import { translateHarnessPolicy } from './harness-policy.service';
 import { sanitizeSessionTitle } from './session-title.service';
+import {
+  getLocalModeModel,
+  getLocalModeModelEntries,
+  isLocalModeEnabled,
+} from '../../shared/local-mode';
 
 const STREAM_DEBUG = process.env.GREP_DEBUG_STREAMING === '1';
 const ANSI_ESCAPE = String.fromCharCode(27);
@@ -521,6 +526,19 @@ export class ClaudeService {
   async getAvailableModels(): Promise<Array<{ id: string; name: string; description: string }>> {
     // Check if Anthropic Foundry (Azure) is configured
     const settings = this.store.get('settings', {}) as Record<string, unknown>;
+    const localModels = getLocalModeModelEntries(settings);
+    if (isLocalModeEnabled(settings)) {
+      console.log('[Claude Service] Local Mode enabled; exposing local-only model list');
+      return [
+        {
+          id: 'auto',
+          name: 'Auto Build (Local)',
+          description: 'Local-only routing through OpenCode and Ollama. Cloud harnesses are disabled while Local Mode is on.',
+        },
+        ...localModels,
+      ];
+    }
+
     const foundryEnabled = settings.foundryEnabled as boolean | undefined;
 
     if (foundryEnabled) {
@@ -576,6 +594,7 @@ export class ClaudeService {
       { id: 'codex:gpt-5.4-mini', name: 'GPT-5.4 Mini (Codex)', description: 'OpenAI fast — good balance of speed and capability' },
       { id: 'codex:gpt-5.3-codex', name: 'GPT-5.3 Codex (Codex)', description: 'OpenAI coding-optimised — purpose-built for agents' },
       { id: 'codex:o3', name: 'o3 (Codex)', description: 'OpenAI o3 — deep reasoning model' },
+      ...localModels,
     ];
 
     // Append custom models from settings (Kimi, Gemini, etc via API proxy)
@@ -4163,6 +4182,15 @@ ${leadContent.slice(0, leadContextLimit)}
       return;
     }
 
+    const appSettings = this.store.get('settings', {}) as Record<string, unknown>;
+    if (isLocalModeEnabled(appSettings) && session.sshConfig) {
+      yield {
+        type: 'error',
+        error: 'Local Mode is enabled but this is an SSH session. Local Mode runs OpenCode against Ollama on this Mac, so start a local session or disable Local Mode for remote work.',
+      };
+      return;
+    }
+
     // Do not compact other sessions from a foreground send. That made the app
     // start hidden Claude work in unrelated tabs, and it can steal/abort the
     // visible stream when a user switches back to that tab.
@@ -4271,6 +4299,16 @@ ${leadContent.slice(0, leadContextLimit)}
       selectedModel = 'auto';
       selectionMode = 'auto';
       selectionSource = 'request';
+    }
+
+    if (isLocalModeEnabled(appSettings)) {
+      const localModel = getLocalModeModel(appSettings);
+      if (selectedModel !== localModel) {
+        console.log(`[Claude Service] Local Mode overriding selected model ${selectedModel || '(none)'} → ${localModel}`);
+      }
+      selectedModel = localModel;
+      selectionMode = model === 'auto' || !model ? 'auto' : 'manual';
+      selectionSource = model ? 'request' : 'default';
     }
 
     try {

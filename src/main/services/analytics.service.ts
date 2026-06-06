@@ -6,6 +6,7 @@ import * as path from 'path';
 import * as readline from 'readline';
 import { randomUUID } from 'crypto';
 import type { Harness, RoutingDecision, TaskDomain, TaskTier } from '../../shared/types';
+import { isLocalModeEnabled } from '../../shared/local-mode';
 
 export interface TokenEvent {
   eventId?: string;
@@ -1295,6 +1296,9 @@ class AnalyticsService {
   }
 
   private capturePostHog(event: string, properties: Record<string, unknown>): void {
+    const settings = this.settingsStore.get('settings', {}) as Record<string, unknown>;
+    if (isLocalModeEnabled(settings)) return;
+
     const { apiKey, host } = this.getPostHogConfig();
     if (!apiKey || typeof fetch !== 'function') return;
     const safeProperties = sanitizePostHogProperties(properties);

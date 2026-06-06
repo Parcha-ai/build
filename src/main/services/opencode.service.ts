@@ -3,6 +3,7 @@ import { spawn, ChildProcess } from 'child_process';
 import * as os from 'os';
 import * as readline from 'readline';
 import type { ChatMessage, SSHConfig } from '../../shared/types';
+import { isLocalModeEnabled, isLocalOllamaModel } from '../../shared/local-mode';
 import { terminateProcessTree } from '../utils/process-tree';
 import { mcpService } from './mcp.service';
 import { sshService } from './ssh.service';
@@ -194,11 +195,24 @@ class OpenCodeService {
     return (settings.deepseekApiKey as string) || process.env.DEEPSEEK_API_KEY || undefined;
   }
 
+  private getSettings(): Record<string, unknown> {
+    return settingsStore.get('settings', {}) as Record<string, unknown>;
+  }
+
   private getCommand(): OpenCodeCommand {
     if (!this.openCodeCommand) {
       this.openCodeCommand = findOpenCodeCommand();
     }
     return this.openCodeCommand;
+  }
+
+  private getOfflineSafeCommand(): OpenCodeCommand {
+    const command = findOpenCodeCommand();
+    if (command.prefixArgs.length > 0) {
+      throw new Error('Local Mode requires an installed OpenCode CLI binary. The npx fallback can reach the network when opencode-ai is not cached, so install OpenCode with: brew install anomalyco/tap/opencode');
+    }
+    this.openCodeCommand = command;
+    return command;
   }
 
   private translateJsonEvent(sessionId: string, event: Record<string, unknown>): OpenCodeStreamEvent | null {
@@ -236,6 +250,7 @@ class OpenCodeService {
   }
 
   private buildLocalSpawn(openCodeCommand: OpenCodeCommand, message: string, workDir: string, opencodeModel: string, abortController: AbortController, permissionMode?: string, policy?: HarnessPolicyTranslation) {
+    const settings = this.getSettings();
     const effectiveMessage = prependPolicyPreamble(message, policy?.promptPreamble);
     const args = [
       ...openCodeCommand.prefixArgs,
@@ -258,8 +273,12 @@ class OpenCodeService {
     env.OPENCODE_CLIENT = 'build-autobuild';
     env.OPENCODE_CONFIG = mcpService.getOpenCodeConfigPath();
     env.OPENCODE_DISABLE_AUTOUPDATE = 'true';
+    env.OPENCODE_DISABLE_MODELS_FETCH = 'true';
     env.OPENCODE_DISABLE_TERMINAL_TITLE = 'true';
     env.OPENCODE_ENABLE_EXPERIMENTAL_MODELS = 'true';
+    if (settings.localModeDisableLspDownload === true) {
+      env.OPENCODE_DISABLE_LSP_DOWNLOAD = 'true';
+    }
 
     console.log(`[OpenCode Service] Local spawn via ${openCodeCommand.label}: ${openCodeCommand.command} ${args.slice(0, openCodeCommand.prefixArgs.length + 1).join(' ')} <${effectiveMessage.length} chars>`);
 
@@ -272,6 +291,7 @@ class OpenCodeService {
   }
 
   private buildSshSpawn(message: string, remoteDir: string, opencodeModel: string, sshConfig: SSHConfig, permissionMode?: string, policy?: HarnessPolicyTranslation) {
+    const settings = this.getSettings();
     const apiKey = this.getApiKey() || '';
     const effectiveMessage = prependPolicyPreamble(message, policy?.promptPreamble);
     const permissionConfig = buildPermissionConfig(permissionMode);
@@ -287,8 +307,10 @@ class OpenCodeService {
       'export OPENCODE_CLIENT=build-autobuild',
       'export OPENCODE_CONFIG="$HOME/.config/opencode/build-mcp.json"',
       'export OPENCODE_DISABLE_AUTOUPDATE=true',
+      'export OPENCODE_DISABLE_MODELS_FETCH=true',
       'export OPENCODE_DISABLE_TERMINAL_TITLE=true',
       'export OPENCODE_ENABLE_EXPERIMENTAL_MODELS=true',
+      settings.localModeDisableLspDownload === true ? 'export OPENCODE_DISABLE_LSP_DOWNLOAD=true' : '',
       'prompt_file="$(mktemp "${TMPDIR:-/tmp}/build-opencode-prompt.XXXXXX")"',
       'cleanup_prompt_file() { rm -f "$prompt_file"; }',
       'trap cleanup_prompt_file EXIT',
@@ -316,8 +338,20 @@ class OpenCodeService {
     permissionMode?: string,
     policy?: HarnessPolicyTranslation,
   ): AsyncGenerator<OpenCodeStreamEvent> {
+    const settings = this.getSettings();
+    const opencodeModel = resolveOpenCodeModel(model);
+    const localOllamaModel = isLocalOllamaModel(opencodeModel);
+
+    if (localOllamaModel && sshConfig) {
+      yield {
+        type: 'error',
+        error: 'Local Mode uses Ollama on this Mac and is only supported for local sessions. SSH sessions would run OpenCode on the remote host.',
+      };
+      return;
+    }
+
     const apiKey = this.getApiKey();
-    if (!apiKey) {
+    if (!apiKey && !localOllamaModel) {
       yield { type: 'error', error: 'DeepSeek API key not configured. Add it in Settings > API Keys, or set DEEPSEEK_API_KEY.' };
       return;
     }
@@ -336,12 +370,11 @@ class OpenCodeService {
       }
     }
 
-    const opencodeModel = resolveOpenCodeModel(model);
     yield {
       type: 'system',
       systemInfo: {
         tools: ['Bash', 'Edit', 'Read', 'Write', 'Glob', 'Grep'],
-        model: opencodeModel,
+        model: isLocalModeEnabled(settings) && localOllamaModel ? `${opencodeModel} (local)` : opencodeModel,
       },
     };
 
@@ -355,7 +388,7 @@ class OpenCodeService {
         child = sshSpawn.child;
         abortController = sshSpawn.abortController;
       } else {
-        const openCodeCommand = this.getCommand();
+        const openCodeCommand = localOllamaModel ? this.getOfflineSafeCommand() : this.getCommand();
         abortController = new AbortController();
         child = this.buildLocalSpawn(openCodeCommand, message, workDir, opencodeModel, abortController, permissionMode, policy);
       }

@@ -8,13 +8,17 @@
 
 import https from 'https';
 import { app, BrowserWindow } from 'electron';
+import Store from 'electron-store';
 import { IPC_CHANNELS } from '../../shared/constants/channels';
+import { isLocalModeEnabled } from '../../shared/local-mode';
 
 // The repo to check for releases
 const GITHUB_OWNER = 'Parcha-ai';
 const GITHUB_REPO = 'build';
 const CHECK_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
 const STARTUP_DELAY_MS = 10 * 1000; // 10 seconds after launch
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const settingsStore = new Store({ name: 'claudette-settings' }) as any;
 
 export interface UpdateInfo {
   version: string;
@@ -105,6 +109,11 @@ class UpdateService {
   start(mainWindow: BrowserWindow): void {
     this.mainWindow = mainWindow;
 
+    if (this.isLocalModeEnabled()) {
+      console.log('[UpdateService] Local Mode enabled; update checks disabled');
+      return;
+    }
+
     // Check after a polite delay — let the app settle first
     this.startupTimer = setTimeout(() => {
       this.checkForUpdates();
@@ -153,6 +162,11 @@ class UpdateService {
    */
   async checkForUpdates(): Promise<UpdateInfo | null> {
     try {
+      if (this.isLocalModeEnabled()) {
+        console.log('[UpdateService] Local Mode enabled; skipping update check');
+        return null;
+      }
+
       const currentVersion = app.getVersion();
       console.log(`[UpdateService] Checking for updates (current: v${currentVersion})`);
 
@@ -212,6 +226,11 @@ class UpdateService {
     if (this.mainWindow && !this.mainWindow.isDestroyed()) {
       this.mainWindow.webContents.send(IPC_CHANNELS.UPDATE_AVAILABLE, info);
     }
+  }
+
+  private isLocalModeEnabled(): boolean {
+    const settings = settingsStore.get('settings', {}) as Record<string, unknown>;
+    return isLocalModeEnabled(settings);
   }
 }
 

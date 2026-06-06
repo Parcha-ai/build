@@ -2,11 +2,27 @@ import { IpcMain, app, shell, dialog, BrowserWindow } from 'electron';
 import { execFile } from 'child_process';
 import { IPC_CHANNELS } from '../../shared/constants/channels';
 import { SettingsService } from '../services/settings.service';
+import { isLocalModeEnabled } from '../../shared/local-mode';
 
 // Track the detached browser window
 let browserWindow: BrowserWindow | null = null;
 
 const settingsService = new SettingsService();
+
+function isRemoteNetworkUrl(rawUrl: string): boolean {
+  try {
+    const parsed = new URL(rawUrl);
+    if (!['http:', 'https:'].includes(parsed.protocol)) return false;
+    const host = parsed.hostname.toLowerCase();
+    return host !== 'localhost'
+      && host !== '::1'
+      && host !== '[::1]'
+      && !host.startsWith('127.')
+      && host !== '0.0.0.0';
+  } catch {
+    return false;
+  }
+}
 
 export function registerSettingsHandlers(ipcMain: IpcMain): void {
   ipcMain.handle(IPC_CHANNELS.SETTINGS_GET, async () => {
@@ -44,6 +60,10 @@ export function registerSettingsHandlers(ipcMain: IpcMain): void {
 
   ipcMain.handle(IPC_CHANNELS.APP_OPEN_EXTERNAL, async (_, url: string) => {
     try {
+      if (isLocalModeEnabled(settingsService.getSettings() as unknown as Record<string, unknown>) && isRemoteNetworkUrl(url)) {
+        console.warn('[Settings IPC] Local Mode blocked remote external URL:', url);
+        return;
+      }
       await shell.openExternal(url);
     } catch (err) {
       console.error('[Settings IPC] shell.openExternal failed, falling back to open command:', err);

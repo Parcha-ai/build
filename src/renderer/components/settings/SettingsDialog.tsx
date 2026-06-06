@@ -4,6 +4,14 @@ import { useUIStore } from '../../stores/ui.store';
 import { useAudioStore } from '../../stores/audio.store';
 import { useSessionStore } from '../../stores/session.store';
 import ReleaseNotes from '../common/ReleaseNotes';
+import {
+  getOllamaModelName,
+  isLocalOllamaModel,
+  LOCAL_MODE_DEFAULT_MODEL,
+  LOCAL_MODE_DEFAULT_OLLAMA_BASE_URL,
+  LOCAL_MODE_DEFAULT_SMALL_MODEL,
+  normalizeLocalOllamaModelId,
+} from '../../../shared/local-mode';
 
 type TabId = 'general' | 'autoBuild' | 'agents' | 'releases';
 
@@ -350,6 +358,13 @@ export default function SettingsDialog() {
   const [foundryDefaultHaikuModel, setFoundryDefaultHaikuModel] = useState('');
   const [foundryDefaultOpusModel, setFoundryDefaultOpusModel] = useState('');
 
+  // Local Mode settings
+  const [localModeEnabled, setLocalModeEnabled] = useState(false);
+  const [localModeModel, setLocalModeModel] = useState(LOCAL_MODE_DEFAULT_MODEL);
+  const [localModeSmallModel, setLocalModeSmallModel] = useState(LOCAL_MODE_DEFAULT_SMALL_MODEL);
+  const [localOllamaBaseUrl, setLocalOllamaBaseUrl] = useState(LOCAL_MODE_DEFAULT_OLLAMA_BASE_URL);
+  const [localModeDisableLspDownload, setLocalModeDisableLspDownload] = useState(false);
+
   // Custom models (Kimi, Gemini, etc via API proxy)
   const [customModels, setCustomModels] = useState<Array<{ id: string; name: string; modelId: string; baseUrl: string; apiKey: string; description?: string }>>([]);
 
@@ -388,14 +403,14 @@ export default function SettingsDialog() {
   }, []);
 
   // Auto-save app settings (toggles and time picker)
-  const autoSaveAppSettings = useCallback(async (updates: { qmdEnabled?: boolean; ultraPlanMode?: boolean; showClearContextOnPlanAccept?: boolean; lunchReminderEnabled?: boolean; lunchReminderTime?: string; bedtimeReminderEnabled?: boolean; bedtimeReminderTime?: string; dailyReviewEnabled?: boolean; dailyReviewTime?: string; bedtimeTaskReviewEnabled?: boolean; foundryEnabled?: boolean; foundryBaseUrl?: string; foundryApiKey?: string; foundryDefaultSonnetModel?: string; foundryDefaultHaikuModel?: string; foundryDefaultOpusModel?: string; customModels?: typeof customModels; cursorApiKey?: string; deepseekApiKey?: string; geminiApiKey?: string; xaiApiKey?: string; cerebrasApiKey?: string; autoRouterConfig?: any }) => {
+  const autoSaveAppSettings = useCallback(async (updates: { qmdEnabled?: boolean; ultraPlanMode?: boolean; showClearContextOnPlanAccept?: boolean; lunchReminderEnabled?: boolean; lunchReminderTime?: string; bedtimeReminderEnabled?: boolean; bedtimeReminderTime?: string; dailyReviewEnabled?: boolean; dailyReviewTime?: string; bedtimeTaskReviewEnabled?: boolean; foundryEnabled?: boolean; foundryBaseUrl?: string; foundryApiKey?: string; foundryDefaultSonnetModel?: string; foundryDefaultHaikuModel?: string; foundryDefaultOpusModel?: string; localModeEnabled?: boolean; localModeModel?: string; localModeSmallModel?: string; localOllamaBaseUrl?: string; localModeDisableLspDownload?: boolean; customModels?: typeof customModels; cursorApiKey?: string; deepseekApiKey?: string; geminiApiKey?: string; xaiApiKey?: string; cerebrasApiKey?: string; autoRouterConfig?: any }) => {
     showSaveIndicator();
     try {
       await window.electronAPI.settings.set(updates);
       console.log('[SettingsDialog] Auto-saved app settings:', updates);
 
       // Reload available models if model-affecting settings changed
-      const isModelUpdate = 'foundryEnabled' in updates || 'foundryDefaultSonnetModel' in updates || 'foundryDefaultHaikuModel' in updates || 'foundryDefaultOpusModel' in updates || 'customModels' in updates || 'cursorApiKey' in updates || 'deepseekApiKey' in updates || 'geminiApiKey' in updates || 'xaiApiKey' in updates;
+      const isModelUpdate = 'foundryEnabled' in updates || 'foundryDefaultSonnetModel' in updates || 'foundryDefaultHaikuModel' in updates || 'foundryDefaultOpusModel' in updates || 'localModeEnabled' in updates || 'localModeModel' in updates || 'localModeSmallModel' in updates || 'localOllamaBaseUrl' in updates || 'customModels' in updates || 'cursorApiKey' in updates || 'deepseekApiKey' in updates || 'geminiApiKey' in updates || 'xaiApiKey' in updates;
       if (isModelUpdate) {
         console.log('[SettingsDialog] Model-affecting settings changed, reloading available models');
         await loadAvailableModels();
@@ -506,6 +521,11 @@ export default function SettingsDialog() {
           setFoundryDefaultSonnetModel(appSettings.foundryDefaultSonnetModel || '');
           setFoundryDefaultHaikuModel(appSettings.foundryDefaultHaikuModel || '');
           setFoundryDefaultOpusModel(appSettings.foundryDefaultOpusModel || '');
+          setLocalModeEnabled((appSettings as any).localModeEnabled || false);
+          setLocalModeModel(normalizeLocalOllamaModelId((appSettings as any).localModeModel, LOCAL_MODE_DEFAULT_MODEL));
+          setLocalModeSmallModel(normalizeLocalOllamaModelId((appSettings as any).localModeSmallModel, LOCAL_MODE_DEFAULT_SMALL_MODEL));
+          setLocalOllamaBaseUrl((appSettings as any).localOllamaBaseUrl || LOCAL_MODE_DEFAULT_OLLAMA_BASE_URL);
+          setLocalModeDisableLspDownload((appSettings as any).localModeDisableLspDownload || false);
           setCustomModels((appSettings as any).customModels || []);
           setCursorApiKey((appSettings as any).cursorApiKey || '');
           setDeepseekApiKey((appSettings as any).deepseekApiKey || '');
@@ -1060,6 +1080,7 @@ export default function SettingsDialog() {
       if (id.startsWith('cursor:')) return 'Cursor';
       if (id.startsWith('gemini:')) return 'Gemini';
       if (id.startsWith('grok:')) return 'Grok';
+      if (isLocalOllamaModel(id)) return 'Local';
       if (id.startsWith('opencode:')) return 'DeepSeek';
       if (id.startsWith('custom:')) return 'Custom';
       if (id.startsWith('claude-')) return 'Claude';
@@ -1599,6 +1620,182 @@ export default function SettingsDialog() {
     );
   };
 
+  const renderLocalModeSection = () => {
+    const primaryOllamaModel = getOllamaModelName(localModeModel) || 'qwen3-coder-64k';
+    const smallOllamaModel = getOllamaModelName(localModeSmallModel) || 'qwen2.5-coder:1.5b';
+    const setupCommands = [
+      {
+        label: 'Script',
+        command: 'npm run setup:local-mode',
+      },
+      {
+        label: 'Install',
+        command: 'brew install --cask ollama-app && open -a Ollama && brew install anomalyco/tap/opencode',
+      },
+      {
+        label: 'Pull',
+        command: `ollama pull qwen3-coder:30b && ollama pull ${smallOllamaModel}`,
+      },
+      {
+        label: '64K Tag',
+        command: [
+          "cat > ~/Qwen3Modelfile <<'EOF'",
+          'FROM qwen3-coder:30b',
+          'PARAMETER num_ctx 65536',
+          'PARAMETER temperature 0.7',
+          'PARAMETER top_p 0.8',
+          'PARAMETER top_k 20',
+          'PARAMETER repeat_penalty 1.05',
+          'EOF',
+          `ollama create ${primaryOllamaModel} -f ~/Qwen3Modelfile`,
+        ].join('\n'),
+      },
+      {
+        label: 'Smoke',
+        command: [
+          `ollama run ${primaryOllamaModel} "say ok"`,
+          `OPENCODE_DISABLE_MODELS_FETCH=true opencode run "say ok" --model ollama/${primaryOllamaModel} --format json --dir "$PWD"`,
+        ].join('\n'),
+      },
+    ];
+
+    const saveLocalToggle = async (value: boolean) => {
+      setLocalModeEnabled(value);
+      await autoSaveAppSettings({ localModeEnabled: value });
+      await refreshProviders();
+    };
+
+    return (
+      <div className="border border-claude-border bg-claude-bg/30" style={{ borderRadius: 0 }}>
+        <div className="p-3 border-b border-claude-border/70">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <Bot size={14} className="text-claude-text-secondary" />
+                <h4 className="text-sm font-mono font-semibold text-claude-text">Local Mode</h4>
+              </div>
+              <p className="mt-1 text-[10px] font-mono text-claude-text-secondary">
+                Force Build through OpenCode and Ollama for local sessions.
+              </p>
+            </div>
+            <Toggle
+              enabled={localModeEnabled}
+              onChange={(value) => void saveLocalToggle(value)}
+              disabled={isLoading}
+            />
+          </div>
+        </div>
+
+        <div className="p-3 space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <label className="space-y-1">
+              <span className="block text-[10px] font-mono text-claude-text-secondary uppercase tracking-wider">
+                Primary Model
+              </span>
+              <input
+                value={localModeModel}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  setLocalModeModel(value);
+                  handleDebouncedChange(value, (next) => autoSaveAppSettings({
+                    localModeModel: normalizeLocalOllamaModelId(next, LOCAL_MODE_DEFAULT_MODEL),
+                  }));
+                }}
+                onBlur={() => {
+                  const normalized = normalizeLocalOllamaModelId(localModeModel, LOCAL_MODE_DEFAULT_MODEL);
+                  setLocalModeModel(normalized);
+                  void autoSaveAppSettings({ localModeModel: normalized });
+                }}
+                disabled={isLoading}
+                className="w-full px-2 py-1.5 bg-claude-surface border border-claude-border text-[10px] font-mono text-claude-text focus:outline-none focus:border-claude-accent"
+                placeholder={LOCAL_MODE_DEFAULT_MODEL}
+              />
+            </label>
+            <label className="space-y-1">
+              <span className="block text-[10px] font-mono text-claude-text-secondary uppercase tracking-wider">
+                Small Model
+              </span>
+              <input
+                value={localModeSmallModel}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  setLocalModeSmallModel(value);
+                  handleDebouncedChange(value, (next) => autoSaveAppSettings({
+                    localModeSmallModel: normalizeLocalOllamaModelId(next, LOCAL_MODE_DEFAULT_SMALL_MODEL),
+                  }));
+                }}
+                onBlur={() => {
+                  const normalized = normalizeLocalOllamaModelId(localModeSmallModel, LOCAL_MODE_DEFAULT_SMALL_MODEL);
+                  setLocalModeSmallModel(normalized);
+                  void autoSaveAppSettings({ localModeSmallModel: normalized });
+                }}
+                disabled={isLoading}
+                className="w-full px-2 py-1.5 bg-claude-surface border border-claude-border text-[10px] font-mono text-claude-text focus:outline-none focus:border-claude-accent"
+                placeholder={LOCAL_MODE_DEFAULT_SMALL_MODEL}
+              />
+            </label>
+            <label className="space-y-1">
+              <span className="block text-[10px] font-mono text-claude-text-secondary uppercase tracking-wider">
+                Ollama Base URL
+              </span>
+              <input
+                value={localOllamaBaseUrl}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  setLocalOllamaBaseUrl(value);
+                  handleDebouncedChange(value, (next) => autoSaveAppSettings({ localOllamaBaseUrl: next }));
+                }}
+                disabled={isLoading}
+                className="w-full px-2 py-1.5 bg-claude-surface border border-claude-border text-[10px] font-mono text-claude-text focus:outline-none focus:border-claude-accent"
+                placeholder={LOCAL_MODE_DEFAULT_OLLAMA_BASE_URL}
+              />
+            </label>
+          </div>
+
+          <div className="flex items-center justify-between gap-3 pt-2 border-t border-claude-border/50">
+            <div>
+              <label className="block text-[10px] font-mono text-claude-text-secondary uppercase tracking-wider">
+                Disable OpenCode LSP Downloads
+              </label>
+              <p className="text-[10px] font-mono text-claude-text-secondary mt-1">
+                Turn on after first online warm-up to prevent first-run network fetches.
+              </p>
+            </div>
+            <Toggle
+              enabled={localModeDisableLspDownload}
+              onChange={(value) => {
+                setLocalModeDisableLspDownload(value);
+                autoSaveAppSettings({ localModeDisableLspDownload: value });
+              }}
+              disabled={isLoading}
+            />
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-2 pt-2 border-t border-claude-border/50">
+            {setupCommands.map((item) => (
+              <div key={item.label} className="flex items-center gap-2 min-w-0">
+                <span className="w-14 shrink-0 text-[10px] font-mono text-claude-text-secondary uppercase">
+                  {item.label}
+                </span>
+                <code className="flex-1 min-w-0 px-2 py-1.5 bg-claude-surface border border-claude-border text-[10px] font-mono text-claude-text-secondary truncate">
+                  {item.command}
+                </code>
+                <button
+                  type="button"
+                  onClick={() => copySetupCommand(item.command)}
+                  className="p-1.5 border border-claude-border text-claude-text-secondary hover:text-claude-text hover:bg-claude-surface"
+                  title={`Copy ${item.label} command`}
+                >
+                  <Copy size={12} />
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   // Render Agents Tab
   const renderAgentsTab = () => {
     const hasReadyAgent = Object.values(providers).some((provider) => provider.loggedIn);
@@ -1846,6 +2043,8 @@ export default function SettingsDialog() {
             Refresh
           </button>
         </div>
+
+        {renderLocalModeSection()}
 
         <div className="space-y-3">
           {harnessCards}

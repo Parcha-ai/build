@@ -14,6 +14,7 @@ import type { Session, SessionStatus } from '../../shared/types';
 import Anthropic from '@anthropic-ai/sdk';
 import { transcriptService } from './transcript.service';
 import { sanitizeSessionTitle } from './session-title.service';
+import { isLocalModeEnabled } from '../../shared/local-mode';
 
 interface SessionCreateConfig {
   name: string;
@@ -185,6 +186,10 @@ export class SessionService extends EventEmitter {
         // Get API key from settings store
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const settingsStore = new Store({ name: 'claudette-settings' }) as any;
+        if (isLocalModeEnabled(settingsStore.get('settings', {}) as Record<string, unknown>)) {
+          console.log('[Session] Local Mode enabled; skipping cloud name generation for:', sessionId);
+          return;
+        }
         apiKey = (settingsStore.get('anthropicApiKey') as string | undefined)?.trim() || undefined;
 
         if (!apiKey) {
@@ -1116,6 +1121,13 @@ Only return the title, nothing else.`
     userMessage: string
   ): Promise<void> {
     const settingsStore = new CachedStore({ name: 'claudette-settings' });
+    if (isLocalModeEnabled((settingsStore.get('settings') || {}) as Record<string, unknown>)) {
+      console.log('[Session] Local Mode enabled; using fallback fork name');
+      const forkCount = (parentSession.childSessionIds?.length || 0);
+      const fallbackName = `Fork ${forkCount}`;
+      await this.updateSession(forkedSessionId, { aiGeneratedName: fallbackName });
+      return;
+    }
     const apiKey = (settingsStore.get('anthropicApiKey') as string | undefined)?.trim() || undefined;
 
     if (!apiKey) {
@@ -1246,6 +1258,10 @@ Only return the short name (exactly 3 words), nothing else.`
   private async generateForkNameStandalone(forkedSessionId: string, userMessage: string): Promise<void> {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const settingsStore = new Store({ name: 'claudette-settings' }) as any;
+    if (isLocalModeEnabled(settingsStore.get('settings', {}) as Record<string, unknown>)) {
+      await this.updateSession(forkedSessionId, { aiGeneratedName: 'Fork' });
+      return;
+    }
     const apiKey = settingsStore.get('anthropicApiKey') as string | undefined;
 
     if (!apiKey) {

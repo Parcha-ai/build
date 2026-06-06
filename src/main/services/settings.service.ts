@@ -1,5 +1,11 @@
 import Store from 'electron-store';
 import type { AppSettings } from '../../shared/types';
+import {
+  LOCAL_MODE_DEFAULT_MODEL,
+  LOCAL_MODE_DEFAULT_OLLAMA_BASE_URL,
+  LOCAL_MODE_DEFAULT_SMALL_MODEL,
+  normalizeLocalOllamaModelId,
+} from '../../shared/local-mode';
 
 const DEFAULT_SETTINGS: AppSettings = {
   theme: 'dark',
@@ -36,6 +42,12 @@ export NODE_ENV=development
   gstackEnabled: false,
   // Foundry - disabled by default
   foundryEnabled: false,
+  // Local Mode - disabled until the user completes Ollama/OpenCode setup
+  localModeEnabled: false,
+  localModeModel: LOCAL_MODE_DEFAULT_MODEL,
+  localModeSmallModel: LOCAL_MODE_DEFAULT_SMALL_MODEL,
+  localOllamaBaseUrl: LOCAL_MODE_DEFAULT_OLLAMA_BASE_URL,
+  localModeDisableLspDownload: false,
   // Focus tasks - empty by default
   focusTasks: [],
   focusModeEnabled: false,
@@ -64,6 +76,12 @@ export class SettingsService {
   setSettings(updates: Partial<AppSettings>): void {
     const current = this.getSettings();
     const updated = { ...current, ...updates };
+    if (Object.prototype.hasOwnProperty.call(updates, 'localModeModel')) {
+      updated.localModeModel = normalizeLocalOllamaModelId(updates.localModeModel, LOCAL_MODE_DEFAULT_MODEL);
+    }
+    if (Object.prototype.hasOwnProperty.call(updates, 'localModeSmallModel')) {
+      updated.localModeSmallModel = normalizeLocalOllamaModelId(updates.localModeSmallModel, LOCAL_MODE_DEFAULT_SMALL_MODEL);
+    }
     this.store.set('settings', updated);
   }
 

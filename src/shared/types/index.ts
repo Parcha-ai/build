@@ -444,6 +444,12 @@ export interface AppSettings {
   cursorApiKey?: string;
   // DeepSeek via OpenCode agent
   deepseekApiKey?: string;
+  // Local Mode via OpenCode + Ollama
+  localModeEnabled?: boolean;
+  localModeModel?: string;
+  localModeSmallModel?: string;
+  localOllamaBaseUrl?: string;
+  localModeDisableLspDownload?: boolean;
   // Google Gemini CLI
   geminiApiKey?: string;
   // Custom models via API proxy (e.g. Kimi K2.6 via Anthropic-compatible endpoint)

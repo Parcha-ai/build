@@ -1,6 +1,7 @@
 import Store from 'electron-store';
 import { EMBEDDED_KEYS } from '../../shared/config/embedded-keys';
 import type { Session } from '../../shared/types';
+import { isLocalModeEnabled } from '../../shared/local-mode';
 
 type UpdateSessionFn = (sessionId: string, updates: Partial<Session>) => Promise<Session>;
 
@@ -72,6 +73,9 @@ function fallbackTitleFromMessage(message: string): string | null {
 }
 
 async function summarizeWithCerebras(userMessage: string, assistantMessage: string): Promise<string | null> {
+  const settings = settingsStore.get('settings', {}) as Record<string, unknown>;
+  if (isLocalModeEnabled(settings)) return null;
+
   const apiKey = getCerebrasKey();
   if (!apiKey) return null;
 

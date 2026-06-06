@@ -95,6 +95,7 @@ assert.equal(withFallbackHarness({ ...recovered, harness: 'gemini' }, 'cursor:co
 assert.equal(withFallbackHarness(recovered, 'codex:gpt-5.5').harness, 'codex');
 assert.equal(withFallbackHarness(recovered, 'gemini:gemini-3.5-flash').harness, 'gemini');
 assert.equal(withFallbackHarness(recovered, 'opencode:qwen').harness, 'opencode');
+assert.equal(withFallbackHarness(recovered, 'opencode:ollama/qwen3-coder-64k').harness, 'opencode');
 assert.equal(withFallbackHarness(recovered, 'custom:local-router').harness, 'custom');
 assert.equal(withFallbackHarness({ ...recovered, harness: 'custom' }, 'claude-3-5-sonnet').harness, 'custom');
 assert.equal(fallbackModelForHarness('auto', 'cursor:composer-2.5'), 'cursor:composer-2.5');

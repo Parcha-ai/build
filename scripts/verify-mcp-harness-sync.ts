@@ -110,7 +110,7 @@ async function main(): Promise<void> {
     'linear',
   );
   assert.equal(nativeLinear.type, 'sse');
-  assert.equal(nativeLinear.url, 'https://mcp.linear.app/sse');
+  assert.equal(nativeLinear.url, 'https://mcp.linear.app/mcp');
 
   const claudeSync = mcpService.getClaudeMcpSyncData();
   assert.deepEqual(claudeSync.serverIds.sort(), ['LocalWrapped', 'LocalWrappedMissingAllow', 'Paper', 'linear', 'shell'].sort());
@@ -118,7 +118,7 @@ async function main(): Promise<void> {
 
   const linearClaude = claudeSync.servers.linear;
   assert.equal(linearClaude.command, 'npx');
-  assert.deepEqual(linearClaude.args?.slice(0, 3), ['-y', 'mcp-remote@0.1.38', 'https://mcp.linear.app/sse']);
+  assert.deepEqual(linearClaude.args?.slice(0, 3), ['-y', 'mcp-remote@0.1.38', 'https://mcp.linear.app/mcp']);
   assert.ok(linearClaude.args?.includes('--header'));
   assert.ok(linearClaude.args?.includes('Authorization: ${BUILD_MCP_LINEAR_AUTHORIZATION}'));
   assert.equal(linearClaude.env?.BUILD_MCP_LINEAR_AUTHORIZATION, 'Bearer linear-token');
@@ -205,7 +205,10 @@ command = "old"
       'removed-by-build': { type: 'local', command: ['removed'] },
     },
   })));
-  assert.deepEqual(openCodeConfig.provider, { keep: true });
+  assert.deepEqual(openCodeConfig.provider.keep, true);
+  assert.equal(openCodeConfig.provider.ollama.npm, '@ai-sdk/openai-compatible');
+  assert.equal(openCodeConfig.provider.ollama.options.baseURL, 'http://localhost:11434/v1');
+  assert.equal(openCodeConfig.provider.ollama.models['qwen3-coder-64k'].tools, true);
   assert.equal(openCodeConfig.theme, 'base');
   assert.deepEqual(openCodeConfig.mcp.baseOpenCodeOnly, { type: 'local', command: ['base-custom'] });
   assert.deepEqual(openCodeConfig.mcp.customOpenCodeOnly, { type: 'local', command: ['custom'] });
@@ -213,6 +216,64 @@ command = "old"
   assert.deepEqual(openCodeConfig.mcp.linear.command.slice(0, 3), ['npx', '-y', 'mcp-remote@0.1.38']);
   assert.equal(openCodeConfig.mcp.linear.environment.BUILD_MCP_LINEAR_AUTHORIZATION, 'Bearer linear-token');
   assert.equal(openCodeConfig.mcp['removed-by-build'], undefined);
+
+  const preservedOpenCodeConfig = JSON.parse(mcpService.buildMergedOpenCodeConfig(JSON.stringify({
+    provider: {
+      ollama: {
+        npm: '@ai-sdk/openai-compatible',
+        name: 'User Ollama',
+        options: { baseURL: 'http://localhost:9999/v1' },
+        models: {
+          'user-model': { name: 'User Model', tools: true },
+          'qwen3-coder-64k': { name: 'User Qwen', tools: false },
+        },
+      },
+    },
+  }), {}, [], '{}'));
+  assert.equal(preservedOpenCodeConfig.provider.ollama.options.baseURL, 'http://localhost:9999/v1');
+  assert.equal(preservedOpenCodeConfig.provider.ollama.models['user-model'].tools, true);
+  assert.equal(preservedOpenCodeConfig.provider.ollama.models['qwen3-coder-64k'].tools, false);
+
+  Object.assign(store('claudette-settings'), {
+    settings: {
+      localModeEnabled: true,
+      localModeModel: 'opencode:ollama/custom-local-64k',
+      localModeSmallModel: 'opencode:ollama/custom-small',
+      localOllamaBaseUrl: 'http://127.0.0.1:11434/v1',
+    },
+  });
+  const localOpenCodeConfig = JSON.parse(mcpService.buildMergedOpenCodeConfig('{}', harnessSync.servers, [], '{}'));
+  assert.deepEqual(localOpenCodeConfig.enabled_providers, ['ollama']);
+  assert.equal(localOpenCodeConfig.autoupdate, false);
+  assert.equal(localOpenCodeConfig.share, 'disabled');
+  assert.equal(localOpenCodeConfig.provider.ollama.options.baseURL, 'http://127.0.0.1:11434/v1');
+  assert.equal(localOpenCodeConfig.provider.ollama.models['custom-local-64k'].tools, true);
+  assert.equal(localOpenCodeConfig.provider.ollama.models['custom-small'].tools, true);
+
+  const forcedLocalOpenCodeConfig = JSON.parse(mcpService.buildMergedOpenCodeConfig(JSON.stringify({
+    provider: {
+      ollama: {
+        options: { baseURL: 'http://localhost:9999/v1' },
+        models: { 'custom-local-64k': { name: 'User override', tools: false } },
+      },
+    },
+  }), {}, [], '{}'));
+  assert.equal(forcedLocalOpenCodeConfig.provider.ollama.options.baseURL, 'http://127.0.0.1:11434/v1');
+  assert.equal(forcedLocalOpenCodeConfig.provider.ollama.models['custom-local-64k'].tools, true);
+
+  const originalFetch = global.fetch;
+  let marketplaceFetchCalls = 0;
+  global.fetch = (async () => {
+    marketplaceFetchCalls += 1;
+    throw new Error('Marketplace fetch should be blocked in Local Mode');
+  }) as typeof fetch;
+  try {
+    const marketplaceServers = await mcpService.fetchMarketplaceServers();
+    assert.deepEqual(marketplaceServers, []);
+    assert.equal(marketplaceFetchCalls, 0);
+  } finally {
+    global.fetch = originalFetch;
+  }
 
   const localhostPorts = mcpService.getLocalhostMcpPorts()
     .map(({ serverId, port }) => `${serverId}:${port}`)
@@ -223,7 +284,7 @@ command = "old"
   assert.deepEqual(cursorSdkServers.linear, {
     type: 'stdio',
     command: 'npx',
-    args: ['-y', 'mcp-remote@0.1.38', 'https://mcp.linear.app/sse', '--header', 'Authorization: ${BUILD_MCP_LINEAR_AUTHORIZATION}'],
+    args: ['-y', 'mcp-remote@0.1.38', 'https://mcp.linear.app/mcp', '--header', 'Authorization: ${BUILD_MCP_LINEAR_AUTHORIZATION}'],
     env: { BUILD_MCP_LINEAR_AUTHORIZATION: 'Bearer linear-token' },
   });
 

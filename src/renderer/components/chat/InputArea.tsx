@@ -12,6 +12,7 @@ import SecureInput from './SecureInput';
 import CompactionSwitchNotice from './CompactionSwitchNotice';
 import { AutoRouteBadge, formatHarnessModelLabel, inferHarnessFromModel } from './AutoRouteBadge';
 import { GSTACK_MODE_META } from '../../../shared/types';
+import { isLocalOllamaModel } from '../../../shared/local-mode';
 
 // Permission mode config for UI - using terminal-style prompts
 const PERMISSION_MODE_CONFIG: Record<PermissionMode, { prompt: string; label: string; color: string; description: string }> = {
@@ -2133,9 +2134,10 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
             // Two-level menu: Harness → Models
 
             const groups: Record<string, typeof availableModels> = {};
-            const groupOrder = ['claude', 'cursor', 'codex', 'gemini', 'opencode', 'custom'];
+            const groupOrder = ['claude', 'local', 'cursor', 'codex', 'gemini', 'opencode', 'custom'];
             const groupLabels: Record<string, string> = {
               claude: 'Claude',
+              local: 'Local',
               cursor: 'Cursor',
               codex: 'Codex',
               gemini: 'Gemini CLI',
@@ -2151,6 +2153,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
               if (model.id.startsWith('codex:')) group = 'codex';
               else if (model.id.startsWith('cursor:')) group = 'cursor';
               else if (model.id.startsWith('gemini:')) group = 'gemini';
+              else if (isLocalOllamaModel(model.id)) group = 'local';
               else if (model.id.startsWith('opencode:')) group = 'opencode';
               else if (model.id.startsWith('custom:')) group = 'custom';
               if (!groups[group]) groups[group] = [];
@@ -2174,6 +2177,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
             if (currentModel.startsWith('codex:')) currentHarness = 'codex';
             else if (currentModel.startsWith('cursor:')) currentHarness = 'cursor';
             else if (currentModel.startsWith('gemini:')) currentHarness = 'gemini';
+            else if (isLocalOllamaModel(currentModel)) currentHarness = 'local';
             else if (currentModel.startsWith('opencode:')) currentHarness = 'opencode';
             else if (currentModel.startsWith('custom:')) currentHarness = 'custom';
 

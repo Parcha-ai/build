@@ -133,10 +133,15 @@ const dynamicImport = new Function('specifier', 'return import(specifier)') as D
 let runtimeModulesKey: string | undefined;
 let runtimeModulesPromise: Promise<FlueRuntimeModules> | undefined;
 
+function getProcessResourcesPath(): string | undefined {
+  return (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
+}
+
 function resolveRuntimeImport(specifier: string): string {
+  const resourcesPath = getProcessResourcesPath();
   const nodeModulesCandidates = [
     process.env.FLUE_RUNTIME_NODE_MODULES,
-    process.resourcesPath ? path.join(process.resourcesPath, 'node_modules') : undefined,
+    resourcesPath ? path.join(resourcesPath, 'node_modules') : undefined,
     path.resolve(process.cwd(), 'node_modules'),
     path.resolve(__dirname, '..', '..', 'node_modules'),
   ].filter((candidate): candidate is string => Boolean(candidate));
@@ -165,7 +170,7 @@ function importRuntime(specifier: string): Promise<unknown> {
 function loadRuntimeModules(): Promise<FlueRuntimeModules> {
   const key = [
     process.env.FLUE_RUNTIME_NODE_MODULES || '',
-    process.resourcesPath || '',
+    getProcessResourcesPath() || '',
     process.cwd(),
   ].join('|');
   if (runtimeModulesPromise && runtimeModulesKey === key) {

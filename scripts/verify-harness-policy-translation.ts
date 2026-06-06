@@ -92,6 +92,17 @@ const opencodePolicy = translateHarnessPolicy({
 });
 assert.match(opencodePolicy.promptPreamble || '', /Harness: opencode/);
 
+const localOpenCodePolicy = translateHarnessPolicy({
+  harness: 'opencode',
+  model: 'opencode:ollama/qwen3-coder-64k',
+  policy: { effort: 'high', speed: 'standard' },
+  permissionMode: 'acceptEdits',
+});
+assert.equal(localOpenCodePolicy.env.BUILD_META_EFFORT, 'high');
+assert.equal(localOpenCodePolicy.env.BUILD_META_SPEED, 'standard');
+assert.match(localOpenCodePolicy.promptPreamble || '', /Harness: opencode/);
+assert.match(localOpenCodePolicy.promptPreamble || '', /Speed: standard/);
+
 const goalPrompt = prependPolicyPreamble('/goal ship the fix\nThen run tests.', '<policy/>');
 assert.equal(goalPrompt, '/goal ship the fix\n\n<policy/>\n\nThen run tests.');
 

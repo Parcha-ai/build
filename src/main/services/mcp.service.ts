@@ -18,6 +18,10 @@ import type {
   MCPRegistryPackage,
   MCPRegistryRemote,
 } from '../../shared/types';
+import {
+  buildOpenCodeOllamaProviderConfig,
+  isLocalModeEnabled,
+} from '../../shared/local-mode';
 
 // MCP Registry API endpoint
 const MCP_REGISTRY_API = 'https://registry.modelcontextprotocol.io/v0/servers';
@@ -49,6 +53,9 @@ const mcpStore = new Store<Record<string, MCPServerConfig>>({
 const mcpHarnessSyncStore = new Store<{ managedServerIds?: string[]; removedServerIds?: string[] }>({
   name: 'claudette-mcp-harness-sync',
 });
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const settingsStore = new Store({ name: 'claudette-settings' }) as any;
 
 interface ClaudeMcpOptions {
   /**
@@ -468,6 +475,33 @@ function getObjectProperty(data: Record<string, unknown>, key: string): Record<s
   return value && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>
     : {};
+}
+
+function mergeOpenCodeOllamaProvider(
+  existingProvider: Record<string, unknown>,
+  localProvider: Record<string, unknown>,
+  forceLocal: boolean,
+): Record<string, unknown> {
+  const existingOllama = getObjectProperty(existingProvider, 'ollama');
+  const localOllama = getObjectProperty(localProvider, 'ollama');
+  const existingOptions = getObjectProperty(existingOllama, 'options');
+  const localOptions = getObjectProperty(localOllama, 'options');
+  const existingModels = getObjectProperty(existingOllama, 'models');
+  const localModels = getObjectProperty(localOllama, 'models');
+
+  return {
+    ...existingProvider,
+    ollama: {
+      ...localOllama,
+      ...existingOllama,
+      options: forceLocal
+        ? { ...existingOptions, ...localOptions }
+        : { ...localOptions, ...existingOptions },
+      models: forceLocal
+        ? { ...existingModels, ...localModels }
+        : { ...localModels, ...existingModels },
+    },
+  };
 }
 
 /**
@@ -919,6 +953,7 @@ class MCPService {
       ...existingBuildData,
       ...baseData,
     };
+    const settings = settingsStore.get('settings', {}) as Record<string, unknown>;
 
     const existingMcp = {
       ...getObjectProperty(existingBuildData, 'mcp'),
@@ -932,6 +967,18 @@ class MCPService {
 
     data.$schema = typeof data.$schema === 'string' ? data.$schema : 'https://opencode.ai/config.json';
     data.mcp = existingMcp;
+    const localModeEnabled = isLocalModeEnabled(settings);
+    const localConfig = buildOpenCodeOllamaProviderConfig(settings);
+    const existingProvider = {
+      ...getObjectProperty(existingBuildData, 'provider'),
+      ...getObjectProperty(baseData, 'provider'),
+    };
+    data.provider = mergeOpenCodeOllamaProvider(existingProvider, localConfig.provider, localModeEnabled);
+    if (localModeEnabled) {
+      data.enabled_providers = ['ollama'];
+      data.autoupdate = false;
+      data.share = 'disabled';
+    }
     return `${JSON.stringify(data, null, 2)}\n`;
   }
 
@@ -1067,6 +1114,12 @@ class MCPService {
    * Fetch all servers from the MCP Registry (handles pagination)
    */
   async fetchMarketplaceServers(): Promise<MarketplaceMCPServer[]> {
+    const settings = settingsStore.get('settings', {}) as Record<string, unknown>;
+    if (isLocalModeEnabled(settings)) {
+      console.log('[MCP Service] Local Mode enabled; skipping MCP registry fetch');
+      return marketplaceCache || [];
+    }
+
     // Return cached data if still valid
     if (marketplaceCache && Date.now() - cacheTimestamp < CACHE_TTL) {
       console.log('[MCP Service] Returning cached marketplace data');

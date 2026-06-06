@@ -83,14 +83,26 @@ export default function ReleaseNotes({ compact = false, banner = false, onDismis
     setLoading(true);
     setError(null);
 
-    fetch(GITHUB_RELEASES_URL, {
-      headers: { 'Accept': 'application/vnd.github+json' },
-    })
+    window.electronAPI.settings.get()
+      .then((settings) => {
+        if (cancelled) return null;
+        if (settings.localModeEnabled) {
+          setReleases([]);
+          setExpandedVersions(new Set());
+          setLoading(false);
+          return null;
+        }
+        return fetch(GITHUB_RELEASES_URL, {
+          headers: { 'Accept': 'application/vnd.github+json' },
+        });
+      })
       .then(res => {
+        if (!res) return null;
         if (!res.ok) throw new Error(`GitHub API returned ${res.status}`);
         return res.json();
       })
-      .then((data: GitHubRelease[]) => {
+      .then((data: GitHubRelease[] | null) => {
+        if (!data) return;
         if (cancelled) return;
         setReleases(data);
         // Auto-expand the latest release

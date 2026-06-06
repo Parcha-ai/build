@@ -8,6 +8,7 @@ import * as path from 'path';
 import * as os from 'os';
 import Store from 'electron-store';
 import { findUsableLocalExecutable, isUsableLocalExecutable } from '../utils/local-executable';
+import { isLocalModeEnabled } from '../../shared/local-mode';
 
 const execFileAsync = promisify(execFile);
 const authService = new AuthService();
@@ -217,13 +218,25 @@ async function checkOpenCodeCli(): Promise<ProviderStatus> {
   const hasRunner = cli.installed || npx.installed;
   const settings = settingsStore.get('settings', {}) as Record<string, unknown>;
   const hasKey = !!((settings.deepseekApiKey as string | undefined)?.trim() || process.env.DEEPSEEK_API_KEY);
-  const ready = hasRunner && hasKey;
+  const localModeReady = isLocalModeEnabled(settings) && cli.installed;
+  const ready = hasRunner && (hasKey || localModeReady);
   const runnerDetail = cli.installed ? 'OpenCode CLI installed' : npx.installed ? 'OpenCode available via npx opencode-ai' : 'Install OpenCode or Node/npm';
+  const localModeRunnerDetail = npx.installed && !cli.installed
+    ? 'Local Mode requires an installed OpenCode CLI; npx is not offline-safe'
+    : runnerDetail;
   return {
     installed: hasRunner,
     loggedIn: ready,
-    method: hasKey ? 'apiKey' : undefined,
-    detail: ready ? `DeepSeek API key configured; ${runnerDetail}` : hasKey ? `API key found; ${runnerDetail}` : hasRunner ? `${runnerDetail}; add DeepSeek key` : undefined,
+    method: hasKey ? 'apiKey' : localModeReady ? 'cli' : undefined,
+    detail: localModeReady
+      ? `Local Mode enabled; ${runnerDetail}`
+      : ready
+        ? `DeepSeek API key configured; ${runnerDetail}`
+        : hasKey
+          ? `API key found; ${runnerDetail}`
+          : hasRunner
+            ? `${localModeRunnerDetail}; add DeepSeek key or enable Local Mode`
+            : undefined,
     path: cli.path || npx.path,
     version: cli.version || npx.version,
     installCommand: 'npm install -g opencode-ai',

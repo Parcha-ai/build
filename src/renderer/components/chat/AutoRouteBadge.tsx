@@ -1,4 +1,5 @@
 import React from 'react';
+import { isLocalOllamaModel } from '../../../shared/local-mode';
 
 interface AutoRouteBadgeProps {
   tier: string;
@@ -21,6 +22,7 @@ export const HARNESS_LABELS: Record<string, string> = {
   codex: 'Codex',
   gemini: 'Gemini',
   opencode: 'OpenCode',
+  local: 'Local',
   custom: 'Custom',
 };
 
@@ -29,6 +31,7 @@ export function inferHarnessFromModel(model?: string): string | undefined {
   if (model.startsWith('codex:')) return 'codex';
   if (model.startsWith('cursor:')) return 'cursor';
   if (model.startsWith('gemini:')) return 'gemini';
+  if (isLocalOllamaModel(model)) return 'local';
   if (model.startsWith('opencode:')) return 'opencode';
   if (model.startsWith('custom:')) return 'custom';
   return 'claude';
@@ -50,7 +53,8 @@ export function formatModelId(model?: string): string | undefined {
 function normalizeModelLabel(label?: string): string | undefined {
   return label
     ?.replace(/ \((Claude|Cursor|Codex|Gemini|OpenCode|Custom)\)$/i, '')
-    .replace(/ \[(Claude|Cursor|Codex|Gemini|OpenCode|Custom)\]$/i, '')
+    .replace(/ \((Local)\)$/i, '')
+    .replace(/ \[(Claude|Cursor|Codex|Gemini|OpenCode|Custom|Local)\]$/i, '')
     .trim();
 }
 
