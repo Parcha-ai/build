@@ -33,7 +33,6 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
   const setActiveSession = useSessionStore(s => s.setActiveSession);
   const activeSessionId = useSessionStore(s => s.activeSessionId);
   const createForkFromCurrent = useSessionStore(s => s.createForkFromCurrent);
-  const loadSessions = useSessionStore(s => s.loadSessions);
 
   // Re-render when session count or any session name/relationship changes
   const sessionCount = useSessionStore(s => s.sessions.length);
@@ -49,26 +48,6 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
     const rid = fs.find(f => !f.parentSessionId)?.id || sessionId;
     return { forkSiblings: fs, projectSessions: ps, rootId: rid, sessions: allSessions };
   }, [sessionId, sessionCount, sessionNamesKey]);
-
-  // Auto-scan remote transcripts on mount for SSH sessions.
-  // Creates session records for any orphaned transcripts in the same directory
-  // so they appear in the overflow menu without manual intervention.
-  const hasScanned = useRef(false);
-  useEffect(() => {
-    if (hasScanned.current) return;
-    const session = sessions.find(s => s.id === sessionId);
-    if (!session?.sshConfig) return;
-    hasScanned.current = true;
-
-    window.electronAPI?.sessions?.scanRemoteTranscripts?.(rootId).then((newSessions) => {
-      if (newSessions && newSessions.length > 0) {
-        console.log(`[ForkTabs] Discovered ${newSessions.length} orphaned remote transcript(s)`);
-        loadSessions();
-      }
-    }).catch((err: unknown) => {
-      console.warn('[ForkTabs] Remote scan failed:', err);
-    });
-  }, [sessionId, rootId, sessions, loadSessions]);
 
   // Persist overflow (closed) tabs — driven by tabHidden flag on session objects
   const storageKey = `grep-overflow-forks-${rootId}`;

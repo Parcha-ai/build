@@ -170,6 +170,9 @@ interface ModelAvailabilityOptions {
   isSSH?: boolean;
   sessionId?: string;
   remoteCliCapabilities?: RemoteCliCapabilities;
+  continuationHarness?: Harness;
+  continuationModel?: string;
+  approvedPlanContinuation?: boolean;
 }
 
 interface RouteOptions extends ModelAvailabilityOptions {
@@ -1178,10 +1181,10 @@ function applyCostAwareDowngrade(
   config: AutoRouterConfig,
 ): string {
   const configured = resolveModelForTier(tier, config);
-  // Planning turns are frequent and usually do not need Opus. Keep the same
+  // Planning turns are frequent and usually do not need frontier Claude. Keep the same
   // Claude harness, but use Sonnet when cost-aware routing is enabled —
-  // unless the user has explicitly chosen Opus for this tier.
-  if (tier === 'plan' && /^claude-opus/i.test(configured)) {
+  // unless the user has explicitly chosen Fable/Opus for this tier.
+  if (tier === 'plan' && /^claude-(?:fable|opus)/i.test(configured)) {
     if (isUserConfiguredModel('plan')) return configured;
     return 'claude-sonnet-4-6';
   }
@@ -1193,6 +1196,66 @@ function firstAvailable(candidates: string[], fallbackModel: string, options?: M
     if (hasConfiguredCredentialForModel(candidate, options)) return candidate;
   }
   return hasConfiguredCredentialForModel(fallbackModel, options) ? fallbackModel : 'claude-sonnet-4-6';
+}
+
+const HARNESS_REQUEST_PATTERNS: Record<Harness, RegExp> = {
+  claude: /\bclaude(?:\s+code)?\b/i,
+  codex: /\bcodex\b/i,
+  cursor: /\bcursor(?:\s+(?:agent|composer))?\b/i,
+  gemini: /\bgemini\b/i,
+  opencode: /\bopen\s*code\b|\bopencode\b/i,
+  custom: /\bcustom\s+(?:model|harness|agent)\b/i,
+};
+
+function userRequestedDifferentHarness(message: string, continuationHarness: Harness): boolean {
+  return (Object.keys(HARNESS_REQUEST_PATTERNS) as Harness[])
+    .filter((harness) => harness !== continuationHarness)
+    .some((harness) => HARNESS_REQUEST_PATTERNS[harness].test(message));
+}
+
+function shouldPreferContinuationHarness(
+  message: string,
+  tier: TaskTier,
+  signals: TaskSignals,
+  options?: ModelAvailabilityOptions,
+): boolean {
+  if (!options?.approvedPlanContinuation || !options.continuationHarness) return false;
+  if (tier === 'plan') return false;
+  if (signals.asksForCapabilityEscalation || signals.asksForMultiHarness) return false;
+  return !userRequestedDifferentHarness(message, options.continuationHarness);
+}
+
+function isApprovedPlanExecutionFollowup(message: string): boolean {
+  return /\b(?:go ahead|go do it|do it|execute(?: the)? plan|implement(?: the)? plan|proceed|ship it|pr this)\b/i.test(message);
+}
+
+function chooseContinuationModelForTier(
+  tier: TaskTier,
+  config: AutoRouterConfig,
+  signals: TaskSignals,
+  options?: ModelAvailabilityOptions,
+): ModelChoice | undefined {
+  const continuationHarness = options?.continuationHarness;
+  if (!continuationHarness) return undefined;
+
+  const candidates = [
+    options.continuationModel,
+    ...candidateModelsForTier(tier, config, signals, options),
+    ...configuredModelsForTier(tier, config),
+    config.fallbackModel,
+    'claude-sonnet-4-6',
+  ].filter((model): model is string => Boolean(model));
+
+  const chosen = candidates.find((model) =>
+    harnessFromModel(model) === continuationHarness && hasConfiguredCredentialForModel(model, options)
+  );
+  if (!chosen) return undefined;
+
+  return {
+    model: chosen,
+    harness: continuationHarness,
+    reason: `Continuing approved plan in ${continuationHarness}; selected ${chosen}`,
+  };
 }
 
 function needsFrontierReasoning(tier: TaskTier, signals: TaskSignals): boolean {
@@ -1217,7 +1280,7 @@ function researchPriorModelCandidates(
   signals: TaskSignals,
 ): string[] {
   const candidates: string[] = [];
-  const addFrontierClaude = () => candidates.push('claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6');
+  const addFrontierClaude = () => candidates.push('claude-fable-5', 'claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6');
 
   if (signals.asksForCapabilityEscalation) {
     addFrontierClaude();
@@ -1233,7 +1296,7 @@ function researchPriorModelCandidates(
     case 'build':
       candidates.push(config.buildModel, 'codex:gpt-5.5');
       if (signals.large || signals.asksForArchitecture || signals.asksForMultiHarness) {
-        candidates.push('claude-opus-4-8', 'claude-opus-4-7');
+        candidates.push('claude-fable-5', 'claude-opus-4-8', 'claude-opus-4-7');
       }
       break;
     case 'verify':
@@ -1356,7 +1419,7 @@ function chooseModelForTier(
   const candidates = candidateModelsForTier(tier, config, signals, options);
   const priorCandidates = researchPriorModelCandidates(tier, config, signals);
   if (signals.asksForCapabilityEscalation) {
-    candidates.unshift('claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6', config.planModel, config.fallbackModel);
+    candidates.unshift('claude-fable-5', 'claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6', config.planModel, config.fallbackModel);
   }
   if (signals.asksForMultiHarness && signals.large && tier !== 'refine') {
     candidates.unshift(...configuredModelsForTier(tier, config).filter((model) => harnessFromModel(model) === 'claude'));
@@ -1367,7 +1430,7 @@ function chooseModelForTier(
   const chosen = firstAvailable(candidates, config.fallbackModel, options);
   const harness = harnessFromModel(chosen);
   const usedResearchPrior = priorCandidates.includes(chosen) && chosen !== configured;
-  const reason = signals.asksForCapabilityEscalation && chosen.includes('opus')
+  const reason = signals.asksForCapabilityEscalation && (chosen.includes('fable') || chosen.includes('opus'))
     ? `User asked for deeper reasoning or a stronger model; selected ${chosen}`
     : usedResearchPrior
     ? `Task complexity/model-harness routing priors selected ${chosen}`
@@ -2193,6 +2256,24 @@ class AutoRouterService {
     // Step 2: Apply workflow awareness
     let result = applyWorkflowAwareness(requestedResult, phase, signals, message);
     result = enforcePermissionMode(result, routeOptions.permissionMode);
+    if (
+      routeOptions.approvedPlanContinuation &&
+      result.tier !== 'build' &&
+      result.tier !== 'verify' &&
+      isApprovedPlanExecutionFollowup(message) &&
+      canRunMutatingStages(routeOptions.permissionMode)
+    ) {
+      requestedResult = {
+        tier: 'build',
+        confidence: Math.max(requestedResult.confidence, 0.9),
+        reason: `${requestedResult.reason}; approved plan follow-up means execute the plan`,
+      };
+      result = {
+        tier: 'build',
+        confidence: Math.max(result.confidence, 0.9),
+        reason: `${result.reason}; approved plan follow-up means execute the plan`,
+      };
+    }
 
     const customCategories = customCategoriesForController(routeOptions);
     let customCategoryLead: ModelChoice | undefined;
@@ -2295,8 +2376,22 @@ class AutoRouterService {
       metaOrchestration = undefined;
     }
 
+    const continuationLead = shouldPreferContinuationHarness(message, result.tier, signals, routeOptions)
+      ? chooseContinuationModelForTier(result.tier, config, signals, routeOptions)
+      : undefined;
+    if (continuationLead) {
+      metaLead = undefined;
+      metaOrchestration = undefined;
+      customCategoryLead = undefined;
+      customCategoryForPolicy = undefined;
+      console.log(
+        `[AutoRouter] ${sessionId}: continuing approved plan in ${continuationLead.harness} ` +
+        `instead of switching harnesses`
+      );
+    }
+
     // Step 4: Resolve the lead harness/model and build an orchestration plan.
-    const lead = metaLead || customCategoryLead || chooseModelForTier(result.tier, config, signals, routeOptions);
+    const lead = continuationLead || metaLead || customCategoryLead || chooseModelForTier(result.tier, config, signals, routeOptions);
     const resolvedModel = lead.model;
     const routePolicy = resolveRoutePolicy(result.tier, config, customCategoryForPolicy);
     const orchestration = metaOrchestration || buildOrchestrationPlan(result.tier, requestedResult.tier, lead, config, signals, phase, routeOptions);

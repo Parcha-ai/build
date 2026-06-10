@@ -78,6 +78,10 @@ function selectCompletedContent(messageContent = '', streamedContent = ''): stri
   return streamedContent.length > messageContent.length ? streamedContent : messageContent;
 }
 
+function hasToolActivity(toolCalls?: ToolCall[], contentBlocks?: ContentBlock[]): boolean {
+  return !!toolCalls?.length || !!contentBlocks?.some((block) => block.type === 'tool_use');
+}
+
 export function buildCompletedStreamMessage({
   message,
   content,
@@ -90,19 +94,25 @@ export function buildCompletedStreamMessage({
 }: BuildCompletedStreamMessageOptions): ChatMessage {
   const finalToolCalls = mergeToolCalls(toolCalls, message?.toolCalls);
   const finalContentBlocks = mergeContentBlocks(contentBlocks, message?.contentBlocks);
-  const finalContent = selectCompletedContent(message?.content, content);
+  const selectedContent = selectCompletedContent(message?.content, content);
+  const finalContent = selectedContent.trim() || !hasToolActivity(finalToolCalls, finalContentBlocks)
+    ? selectedContent
+    : 'The agent stopped after tool activity without returning a final text response. The last tool result is shown above.';
+  const contentBlocksWithFallback = finalContent === selectedContent
+    ? finalContentBlocks
+    : mergeContentBlocks(finalContentBlocks, [{ type: 'text', text: finalContent }]);
   const finalMessage = message ? {
     ...message,
     content: finalContent,
     toolCalls: finalToolCalls,
-    contentBlocks: finalContentBlocks,
+    contentBlocks: contentBlocksWithFallback,
   } : {
     id: fallbackId || Date.now().toString(),
     role: 'assistant' as const,
     content: finalContent,
     timestamp: timestamp || new Date(),
     toolCalls: finalToolCalls,
-    contentBlocks: finalContentBlocks,
+    contentBlocks: contentBlocksWithFallback,
   };
 
   return withFallbackHarness(finalMessage, model, resolvedModel);

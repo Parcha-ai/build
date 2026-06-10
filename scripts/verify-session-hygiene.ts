@@ -10,6 +10,9 @@ const browserIpc = fs.readFileSync(path.join(root, 'src/main/ipc/browser.ipc.ts'
 const preload = fs.readFileSync(path.join(root, 'src/main/preload.ts'), 'utf8');
 const mainIndex = fs.readFileSync(path.join(root, 'src/main/index.ts'), 'utf8');
 const gitService = fs.readFileSync(path.join(root, 'src/main/services/git.service.ts'), 'utf8');
+const sessionServiceMain = fs.readFileSync(path.join(root, 'src/main/services/session.service.ts'), 'utf8');
+const sessionTitleService = fs.readFileSync(path.join(root, 'src/main/services/session-title.service.ts'), 'utf8');
+const claudeService = fs.readFileSync(path.join(root, 'src/main/services/claude.service.ts'), 'utf8');
 const sessionDisplay = fs.readFileSync(path.join(root, 'src/renderer/utils/session-display.ts'), 'utf8');
 const chatContainer = fs.readFileSync(path.join(root, 'src/renderer/components/chat/ChatContainer.tsx'), 'utf8');
 const sessionCard = fs.readFileSync(path.join(root, 'src/renderer/components/session/SessionCard.tsx'), 'utf8');
@@ -74,5 +77,20 @@ assert.match(sessionDisplay, /return candidates\.find\(\(candidate\) => candidat
 assert.match(chatContainer, /getSessionDisplayName\(session\)/);
 assert.match(sessionCard, /displayName \|\| getSessionDisplayName\(session\)/);
 assert.match(sessionList, /getSidebarSessionDisplayName/);
+
+assert.match(sessionTitleService, /export function hasExistingSessionTitle\(sessionId: string, session\?: Session \| null\): boolean/);
+assert.match(sessionTitleService, /export function rememberAutoSessionTitle\(sessionId: string, title: string, source: string\): string \| null/);
+assert.match(sessionTitleService, /CONTINUATION_ONLY_MESSAGE_RE/);
+assert.match(sessionTitleService, /Do not copy the user request or its first sentence verbatim/);
+assert.match(sessionTitleService, /new CachedStore\(\{ name: getSessionStoreName\(\) \}\)/);
+assert.match(sessionServiceMain, /pendingNameGenerationSessionIds = new Set<string>\(\)/);
+assert.match(sessionServiceMain, /hasExistingSessionTitle\(sessionId\)/);
+assert.match(sessionServiceMain, /rememberAutoSessionTitle\(sessionId, title, 'first-user-message'\)/);
+assert.match(claudeService, /Only call this when the session does not already have a useful name/);
+assert.match(claudeService, /hasExistingSessionTitle\(sessionId, currentSession\)/);
+assert.match(claudeService, /rememberAutoSessionTitle\(sessionId, sanitizedName, 'claude-tool'\)/);
+assert.match(claudeService, /rememberAutoSessionTitle\(sessionId, summary, 'sdk-summary'\)/);
+assert.doesNotMatch(claudeService, /Auto-generate session name from task/);
+assert.doesNotMatch(claudeService, /Could not auto-generate tab name/);
 
 console.log('session hygiene verifier passed');

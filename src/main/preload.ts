@@ -302,7 +302,7 @@ const electronAPI = {
       return () => ipcRenderer.removeListener(IPC_CHANNELS.CLAUDE_PLAN_APPROVAL_REQUEST, handler);
     },
     // Send plan approval response
-    respondToPlanApproval: (response: { requestId: string; approved: boolean }): Promise<void> =>
+    respondToPlanApproval: (response: { requestId: string; approved: boolean; sessionId?: string; planContent?: string; planFilePath?: string; feedback?: string }): Promise<void> =>
       ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_PLAN_APPROVAL_RESPONSE, response),
     // Auto Build routing decision listener
     onAutoRouteDecision: (callback: (data: { sessionId: string; decision: { tier: string; domain?: string; resolvedModel: string; resolvedHarness?: string; resolvedEffort?: string; resolvedSpeed?: string; workflow?: string; budgetUsd?: number; verification?: string; confidence: number; reason: string; method: string; enableGoals?: boolean; goal?: { objective: string; source: 'slash-command' | 'ralph-loop' }; orchestration?: { mode: string; leadHarness: string; leadModel: string; stages: Array<{ tier: string; harness: string; model: string; purpose: string; effort?: string; speed?: string; workflow?: string; budgetUsd?: number; verification?: string; fallbackModels?: string[]; required?: boolean; trigger?: string }> } } }) => void) => {

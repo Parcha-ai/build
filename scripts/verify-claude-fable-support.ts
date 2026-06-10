@@ -1,0 +1,81 @@
+import assert from 'assert';
+import fs from 'fs';
+import path from 'path';
+
+const root = path.resolve(__dirname, '..');
+const claudeService = fs.readFileSync(path.join(root, 'src/main/services/claude.service.ts'), 'utf8');
+const autoRouterService = fs.readFileSync(path.join(root, 'src/main/services/auto-router.service.ts'), 'utf8');
+const sessionStore = fs.readFileSync(path.join(root, 'src/renderer/stores/session.store.ts'), 'utf8');
+const analyticsService = fs.readFileSync(path.join(root, 'src/main/services/analytics.service.ts'), 'utf8');
+const tokenDashboard = fs.readFileSync(path.join(root, 'src/renderer/components/analytics/TokenDashboard.tsx'), 'utf8');
+const harnessPolicy = fs.readFileSync(path.join(root, 'src/main/services/harness-policy.service.ts'), 'utf8');
+
+assert.match(
+  claudeService,
+  /\{ id: 'claude-fable-5', name: 'Fable 5'/,
+  'Claude model picker must expose Claude Fable 5',
+);
+assert.match(
+  claudeService,
+  /currentModel\.includes\('fable-5'\)/,
+  'Claude Fable 5 must use the 1M context window size',
+);
+assert.match(
+  claudeService,
+  /!selectedModel\.includes\('fable-5'\)/,
+  'Claude Fable 5 must skip the legacy 1M context beta flag',
+);
+assert.match(
+  claudeService,
+  /'claude-fable-5'[\s\S]{0,120}'claude-opus-4-6'/,
+  'Claude Fable 5 should be allowed wherever the newest Claude Code computer-use-capable models are allowed',
+);
+
+assert.match(
+  autoRouterService,
+  /candidates\.push\('claude-fable-5', 'claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6'\)/,
+  'Auto Build frontier Claude candidates must prefer Fable before Opus',
+);
+assert.match(
+  autoRouterService,
+  /candidates\.unshift\('claude-fable-5', 'claude-opus-4-8'/,
+  'Capability-escalation routes must consider Fable first',
+);
+assert.match(
+  autoRouterService,
+  /\^claude-\(\?:fable\|opus\)/,
+  'Cost-aware planning downgrade must treat Fable like other frontier Claude models unless user-configured',
+);
+
+assert.match(
+  sessionStore,
+  /'claude-fable-5'/,
+  'Renderer fallback model handling must know about Claude Fable 5',
+);
+assert.match(
+  analyticsService,
+  /'claude-fable-5': \{ input: 10, output: 50, cacheRead: 1, cacheWrite: 12\.50 \}/,
+  'Analytics pricing must use Fable 5 pricing',
+);
+assert.match(
+  analyticsService,
+  /if \(normalized\.includes\('fable'\)\) return MODEL_PRICING\['claude-fable-5'\]/,
+  'Analytics pricing fallback must recognize Fable aliases',
+);
+assert.match(
+  analyticsService,
+  /if \(\/\\b\(fable\)\\b\/\.test\(lower\)\) return 'claude-fable-5'/,
+  'Historical override inference must recognize user requests for Fable',
+);
+assert.match(
+  tokenDashboard,
+  /if \(model\.includes\('fable-5'\)\) return 'Fable 5'/,
+  'Token dashboard must display a clean Fable 5 label',
+);
+assert.match(
+  harnessPolicy,
+  /fable-5\|opus-4-/,
+  'Claude harness policy must enable adaptive thinking for Fable 5',
+);
+
+console.log('Claude Fable support verifier passed');

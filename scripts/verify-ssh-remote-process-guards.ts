@@ -58,6 +58,7 @@ const hasActiveRemoteProcessMethod = sshService.match(/async hasActiveRemoteProc
 assert.match(hasActiveRemoteProcessMethod, /this\.buildSessionEnvProcessLoop\(sessionId/);
 assert.match(hasActiveRemoteProcessMethod, /ps -p "\$pid" -o args=/);
 assert.match(hasActiveRemoteProcessMethod, /@anthropic-ai\/claude-code/);
+assert.match(hasActiveRemoteProcessMethod, /cursor-agent/);
 assert.doesNotMatch(hasActiveRemoteProcessMethod, /buildSessionEnvProcessLoop\(sessionId, 'kill -0 "\$pid"/);
 assert.match(hasActiveRemoteProcessMethod, /active=1; break/);
 

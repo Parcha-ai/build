@@ -49,13 +49,16 @@ assert.ok(loadMostRecentIndex >= 0, 'Missing legacy most-recent transcript fallb
 assert.ok(requestedMissingIndex < loadMostRecentIndex, 'SDK-specific missing transcript must return before legacy fallback');
 assert.match(parseTranscriptsFromDirMethod, /return \[\];/);
 
-const canonicalMethod = claudeService.match(/async getCanonicalMessages\(sessionId: string, limit = 200\): Promise<ChatMessage\[]> \{[\s\S]*?\n {2}\}/)?.[0] || '';
+const canonicalMethod = claudeService.match(/async getCanonicalMessages\([\s\S]*?Promise<ChatMessage\[]> \{[\s\S]*?\n {2}\}/)?.[0] || '';
 const buildLoadIndex = canonicalMethod.indexOf('this.loadBuildTranscriptForSession(sessionId)');
 const claudeLoadIndex = canonicalMethod.indexOf('const claudeMessages');
 assert.ok(buildLoadIndex >= 0, 'Canonical messages must load Build transcript entries');
 assert.ok(claudeLoadIndex >= 0, 'Canonical messages must retain Claude legacy backfill');
 assert.ok(buildLoadIndex < claudeLoadIndex, 'Build transcript must be considered before Claude transcript');
 assert.match(canonicalMethod, /if \(buildTranscript\.exists\)/);
+assert.match(canonicalMethod, /options: \{ allowSdkFallback\?: boolean \} = \{\}/);
+assert.match(canonicalMethod, /if \(options\.allowSdkFallback === false\) \{/);
+assert.match(canonicalMethod, /Skipping SDK transcript fallback for foreground context/);
 assert.match(canonicalMethod, /return filterInternalPromptEchoes\(limit && limit > 0/);
 assert.match(canonicalMethod, /transcriptService\.upsertMessages\(buildTranscript\.sessionId, usableClaudeMessages/);
 
@@ -64,10 +67,64 @@ assert.match(claudeService, /sdkSessionMappings/);
 assert.match(claudeService, /continuedFromSessionId/);
 assert.match(claudeService, /relatedSessionIds/);
 assert.match(claudeService, /preferredIds/);
+assert.match(claudeService, /private getBuildTranscriptLatestTime\(candidateId: string, entries: TranscriptEntry\[]\): number/);
 assert.match(claudeService, /private loadBuildTranscriptForSession\(sessionId: string\)/);
-assert.match(claudeService, /firstExistingTranscript/);
+assert.match(claudeService, /const usableTranscripts = transcripts\.filter/);
+assert.match(claudeService, /const withAssistant = usableTranscripts\.filter/);
+assert.match(claudeService, /const timeDelta = b\.latestTime - a\.latestTime/);
 assert.match(claudeService, /hasBuildTranscriptForSession\(sessionId: string\): boolean/);
-assert.match(claudeService, /Using Build transcript alias/);
+assert.match(claudeService, /Using freshest Build transcript alias/);
+assert.doesNotMatch(claudeService, /if \(candidateId === sessionId && entries\.length > 0\) \{\s*return \{ sessionId: candidateId, entries, exists: true \};\s*\}/);
+assert.match(
+  claudeService,
+  /const includeCurrentClaudeHarness = !effectiveSdkSessionId;/,
+  'Claude must include prior Claude turns when SDK resume is unavailable',
+);
+assert.match(
+  claudeService,
+  /includeCurrentClaudeHarness \? undefined : 'claude'/,
+  'Build transcript continuity must not filter out Claude messages after resume is cleared',
+);
+assert.match(
+  claudeService,
+  /Recent Build Session Context/,
+  'Full Build transcript context must use a clear system prompt label',
+);
+assert.match(
+  claudeService,
+  /<build_session_continuity>/,
+  'Full Build transcript fallback must pin authoritative continuity before raw history',
+);
+assert.match(
+  claudeService,
+  /filterMessagesForBuildContinuityContext/,
+  'Full Build transcript fallback must filter false no-context assistant replies',
+);
+assert.match(
+  claudeService,
+  /isFalseNoContextAssistantMessage/,
+  'Build transcript fallback must identify stale fresh-conversation replies',
+);
+assert.match(
+  claudeService,
+  /authoritative over any earlier assistant message claiming missing context/,
+  'Pinned continuity context must override stale no-context assistant replies',
+);
+assert.match(
+  claudeService,
+  /const continuityMessages = includeCurrentClaudeHarness[\s\S]*?this\.filterMessagesForBuildContinuityContext\(merged\)[\s\S]*?: merged;/,
+  'Claude fallback context must clean the Build transcript before injecting it',
+);
+assert.match(
+  claudeService,
+  /const pinnedBuildContinuityContext = includeCurrentClaudeHarness[\s\S]*?this\.buildBuildSessionContinuityContext\(sessionId, session, continuityMessages\)/,
+  'Claude fallback context must prepend a pinned Build session continuity block',
+);
+assert.match(
+  claudeService,
+  /Claude \$\{includeCurrentClaudeHarness \? 'Build transcript' : 'cross-harness'\} context/,
+  'Claude continuity logging must distinguish full Build transcript context from cross-harness context',
+);
 
 assert.match(sessionService, /resolveBuildSessionIdForDiscoveredSession/);
 assert.match(sessionService, /const canonicalId = this\.resolveBuildSessionIdForDiscoveredSession/);
@@ -77,6 +134,9 @@ assert.match(sessionService, /canonicalId !== id/);
 assert.match(transcriptService, /Persists ALL harness messages/);
 assert.match(transcriptService, /~\/\.build\/transcripts\/\{sessionId\}\.jsonl/);
 assert.match(transcriptService, /mergeRecoveredStreamMessages\(existingMessages, incomingMessages\)/);
+assert.match(sessionStore, /function mergeDuplicateTimelineMessage\(existing: ChatMessage, incoming: ChatMessage\): ChatMessage/);
+assert.match(sessionStore, /seenIds\.has\(message\.id\)[\s\S]*?mergeDuplicateTimelineMessage\(deduped\[existingIndex\], message\)/);
+assert.doesNotMatch(sessionStore, /if \(seenIds\.has\(message\.id\)\) \{\s*continue;\s*\}/);
 
 const recoveredEntries: TranscriptEntry[] = [
   {

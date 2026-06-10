@@ -47,6 +47,7 @@ function formatTokens(tokens: number): string {
 }
 
 function getModelShortName(model: string): string {
+  if (model.includes('fable-5')) return 'Fable 5';
   if (model.includes('opus-4-8')) return 'Opus 4.8';
   if (model.includes('opus-4-7')) return 'Opus 4.7';
   if (model.includes('opus-4-6')) return 'Opus 4.6';
