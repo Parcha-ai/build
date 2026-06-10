@@ -1207,11 +1207,75 @@ const HARNESS_REQUEST_PATTERNS: Record<Harness, RegExp> = {
   custom: /\bcustom\s+(?:model|harness|agent)\b/i,
 };
 
-function userRequestedDifferentHarness(message: string, continuationHarness: Harness): boolean {
-  return (Object.keys(HARNESS_REQUEST_PATTERNS) as Harness[])
-    .filter((harness) => harness !== continuationHarness)
-    .some((harness) => HARNESS_REQUEST_PATTERNS[harness].test(message));
+// Harness name fragments for directive detection ("use codex", "switch to
+// gemini"). Stricter than HARNESS_REQUEST_PATTERNS: a bare mention ("update
+// CLAUDE.md") must not count as a routing request.
+const HARNESS_NAME_PATTERN_SOURCES: Record<Harness, string> = {
+  claude: 'claude(?:\\s+code)?',
+  codex: 'codex',
+  cursor: 'cursor(?:\\s+(?:agent|composer))?',
+  gemini: 'gemini',
+  opencode: '(?:open\\s*code|opencode)',
+  custom: 'custom\\s+(?:model|harness|agent)',
+};
+
+const HARNESS_DIRECTIVE_CONTEXT = '(?:use|using|with|via|through|ask|have|let|try|prefer|switch(?:ing)?\\s+to|route\\s+(?:this\\s+)?(?:to|through)|hand(?:\\s+this)?\\s+(?:off\\s+)?to|delegate\\s+to)';
+
+function harnessesInDirectivePosition(message: string): Harness[] {
+  return (Object.keys(HARNESS_NAME_PATTERN_SOURCES) as Harness[]).filter((harness) =>
+    new RegExp(`\\b${HARNESS_DIRECTIVE_CONTEXT}\\s+(?:the\\s+)?${HARNESS_NAME_PATTERN_SOURCES[harness]}(?!\\.|\\w)`, 'i').test(message)
+  );
 }
+
+/**
+ * Detects an unambiguous, user-typed directive to run this turn on a specific
+ * harness ("use codex to fix it", "switch to gemini"). Returns undefined when
+ * no harness — or more than one — is named in directive position.
+ */
+function explicitlyRequestedHarness(message: string): Harness | undefined {
+  const matches = harnessesInDirectivePosition(message);
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
+// A different harness named in directive position ("use codex") breaks
+// continuity; a bare mention (file path, question about past work) does not.
+function userRequestedDifferentHarness(message: string, continuationHarness: Harness): boolean {
+  return harnessesInDirectivePosition(message).some((harness) => harness !== continuationHarness);
+}
+
+// Follow-up cues at the start of a message: approvals, continuations, and
+// incremental asks that build on the previous turn's work.
+const CONTINUATION_OPENER_RE = /^(?:ok(?:ay)?|yes|yep|yeah|sure|great|nice|good|perfect|lgtm|thanks?|thank you)?[,.!\s]*(?:now\s+|please\s+)?(?:continue|keep (?:going|at it)|go on|carry on|resume|proceed|next|retry|try again|run it again|one more|go ahead|do it|finish|wrap up|ship it|and\b|also\b|then\b|same\b)/i;
+
+// References to the previous turn's output without introducing a new subject.
+const ANAPHORIC_REFERENCE_RE = /\b(?:it|that|this|those|these|them|the same|the above|your (?:change|fix|plan|approach|version)|what you (?:did|made|wrote|suggested|proposed))\b/i;
+
+// Explicit signals that the user is starting something unrelated.
+const NEW_TASK_CUE_RE = /\b(?:new (?:task|feature|project|bug|issue|topic|request)|different (?:task|problem|issue|topic)|unrelated|separate(?:ly)? (?:task|issue|thing)|switch(?:ing)? (?:gears|topics?|to)|next (?:task|project|feature)|moving on|instead of that|forget (?:that|it)|something else (?:entirely|now)?)\b/i;
+
+/**
+ * A continuation intent builds on the previous turn's work, so staying on the
+ * previous harness is both cheaper (native resume preserves context instead of
+ * rebuilding it from transcripts) and more accurate. New, self-contained
+ * intents must NOT match — they re-route freely.
+ */
+function isContinuationIntentMessage(message: string, signals: TaskSignals): boolean {
+  const trimmed = message.trim();
+  if (NEW_TASK_CUE_RE.test(trimmed)) return false;
+  if (isApprovedPlanExecutionFollowup(trimmed)) return true;
+  if (CONTINUATION_OPENER_RE.test(trimmed)) return true;
+  // Short messages mid-session are nearly always follow-ups on the work in
+  // flight ("fix the lint too", "make it purple", "why did that fail?").
+  if (signals.short) return true;
+  // Medium-length messages that lean on the previous turn's output.
+  if (trimmed.length < 400 && ANAPHORIC_REFERENCE_RE.test(trimmed)) return true;
+  return false;
+}
+
+// Asks for cross-harness orchestration — never pin those to one harness.
+// Deliberately narrower than signals.asksForMultiHarness, which also fires on
+// bare harness-name mentions like "CLAUDE.md" or "what did codex do?".
+const ORCHESTRATION_ASK_RE = /\b(?:multiplex|orchestrat\w*|multi[- ]?harness|multiple (?:agents|models|harnesses)|in parallel across)\b/i;
 
 function shouldPreferContinuationHarness(
   message: string,
@@ -1219,10 +1283,14 @@ function shouldPreferContinuationHarness(
   signals: TaskSignals,
   options?: ModelAvailabilityOptions,
 ): boolean {
-  if (!options?.approvedPlanContinuation || !options.continuationHarness) return false;
+  if (!options?.continuationHarness) return false;
+  // Planning escalations deserve a fresh frontier-model choice regardless of
+  // which harness ran the last turn.
   if (tier === 'plan') return false;
-  if (signals.asksForCapabilityEscalation || signals.asksForMultiHarness) return false;
-  return !userRequestedDifferentHarness(message, options.continuationHarness);
+  if (signals.asksForCapabilityEscalation || ORCHESTRATION_ASK_RE.test(message)) return false;
+  if (userRequestedDifferentHarness(message, options.continuationHarness)) return false;
+  if (options.approvedPlanContinuation) return true;
+  return isContinuationIntentMessage(message, signals);
 }
 
 function isApprovedPlanExecutionFollowup(message: string): boolean {
@@ -1254,7 +1322,9 @@ function chooseContinuationModelForTier(
   return {
     model: chosen,
     harness: continuationHarness,
-    reason: `Continuing approved plan in ${continuationHarness}; selected ${chosen}`,
+    reason: options?.approvedPlanContinuation
+      ? `Continuing approved plan in ${continuationHarness}; selected ${chosen}`
+      : `Follow-up on previous ${continuationHarness} turn; staying on ${chosen} to reuse native session context`,
   };
 }
 
@@ -2306,6 +2376,8 @@ class AutoRouterService {
           candidateModelsByTier,
           customCategories,
           recentMessages: routeOptions.recentMessages,
+          continuationHarness: routeOptions.continuationHarness,
+          continuationModel: routeOptions.continuationModel,
           goalObjective: routeOptions.goalObjective,
           goalSource: routeOptions.goalSource,
           cerebrasKey,
@@ -2376,22 +2448,55 @@ class AutoRouterService {
       metaOrchestration = undefined;
     }
 
-    const continuationLead = shouldPreferContinuationHarness(message, result.tier, signals, routeOptions)
+    // An unambiguous user directive ("use codex", "switch to gemini") wins over
+    // every other lead source — the clearest possible switch intent.
+    const requestedHarness = explicitlyRequestedHarness(message);
+    let explicitHarnessLead: ModelChoice | undefined;
+    if (requestedHarness && requestedHarness !== 'custom') {
+      const choice = chooseContinuationModelForTier(result.tier, config, signals, {
+        ...routeOptions,
+        continuationHarness: requestedHarness,
+        continuationModel: undefined,
+        approvedPlanContinuation: false,
+      });
+      if (choice) {
+        explicitHarnessLead = {
+          ...choice,
+          reason: `User explicitly requested ${requestedHarness}; selected ${choice.model}`,
+        };
+      } else {
+        console.log(`[AutoRouter] ${sessionId}: user requested ${requestedHarness} but no usable model found; routing normally`);
+      }
+    }
+    if (explicitHarnessLead) {
+      metaLead = undefined;
+      metaOrchestration = undefined;
+      customCategoryLead = undefined;
+      customCategoryForPolicy = undefined;
+      console.log(`[AutoRouter] ${sessionId}: honoring explicit harness request for ${explicitHarnessLead.harness}`);
+    }
+
+    let continuationLead = !explicitHarnessLead && shouldPreferContinuationHarness(message, result.tier, signals, routeOptions)
       ? chooseContinuationModelForTier(result.tier, config, signals, routeOptions)
       : undefined;
+    // No need to clobber the controller's plan when it already chose the
+    // continuation harness — its model pick and helper stages are richer.
+    if (continuationLead && metaLead && metaLead.harness === continuationLead.harness) {
+      continuationLead = undefined;
+    }
     if (continuationLead) {
       metaLead = undefined;
       metaOrchestration = undefined;
       customCategoryLead = undefined;
       customCategoryForPolicy = undefined;
       console.log(
-        `[AutoRouter] ${sessionId}: continuing approved plan in ${continuationLead.harness} ` +
-        `instead of switching harnesses`
+        `[AutoRouter] ${sessionId}: ${routeOptions.approvedPlanContinuation ? 'continuing approved plan' : 'follow-up turn staying'} ` +
+        `in ${continuationLead.harness} instead of switching harnesses`
       );
     }
 
     // Step 4: Resolve the lead harness/model and build an orchestration plan.
-    const lead = continuationLead || metaLead || customCategoryLead || chooseModelForTier(result.tier, config, signals, routeOptions);
+    const lead = explicitHarnessLead || continuationLead || metaLead || customCategoryLead || chooseModelForTier(result.tier, config, signals, routeOptions);
     const resolvedModel = lead.model;
     const routePolicy = resolveRoutePolicy(result.tier, config, customCategoryForPolicy);
     const orchestration = metaOrchestration || buildOrchestrationPlan(result.tier, requestedResult.tier, lead, config, signals, phase, routeOptions);

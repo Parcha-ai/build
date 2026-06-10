@@ -4739,9 +4739,11 @@ ${leadContent.slice(0, leadContextLimit)}
           }
 
           const approvedPlanContinuation = Boolean(this.sessionApprovedPlanFiles.get(sessionId)?.content?.trim());
-          const continuationRoute = approvedPlanContinuation
-            ? await this.resolveLastAssistantRoute(sessionId, normalizedSupplementalMessages, recentRoutingMessages)
-            : {};
+          // Resolve the previous turn's harness/model on every Auto Build turn:
+          // the router biases follow-up messages toward the same harness (native
+          // resume is cheaper than rebuilding context) and switches only on
+          // genuinely new intents.
+          const continuationRoute = await this.resolveLastAssistantRoute(sessionId, normalizedSupplementalMessages, recentRoutingMessages);
 
           const routingDecision = await autoRouterService.classifyAndRoute(sessionId, userMessage, {
             gstackMode: gstackMode || undefined,
