@@ -82,6 +82,7 @@ export interface Session {
   childSessionIds?: string[]; // Array of child fork session IDs
   forkPoint?: string; // Message ID where this fork was created from parent
   aiGeneratedName?: string; // AI-generated short name (2-3 words) for fork tabs
+  autoTitleGeneratedAt?: Date | string; // Set after the one allowed automatic session title
   isRoot?: boolean; // True for original conversation (no parent)
   forkCreatedAt?: Date; // When this conversation fork was created
   gstackMode?: string; // Active GStack skill name (dynamic, from disk)
@@ -581,6 +582,9 @@ export interface PlanApprovalRequest {
 export interface PlanApprovalResponse {
   requestId: string;
   approved: boolean;
+  sessionId?: string;
+  planContent?: string;
+  planFilePath?: string;
   feedback?: string; // Optional feedback message when rejecting
 }
 

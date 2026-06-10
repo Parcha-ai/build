@@ -170,6 +170,9 @@ interface ModelAvailabilityOptions {
   isSSH?: boolean;
   sessionId?: string;
   remoteCliCapabilities?: RemoteCliCapabilities;
+  continuationHarness?: Harness;
+  continuationModel?: string;
+  approvedPlanContinuation?: boolean;
 }
 
 interface RouteOptions extends ModelAvailabilityOptions {
@@ -1178,10 +1181,10 @@ function applyCostAwareDowngrade(
   config: AutoRouterConfig,
 ): string {
   const configured = resolveModelForTier(tier, config);
-  // Planning turns are frequent and usually do not need Opus. Keep the same
+  // Planning turns are frequent and usually do not need frontier Claude. Keep the same
   // Claude harness, but use Sonnet when cost-aware routing is enabled —
-  // unless the user has explicitly chosen Opus for this tier.
-  if (tier === 'plan' && /^claude-opus/i.test(configured)) {
+  // unless the user has explicitly chosen Fable/Opus for this tier.
+  if (tier === 'plan' && /^claude-(?:fable|opus)/i.test(configured)) {
     if (isUserConfiguredModel('plan')) return configured;
     return 'claude-sonnet-4-6';
   }
@@ -1193,6 +1196,136 @@ function firstAvailable(candidates: string[], fallbackModel: string, options?: M
     if (hasConfiguredCredentialForModel(candidate, options)) return candidate;
   }
   return hasConfiguredCredentialForModel(fallbackModel, options) ? fallbackModel : 'claude-sonnet-4-6';
+}
+
+const HARNESS_REQUEST_PATTERNS: Record<Harness, RegExp> = {
+  claude: /\bclaude(?:\s+code)?\b/i,
+  codex: /\bcodex\b/i,
+  cursor: /\bcursor(?:\s+(?:agent|composer))?\b/i,
+  gemini: /\bgemini\b/i,
+  opencode: /\bopen\s*code\b|\bopencode\b/i,
+  custom: /\bcustom\s+(?:model|harness|agent)\b/i,
+};
+
+// Harness name fragments for directive detection ("use codex", "switch to
+// gemini"). Stricter than HARNESS_REQUEST_PATTERNS: a bare mention ("update
+// CLAUDE.md") must not count as a routing request.
+const HARNESS_NAME_PATTERN_SOURCES: Record<Harness, string> = {
+  claude: 'claude(?:\\s+code)?',
+  codex: 'codex',
+  cursor: 'cursor(?:\\s+(?:agent|composer))?',
+  gemini: 'gemini',
+  opencode: '(?:open\\s*code|opencode)',
+  custom: 'custom\\s+(?:model|harness|agent)',
+};
+
+const HARNESS_DIRECTIVE_CONTEXT = '(?:use|using|with|via|through|ask|have|let|try|prefer|switch(?:ing)?\\s+to|route\\s+(?:this\\s+)?(?:to|through)|hand(?:\\s+this)?\\s+(?:off\\s+)?to|delegate\\s+to)';
+
+function harnessesInDirectivePosition(message: string): Harness[] {
+  return (Object.keys(HARNESS_NAME_PATTERN_SOURCES) as Harness[]).filter((harness) =>
+    new RegExp(`\\b${HARNESS_DIRECTIVE_CONTEXT}\\s+(?:the\\s+)?${HARNESS_NAME_PATTERN_SOURCES[harness]}(?!\\.|\\w)`, 'i').test(message)
+  );
+}
+
+/**
+ * Detects an unambiguous, user-typed directive to run this turn on a specific
+ * harness ("use codex to fix it", "switch to gemini"). Returns undefined when
+ * no harness — or more than one — is named in directive position.
+ */
+function explicitlyRequestedHarness(message: string): Harness | undefined {
+  const matches = harnessesInDirectivePosition(message);
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
+// A different harness named in directive position ("use codex") breaks
+// continuity; a bare mention (file path, question about past work) does not.
+function userRequestedDifferentHarness(message: string, continuationHarness: Harness): boolean {
+  return harnessesInDirectivePosition(message).some((harness) => harness !== continuationHarness);
+}
+
+// Follow-up cues at the start of a message: approvals, continuations, and
+// incremental asks that build on the previous turn's work.
+const CONTINUATION_OPENER_RE = /^(?:ok(?:ay)?|yes|yep|yeah|sure|great|nice|good|perfect|lgtm|thanks?|thank you)?[,.!\s]*(?:now\s+|please\s+)?(?:continue|keep (?:going|at it)|go on|carry on|resume|proceed|next|retry|try again|run it again|one more|go ahead|do it|finish|wrap up|ship it|and\b|also\b|then\b|same\b)/i;
+
+// References to the previous turn's output without introducing a new subject.
+const ANAPHORIC_REFERENCE_RE = /\b(?:it|that|this|those|these|them|the same|the above|your (?:change|fix|plan|approach|version)|what you (?:did|made|wrote|suggested|proposed))\b/i;
+
+// Explicit signals that the user is starting something unrelated.
+const NEW_TASK_CUE_RE = /\b(?:new (?:task|feature|project|bug|issue|topic|request)|different (?:task|problem|issue|topic)|unrelated|separate(?:ly)? (?:task|issue|thing)|switch(?:ing)? (?:gears|topics?|to)|next (?:task|project|feature)|moving on|instead of that|forget (?:that|it)|something else (?:entirely|now)?)\b/i;
+
+/**
+ * A continuation intent builds on the previous turn's work, so staying on the
+ * previous harness is both cheaper (native resume preserves context instead of
+ * rebuilding it from transcripts) and more accurate. New, self-contained
+ * intents must NOT match — they re-route freely.
+ */
+function isContinuationIntentMessage(message: string, signals: TaskSignals): boolean {
+  const trimmed = message.trim();
+  if (NEW_TASK_CUE_RE.test(trimmed)) return false;
+  if (isApprovedPlanExecutionFollowup(trimmed)) return true;
+  if (CONTINUATION_OPENER_RE.test(trimmed)) return true;
+  // Short messages mid-session are nearly always follow-ups on the work in
+  // flight ("fix the lint too", "make it purple", "why did that fail?").
+  if (signals.short) return true;
+  // Medium-length messages that lean on the previous turn's output.
+  if (trimmed.length < 400 && ANAPHORIC_REFERENCE_RE.test(trimmed)) return true;
+  return false;
+}
+
+// Asks for cross-harness orchestration — never pin those to one harness.
+// Deliberately narrower than signals.asksForMultiHarness, which also fires on
+// bare harness-name mentions like "CLAUDE.md" or "what did codex do?".
+const ORCHESTRATION_ASK_RE = /\b(?:multiplex|orchestrat\w*|multi[- ]?harness|multiple (?:agents|models|harnesses)|in parallel across)\b/i;
+
+function shouldPreferContinuationHarness(
+  message: string,
+  tier: TaskTier,
+  signals: TaskSignals,
+  options?: ModelAvailabilityOptions,
+): boolean {
+  if (!options?.continuationHarness) return false;
+  // Planning escalations deserve a fresh frontier-model choice regardless of
+  // which harness ran the last turn.
+  if (tier === 'plan') return false;
+  if (signals.asksForCapabilityEscalation || ORCHESTRATION_ASK_RE.test(message)) return false;
+  if (userRequestedDifferentHarness(message, options.continuationHarness)) return false;
+  if (options.approvedPlanContinuation) return true;
+  return isContinuationIntentMessage(message, signals);
+}
+
+function isApprovedPlanExecutionFollowup(message: string): boolean {
+  return /\b(?:go ahead|go do it|do it|execute(?: the)? plan|implement(?: the)? plan|proceed|ship it|pr this)\b/i.test(message);
+}
+
+function chooseContinuationModelForTier(
+  tier: TaskTier,
+  config: AutoRouterConfig,
+  signals: TaskSignals,
+  options?: ModelAvailabilityOptions,
+): ModelChoice | undefined {
+  const continuationHarness = options?.continuationHarness;
+  if (!continuationHarness) return undefined;
+
+  const candidates = [
+    options.continuationModel,
+    ...candidateModelsForTier(tier, config, signals, options),
+    ...configuredModelsForTier(tier, config),
+    config.fallbackModel,
+    'claude-sonnet-4-6',
+  ].filter((model): model is string => Boolean(model));
+
+  const chosen = candidates.find((model) =>
+    harnessFromModel(model) === continuationHarness && hasConfiguredCredentialForModel(model, options)
+  );
+  if (!chosen) return undefined;
+
+  return {
+    model: chosen,
+    harness: continuationHarness,
+    reason: options?.approvedPlanContinuation
+      ? `Continuing approved plan in ${continuationHarness}; selected ${chosen}`
+      : `Follow-up on previous ${continuationHarness} turn; staying on ${chosen} to reuse native session context`,
+  };
 }
 
 function needsFrontierReasoning(tier: TaskTier, signals: TaskSignals): boolean {
@@ -1217,7 +1350,7 @@ function researchPriorModelCandidates(
   signals: TaskSignals,
 ): string[] {
   const candidates: string[] = [];
-  const addFrontierClaude = () => candidates.push('claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6');
+  const addFrontierClaude = () => candidates.push('claude-fable-5', 'claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6');
 
   if (signals.asksForCapabilityEscalation) {
     addFrontierClaude();
@@ -1233,7 +1366,7 @@ function researchPriorModelCandidates(
     case 'build':
       candidates.push(config.buildModel, 'codex:gpt-5.5');
       if (signals.large || signals.asksForArchitecture || signals.asksForMultiHarness) {
-        candidates.push('claude-opus-4-8', 'claude-opus-4-7');
+        candidates.push('claude-fable-5', 'claude-opus-4-8', 'claude-opus-4-7');
       }
       break;
     case 'verify':
@@ -1356,7 +1489,7 @@ function chooseModelForTier(
   const candidates = candidateModelsForTier(tier, config, signals, options);
   const priorCandidates = researchPriorModelCandidates(tier, config, signals);
   if (signals.asksForCapabilityEscalation) {
-    candidates.unshift('claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6', config.planModel, config.fallbackModel);
+    candidates.unshift('claude-fable-5', 'claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6', config.planModel, config.fallbackModel);
   }
   if (signals.asksForMultiHarness && signals.large && tier !== 'refine') {
     candidates.unshift(...configuredModelsForTier(tier, config).filter((model) => harnessFromModel(model) === 'claude'));
@@ -1367,7 +1500,7 @@ function chooseModelForTier(
   const chosen = firstAvailable(candidates, config.fallbackModel, options);
   const harness = harnessFromModel(chosen);
   const usedResearchPrior = priorCandidates.includes(chosen) && chosen !== configured;
-  const reason = signals.asksForCapabilityEscalation && chosen.includes('opus')
+  const reason = signals.asksForCapabilityEscalation && (chosen.includes('fable') || chosen.includes('opus'))
     ? `User asked for deeper reasoning or a stronger model; selected ${chosen}`
     : usedResearchPrior
     ? `Task complexity/model-harness routing priors selected ${chosen}`
@@ -2193,6 +2326,24 @@ class AutoRouterService {
     // Step 2: Apply workflow awareness
     let result = applyWorkflowAwareness(requestedResult, phase, signals, message);
     result = enforcePermissionMode(result, routeOptions.permissionMode);
+    if (
+      routeOptions.approvedPlanContinuation &&
+      result.tier !== 'build' &&
+      result.tier !== 'verify' &&
+      isApprovedPlanExecutionFollowup(message) &&
+      canRunMutatingStages(routeOptions.permissionMode)
+    ) {
+      requestedResult = {
+        tier: 'build',
+        confidence: Math.max(requestedResult.confidence, 0.9),
+        reason: `${requestedResult.reason}; approved plan follow-up means execute the plan`,
+      };
+      result = {
+        tier: 'build',
+        confidence: Math.max(result.confidence, 0.9),
+        reason: `${result.reason}; approved plan follow-up means execute the plan`,
+      };
+    }
 
     const customCategories = customCategoriesForController(routeOptions);
     let customCategoryLead: ModelChoice | undefined;
@@ -2225,6 +2376,8 @@ class AutoRouterService {
           candidateModelsByTier,
           customCategories,
           recentMessages: routeOptions.recentMessages,
+          continuationHarness: routeOptions.continuationHarness,
+          continuationModel: routeOptions.continuationModel,
           goalObjective: routeOptions.goalObjective,
           goalSource: routeOptions.goalSource,
           cerebrasKey,
@@ -2295,8 +2448,55 @@ class AutoRouterService {
       metaOrchestration = undefined;
     }
 
+    // An unambiguous user directive ("use codex", "switch to gemini") wins over
+    // every other lead source — the clearest possible switch intent.
+    const requestedHarness = explicitlyRequestedHarness(message);
+    let explicitHarnessLead: ModelChoice | undefined;
+    if (requestedHarness && requestedHarness !== 'custom') {
+      const choice = chooseContinuationModelForTier(result.tier, config, signals, {
+        ...routeOptions,
+        continuationHarness: requestedHarness,
+        continuationModel: undefined,
+        approvedPlanContinuation: false,
+      });
+      if (choice) {
+        explicitHarnessLead = {
+          ...choice,
+          reason: `User explicitly requested ${requestedHarness}; selected ${choice.model}`,
+        };
+      } else {
+        console.log(`[AutoRouter] ${sessionId}: user requested ${requestedHarness} but no usable model found; routing normally`);
+      }
+    }
+    if (explicitHarnessLead) {
+      metaLead = undefined;
+      metaOrchestration = undefined;
+      customCategoryLead = undefined;
+      customCategoryForPolicy = undefined;
+      console.log(`[AutoRouter] ${sessionId}: honoring explicit harness request for ${explicitHarnessLead.harness}`);
+    }
+
+    let continuationLead = !explicitHarnessLead && shouldPreferContinuationHarness(message, result.tier, signals, routeOptions)
+      ? chooseContinuationModelForTier(result.tier, config, signals, routeOptions)
+      : undefined;
+    // No need to clobber the controller's plan when it already chose the
+    // continuation harness — its model pick and helper stages are richer.
+    if (continuationLead && metaLead && metaLead.harness === continuationLead.harness) {
+      continuationLead = undefined;
+    }
+    if (continuationLead) {
+      metaLead = undefined;
+      metaOrchestration = undefined;
+      customCategoryLead = undefined;
+      customCategoryForPolicy = undefined;
+      console.log(
+        `[AutoRouter] ${sessionId}: ${routeOptions.approvedPlanContinuation ? 'continuing approved plan' : 'follow-up turn staying'} ` +
+        `in ${continuationLead.harness} instead of switching harnesses`
+      );
+    }
+
     // Step 4: Resolve the lead harness/model and build an orchestration plan.
-    const lead = metaLead || customCategoryLead || chooseModelForTier(result.tier, config, signals, routeOptions);
+    const lead = explicitHarnessLead || continuationLead || metaLead || customCategoryLead || chooseModelForTier(result.tier, config, signals, routeOptions);
     const resolvedModel = lead.model;
     const routePolicy = resolveRoutePolicy(result.tier, config, customCategoryForPolicy);
     const orchestration = metaOrchestration || buildOrchestrationPlan(result.tier, requestedResult.tier, lead, config, signals, phase, routeOptions);

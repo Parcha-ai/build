@@ -110,6 +110,7 @@ const config: ForgeConfig = {
           '@cursor/sdk',
           '@cursor/sdk-darwin-arm64',
           '@flue/runtime',
+          'fast-uri',
           'valibot',
           'docx',
           'monaco-editor',

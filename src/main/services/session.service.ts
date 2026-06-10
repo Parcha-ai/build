@@ -13,7 +13,7 @@ import { getSessionStoreName } from '../store-names';
 import type { Session, SessionStatus } from '../../shared/types';
 import Anthropic from '@anthropic-ai/sdk';
 import { transcriptService } from './transcript.service';
-import { sanitizeSessionTitle } from './session-title.service';
+import { hasExistingSessionTitle, rememberAutoSessionTitle, sanitizeSessionTitle } from './session-title.service';
 
 interface SessionCreateConfig {
   name: string;
@@ -63,6 +63,7 @@ export class SessionService extends EventEmitter {
   private isInitialLoadDone = false;
   private discoveryInProgress = false;
   private invalidNameGenerationApiKey: string | null = null;
+  private pendingNameGenerationSessionIds = new Set<string>();
 
   constructor() {
     super();
@@ -178,6 +179,10 @@ export class SessionService extends EventEmitter {
   }
 
   private generateSessionNameAsync(sessionId: string, firstUserMessage: string, actualPath: string): void {
+    if (this.pendingNameGenerationSessionIds.has(sessionId) || hasExistingSessionTitle(sessionId)) {
+      return;
+    }
+    this.pendingNameGenerationSessionIds.add(sessionId);
     // Run name generation in background without blocking discovery
     (async () => {
       let apiKey: string | undefined;
@@ -192,6 +197,9 @@ export class SessionService extends EventEmitter {
           return;
         }
         if (this.invalidNameGenerationApiKey === apiKey) {
+          return;
+        }
+        if (hasExistingSessionTitle(sessionId)) {
           return;
         }
 
@@ -212,11 +220,12 @@ Only return the title, nothing else.`
 
         const title = sanitizeSessionTitle(response.content[0]?.type === 'text' ? response.content[0].text.trim() : '');
         if (title) {
-          this.store.set(`sessionNames.${sessionId}`, title);
+          const storedTitle = rememberAutoSessionTitle(sessionId, title, 'first-user-message');
+          if (!storedTitle) return;
           console.log('[Session] Generated name:', path.basename(actualPath), '→', title);
 
           // Emit event so UI can refresh
-          this.emit('sessionNameGenerated', { sessionId, name: title });
+          this.emit('sessionNameGenerated', { sessionId, name: storedTitle });
         }
       } catch (error) {
         if (apiKey && this.isAnthropicAuthenticationError(error)) {
@@ -227,6 +236,8 @@ Only return the title, nothing else.`
           return;
         }
         console.error('[Session] Error generating name:', error);
+      } finally {
+        this.pendingNameGenerationSessionIds.delete(sessionId);
       }
     })();
   }

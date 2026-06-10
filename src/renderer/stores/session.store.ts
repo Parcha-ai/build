@@ -458,6 +458,7 @@ const PREFERRED_CLAUDE_FALLBACK_MODELS = [
   'claude-sonnet-4-5-20250929',
   'claude-sonnet-4-20250514',
   'claude-haiku-4-5-20251001',
+  'claude-fable-5',
   'claude-opus-4-8',
   'claude-opus-4-7',
   'claude-opus-4-6',
@@ -475,11 +476,40 @@ interface LoadMessagesOptions {
 }
 
 const remoteProcessPollers = new Set<string>();
-const MAX_CONCURRENT_SSH_REATTACH_CHECKS = 3;
+const MAX_CONCURRENT_SSH_REATTACH_CHECKS = 1;
 const SSH_STARTUP_REATTACH_WINDOW_MS = 24 * 60 * 60 * 1000;
+const SSH_STARTUP_REATTACH_DELAY_MS = 15_000;
+const SSH_STARTUP_REATTACH_STREAM_BACKOFF_MS = 2_000;
 
 interface StartRemoteProcessMonitorOptions {
   recoverableKnown?: boolean;
+}
+
+function hasActiveStreamingSession(state: SessionState): boolean {
+  return Object.values(state.isStreaming).some(Boolean);
+}
+
+async function waitForNoActiveStream(getState: () => SessionState): Promise<void> {
+  while (hasActiveStreamingSession(getState())) {
+    console.log('[SessionStore] Delaying SSH startup reattach probe while a stream is active');
+    await new Promise(resolve => setTimeout(resolve, SSH_STARTUP_REATTACH_STREAM_BACKOFF_MS));
+  }
+}
+
+function scheduleStartupRemoteProcessMonitor(
+  sessionId: string,
+  getState: () => SessionState,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  setState: any,
+  loadMessages: (sessionId: string, options?: LoadMessagesOptions) => Promise<void>,
+) {
+  console.log('[SessionStore] Startup SSH reattach delayed for active session:', sessionId);
+  setTimeout(() => {
+    void (async () => {
+      await waitForNoActiveStream(getState);
+      startRemoteProcessMonitor(sessionId, getState, setState, loadMessages);
+    })();
+  }, SSH_STARTUP_REATTACH_DELAY_MS);
 }
 
 function startRemoteProcessMonitor(
@@ -590,7 +620,7 @@ function startRunningSshProcessMonitors(
 ) {
   if (sessions.length === 0) return;
 
-  console.log('[SessionStore] Auto-reattaching running SSH sessions on startup:', sessions.map((session) => session.id));
+  console.log('[SessionStore] Auto-reattaching running SSH sessions on startup after delay:', sessions.map((session) => session.id));
 
   let nextIndex = 0;
   const workerCount = Math.min(MAX_CONCURRENT_SSH_REATTACH_CHECKS, sessions.length);
@@ -601,6 +631,7 @@ function startRunningSshProcessMonitors(
       if (remoteProcessPollers.has(session.id)) continue;
 
       try {
+        await waitForNoActiveStream(getState);
         const recoverable = window.electronAPI.ssh.hasRecoverableRemoteProcess
           ? await window.electronAPI.ssh.hasRecoverableRemoteProcess(session.id, { closeAfter: true })
           : await window.electronAPI.ssh.hasActiveRemoteProcess(session.id);
@@ -798,6 +829,71 @@ function buildMessageFingerprint(message: ChatMessage): string {
   ].join('::');
 }
 
+function mergeContentBlocks(existingBlocks?: ContentBlock[], incomingBlocks?: ContentBlock[]): ContentBlock[] | undefined {
+  const merged: ContentBlock[] = [];
+  const seen = new Set<string>();
+
+  for (const block of [...(existingBlocks || []), ...(incomingBlocks || [])]) {
+    const key = [
+      block.type,
+      block.text || '',
+      block.toolCallId || '',
+      block.agentId || '',
+    ].join('::');
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(block);
+  }
+
+  return merged.length > 0 ? merged : undefined;
+}
+
+function mergeToolCalls(existingToolCalls?: ToolCall[], incomingToolCalls?: ToolCall[]): ToolCall[] | undefined {
+  const merged: ToolCall[] = [];
+  const indexById = new Map<string, number>();
+
+  for (const toolCall of [...(existingToolCalls || []), ...(incomingToolCalls || [])]) {
+    const existingIndex = indexById.get(toolCall.id);
+    if (existingIndex === undefined) {
+      indexById.set(toolCall.id, merged.length);
+      merged.push(normalizeToolCall(toolCall));
+      continue;
+    }
+    merged[existingIndex] = mergeToolCall(merged[existingIndex], toolCall);
+  }
+
+  return merged.length > 0 ? merged : undefined;
+}
+
+function mergeDuplicateTimelineMessage(existing: ChatMessage, incoming: ChatMessage): ChatMessage {
+  const existingContent = existing.content || '';
+  const incomingContent = incoming.content || '';
+  if (existingContent.length !== incomingContent.length) {
+    console.debug('[SessionStore] preserving fuller duplicate message during hydration');
+  }
+  const content = incomingContent.length > existingContent.length
+    ? incomingContent
+    : existingContent;
+  const existingTime = normalizeChatMessageTimestamp(existing).timestamp.getTime();
+  const incomingTime = normalizeChatMessageTimestamp(incoming).timestamp.getTime();
+  const safeExistingTime = Number.isFinite(existingTime) ? existingTime : 0;
+  const safeIncomingTime = Number.isFinite(incomingTime) ? incomingTime : 0;
+  const newestTime = Math.max(safeExistingTime, safeIncomingTime);
+  const newerMessage = safeIncomingTime > safeExistingTime ? incoming : existing;
+
+  return {
+    ...existing,
+    ...newerMessage,
+    id: existing.id,
+    role: existing.role,
+    content,
+    timestamp: newestTime > 0 ? new Date(newestTime) : normalizeChatMessageTimestamp(existing).timestamp,
+    toolCalls: mergeToolCalls(existing.toolCalls, incoming.toolCalls),
+    contentBlocks: mergeContentBlocks(existing.contentBlocks, incoming.contentBlocks),
+    interrupted: existing.interrupted || incoming.interrupted,
+  };
+}
+
 function normalizeContentForTimelineCompare(content?: string): string {
   return (content || '').replace(/\r\n/g, '\n').trim();
 }
@@ -882,11 +978,16 @@ function mergeTimelineMessages(primary: ChatMessage[], supplemental: ChatMessage
     .sort(compareChatMessages);
 
   const seenIds = new Set<string>();
+  const indexById = new Map<string, number>();
   const seenFingerprints = new Set<string>();
   const deduped: ChatMessage[] = [];
 
   for (const message of merged) {
     if (seenIds.has(message.id)) {
+      const existingIndex = indexById.get(message.id);
+      if (existingIndex !== undefined) {
+        deduped[existingIndex] = mergeDuplicateTimelineMessage(deduped[existingIndex], message);
+      }
       continue;
     }
 
@@ -896,6 +997,7 @@ function mergeTimelineMessages(primary: ChatMessage[], supplemental: ChatMessage
     }
 
     seenIds.add(message.id);
+    indexById.set(message.id, deduped.length);
     seenFingerprints.add(fingerprint);
     deduped.push(message);
   }
@@ -1506,7 +1608,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         const { loadMessages } = get();
         loadMessages(validActiveSessionId);
         if (activeSession?.sshConfig) {
-          startRemoteProcessMonitor(validActiveSessionId, get, set, loadMessages);
+          scheduleStartupRemoteProcessMonitor(validActiveSessionId, get, set, loadMessages);
         }
       }
 
@@ -1515,7 +1617,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         const { loadMessages } = get();
         setTimeout(() => {
           startRunningSshProcessMonitors(runningSshSessions, get, set, loadMessages);
-        }, 0);
+        }, SSH_STARTUP_REATTACH_DELAY_MS);
       }
     } catch (error) {
       console.error('Failed to load sessions:', error);
@@ -3628,6 +3730,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const response: PlanApprovalResponse = {
       requestId: request.requestId,
       approved: true,
+      sessionId: request.sessionId,
+      planContent: request.planContent,
+      planFilePath: request.planFilePath,
     };
 
     console.log('[Session Store] Approving plan:', request.requestId);
@@ -3649,6 +3754,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const response: PlanApprovalResponse = {
       requestId: request.requestId,
       approved: false,
+      sessionId: request.sessionId,
+      planContent: request.planContent,
+      planFilePath: request.planFilePath,
       feedback,
     };
 

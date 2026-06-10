@@ -38,7 +38,7 @@ import { findUsableLocalExecutable } from '../utils/local-executable';
 import { transcriptEntriesToChatMessages, transcriptService, type TranscriptEntry } from './transcript.service';
 import { filterInternalPromptEchoes, hasRecoverableOutput, mergeRecoveredStreamMessages } from '../../shared/utils/message-recovery';
 import { translateHarnessPolicy } from './harness-policy.service';
-import { sanitizeSessionTitle } from './session-title.service';
+import { hasExistingSessionTitle, rememberAutoSessionTitle, sanitizeSessionTitle } from './session-title.service';
 
 const STREAM_DEBUG = process.env.GREP_DEBUG_STREAMING === '1';
 const ANSI_ESCAPE = String.fromCharCode(27);
@@ -58,6 +58,13 @@ interface HarnessContextLimits {
 const ROUTING_TRANSCRIPT_LIMIT = 40;
 const SUPPLEMENTAL_CONTEXT_MAX_MESSAGES = 80;
 const SUPPLEMENTAL_CONTEXT_MAX_BYTES = 160 * 1024;
+const ASSUMED_REMOTE_CLI_CAPABILITIES: RemoteCliCapabilities = {
+  claude: true,
+  codex: true,
+  cursor: true,
+  gemini: true,
+  opencode: true,
+};
 
 const CLI_HARNESS_CONTEXT_LIMITS: Partial<Record<Harness, HarnessContextLimits>> = {
   cursor: {
@@ -143,6 +150,12 @@ interface PendingPlanApproval {
   sessionId: string;
 }
 
+interface PlanApprovalRecord {
+  sessionId: string;
+  planContent: string;
+  planFilePath?: string;
+}
+
 export class ClaudeService {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private store: any;
@@ -160,6 +173,7 @@ export class ClaudeService {
   private pendingQuestions: Map<string, PendingQuestion> = new Map();
   private pendingPermissions: Map<string, PendingPermission> = new Map();
   private pendingPlanApprovals: Map<string, PendingPlanApproval> = new Map();
+  private planApprovalRecords: Map<string, PlanApprovalRecord> = new Map();
   private sessionPlanFiles: Map<string, { content: string; filePath: string }> = new Map(); // Cache plan content per session
   private sessionApprovedPlanFiles: Map<string, { content: string; filePath: string }> = new Map(); // Last approved plan artifact per session
   private lastPlanFeedback: Map<string, string> = new Map(); // Stores feedback from last plan rejection per session
@@ -565,6 +579,7 @@ export class ClaudeService {
     console.log('[Claude Service] Using default Anthropic model list');
     const models: Array<{ id: string; name: string; description: string }> = [
       { id: 'auto', name: 'Auto Build', description: 'Harness orchestration — picks the lead model, helper handoffs, and shared context per task' },
+      { id: 'claude-fable-5', name: 'Fable 5', description: 'Most capable Claude model - best for demanding coding and long-horizon agentic work' },
       { id: 'claude-opus-4-8', name: 'Opus 4.8', description: 'Latest and most capable model - best for complex tasks' },
       { id: 'claude-opus-4-7', name: 'Opus 4.7', description: 'Highly capable model' },
       { id: 'claude-opus-4-6', name: 'Opus 4.6', description: 'Highly capable model' },
@@ -651,6 +666,7 @@ export class ClaudeService {
    */
   private supportsComputerUse(model: string): boolean {
     const supportedModels = [
+      'claude-fable-5',
       'claude-opus-4-6',
       'claude-opus-4-5',
       'claude-sonnet-4-6',
@@ -666,8 +682,8 @@ export class ClaudeService {
    * Get Computer Use beta header for the model
    */
   private getComputerUseBetaHeader(model: string): string {
-    // Opus 4.6/4.5 and Sonnet 4.6 use newer beta version
-    if (model.includes('opus-4-6') || model.includes('opus-4-5') || model.includes('sonnet-4-6')) {
+    // Fable 5, Opus 4.6/4.5, and Sonnet 4.6 use newer beta version
+    if (model.includes('fable-5') || model.includes('opus-4-6') || model.includes('opus-4-5') || model.includes('sonnet-4-6')) {
       return 'computer-use-2025-11-24';
     }
     // Other models use older beta version
@@ -714,6 +730,7 @@ You are intelligent enough to determine what URLs to test based on the project s
     secureEnvContext?: string,
     supplementalConversationContext?: string,
     autoOrchestrationContext?: string,
+    supplementalConversationContextLabel = 'Recent Session Context',
   ): string {
     // Start with static content (cached by the API) then append dynamic context
     let append = ClaudeService.STATIC_SYSTEM_PROMPT;
@@ -804,9 +821,9 @@ ${memoriesPrompt}
     if (supplementalConversationContext && supplementalConversationContext.trim()) {
       append += `
 
-## Recent Session Context From Other Models
+## ${supplementalConversationContextLabel}
 
-The following recent turns happened in this same session, but may not be present in the current Claude transcript because they were produced while another model was active.
+The following recent turns happened in this same Build session, but may not be present in the current Claude transcript.
 Use them to preserve continuity and avoid repeating work.
 
 ${supplementalConversationContext}
@@ -879,6 +896,10 @@ For substantive responses (more than ~500 characters of content), respond with a
     options: { command: string; args: string[]; cwd?: string; env: Record<string, string | undefined>; signal: AbortSignal }
   ): SpawnedProcess {
     const launch = this.resolveLocalClaudeLaunch(nodeExecutable, options);
+    const safeCwd = options.cwd && fs.existsSync(options.cwd) ? options.cwd : process.cwd();
+    if (safeCwd !== options.cwd) {
+      console.warn(`[Claude Service] Spawn cwd does not exist: ${options.cwd}, using: ${safeCwd}`);
+    }
     console.log('[Claude Service] Spawning local Claude Code:', {
       command: launch.command,
       mode: launch.mode,
@@ -887,7 +908,7 @@ For substantive responses (more than ~500 characters of content), respond with a
     });
 
     const child = spawn(launch.command, launch.args, {
-      cwd: options.cwd,
+      cwd: safeCwd,
       env: options.env,
       stdio: ['pipe', 'pipe', options.env.DEBUG_CLAUDE_AGENT_SDK ? 'pipe' : 'ignore'],
       signal: options.signal,
@@ -960,6 +981,25 @@ For substantive responses (more than ~500 characters of content), respond with a
     }
 
     return undefined;
+  }
+
+  private resolveValidCwd(session: Session): string {
+    const candidates = [
+      session.worktreePath,
+      session.repoPath,
+      session.sshConfig?.remoteWorkdir,
+    ];
+
+    for (const candidate of candidates) {
+      if (candidate && fs.existsSync(candidate)) return candidate;
+    }
+
+    if (session.worktreePath || session.repoPath) {
+      const missing = session.worktreePath || session.repoPath;
+      console.warn(`[Claude Service] Session working directory no longer exists: ${missing}, falling back to home directory`);
+    }
+
+    return process.cwd();
   }
 
   private formatSecureEnvFileContent(sessionId: string): string {
@@ -1112,7 +1152,7 @@ Read or source that file if you need the actual values. Do not print secret valu
     if (!resolvedModel) return;
     const harness = this.getHarnessFromModel(resolvedModel);
     if (success) {
-      this.rememberLastAssistantHarness(sessionId, harness);
+      this.rememberLastAssistantHarness(sessionId, harness, resolvedModel);
     }
     const usage = event?.usage;
     const inputTokens = usage?.inputTokens ?? Math.max(0, (usage?.totalTokens || 0) - (usage?.outputTokens || 0));
@@ -1445,7 +1485,8 @@ Read or source that file if you need the actual values. Do not print secret valu
 
   private getContextWindowSize(model?: string): number {
     const currentModel = model || '';
-    const hasLargeContext = currentModel.includes('opus-4-8')
+    const hasLargeContext = currentModel.includes('fable-5')
+      || currentModel.includes('opus-4-8')
       || currentModel.includes('opus-4-7')
       || currentModel.includes('opus-4-6')
       || currentModel.includes('sonnet-4-6')
@@ -1463,6 +1504,7 @@ Read or source that file if you need the actual values. Do not print secret valu
       try {
         const entry = JSON.parse(lines[i]) as {
           model?: string;
+          isSidechain?: boolean;
           usage?: {
             input_tokens?: number;
             cache_creation_input_tokens?: number;
@@ -1477,6 +1519,9 @@ Read or source that file if you need the actual values. Do not print secret valu
             };
           };
         };
+        // Subagent (sidechain) calls run in their own context window and
+        // don't reflect the main conversation's occupancy.
+        if (entry.isSidechain) continue;
         const usage = entry.usage || entry.message?.usage;
         if (!usage) continue;
 
@@ -1559,7 +1604,15 @@ Read or source that file if you need the actual values. Do not print secret valu
     model?: string,
   ): Promise<number | undefined> {
     const storedPercentage = this.getSessionContextPercentage(sessionId);
-    if (typeof storedPercentage === 'number') return storedPercentage;
+    // Context occupancy can never exceed 100% — readings above that were
+    // computed from cumulative turn usage by older builds and must not be
+    // trusted to gate resume. Drop them and re-measure from the transcript.
+    if (typeof storedPercentage === 'number' && storedPercentage <= 100) return storedPercentage;
+    if (typeof storedPercentage === 'number') {
+      console.warn(`[Claude Service] Discarding impossible stored context reading (${storedPercentage}%) for ${sessionId.substring(0, 8)}; re-measuring from transcript`);
+      this.sessionContextPercentage.delete(sessionId);
+      this.sessionStore.delete(`contextUsage.${sessionId}`);
+    }
     return this.inferSessionContextPercentageFromSdkTranscript(sessionId, session, sdkSessionId, model);
   }
 
@@ -1609,6 +1662,161 @@ Read or source that file if you need the actual values. Do not print secret valu
     return references;
   }
 
+  private buildApprovedPlanHandoffContext(sessionId: string): string {
+    const planFile = this.sessionApprovedPlanFiles.get(sessionId)
+      || this.sessionStore.get(`harnessState.${sessionId}.approvedPlan`) as { content?: string; filePath?: string } | undefined;
+    const planContent = planFile?.content?.trim();
+    if (!planContent) return '';
+
+    const planReference = planFile?.filePath
+      ? `Plan file path: ${planFile.filePath}\n`
+      : '';
+
+    return `<approved_plan_handoff>
+The user approved this plan for execution. If the current user message asks to proceed, execute this plan before starting a different investigation.
+${planReference}
+${planContent}
+</approved_plan_handoff>`;
+  }
+
+  private isFalseNoContextAssistantMessage(message: ChatMessage): boolean {
+    if (message.role !== 'assistant') return false;
+
+    const normalized = this.normalizeSdkResumeMatchText(message.content || '').toLowerCase();
+    if (!normalized) return false;
+
+    return [
+      'fresh conversation',
+      'without the earlier thread',
+      'without the earlier context',
+      'without the dossier',
+      'without a full briefing',
+      'no briefing carried over',
+      'no record of which',
+      'no record of what',
+      "don't yet have the",
+      'which jobs you',
+      'which mission',
+      'what would you like me to do with the evals',
+      'leaves rather a lot to the imagination',
+    ].some((needle) => normalized.includes(needle));
+  }
+
+  private getBuildContinuityMessageContent(message: ChatMessage, maxChars: number): string {
+    let content = message.content || '';
+    if (!content.trim() && message.contentBlocks?.length) {
+      content = message.contentBlocks
+        .filter((block) => block.type === 'text' && block.text)
+        .map((block) => block.text || '')
+        .join('');
+    }
+
+    if (maxChars > 0 && content.length > maxChars) {
+      return `${content.slice(0, maxChars)}\n[...truncated]`;
+    }
+    return content;
+  }
+
+  private filterMessagesForBuildContinuityContext(messages: ChatMessage[]): ChatMessage[] {
+    let hasPriorContext = false;
+
+    return messages.filter((message) => {
+      const content = this.getBuildContinuityMessageContent(message, 1).trim();
+      if (message.role === 'assistant' && hasPriorContext && this.isFalseNoContextAssistantMessage(message)) {
+        return false;
+      }
+
+      if (content.length > 0 || (message.toolCalls?.length || 0) > 0 || (message.contentBlocks?.length || 0) > 0) {
+        hasPriorContext = true;
+      }
+
+      return true;
+    });
+  }
+
+  private extractBuildContinuityReferences(messages: ChatMessage[]): string[] {
+    const references: string[] = [];
+    const seen = new Set<string>();
+    const add = (value: string): void => {
+      const cleaned = value
+        .replace(/[),.;:]+$/g, '')
+        .replace(/^['"`]+|['"`]+$/g, '')
+        .trim();
+      if (cleaned.length < 3 || seen.has(cleaned)) return;
+      seen.add(cleaned);
+      references.push(cleaned);
+    };
+
+    const text = messages
+      .slice(-30)
+      .map((message) => this.getBuildContinuityMessageContent(message, 4000))
+      .join('\n');
+
+    const patterns = [
+      /\/[A-Za-z0-9._~@%+=:,/-]+/g,
+      /\b[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+\.(?:ts|tsx|js|jsx|py|json|jsonl|md|sql|txt|toml|ya?ml|sh|tsx|css|html)\b/g,
+      /\b_[A-Za-z0-9_.-]+\.(?:json|jsonl|md|txt|psv|csv)\b/g,
+      /\b[A-Za-z0-9_.-]+\.(?:py|json|jsonl|md|sql|toml|ya?ml|sh)\b/g,
+      /\b(?:port|localhost:)\s*\d{2,5}\b/gi,
+      /\b[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\b/gi,
+    ];
+
+    for (const pattern of patterns) {
+      for (const match of text.matchAll(pattern)) {
+        add(match[0]);
+        if (references.length >= 24) return references;
+      }
+    }
+
+    return references;
+  }
+
+  private buildBuildSessionContinuityContext(
+    sessionId: string,
+    session: Session,
+    messages: ChatMessage[],
+  ): string {
+    const filteredMessages = this.filterMessagesForBuildContinuityContext(messages);
+    if (filteredMessages.length === 0) return '';
+
+    const sessionName = session.name || session.aiGeneratedName || sessionId;
+    const remotePath = session.worktreePath || session.repoPath || session.sshConfig?.remoteWorkdir;
+    const recentUsers = filteredMessages
+      .filter((message) => message.role === 'user')
+      .slice(-6)
+      .map((message) => `- ${this.getBuildContinuityMessageContent(message, 900).trim()}`)
+      .filter((line) => line.length > 2);
+    const workingNotes = filteredMessages
+      .filter((message) => message.role === 'assistant' && !this.isFalseNoContextAssistantMessage(message))
+      .slice(-4)
+      .map((message) => {
+        const content = this.getBuildContinuityMessageContent(message, 1200).trim();
+        return content ? `- ${content}` : '';
+      })
+      .filter(Boolean);
+    const references = this.extractBuildContinuityReferences(filteredMessages);
+
+    const parts = [
+      '<build_session_continuity>',
+      'This is the same Build session, not a new conversation. Treat this block as authoritative over any earlier assistant message claiming missing context, no briefing, or no prior thread.',
+      `Session: ${sessionName}`,
+      session.branch ? `Branch: ${session.branch}` : '',
+      remotePath ? `Working directory: ${remotePath}` : '',
+      recentUsers.length > 0 ? `Recent user requests:\n${recentUsers.join('\n')}` : '',
+      references.length > 0 ? `Relevant files, job artifacts, or ids mentioned:\n${references.map((reference) => `- ${reference}`).join('\n')}` : '',
+      workingNotes.length > 0 ? `Recent working notes from prior assistant turns:\n${workingNotes.join('\n')}` : '',
+      'Continue from these facts directly. If the user asks a short follow-up like "the evals" or "what happened to those jobs", resolve it against the recent requests and artifacts above before asking them to restate context.',
+      '</build_session_continuity>',
+    ].filter(Boolean).join('\n\n');
+
+    return parts.length > 18000
+      ? truncateMiddlePreservingTail(parts, 18000, {
+        marker: '\n\n[... middle of Build session continuity context truncated ...]\n\n',
+        tailRatio: 0.4,
+      })
+      : parts;
+  }
+
   private async buildUnifiedContextForHarness(
     sessionId: string,
     session: Session,
@@ -1619,7 +1827,7 @@ Read or source that file if you need the actual values. Do not print secret valu
     prefetchedTranscriptMessages?: ChatMessage[],
   ): Promise<string> {
     const transcriptMessages = prefetchedTranscriptMessages
-      ?? await this.getCanonicalMessages(sessionId, ROUTING_TRANSCRIPT_LIMIT);
+      ?? await this.getCanonicalMessages(sessionId, ROUTING_TRANSCRIPT_LIMIT, { allowSdkFallback: false });
     const mergedMessages = mergeConversationMessages(transcriptMessages, normalizedSupplementalMessages);
     const memoryProjectPath = this.getMemoryProjectPath(session, projectPath);
     const memoriesContext = memoryProjectPath
@@ -1631,6 +1839,11 @@ Read or source that file if you need the actual values. Do not print secret valu
     const contextLimits = CLI_HARNESS_CONTEXT_LIMITS[currentHarness];
     const remoteProjectContext = await this.buildRemoteProjectInstructionContext(sessionId, session, projectPath, contextLimits);
     const handoffReferences = this.buildAutoBuildHandoffReferences(sessionId, session, projectPath);
+    const approvedPlanHandoffContext = this.buildApprovedPlanHandoffContext(sessionId);
+    const orchestrationAndPlanContext = [
+      approvedPlanHandoffContext,
+      autoOrchestrationContext,
+    ].filter(Boolean).join('\n\n');
     const maxConversationChars = handoffReferences.length > 0
       ? Math.min(contextLimits?.maxConversationChars ?? 24000, 24000)
       : contextLimits?.maxConversationChars;
@@ -1640,7 +1853,7 @@ Read or source that file if you need the actual values. Do not print secret valu
       currentHarness,
       projectPath,
       additionalProjectContext: remoteProjectContext,
-      orchestrationContext: autoOrchestrationContext,
+      orchestrationContext: orchestrationAndPlanContext,
       handoffReferences,
       memoriesContext,
       includeProjectContext: session.sshConfig ? false : true,
@@ -1662,17 +1875,61 @@ Read or source that file if you need the actual values. Do not print secret valu
     return context;
   }
 
-  private rememberLastAssistantHarness(sessionId: string, harness: Harness): void {
+  private rememberLastAssistantHarness(sessionId: string, harness: Harness, model?: string): void {
     this.sessionStore.set(`harnessState.${sessionId}.lastAssistantHarness`, harness);
+    if (model) {
+      this.sessionStore.set(`harnessState.${sessionId}.lastAssistantModel`, model);
+    }
+  }
+
+  private getLastAssistantRoute(
+    supplementalMessages: ChatMessage[],
+    transcriptMessages: ChatMessage[] = [],
+  ): { harness?: Harness; model?: string } {
+    const merged = mergeConversationMessages(transcriptMessages, supplementalMessages);
+    const lastAssistant = [...merged].reverse().find((message) => message.role === 'assistant' && message.harness);
+    return {
+      harness: lastAssistant?.harness,
+      model: typeof (lastAssistant as ChatMessage & { model?: unknown; resolvedModel?: unknown } | undefined)?.model === 'string'
+        ? (lastAssistant as ChatMessage & { model: string }).model
+        : typeof (lastAssistant as ChatMessage & { resolvedModel?: unknown } | undefined)?.resolvedModel === 'string'
+          ? (lastAssistant as ChatMessage & { resolvedModel: string }).resolvedModel
+          : undefined,
+    };
   }
 
   private getLastAssistantHarness(
     supplementalMessages: ChatMessage[],
     transcriptMessages: ChatMessage[] = [],
   ): Harness | undefined {
-    const merged = mergeConversationMessages(transcriptMessages, supplementalMessages);
-    const lastAssistant = [...merged].reverse().find((message) => message.role === 'assistant' && message.harness);
-    return lastAssistant?.harness;
+    return this.getLastAssistantRoute(supplementalMessages, transcriptMessages).harness;
+  }
+
+  private async resolveLastAssistantRoute(
+    sessionId: string,
+    supplementalMessages: ChatMessage[],
+    prefetchedTranscriptMessages?: ChatMessage[],
+  ): Promise<{ harness?: Harness; model?: string }> {
+    const fromSupplemental = this.getLastAssistantRoute(supplementalMessages);
+    if (fromSupplemental.harness) return fromSupplemental;
+
+    if (prefetchedTranscriptMessages) {
+      const fromPrefetched = this.getLastAssistantRoute(supplementalMessages, prefetchedTranscriptMessages);
+      if (fromPrefetched.harness) return fromPrefetched;
+    } else {
+      try {
+        const transcriptPeek = await this.getCanonicalMessages(sessionId, ROUTING_TRANSCRIPT_LIMIT, { allowSdkFallback: false });
+        const fromTranscript = this.getLastAssistantRoute(supplementalMessages, transcriptPeek);
+        if (fromTranscript.harness) return fromTranscript;
+      } catch (error) {
+        console.warn('[Claude Service] Could not peek transcript for last assistant harness:', error);
+      }
+    }
+
+    return {
+      harness: this.sessionStore.get(`harnessState.${sessionId}.lastAssistantHarness`) as Harness | undefined,
+      model: this.sessionStore.get(`harnessState.${sessionId}.lastAssistantModel`) as string | undefined,
+    };
   }
 
   private async resolveLastAssistantHarness(
@@ -1680,23 +1937,7 @@ Read or source that file if you need the actual values. Do not print secret valu
     supplementalMessages: ChatMessage[],
     prefetchedTranscriptMessages?: ChatMessage[],
   ): Promise<Harness | undefined> {
-    const fromSupplemental = this.getLastAssistantHarness(supplementalMessages);
-    if (fromSupplemental) return fromSupplemental;
-
-    if (prefetchedTranscriptMessages) {
-      const fromPrefetched = this.getLastAssistantHarness(supplementalMessages, prefetchedTranscriptMessages);
-      if (fromPrefetched) return fromPrefetched;
-    } else {
-      try {
-        const transcriptPeek = await this.getCanonicalMessages(sessionId, ROUTING_TRANSCRIPT_LIMIT);
-        const fromTranscript = this.getLastAssistantHarness(supplementalMessages, transcriptPeek);
-        if (fromTranscript) return fromTranscript;
-      } catch (error) {
-        console.warn('[Claude Service] Could not peek transcript for last assistant harness:', error);
-      }
-    }
-
-    return this.sessionStore.get(`harnessState.${sessionId}.lastAssistantHarness`) as Harness | undefined;
+    return (await this.resolveLastAssistantRoute(sessionId, supplementalMessages, prefetchedTranscriptMessages)).harness;
   }
 
   private canAutoBuildStageEdit(stage: OrchestrationStage, sdkPermissionMode?: string): boolean {
@@ -2832,13 +3073,22 @@ ${leadContent.slice(0, leadContextLimit)}
     // UpdateSessionName tool - allow Claude to set descriptive session names
     const updateSessionNameTool = tool(
       'UpdateSessionName',
-      'Update the current session name with a descriptive title. Call this when you understand what the session is about to help the user identify it later. Use concise, descriptive titles (3-5 words).',
+      'Set the current session name once with a descriptive title. Only call this when the session does not already have a useful name. Do not rename an already titled session. Use concise, descriptive titles (3-5 words).',
       {
         name: z.string().describe('A concise descriptive name for this session (e.g., "Video Processing Workflow", "Entity Research Integration")'),
       },
       async (args) => {
         try {
           const { name } = args;
+          const currentSession = this.sessionStore.get(`sessions.${sessionId}`) as Session | undefined;
+          if (hasExistingSessionTitle(sessionId, currentSession)) {
+            return {
+              content: [{
+                type: 'text',
+                text: 'Session already has a title; keeping the current name.',
+              }],
+            };
+          }
           const sanitizedName = sanitizeSessionTitle(name);
           if (!sanitizedName) {
             console.warn('[Claude Service] Rejected vague session name:', sessionId, '→', name);
@@ -2851,8 +3101,16 @@ ${leadContent.slice(0, leadContextLimit)}
           }
           console.log('[Claude Service] Updating session name:', sessionId, '→', sanitizedName);
 
-          // Store the custom name
-          this.sessionStore.set(`sessionNames.${sessionId}`, sanitizedName);
+          // Store the auto name once. Future automatic title writers must not replace it.
+          const storedName = rememberAutoSessionTitle(sessionId, sanitizedName, 'claude-tool');
+          if (currentSession && storedName) {
+            this.sessionStore.set(`sessions.${sessionId}`, {
+              ...currentSession,
+              name: storedName,
+              aiGeneratedName: storedName,
+              autoTitleGeneratedAt: new Date().toISOString(),
+            });
+          }
           this.onSessionNameChanged?.();
 
           return {
@@ -3782,17 +4040,76 @@ ${leadContent.slice(0, leadContextLimit)}
     });
   }
 
+  private rememberApprovedPlan(
+    sessionId: string,
+    planContent: string | undefined,
+    planFilePath: string | undefined,
+    source: 'live' | 'late',
+  ): void {
+    const content = (planContent || '').trim();
+    if (!content) return;
+
+    this.sessionApprovedPlanFiles.set(sessionId, {
+      content,
+      filePath: planFilePath || '',
+    });
+    this.sessionStore.set(`harnessState.${sessionId}.approvedPlan`, {
+      content,
+      filePath: planFilePath || '',
+      updatedAt: new Date().toISOString(),
+    });
+    this.sessionPlanFiles.delete(sessionId);
+    console.log(
+      `[Claude Service] Recorded ${source} approved plan for handoff context: ` +
+      `${sessionId.substring(0, 8)} (${content.length} chars${planFilePath ? `, ${planFilePath}` : ''})`
+    );
+  }
+
+  private applyPlanApprovalExecutionMode(sessionId: string): void {
+    this.sessionPermissionModes.set(sessionId, 'bypassPermissions');
+    this.prePlanPermissionModes.delete(sessionId);
+    this.autoBuildForcedPlanSessions.delete(sessionId);
+    this.persistSessionPermissionMode(sessionId, 'bypassPermissions');
+
+    if (this.mainWindow) {
+      this.mainWindow.webContents.send(IPC_CHANNELS.CLAUDE_PERMISSION_MODE_CHANGED, {
+        sessionId,
+        mode: 'bypassPermissions',
+      });
+    }
+  }
+
   // Handle plan approval responses from the renderer
   handlePlanApprovalResponse(response: PlanApprovalResponse): void {
     const pending = this.pendingPlanApprovals.get(response.requestId);
-    if (pending) {
-      // Store feedback if provided for use in rejection message (scoped per session)
-      if (!response.approved && response.feedback) {
-        this.lastPlanFeedback.set(pending.sessionId, response.feedback);
+    const record = this.planApprovalRecords.get(response.requestId);
+    const sessionId = pending?.sessionId || response.sessionId || record?.sessionId;
+
+    if (!sessionId) {
+      console.warn('[Claude Service] Ignoring plan approval response without session context:', response.requestId);
+      return;
+    }
+
+    if (!response.approved && response.feedback) {
+      this.lastPlanFeedback.set(sessionId, response.feedback);
+    }
+
+    if (response.approved) {
+      const planContent = record?.planContent || response.planContent;
+      const planFilePath = record?.planFilePath || response.planFilePath;
+      this.rememberApprovedPlan(sessionId, planContent, planFilePath, pending ? 'live' : 'late');
+      if (!pending) {
+        this.applyPlanApprovalExecutionMode(sessionId);
+        console.log('[Claude Service] Late plan approval recorded for next harness handoff:', response.requestId);
       }
+    }
+
+    if (pending) {
       pending.resolve(response.approved);
       this.pendingPlanApprovals.delete(response.requestId);
     }
+
+    this.planApprovalRecords.delete(response.requestId);
   }
 
   // Ask user to approve a plan via the renderer
@@ -3807,6 +4124,11 @@ ${leadContent.slice(0, leadContextLimit)}
     return new Promise((resolve, reject) => {
       // Store the promise resolve/reject functions
       this.pendingPlanApprovals.set(requestId, { resolve, reject, sessionId });
+      this.planApprovalRecords.set(requestId, {
+        sessionId,
+        planContent,
+        planFilePath,
+      });
 
       // Send plan approval request to renderer
       if (this.mainWindow) {
@@ -4231,9 +4553,12 @@ ${leadContent.slice(0, leadContextLimit)}
     }
 
     if (session.sshConfig) {
-      await sshService.cleanupDetachedBridgeProcessesForNewTurn(sessionId, session.sshConfig, {
-        killActive: true,
+      void sshService.cleanupDetachedBridgeProcessesForNewTurn(sessionId, session.sshConfig, {
+        killActive: false,
+      }).catch((error) => {
+        console.warn('[Claude Service] Background foreground SSH cleanup failed:', error);
       });
+      console.log(`[Claude Service] Foreground SSH cleanup scheduled in background for ${sessionId.substring(0, 8)}`);
     }
 
     // Rate limit auto-retry flag — set in rate_limit_event, checked in result handler
@@ -4248,7 +4573,7 @@ ${leadContent.slice(0, leadContextLimit)}
     // scans are guarded and run only on native Claude resume paths below.
     const rawSdkSessionId = this.sessionStore.get(`sdkSessionMappings.${sessionId}`) as string | undefined
       || this.sessionStore.get(`sessions.${sessionId}.sdkSessionId`) as string | undefined;
-    let sdkSessionId = rawSdkSessionId && rawSdkSessionId !== 'new' ? rawSdkSessionId : undefined;
+    const sdkSessionId = rawSdkSessionId && rawSdkSessionId !== 'new' ? rawSdkSessionId : undefined;
 
     // Invalidate message cache - new message being sent (performance optimization)
     this.invalidateMessageCache(sessionId);
@@ -4394,7 +4719,7 @@ ${leadContent.slice(0, leadContextLimit)}
         try {
           let recentRoutingMessages = normalizedSupplementalMessages;
           try {
-            const transcriptMessages = await this.getCanonicalMessages(sessionId, ROUTING_TRANSCRIPT_LIMIT);
+            const transcriptMessages = await this.getCanonicalMessages(sessionId, ROUTING_TRANSCRIPT_LIMIT, { allowSdkFallback: false });
             recentRoutingMessages = mergeConversationMessages(transcriptMessages, normalizedSupplementalMessages);
             prefetchedRoutingMessages = recentRoutingMessages;
           } catch (error) {
@@ -4403,14 +4728,31 @@ ${leadContent.slice(0, leadContextLimit)}
 
           let remoteCliCapabilities: RemoteCliCapabilities | undefined;
           if (session.sshConfig) {
-            remoteCliCapabilities = await sshService.detectRemoteCliCapabilities(sessionId, session.sshConfig);
+            remoteCliCapabilities = sshService.getCachedRemoteCliCapabilities(session.sshConfig);
+            if (!remoteCliCapabilities) {
+              remoteCliCapabilities = ASSUMED_REMOTE_CLI_CAPABILITIES;
+              void sshService.detectRemoteCliCapabilities(sessionId, session.sshConfig).catch((error) => {
+                console.warn('[Claude Service] Background remote CLI capability refresh failed:', error);
+              });
+              console.log('[Claude Service] Auto Build using assumed remote CLI capabilities; refresh scheduled in background');
+            }
           }
+
+          const approvedPlanContinuation = Boolean(this.sessionApprovedPlanFiles.get(sessionId)?.content?.trim());
+          // Resolve the previous turn's harness/model on every Auto Build turn:
+          // the router biases follow-up messages toward the same harness (native
+          // resume is cheaper than rebuilding context) and switches only on
+          // genuinely new intents.
+          const continuationRoute = await this.resolveLastAssistantRoute(sessionId, normalizedSupplementalMessages, recentRoutingMessages);
 
           const routingDecision = await autoRouterService.classifyAndRoute(sessionId, userMessage, {
             gstackMode: gstackMode || undefined,
             permissionMode: sdkPermissionMode,
             isSSH: !!session.sshConfig,
             remoteCliCapabilities,
+            approvedPlanContinuation,
+            continuationHarness: continuationRoute.harness,
+            continuationModel: continuationRoute.model,
             attachmentCount: attachments?.length || 0,
             attachmentTypes: attachments?.map((attachment) => attachment.type) || [],
             recentMessages: recentRoutingMessages,
@@ -4460,27 +4802,6 @@ ${leadContent.slice(0, leadContextLimit)}
             this.ensureCodexGoalsEnabled('Auto Build route');
           }
 
-          // Auto-generate session name from task when in Auto Build mode
-          if (userMessage && userMessage.length > 10) {
-            try {
-              const currentSession = this.sessionStore.get(`sessions.${sessionId}`) as Session | undefined;
-              if (currentSession && !currentSession.aiGeneratedName) {
-                let tabName = userMessage
-                  .replace(/^(I want to|can you|please|could you|I need to|I need|let's|we need to|we should|I'd like to|I have a new task[^-]*-)\s*/i, '')
-                  .trim();
-                if (tabName.length > 60) {
-                  tabName = tabName.substring(0, 57).replace(/\s+\S*$/, '') + '…';
-                }
-                tabName = tabName.charAt(0).toUpperCase() + tabName.slice(1);
-                if (tabName.length > 5) {
-                  const updatedSession = { ...currentSession, aiGeneratedName: tabName };
-                  this.sessionStore.set(`sessions.${sessionId}`, updatedSession);
-                }
-              }
-            } catch (e) {
-              console.warn('[Claude Service] Could not auto-generate tab name:', e);
-            }
-          }
         } catch (e) {
           console.warn('[Claude Service] Auto Build router failed, falling back to Sonnet:', e);
           selectedModel = 'claude-sonnet-4-6';
@@ -4575,22 +4896,48 @@ ${leadContent.slice(0, leadContextLimit)}
           this.ensureCodexGoalsEnabled('explicit /goal');
         }
 
-        let conversationContext = '';
-        try {
-          conversationContext = await this.buildUnifiedContextForHarness(
+        const isManualCodexSelection = selectionMode === 'manual';
+        const lastHarnessForCodex = isManualCodexSelection
+          ? await this.resolveLastAssistantHarness(
             sessionId,
-            session,
-            'codex',
             normalizedSupplementalMessages,
-            projectPath,
-            autoOrchestrationContext,
             prefetchedRoutingMessages,
-          );
-          if (conversationContext) {
-            console.log(`[Claude Service] Codex unified harness context: ${conversationContext.length} chars`);
+          )
+          : undefined;
+        let codexThreadId = isManualCodexSelection ? codexService.getThreadId(sessionId) : undefined;
+        let shouldBuildCodexContext = true;
+
+        if (isManualCodexSelection) {
+          if (lastHarnessForCodex && lastHarnessForCodex !== 'codex') {
+            console.log(`[Claude Service] Manual Codex selected after ${lastHarnessForCodex}; starting fresh native Codex thread with Build handoff context`);
+            codexService.clearThreadId(sessionId);
+            codexThreadId = undefined;
+          } else if (codexThreadId) {
+            console.log(`[Claude Service] Manual Codex resuming native thread ${codexThreadId} for session ${sessionId.substring(0, 8)}`);
+            shouldBuildCodexContext = false;
+          } else {
+            console.log('[Claude Service] Manual Codex has no native thread yet; seeding a new native thread from Build context');
           }
-        } catch (e) {
-          console.warn('[Claude Service] Could not load messages for Codex context:', e);
+        }
+
+        let conversationContext = '';
+        if (shouldBuildCodexContext) {
+          try {
+            conversationContext = await this.buildUnifiedContextForHarness(
+              sessionId,
+              session,
+              'codex',
+              normalizedSupplementalMessages,
+              projectPath,
+              autoOrchestrationContext,
+              prefetchedRoutingMessages,
+            );
+            if (conversationContext) {
+              console.log(`[Claude Service] Codex unified harness context: ${conversationContext.length} chars`);
+            }
+          } catch (e) {
+            console.warn('[Claude Service] Could not load messages for Codex context:', e);
+          }
         }
 
         const codexContext = [secureEnvContext, conversationContext].filter(Boolean).join('\n\n');
@@ -4599,7 +4946,18 @@ ${leadContent.slice(0, leadContextLimit)}
           ? `/goal ${nativeCodexGoalObjective}`
           : userMessage;
 
-        const codexEvents = codexService.streamAsChat(sessionId, codexPrompt, projectPath, session.sshConfig, codexContext, codexModel, attachments, autoBuildLeadPermissionMode, leadHarnessPolicy) as AsyncIterable<StreamEvent>;
+        const codexEvents = codexService.streamAsChat(
+          sessionId,
+          codexPrompt,
+          projectPath,
+          session.sshConfig,
+          codexContext,
+          codexModel,
+          attachments,
+          autoBuildLeadPermissionMode,
+          leadHarnessPolicy,
+          { resumeThreadId: codexThreadId, persistThread: isManualCodexSelection },
+        ) as AsyncIterable<StreamEvent>;
         for await (const event of this.streamLeadWithAutoBuildStages(
           codexEvents,
           sessionId,
@@ -4863,9 +5221,10 @@ ${leadContent.slice(0, leadContextLimit)}
       }
 
       // If the last turn was handled by a different harness (Codex, Cursor, etc.),
-      // don't resume the stale Claude SDK session. Build's transcript is canonical
-      // across harnesses; resuming Claude's native transcript after a non-Claude
-      // turn can drag in unrelated old context.
+      // don't resume the stale Claude SDK session. But when the user manually
+      // stays on Claude Code, preserve Claude's native SDK transcript. That is
+      // the only path that gives Claude its own immediate prior-turn context
+      // without relying on copied Build transcript summaries.
       let effectiveSdkSessionId = sdkSessionId;
       if (sdkSessionId) {
         const lastHarness = await this.resolveLastAssistantHarness(
@@ -4874,16 +5233,7 @@ ${leadContent.slice(0, leadContextLimit)}
           console.log(`[Claude Service] Last turn was ${lastHarness}, not Claude — skipping Claude SDK resume and using Build transcript context`);
           effectiveSdkSessionId = undefined;
         } else if (session.sshConfig) {
-          sdkSessionId = await this.repairSshSdkSessionIdFromBuildTranscriptOnce(
-            sessionId,
-            session,
-            rawSdkSessionId,
-            userMessage,
-          );
-          effectiveSdkSessionId = sdkSessionId;
-          if (sdkSessionId) {
-            sshService.invalidateTranscriptCache(sdkSessionId);
-          }
+          console.log('[Claude Service] SSH foreground Claude turn: resuming stored Claude SDK session without repair scan');
         }
       }
       if (effectiveSdkSessionId) {
@@ -4914,19 +5264,42 @@ ${leadContent.slice(0, leadContextLimit)}
         autoOrchestrationContext = '';
       }
 
-      // Build cross-harness context so Claude sees messages from Cursor/Codex turns
+      // If native Claude resume is unavailable, the Build transcript becomes
+      // the continuity source and must include prior Claude turns too.
       let supplementalConversationContext = '';
+      let supplementalConversationContextLabel = 'Recent Session Context From Other Models';
       try {
-        const transcriptMessages = await this.getCanonicalMessages(sessionId);
+        const transcriptMessages = await this.getCanonicalMessages(sessionId, 200, { allowSdkFallback: false });
         const merged = mergeConversationMessages(transcriptMessages, normalizedSupplementalMessages);
         if (merged.length > 0) {
-          supplementalConversationContext = buildCrossHarnessContext(merged, [], 'claude');
+          const includeCurrentClaudeHarness = !effectiveSdkSessionId;
+          const continuityMessages = includeCurrentClaudeHarness
+            ? this.filterMessagesForBuildContinuityContext(merged)
+            : merged;
+          const pinnedBuildContinuityContext = includeCurrentClaudeHarness
+            ? this.buildBuildSessionContinuityContext(sessionId, session, continuityMessages)
+            : '';
+          const transcriptConversationContext = buildCrossHarnessContext(
+            continuityMessages,
+            [],
+            includeCurrentClaudeHarness ? undefined : 'claude',
+          );
+          supplementalConversationContext = [
+            pinnedBuildContinuityContext,
+            transcriptConversationContext,
+          ].filter(Boolean).join('\n\n');
+          supplementalConversationContextLabel = includeCurrentClaudeHarness
+            ? 'Recent Build Session Context'
+            : 'Recent Session Context From Other Models';
           if (supplementalConversationContext) {
-            console.log(`[Claude Service] Claude cross-harness context: ${supplementalConversationContext.length} chars from ${merged.length} messages`);
+            console.log(
+              `[Claude Service] Claude ${includeCurrentClaudeHarness ? 'Build transcript' : 'cross-harness'} context: ` +
+              `${supplementalConversationContext.length} chars from ${continuityMessages.length}/${merged.length} messages`
+            );
           }
         }
       } catch (error) {
-        console.warn('[Claude Service] Could not load transcript messages for cross-harness context:', error);
+        console.warn('[Claude Service] Could not load transcript messages for Claude continuity context:', error);
       }
 
       const claudePolicy = leadHarnessPolicy.claude;
@@ -4980,8 +5353,8 @@ ${leadContent.slice(0, leadContextLimit)}
         });
       }
 
-      // Create async generator for prompt with images
-      // Capture `this` for use inside the generator function
+      // Use the stable Claude SDK prompt shape for the initial turn. Keeping a
+      // long-lived AsyncIterable open here can leave the SDK waiting forever.
       const resizeImage = this.resizeImageIfNeeded.bind(this);
       const normalizeBase64ImageData = this.normalizeBase64ImageData.bind(this);
       const createPromptWithImages = async function* (): AsyncIterable<SDKUserMessage> {
@@ -4990,14 +5363,12 @@ ${leadContent.slice(0, leadContextLimit)}
         ];
 
         for (const attachment of imageAttachments) {
-          // Determine media type from filename or default to png
           const ext = attachment.name.split('.').pop()?.toLowerCase();
           const mediaType = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg'
             : ext === 'gif' ? 'image/gif'
-            : ext === 'webp' ? 'image/webp'
-            : 'image/png';
+              : ext === 'webp' ? 'image/webp'
+                : 'image/png';
 
-          // Resize image if needed to stay under Anthropic's dimension limits
           const resizedData = await resizeImage(normalizeBase64ImageData(attachment.content), mediaType);
 
           content.push({
@@ -5028,7 +5399,7 @@ ${leadContent.slice(0, leadContextLimit)}
       }
 
       // Pre-fetch agent memories to inject into system prompt.
-      const projectPath = session.worktreePath || session.repoPath || session.sshConfig?.remoteWorkdir || process.cwd();
+      const projectPath = this.resolveValidCwd(session);
       const memoryProjectPath = this.getMemoryProjectPath(session, projectPath);
       let memoriesPrompt: string | undefined;
       if (memoryProjectPath) {
@@ -5408,10 +5779,10 @@ Begin by creating the task structure now.
           includePartialMessages: true,
           // Use computed model — resolve custom:* IDs to actual API model names
           model: this.resolveCustomModelId(selectedModel),
-          // 1M context is native for Opus 4.6/Sonnet 4.6 (no beta needed since Mar 13 2026)
+          // 1M context is native for Fable 5, Opus 4.6, and Sonnet 4.6.
           // Legacy models (Sonnet 4.5, Sonnet 4) still need the beta until Apr 30 2026
           // Skip betas for Foundry (custom betas not supported)
-          ...(!settings.foundryEnabled && !selectedModel.includes('opus-4-6') && !selectedModel.includes('sonnet-4-6')
+          ...(!settings.foundryEnabled && !selectedModel.includes('fable-5') && !selectedModel.includes('opus-4-6') && !selectedModel.includes('sonnet-4-6')
             ? { betas: ['context-1m-2025-08-07' as const] }
             : {}),
           ...(claudePolicy?.thinking ? { thinking: claudePolicy.thinking } : {}),
@@ -5424,7 +5795,15 @@ Begin by creating the task structure now.
           systemPrompt: {
             type: 'preset',
             preset: 'claude_code',
-            append: this.buildSystemPromptAppend(session, memoriesPrompt, gstackMode, secureEnvContext, supplementalConversationContext, autoOrchestrationContext),
+            append: this.buildSystemPromptAppend(
+              session,
+              memoriesPrompt,
+              gstackMode,
+              secureEnvContext,
+              supplementalConversationContext,
+              autoOrchestrationContext,
+              supplementalConversationContextLabel,
+            ),
           },
           // Enable CLAUDE.md and Skills from both user (~/.claude/) and project (.claude/)
           // Skills are discovered automatically by the SDK from these filesystem locations
@@ -5618,26 +5997,9 @@ Begin by creating the task structure now.
 
                 if (approved) {
                   console.log('[Claude Service] Plan approved by user');
-                  if (planFilePath) {
-                    this.sessionApprovedPlanFiles.set(sessionId, { content: planContent, filePath: planFilePath });
-                  }
-                  // Clean up cached plan content
-                  this.sessionPlanFiles.delete(sessionId);
-
-                  // Switch to bypassPermissions (GREP IT) mode so the agent can execute its plan without interruptions
-                  this.sessionPermissionModes.set(sessionId, 'bypassPermissions');
-                  this.prePlanPermissionModes.delete(sessionId); // Clean up
-                  this.autoBuildForcedPlanSessions.delete(sessionId);
-                  this.persistSessionPermissionMode(sessionId, 'bypassPermissions');
+                  this.rememberApprovedPlan(sessionId, planContent, planFilePath, 'live');
+                  this.applyPlanApprovalExecutionMode(sessionId);
                   console.log('[Claude Service] Plan approved — switching to bypassPermissions mode for execution');
-
-                  // Notify the renderer to update its permission mode state
-                  if (this.mainWindow) {
-                    this.mainWindow.webContents.send(IPC_CHANNELS.CLAUDE_PERMISSION_MODE_CHANGED, {
-                      sessionId,
-                      mode: 'bypassPermissions',
-                    });
-                  }
 
                   return { behavior: 'allow' as const, updatedInput: input };
                 } else {
@@ -5645,6 +6007,7 @@ Begin by creating the task structure now.
                   // Clean up cached plan content
                   this.sessionPlanFiles.delete(sessionId);
                   this.sessionApprovedPlanFiles.delete(sessionId);
+                  this.sessionStore.delete(`harnessState.${sessionId}.approvedPlan`);
 
                   // Use custom feedback if provided, otherwise use default message
                   const planFeedback = this.lastPlanFeedback.get(sessionId);
@@ -5808,6 +6171,10 @@ Begin by creating the task structure now.
       let queryComplete = false;
       let lastTerminalReason: string | undefined; // From SDK result message (v0.2.91+)
       let lastToolName: string | undefined; // Track last tool for analytics attribution
+      // Context occupancy = input tokens of the LAST single API call. The result
+      // message's usage is cumulative across every API call in the turn (cache
+      // reads re-count the context on each call), so it cannot measure context.
+      let lastApiCallContextTokens: number | undefined;
       // Use manual iterator instead of `for await` to avoid auto-closing the
       // iterator on break. The background task listener needs the iterator to
       // stay open so it can keep reading task events after the turn ends.
@@ -6038,12 +6405,28 @@ Begin by creating the task structure now.
               // blocks the entire real-time pipeline while reading remote state.
               (async () => {
                 try {
+                  const currentSession = this.sessionStore.get(`sessions.${sessionId}`) as Session | undefined;
+                  if (hasExistingSessionTitle(sessionId, currentSession)) {
+                    return;
+                  }
                   // eslint-disable-next-line @typescript-eslint/no-var-requires
                   const { getSessionInfo } = require('@anthropic-ai/claude-agent-sdk') as { getSessionInfo: (id: string, opts?: { dir?: string }) => Promise<{ summary?: string } | undefined> };
                   const info = await getSessionInfo(canonicalSdkSessionId, { dir: projectPath || process.cwd() });
                   const summary = sanitizeSessionTitle(info?.summary);
+                  if (hasExistingSessionTitle(sessionId, currentSession)) {
+                    return;
+                  }
                   if (summary) {
-                    this.sessionStore.set(`sessionNames.${sessionId}`, summary);
+                    const storedSummary = rememberAutoSessionTitle(sessionId, summary, 'sdk-summary');
+                    if (!storedSummary) return;
+                    if (currentSession) {
+                      this.sessionStore.set(`sessions.${sessionId}`, {
+                        ...currentSession,
+                        name: storedSummary,
+                        aiGeneratedName: storedSummary,
+                        autoTitleGeneratedAt: new Date().toISOString(),
+                      });
+                    }
                     console.log(`[Claude SDK] Session name from SDK: "${summary}"`);
                     this.onSessionNameChanged?.();
                   }
@@ -6074,10 +6457,22 @@ Begin by creating the task structure now.
           case 'assistant': {
             // Full assistant message - only process tool_use blocks here
             // Text and thinking are handled via stream_event for real-time streaming
-            const assistantMsg = msg as SDKMessage & { parent_tool_use_id?: string | null; message?: { content?: Array<{ type: string; text?: string; thinking?: string; name?: string; id?: string; input?: Record<string, unknown> }> } };
+            const assistantMsg = msg as SDKMessage & { parent_tool_use_id?: string | null; message?: { content?: Array<{ type: string; text?: string; thinking?: string; name?: string; id?: string; input?: Record<string, unknown> }>; usage?: { input_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } } };
 
             // Track which agent is producing this content
             currentAgentId = assistantMsg.parent_tool_use_id || undefined;
+
+            // Top-level assistant calls carry per-API-call usage: the context
+            // this single call read. Subagent calls have their own contexts.
+            if (!assistantMsg.parent_tool_use_id && assistantMsg.message?.usage) {
+              const callUsage = assistantMsg.message.usage;
+              const callTokens = (callUsage.input_tokens || 0)
+                + (callUsage.cache_creation_input_tokens || 0)
+                + (callUsage.cache_read_input_tokens || 0);
+              if (callTokens > 0) {
+                lastApiCallContextTokens = callTokens;
+              }
+            }
 
             if (assistantMsg.message?.content) {
               // Log all block types to debug tool detection
@@ -6317,6 +6712,7 @@ Begin by creating the task structure now.
                           // Cache the plan content for this session (for later ExitPlanMode use)
                           this.sessionPlanFiles.set(sessionId, { content: planContent, filePath });
                           this.sessionApprovedPlanFiles.delete(sessionId);
+                          this.sessionStore.delete(`harnessState.${sessionId}.approvedPlan`);
 
                           // Emit to renderer via IPC
                           if (this.mainWindow) {
@@ -6505,7 +6901,6 @@ Begin by creating the task structure now.
               const outputTokens = successResult.usage.output_tokens || 0;
               const currentModel = successResult.model || selectedModel || 'claude-opus-4-6';
               const contextWindowSize = this.getContextWindowSize(currentModel);
-              const percentage = Math.round((inputTokens / contextWindowSize) * 100);
 
               if (
                 effectiveSdkSessionId
@@ -6521,10 +6916,15 @@ Begin by creating the task structure now.
                 return;
               }
 
-              console.log(`[Claude SDK] Conversation tokens: ${inputTokens}/${contextWindowSize} (${percentage}%)`);
-              this.rememberSessionContextUsage(sessionId, inputTokens, contextWindowSize, percentage);
+              // Context occupancy comes from the last single API call, NOT the
+              // cumulative result usage (which re-counts cache reads per call
+              // and can exceed the window several times over).
+              const contextTokens = lastApiCallContextTokens ?? inputTokens;
+              const percentage = Math.round((contextTokens / contextWindowSize) * 100);
+              console.log(`[Claude SDK] Context tokens: ${contextTokens}/${contextWindowSize} (${percentage}%), cumulative turn tokens: ${inputTokens}`);
+              this.rememberSessionContextUsage(sessionId, contextTokens, contextWindowSize, percentage);
 
-              if (inputTokens >= contextWindowSize * 0.75) {
+              if (contextTokens >= contextWindowSize * 0.75) {
                 console.warn(`[Claude SDK] ⚠️ Conversation approaching context limit: ${percentage}%`);
               }
 
@@ -6545,6 +6945,16 @@ Begin by creating the task structure now.
                     ]);
                     contextUsageBreakdown = richUsage as unknown as Record<string, unknown>;
                     console.log(`[Claude SDK] Rich context usage: ${richUsage.totalTokens}/${richUsage.maxTokens} (${richUsage.percentage}%) across ${richUsage.categories.length} categories`);
+                    // Most accurate context reading available — prefer it over
+                    // the per-call estimate for resume gating.
+                    if (typeof richUsage.totalTokens === 'number' && typeof richUsage.maxTokens === 'number' && richUsage.maxTokens > 0) {
+                      this.rememberSessionContextUsage(
+                        sessionId,
+                        richUsage.totalTokens,
+                        richUsage.maxTokens,
+                        Math.round(typeof richUsage.percentage === 'number' ? richUsage.percentage : (richUsage.totalTokens / richUsage.maxTokens) * 100),
+                      );
+                    }
                   }
                 } catch (ctxErr) {
                   console.warn('[Claude SDK] getContextUsage() failed, using basic token counts:', ctxErr);
@@ -6656,7 +7066,7 @@ Begin by creating the task structure now.
       }
 
       this.recordAutoBuildLeadSuccess(sessionId, autoOrchestrationPlan);
-      this.rememberLastAssistantHarness(sessionId, this.getHarnessFromModel(selectedModel));
+      this.rememberLastAssistantHarness(sessionId, this.getHarnessFromModel(selectedModel), selectedModel);
 
       const projectPathForStages = session.worktreePath || session.repoPath || session.sshConfig?.remoteWorkdir || process.cwd();
       for await (const stageEvent of this.streamAutoBuildStages(
@@ -6851,6 +7261,10 @@ Begin by creating the task structure now.
       let thinkingBuffer = '';
       let queryComplete = false;
       let lastTerminalReason: string | undefined;
+      // Last single API call's input tokens — true context occupancy. The
+      // result message's usage is cumulative across the turn and unusable
+      // for context measurement.
+      let lastApiCallContextTokens: number | undefined;
 
       const flushBuffers = (): StreamEvent[] => {
         const events: StreamEvent[] = [];
@@ -6994,9 +7408,21 @@ Begin by creating the task structure now.
                   id?: string;
                   input?: Record<string, unknown>;
                 }>;
+                usage?: { input_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number };
               };
             };
             currentAgentId = assistantMsg.parent_tool_use_id || undefined;
+
+            // Per-API-call usage = true context occupancy (see live stream loop).
+            if (!assistantMsg.parent_tool_use_id && assistantMsg.message?.usage) {
+              const callUsage = assistantMsg.message.usage;
+              const callTokens = (callUsage.input_tokens || 0)
+                + (callUsage.cache_creation_input_tokens || 0)
+                + (callUsage.cache_read_input_tokens || 0);
+              if (callTokens > 0) {
+                lastApiCallContextTokens = callTokens;
+              }
+            }
 
             for (const block of assistantMsg.message?.content || []) {
               if (block.type === 'text' && block.text && block.text.length > fullContent.length) {
@@ -7154,12 +7580,15 @@ Begin by creating the task structure now.
               const outputTokens = resultMsg.usage.output_tokens || 0;
               const currentModel = resultMsg.model || selectedModel || 'claude-sonnet-4-6';
               const contextWindowSize = this.getContextWindowSize(currentModel);
-              const percentage = Math.round((inputTokens / contextWindowSize) * 100);
+              // Context occupancy from the last single API call, not the
+              // cumulative turn usage (see live stream loop).
+              const contextTokens = lastApiCallContextTokens ?? inputTokens;
+              const percentage = Math.round((contextTokens / contextWindowSize) * 100);
               const cacheReadTokens = resultMsg.usage.cache_read_input_tokens || 0;
               const cacheWriteTokens = resultMsg.usage.cache_creation_input_tokens || 0;
               const cost = estimateCost(currentModel, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens);
 
-              this.rememberSessionContextUsage(sessionId, inputTokens, contextWindowSize, percentage);
+              this.rememberSessionContextUsage(sessionId, contextTokens, contextWindowSize, percentage);
               events.push({
                 type: 'context_usage',
                 inputTokens,
@@ -7425,9 +7854,9 @@ Begin by creating the task structure now.
   }
 
   /**
-   * Inject a message into an active query using streamInput.
-   * This allows sending follow-up messages without waiting for the current response to complete.
-   * The message will be processed after the next tool call completes.
+   * Inject a message into an active query using Query.streamInput.
+   * This lets queued follow-ups enter the running Claude Code process without
+   * starting a second turn or waiting for the current response to finish.
    */
   async injectMessage(sessionId: string, message: string, attachments?: Attachment[]): Promise<boolean> {
     const queryObj = this.activeQueryObjects.get(sessionId);
@@ -7447,14 +7876,12 @@ Begin by creating the task structure now.
       safeMessage = 'Please analyze this image.';
     }
 
-    console.log('[Claude Service] injectMessage: Injecting message into active query for session', sessionId);
+    console.log('[Claude Service] injectMessage: Injecting queued message via Query.streamInput for session', sessionId);
 
     try {
-      // Create an async generator that yields a single user message
-      // Capture `this` for use inside the generator function
       const resizeImage = this.resizeImageIfNeeded.bind(this);
+      const normalizeBase64ImageData = this.normalizeBase64ImageData.bind(this);
       const createMessageStream = async function* (): AsyncIterable<SDKUserMessage> {
-        // Build content with any image attachments
         const imageAttachments = attachments?.filter(a => a.type === 'image') || [];
         const hasImagesLocal = imageAttachments.length > 0;
 
@@ -7467,11 +7894,10 @@ Begin by creating the task structure now.
             const ext = attachment.name.split('.').pop()?.toLowerCase();
             const mediaType = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg'
               : ext === 'gif' ? 'image/gif'
-              : ext === 'webp' ? 'image/webp'
-              : 'image/png';
+                : ext === 'webp' ? 'image/webp'
+                  : 'image/png';
 
-            // Resize image if needed to stay under Anthropic's dimension limits
-            const resizedData = await resizeImage(attachment.content, mediaType);
+            const resizedData = await resizeImage(normalizeBase64ImageData(attachment.content), mediaType);
 
             content.push({
               type: 'image',
@@ -7506,7 +7932,7 @@ Begin by creating the task structure now.
       };
 
       await queryObj.streamInput(createMessageStream());
-      console.log('[Claude Service] injectMessage: Message injected successfully');
+      console.log('[Claude Service] injectMessage: Message injected successfully via Query.streamInput');
       return true;
     } catch (error) {
       console.error('[Claude Service] injectMessage: Failed to inject message:', error);
@@ -8272,35 +8698,67 @@ Begin by creating the task structure now.
     return Array.from(new Set([sessionId, ...preferredIds, ...candidateIds]));
   }
 
+  private getBuildTranscriptLatestTime(candidateId: string, entries: TranscriptEntry[]): number {
+    const latestEntryTime = entries.reduce((latest, entry) => {
+      const time = Date.parse(entry.timestamp);
+      return Number.isFinite(time) ? Math.max(latest, time) : latest;
+    }, 0);
+    if (latestEntryTime > 0) return latestEntryTime;
+
+    try {
+      const stat = fs.statSync(transcriptService.getTranscriptPath(candidateId));
+      return stat.mtimeMs;
+    } catch {
+      return 0;
+    }
+  }
+
   private loadBuildTranscriptForSession(sessionId: string): { sessionId: string; entries: TranscriptEntry[]; exists: boolean } {
     const candidateIds = this.getCanonicalTranscriptCandidateIds(sessionId);
     const fallbackId = sessionId;
-    let firstExistingTranscript: { sessionId: string; entries: TranscriptEntry[]; exists: boolean } | null = null;
+    const transcripts: Array<{
+      sessionId: string;
+      entries: TranscriptEntry[];
+      exists: true;
+      hasAssistant: boolean;
+      latestTime: number;
+      candidateIndex: number;
+    }> = [];
 
-    for (const candidateId of candidateIds) {
+    for (const [candidateIndex, candidateId] of candidateIds.entries()) {
       if (!transcriptService.hasTranscript(candidateId)) continue;
       const entries = transcriptService.loadMessages(candidateId);
-      if (candidateId === sessionId && entries.length > 0) {
-        return { sessionId: candidateId, entries, exists: true };
-      }
-      if (!firstExistingTranscript) {
-        firstExistingTranscript = { sessionId: candidateId, entries, exists: true };
-      }
       const messages = transcriptEntriesToChatMessages(entries)
         .filter((message) => message.role !== 'assistant' || hasRecoverableOutput(message));
-      if (messages.some((message) => message.role === 'assistant')) {
-        if (candidateId !== sessionId) {
-          console.log(`[Claude] Using Build transcript alias ${candidateId} for session ${sessionId}`);
-        }
-        return { sessionId: candidateId, entries, exists: true };
-      }
+      transcripts.push({
+        sessionId: candidateId,
+        entries,
+        exists: true,
+        hasAssistant: messages.some((message) => message.role === 'assistant'),
+        latestTime: this.getBuildTranscriptLatestTime(candidateId, entries),
+        candidateIndex,
+      });
     }
 
-    if (firstExistingTranscript) {
-      if (firstExistingTranscript.sessionId !== sessionId) {
-        console.log(`[Claude] Using Build transcript alias ${firstExistingTranscript.sessionId} for session ${sessionId}`);
+    const usableTranscripts = transcripts.filter((transcript) => transcript.entries.length > 0);
+    if (usableTranscripts.length > 0) {
+      const withAssistant = usableTranscripts.filter((transcript) => transcript.hasAssistant);
+      const candidates = withAssistant.length > 0 ? withAssistant : usableTranscripts;
+      const selected = [...candidates].sort((a, b) => {
+        const timeDelta = b.latestTime - a.latestTime;
+        if (timeDelta !== 0) return timeDelta;
+        if (a.sessionId === sessionId && b.sessionId !== sessionId) return -1;
+        if (b.sessionId === sessionId && a.sessionId !== sessionId) return 1;
+        return a.candidateIndex - b.candidateIndex;
+      })[0];
+
+      if (selected.sessionId !== sessionId) {
+        console.log(
+          `[Claude] Using freshest Build transcript alias ${selected.sessionId} for session ${sessionId}`
+          + ` (${new Date(selected.latestTime || Date.now()).toISOString()})`
+        );
       }
-      return firstExistingTranscript;
+      return { sessionId: selected.sessionId, entries: selected.entries, exists: true };
     }
 
     return { sessionId: fallbackId, entries: [], exists: false };
@@ -8310,13 +8768,24 @@ Begin by creating the task structure now.
     return this.loadBuildTranscriptForSession(sessionId).exists;
   }
 
-  async getCanonicalMessages(sessionId: string, limit = 200): Promise<ChatMessage[]> {
+  async getCanonicalMessages(
+    sessionId: string,
+    limit = 200,
+    options: { allowSdkFallback?: boolean } = {},
+  ): Promise<ChatMessage[]> {
     const buildTranscript = this.loadBuildTranscriptForSession(sessionId);
     const buildTranscriptEntries = buildTranscript.entries;
     const buildMessages = transcriptEntriesToChatMessages(buildTranscriptEntries);
     const usableBuildMessages = buildMessages
       .filter((message) => message.role !== 'assistant' || hasRecoverableOutput(message));
     if (buildTranscript.exists) {
+      return filterInternalPromptEchoes(limit && limit > 0
+        ? usableBuildMessages.slice(-limit)
+        : usableBuildMessages);
+    }
+
+    if (options.allowSdkFallback === false) {
+      console.log(`[Claude] Skipping SDK transcript fallback for foreground context: ${sessionId.substring(0, 8)}`);
       return filterInternalPromptEchoes(limit && limit > 0
         ? usableBuildMessages.slice(-limit)
         : usableBuildMessages);

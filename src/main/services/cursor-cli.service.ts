@@ -118,6 +118,10 @@ class CursorCliService {
     return `test -d ${remotePath} || { echo "Remote workdir not found on remote: ${displayPath}" >&2; exit 66; }`;
   }
 
+  private getSafeSessionId(sessionId: string): string {
+    return sessionId.replace(/[^a-zA-Z0-9_-]/g, '-');
+  }
+
   private getRemotePathPrefix(): string {
     return [
       'export PATH="$HOME/.local/bin:$HOME/.cursor/bin:$HOME/.bun/bin:$HOME/.npm-global/bin:$HOME/bin:$HOME/.cargo/bin:/usr/local/bin:/usr/bin:$PATH"',
@@ -405,15 +409,12 @@ class CursorCliService {
     const abortController = new AbortController();
 
     if (sshConfig) {
-      void sshService.syncMcpConfigsToRemote(sessionId, sshConfig)
-        .then((syncResult) => {
-          if (!syncResult.success) {
-            console.warn('[Cursor CLI] Background MCP sync failed:', syncResult.error);
-          }
-        })
-        .catch((error) => {
-          console.warn('[Cursor CLI] Background MCP sync failed:', error);
-        });
+      console.log(`[Cursor CLI] Waiting for MCP config sync before SSH agent start: ${sessionId.substring(0, 8)}`);
+      const syncResult = await sshService.syncMcpConfigsToRemote(sessionId, sshConfig);
+      if (!syncResult.success) {
+        yield { type: 'error', error: `Failed to sync MCP config to remote: ${syncResult.error}` };
+        return;
+      }
 
       const remoteDir = workDir || sshConfig.remoteWorkdir || '~';
       const remoteArgs = [
@@ -442,6 +443,8 @@ class CursorCliService {
         `cd ${this.remotePathForShell(remoteDir)}`,
         this.getRemotePathPrefix(),
         apiKey ? `export CURSOR_API_KEY=${this.quoteForRemoteShell(apiKey)}` : '',
+        `export CLAUDETTE_SESSION_ID=${this.quoteForRemoteShell(this.getSafeSessionId(sessionId))}`,
+        'export BUILD_HARNESS=cursor',
         ...Object.entries(policy?.env || {}).map(([key, value]) => `export ${key}=${this.quoteForRemoteShell(value)}`),
         'agent_bin="$(command -v cursor-agent || command -v agent)" || { echo "Cursor Agent CLI not found on remote. Install it with: curl https://cursor.com/install -fsS | bash" >&2; exit 127; }',
         'prompt="$(cat)"',
@@ -452,7 +455,11 @@ class CursorCliService {
 
       child = spawn('ssh', this.buildSshArgs(sshConfig, remoteCmd), {
         signal: abortController.signal,
-        detached: process.platform !== 'win32',
+        env: {
+          ...(process.env as Record<string, string>),
+          CLAUDETTE_SESSION_ID: this.getSafeSessionId(sessionId),
+          BUILD_HARNESS: 'cursor',
+        },
       });
       child.stdin?.end(effectiveMessage);
     } else {
@@ -500,7 +507,6 @@ class CursorCliService {
         env,
         cwd: workDir,
         signal: abortController.signal,
-        detached: process.platform !== 'win32',
       });
       child.stdin?.end();
     }

@@ -1,4 +1,4 @@
-import type { AutoRouterConfig, ChatMessage, MetaHarnessPolicy, OrchestrationStage, SessionPhase, TaskDomain, TaskTier } from '../../shared/types';
+import type { AutoRouterConfig, ChatMessage, Harness, MetaHarnessPolicy, OrchestrationStage, SessionPhase, TaskDomain, TaskTier } from '../../shared/types';
 import * as path from 'path';
 import * as fs from 'fs';
 import { pathToFileURL } from 'url';
@@ -29,6 +29,8 @@ export interface FlueMetaRouterRequest {
   candidateModelsByTier: Record<TaskTier, string[]>;
   customCategories?: FlueMetaCustomCategory[];
   recentMessages?: ChatMessage[];
+  continuationHarness?: Harness;
+  continuationModel?: string;
   goalObjective?: string;
   goalSource?: 'slash-command' | 'ralph-loop';
   cerebrasKey: string;
@@ -133,10 +135,15 @@ const dynamicImport = new Function('specifier', 'return import(specifier)') as D
 let runtimeModulesKey: string | undefined;
 let runtimeModulesPromise: Promise<FlueRuntimeModules> | undefined;
 
+function getElectronResourcesPath(): string | undefined {
+  return (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
+}
+
 function resolveRuntimeImport(specifier: string): string {
+  const resourcesPath = getElectronResourcesPath();
   const nodeModulesCandidates = [
     process.env.FLUE_RUNTIME_NODE_MODULES,
-    process.resourcesPath ? path.join(process.resourcesPath, 'node_modules') : undefined,
+    resourcesPath ? path.join(resourcesPath, 'node_modules') : undefined,
     path.resolve(process.cwd(), 'node_modules'),
     path.resolve(__dirname, '..', '..', 'node_modules'),
   ].filter((candidate): candidate is string => Boolean(candidate));
@@ -165,7 +172,7 @@ function importRuntime(specifier: string): Promise<unknown> {
 function loadRuntimeModules(): Promise<FlueRuntimeModules> {
   const key = [
     process.env.FLUE_RUNTIME_NODE_MODULES || '',
-    process.resourcesPath || '',
+    getElectronResourcesPath() || '',
     process.cwd(),
   ].join('|');
   if (runtimeModulesPromise && runtimeModulesKey === key) {
@@ -332,6 +339,10 @@ function buildPrompt(request: FlueMetaRouterRequest): string {
       source: request.goalSource || 'slash-command',
       objective: redactSecrets(request.goalObjective).slice(0, 600),
     } : undefined,
+    previousTurn: request.continuationHarness ? {
+      harness: request.continuationHarness,
+      model: request.continuationModel,
+    } : undefined,
     recentMessages: compactRecentMessages(request.recentMessages),
   };
 
@@ -344,6 +355,7 @@ function buildPrompt(request: FlueMetaRouterRequest): string {
     'Custom settings categories: semantic model overrides plus policy. matchedCategoryId="" or category id with chosen leadTier; never invent policy values.',
     'Goal requests represent a persistent objective: choose lead/helper stages to complete it; never execute.',
     'Switch-cost: prefer one lead until plan, build-check, or failure boundary; use artifact/transcript refs over copied history.',
+    'Continuity: previousTurn = last lead harness/model. Follow-ups/fixes/retries keep that lead (native resume is cheaper); switch only for new intent, explicit harness ask, or missing capability.',
     'Rules: leadTier=first now stage; requestedTier=raw intent; first trigger "now" matches lead; plan/dontAsk forbids build/refine mutation stages.',
     'If phase.hasPlanContext and lastTierUsed=plan, short approvals/follow-ups route build unless user asks to revise/re-plan.',
     'If workflowTier=plan but intent=build for broad migration, lead plan and schedule build after-plan plus verify after-build when checks requested.',

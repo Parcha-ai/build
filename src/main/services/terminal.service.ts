@@ -1,4 +1,5 @@
 import * as pty from 'node-pty';
+import * as fs from 'fs';
 import { v4 as uuid } from 'uuid';
 import Store from 'electron-store';
 import { CachedStore } from '../cached-store';
@@ -38,7 +39,10 @@ export class TerminalService {
   }
 
   private getSession(sessionId: string): Session | undefined {
-    return this.store.get(`sessions.${sessionId}`) as Session | undefined;
+    return (
+      this.store.get(`sessions.${sessionId}`) ||
+      this.store.get(`discoveredSessions.${sessionId}`)
+    ) as Session | undefined;
   }
 
   async createTerminal(sessionId: string): Promise<string> {
@@ -73,8 +77,18 @@ export class TerminalService {
         ? 'powershell.exe'
         : process.env.SHELL || '/bin/zsh'; // Use user's shell or fallback to zsh on macOS
 
+      const cwd = session.worktreePath && fs.existsSync(session.worktreePath)
+        ? session.worktreePath
+        : session.repoPath && fs.existsSync(session.repoPath)
+          ? session.repoPath
+          : process.env.HOME || '/';
+
+      if (cwd !== session.worktreePath) {
+        console.warn(`Working directory no longer exists: ${session.worktreePath}, falling back to: ${cwd}`);
+      }
+
       console.log('Spawning shell:', shell);
-      console.log('Working directory:', session.worktreePath);
+      console.log('Working directory:', cwd);
       console.log('Platform:', process.platform);
 
       try {
@@ -82,7 +96,7 @@ export class TerminalService {
           name: 'xterm-256color',
           cols: 80,
           rows: 24,
-          cwd: session.worktreePath,
+          cwd,
           env: {
             ...process.env as { [key: string]: string },
             TERM: 'xterm-256color',

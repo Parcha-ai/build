@@ -188,6 +188,7 @@ export class SSHService {
     capabilities: RemoteCliCapabilities;
     fetchedAt: number;
   }>();
+  private remoteCliCapabilitiesDetections = new Map<string, Promise<RemoteCliCapabilities>>();
   private readonly REMOTE_CLI_CAPABILITIES_TTL = 5 * 60 * 1000; // 5 minutes
   private remoteBridgeReady = new Map<string, Promise<RemoteBridgeInstall>>();
   private activeTunnels: Set<string> = new Set();
@@ -207,6 +208,14 @@ export class SSHService {
 
   private getSafeSessionId(sessionId: string): string {
     return sessionId.replace(/[^a-zA-Z0-9_-]/g, '-');
+  }
+
+  private getMcpConfigSyncKey(config: SSHConfig): string {
+    const username = config.username || '';
+    const host = config.host || '';
+    const port = config.port || 22;
+    const keyPath = config.privateKeyPath || '';
+    return `${username}@${host}:${port}|${keyPath}`;
   }
 
   private getDetachedBridgeSessionDir(sessionId: string): string {
@@ -835,7 +844,7 @@ export class SSHService {
         this.buildSessionEnvProcessLoop(sessionId, [
           'cmd="$(ps -p "$pid" -o args= 2>/dev/null || true)"',
           'case "$cmd" in',
-          'claude|claude\\ *|*/claude|*/claude\\ *|*\\ claude|*\\ claude\\ *|*@anthropic-ai/claude-code*|*/claude-code/*) kill -0 "$pid" 2>/dev/null && { active=1; break; } ;;',
+          'claude|claude\\ *|*/claude|*/claude\\ *|*\\ claude|*\\ claude\\ *|*@anthropic-ai/claude-code*|*/claude-code/*|cursor-agent|cursor-agent\\ *|*/cursor-agent|*/cursor-agent\\ *|*\\ cursor-agent|*\\ cursor-agent\\ *|agent|agent\\ *|*/agent|*/agent\\ *|*\\ agent|*\\ agent\\ *) kill -0 "$pid" 2>/dev/null && { active=1; break; } ;;',
           'esac',
         ].join('\n')) + '; ' +
         `if test "$active" = "0" && tmux has-session -t ${this.quoteForShell(legacyTmuxName)} 2>/dev/null; then active=1; fi; ` +
@@ -1305,44 +1314,72 @@ detect_cli gemini gemini
     return `${config.username}@${config.host}:${config.port || 22}`;
   }
 
+  getCachedRemoteCliCapabilities(config: SSHConfig): RemoteCliCapabilities | undefined {
+    const cached = this.remoteCliCapabilitiesCache.get(this.getRemoteCliCapabilitiesCacheKey(config));
+    if (!cached || Date.now() - cached.fetchedAt >= this.REMOTE_CLI_CAPABILITIES_TTL) {
+      return undefined;
+    }
+    return cached.capabilities;
+  }
+
   async detectRemoteCliCapabilities(
     sessionId: string,
     config: SSHConfig,
     options?: { force?: boolean },
   ): Promise<RemoteCliCapabilities> {
     const cacheKey = this.getRemoteCliCapabilitiesCacheKey(config);
-    const cached = this.remoteCliCapabilitiesCache.get(cacheKey);
-    if (!options?.force && cached && Date.now() - cached.fetchedAt < this.REMOTE_CLI_CAPABILITIES_TTL) {
-      return cached.capabilities;
+    const cached = this.getCachedRemoteCliCapabilities(config);
+    if (!options?.force && cached) {
+      return cached;
     }
 
-    let capabilities: RemoteCliCapabilities = {
-      claude: false,
-      codex: false,
-      cursor: false,
-      gemini: false,
-      opencode: false,
-    };
-
-    try {
-      const client = await this.getConnection(sessionId, config);
-      capabilities = this.parseRemoteCliCapabilities(
-        await this.execCommand(client, this.buildRemoteCliDetectionCommand(config))
-      );
-
-      this.remoteCliCapabilitiesCache.set(cacheKey, {
-        capabilities,
-        fetchedAt: Date.now(),
-      });
-      console.log('[SSH Service] Remote CLI capabilities:', capabilities);
-    } catch (error) {
-      console.warn('[SSH Service] Failed to detect remote CLI capabilities:', error);
-      if (cached) {
-        return cached.capabilities;
+    if (!options?.force) {
+      const pending = this.remoteCliCapabilitiesDetections.get(cacheKey);
+      if (pending) {
+        return pending;
       }
     }
 
-    return capabilities;
+    const detection = (async () => {
+      let capabilities: RemoteCliCapabilities = {
+        claude: false,
+        codex: false,
+        cursor: false,
+        gemini: false,
+        opencode: false,
+      };
+
+      try {
+        const client = await this.getConnection(sessionId, config);
+        capabilities = this.parseRemoteCliCapabilities(
+          await this.execCommand(client, this.buildRemoteCliDetectionCommand(config))
+        );
+
+        this.remoteCliCapabilitiesCache.set(cacheKey, {
+          capabilities,
+          fetchedAt: Date.now(),
+        });
+        console.log('[SSH Service] Remote CLI capabilities:', capabilities);
+      } catch (error) {
+        console.warn('[SSH Service] Failed to detect remote CLI capabilities:', error);
+        if (cached) {
+          return cached;
+        }
+      }
+
+      return capabilities;
+    })();
+
+    if (!options?.force) {
+      this.remoteCliCapabilitiesDetections.set(cacheKey, detection);
+      try {
+        return await detection;
+      } finally {
+        this.remoteCliCapabilitiesDetections.delete(cacheKey);
+      }
+    }
+
+    return detection;
   }
 
   private async ensureDetachedRemoteBridge(sessionId: string, config: SSHConfig): Promise<RemoteBridgeInstall> {
@@ -4258,19 +4295,31 @@ SETTINGS_EOF`);
   }
 
   async syncMcpConfigsToRemote(sessionId: string, config: SSHConfig): Promise<{ success: boolean; error?: string }> {
-    const inFlight = this.mcpConfigSyncInFlight.get(sessionId);
+    const syncKey = this.getMcpConfigSyncKey(config);
+    const inFlight = this.mcpConfigSyncInFlight.get(syncKey);
     if (inFlight) {
-      console.log('[SSH Service] MCP config sync already running for session, reusing promise:', sessionId);
-      return inFlight;
+      console.log('[SSH Service] MCP config sync already running for remote, reusing promise:', syncKey);
+      const result = await inFlight;
+      if (result.success) {
+        try {
+          await this.setupMcpReverseTunnelsForSession(sessionId, config, true);
+        } catch (error) {
+          return {
+            success: false,
+            error: error instanceof Error ? error.message : 'Unknown error',
+          };
+        }
+      }
+      return result;
     }
 
     const syncPromise = this.syncMcpConfigsToRemoteInternal(sessionId, config);
-    this.mcpConfigSyncInFlight.set(sessionId, syncPromise);
+    this.mcpConfigSyncInFlight.set(syncKey, syncPromise);
 
     try {
       return await syncPromise;
     } finally {
-      this.mcpConfigSyncInFlight.delete(sessionId);
+      this.mcpConfigSyncInFlight.delete(syncKey);
     }
   }
 
@@ -4293,7 +4342,10 @@ SETTINGS_EOF`);
       }
 
       await this.syncBuildMcpServersInternal(client, true, bridgePorts);
-      await this.syncMcpAuthInternal(client, true);
+      void this.syncMcpAuthInternal(client, false).catch((error) => {
+        console.warn('[SSH Service] Background MCP auth token sync failed:', error);
+      });
+      console.log('[SSH Service] MCP auth token sync running in background');
       await this.syncHarnessMcpConfigsInternal(client, true, bridgePorts);
       await this.setupMcpReverseTunnelsForSession(sessionId, config, true);
 

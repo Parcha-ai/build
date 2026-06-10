@@ -263,6 +263,7 @@ export interface HistoricalImportSummary {
 
 // Pricing per 1M tokens (USD)
 const MODEL_PRICING: Record<string, { input: number; output: number; cacheRead: number; cacheWrite: number }> = {
+  'claude-fable-5': { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.50 },
   'claude-opus-4-8': { input: 5, output: 25, cacheRead: 0.50, cacheWrite: 6.25 },
   'claude-opus-4-7': { input: 5, output: 25, cacheRead: 0.50, cacheWrite: 6.25 },
   'claude-opus-4-6': { input: 5, output: 25, cacheRead: 0.50, cacheWrite: 6.25 },
@@ -311,6 +312,7 @@ function getPricingForModel(modelId: string): typeof DEFAULT_PRICING {
       return pricing;
     }
   }
+  if (normalized.includes('fable')) return MODEL_PRICING['claude-fable-5'];
   if (normalized.includes('opus')) return MODEL_PRICING['claude-opus-4-7'];
   if (normalized.includes('haiku')) return MODEL_PRICING['claude-haiku-4-5'];
   if (normalized.includes('sonnet')) return MODEL_PRICING['claude-sonnet-4-6'];
@@ -410,6 +412,7 @@ function inferOverrideModelFromUserMessage(message: string): string | undefined 
   if (/\b(codex|openai)\b/.test(lower)) return 'codex:gpt-5.5';
   if (/\b(gemini)\b/.test(lower)) return 'gemini:gemini-3.5-flash';
   if (/\b(opencode|deepseek)\b/.test(lower)) return 'opencode:deepseek-v4-pro';
+  if (/\b(fable)\b/.test(lower)) return 'claude-fable-5';
   if (/\b(haiku)\b/.test(lower)) return 'claude-haiku-4-5';
   if (/\b(sonnet)\b/.test(lower)) return 'claude-sonnet-4-6';
   if (/\b(opus)\b/.test(lower)) return 'claude-opus-4-7';

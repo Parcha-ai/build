@@ -10,6 +10,8 @@ import type { Attachment, ChatMessage, SSHConfig } from '../../shared/types';
 import { terminateProcessTree } from '../utils/process-tree';
 import { truncateMiddlePreservingTail } from '../../shared/utils/prompt-truncation';
 import { mcpService } from './mcp.service';
+import { CachedStore } from '../cached-store';
+import { getSessionStoreName } from '../store-names';
 import { findUsableLocalExecutable, isUsableLocalExecutable } from '../utils/local-executable';
 import { prependPolicyPreamble, type HarnessPolicyTranslation, type CodexReasoningEffort } from './harness-policy.service';
 import { buildProjectInstructionContext, formatProjectInstructionContextFiles } from './codex-context';
@@ -97,6 +99,7 @@ function findCodexBinary(): string {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 interface CodexJsonEvent {
   type: string;
+  thread_id?: string;
   item?: {
     id: string;
     type: string;
@@ -137,9 +140,17 @@ interface CodexExecutionMode {
   policy?: HarnessPolicyTranslation;
 }
 
+interface CodexNativeThreadOptions {
+  resumeThreadId?: string;
+  persistThread?: boolean;
+}
+
 class CodexServiceImpl {
   private activeProcesses: Map<string, { process: ChildProcess; abortController: AbortController }> = new Map();
   private codexBinaryPath: string | null = null;
+  private codexThreadIds: Map<string, string> = new Map();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private sessionStore: any = new CachedStore({ name: getSessionStoreName() }) as any;
   private readonly CODEX_INSTRUCTION_CONTEXT_CHAR_LIMIT = 30000;
 
   getOpenAiApiKey(): string | undefined {
@@ -153,6 +164,30 @@ class CodexServiceImpl {
       this.codexBinaryPath = findCodexBinary();
     }
     return this.codexBinaryPath;
+  }
+
+  getThreadId(sessionId: string): string | undefined {
+    const cached = this.codexThreadIds.get(sessionId);
+    if (cached) return cached;
+
+    const stored = this.sessionStore.get(`harnessState.${sessionId}.codexThreadId`) as string | undefined;
+    if (stored) {
+      this.codexThreadIds.set(sessionId, stored);
+      return stored;
+    }
+
+    return undefined;
+  }
+
+  clearThreadId(sessionId: string): void {
+    this.codexThreadIds.delete(sessionId);
+    this.sessionStore.delete(`harnessState.${sessionId}.codexThreadId`);
+  }
+
+  private rememberThreadId(sessionId: string, threadId: string): void {
+    this.codexThreadIds.set(sessionId, threadId);
+    this.sessionStore.set(`harnessState.${sessionId}.codexThreadId`, threadId);
+    console.log(`[Codex Service] Remembered native Codex thread ${threadId} for session ${sessionId.substring(0, 8)}`);
   }
 
   private isBenignDiagnosticLine(line: string): boolean {
@@ -436,6 +471,7 @@ class CodexServiceImpl {
     codexModel?: string,
     imagePaths: string[] = [],
     executionMode?: CodexExecutionMode,
+    nativeThread?: CodexNativeThreadOptions,
   ): AsyncGenerator<CodexJsonEvent> {
     let binary: string;
     try {
@@ -453,6 +489,10 @@ class CodexServiceImpl {
     this.appendExecutionModeArgs(args, executionMode);
     if (codexModel) {
       args.push('--model', codexModel);
+    }
+    if (nativeThread?.resumeThreadId) {
+      console.log(`[Codex Service] Resuming native Codex thread ${nativeThread.resumeThreadId}`);
+      args.push('resume', nativeThread.resumeThreadId);
     }
     for (const imagePath of imagePaths) {
       args.push('--image', imagePath);
@@ -566,6 +606,7 @@ class CodexServiceImpl {
     codexModel?: string,
     imagePaths: string[] = [],
     executionMode?: CodexExecutionMode,
+    nativeThread?: CodexNativeThreadOptions,
   ): AsyncGenerator<CodexJsonEvent> {
     console.log(`[Codex Service] Spawning Codex via SSH on ${sshConfig.host}`);
 
@@ -573,6 +614,10 @@ class CodexServiceImpl {
     this.appendExecutionModeArgs(codexArgs, executionMode);
     if (codexModel) {
       codexArgs.push('--model', codexModel);
+    }
+    if (nativeThread?.resumeThreadId) {
+      console.log(`[Codex Service] Resuming native SSH Codex thread ${nativeThread.resumeThreadId}`);
+      codexArgs.push('resume', nativeThread.resumeThreadId);
     }
     for (const imagePath of imagePaths) {
       codexArgs.push('--image', imagePath);
@@ -654,7 +699,7 @@ class CodexServiceImpl {
    * Stream Codex events for direct /codex invocation.
    */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  async *streamDirect(sessionId: string, prompt: string, workingDir: string, sshConfig?: any, codexModel?: string, attachments?: Attachment[], permissionMode?: string, policy?: HarnessPolicyTranslation): AsyncGenerator<CodexStreamEvent> {
+  async *streamDirect(sessionId: string, prompt: string, workingDir: string, sshConfig?: any, codexModel?: string, attachments?: Attachment[], permissionMode?: string, policy?: HarnessPolicyTranslation, nativeThread?: CodexNativeThreadOptions): AsyncGenerator<CodexStreamEvent> {
     const apiKey = this.getOpenAiApiKey();
 
     if (sshConfig) {
@@ -699,8 +744,8 @@ class CodexServiceImpl {
 
     // Choose local or SSH spawn
     const eventSource = sshConfig
-      ? this.spawnCodexSSH(sessionId, safePrompt, workingDir, apiKey, sshConfig, codexModel, preparedAssets.imagePaths, executionMode)
-      : this.spawnCodex(sessionId, safePrompt, workingDir, apiKey, codexModel, preparedAssets.imagePaths, executionMode);
+      ? this.spawnCodexSSH(sessionId, safePrompt, workingDir, apiKey, sshConfig, codexModel, preparedAssets.imagePaths, executionMode, nativeThread)
+      : this.spawnCodex(sessionId, safePrompt, workingDir, apiKey, codexModel, preparedAssets.imagePaths, executionMode, nativeThread);
 
     try {
       // Codex --experimental-json emits multiple item.completed agent_message per turn
@@ -708,6 +753,10 @@ class CodexServiceImpl {
       let emittedMessageCount = 0;
 
       for await (const event of eventSource) {
+        if (nativeThread?.persistThread && event.type === 'thread.started' && event.thread_id) {
+          this.rememberThreadId(sessionId, event.thread_id);
+        }
+
         // For agent_message items, emit as text_delta with newline separator between items
         if (event.type === 'item.completed' && event.item?.type === 'agent_message' && event.item.text) {
           const prefix = emittedMessageCount > 0 ? '\n\n' : '';
@@ -757,7 +806,7 @@ class CodexServiceImpl {
    * Stream Codex as Claude-compatible StreamEvents so it works in the existing chat pipeline.
    */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  async *streamAsChat(sessionId: string, prompt: string, workingDir: string, sshConfig?: any, conversationContext?: string, codexModel?: string, attachments?: Attachment[], permissionMode?: string, policy?: HarnessPolicyTranslation): AsyncGenerator<{
+  async *streamAsChat(sessionId: string, prompt: string, workingDir: string, sshConfig?: any, conversationContext?: string, codexModel?: string, attachments?: Attachment[], permissionMode?: string, policy?: HarnessPolicyTranslation, nativeThread?: CodexNativeThreadOptions): AsyncGenerator<{
     type: string;
     content?: string;
     toolCall?: { id: string; name: string; input: Record<string, unknown>; status: string; result?: string };
@@ -776,7 +825,7 @@ class CodexServiceImpl {
     const fullPrompt = conversationContext ? `${conversationContext}\n\n${promptWithAttachmentContext}` : promptWithAttachmentContext;
     let outputContent = '';
 
-    for await (const event of this.streamDirect(sessionId, fullPrompt, workingDir, sshConfig, codexModel, attachments, permissionMode, policy)) {
+    for await (const event of this.streamDirect(sessionId, fullPrompt, workingDir, sshConfig, codexModel, attachments, permissionMode, policy, nativeThread)) {
       switch (event.type) {
         case 'text_start':
           break;

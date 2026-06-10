@@ -11,8 +11,8 @@ const sessionStore = fs.readFileSync(path.join(root, 'src/renderer/stores/sessio
 
 assert.match(
   harnessCapabilities,
-  /claude:\s+\{\s*supportsAsyncInjection: false,\s*supportsMultiTurn: true,\s*minTurnGapMs: 500,/,
-  'Claude queueing must wait for the active turn to finish instead of using streamInput mid-turn',
+  /claude:\s+\{\s*supportsAsyncInjection: true,\s*supportsMultiTurn: true,\s*minTurnGapMs: 500,/,
+  'Claude queueing must use streamInput so queued turns dequeue while the active turn is still running',
 );
 
 assert.match(queueService, /private drainDeferredSince = new Map<string, number>\(\);/);
@@ -63,6 +63,14 @@ assert.match(enqueueMethod, /if \(\(!isStreaming \|\| canDrainActiveStream\) && 
 
 assert.match(claudeService, /private activeQueryStartedAt: Map<string, number> = new Map\(\);/);
 assert.match(claudeService, /private activeQueryLastEventAt: Map<string, number> = new Map\(\);/);
+assert.doesNotMatch(
+  claudeService,
+  /class SdkUserInputStream implements AsyncIterable<SDKUserMessage>/,
+  'initial Claude turns must not use a long-lived SDK input stream; it can leave the query waiting forever',
+);
+assert.doesNotMatch(claudeService, /activeQueryInputStreams/);
+assert.match(claudeService, /const prompt = hasImages \? createPromptWithImages\(\) : fullTextMessage;/);
+assert.match(claudeService, /Injecting queued message via Query\.streamInput/);
 
 const setActiveQueryMethod = claudeService.match(/private setActiveQuery\(sessionId: string, abortController: AbortController\): void \{[\s\S]*?\n {2}\}/)?.[0] || '';
 assert.match(setActiveQueryMethod, /const now = Date\.now\(\)/);
@@ -95,6 +103,33 @@ assert.match(hasActiveQueryMethod, /return this\.getActiveQueryState\(sessionId\
 assert.match(claudeIpc, /const STALE_QUEUE_DRAIN_ACTIVE_QUERY_GRACE_MS = 30_000;/);
 assert.match(claudeIpc, /const STALE_QUEUE_DRAIN_REMOTE_PROCESS_GRACE_MS = 30_000;/);
 assert.ok((claudeIpc.match(/claudeService\.noteActiveQueryEvent\(sessionId\)/g) || []).length >= 2, 'stream and resume loops must refresh active query activity');
+
+const resumeHandler = claudeIpc.match(/IPC_CHANNELS\.CLAUDE_RESUME_REMOTE_TURN[\s\S]*?\n {4}\}\n {2}\);/)?.[0] || '';
+assert.match(
+  resumeHandler,
+  /let resumeProducedVisibleOutput = false;/,
+  'resume reattach must track whether it recovered visible assistant output',
+);
+assert.match(
+  resumeHandler,
+  /if \(resumeProducedVisibleOutput\) \{\s*recordCompletedStreamMessage\(sessionId, finalizedMessage\);/,
+  'failed or empty resume reattach must not persist a blank assistant turn',
+);
+assert.match(
+  resumeHandler,
+  /const shouldDrainAfterResume = !hadError && resumeProducedVisibleOutput;/,
+  'resume reattach must compute queue drain from both success and visible recovered output',
+);
+assert.match(
+  resumeHandler,
+  /Resume reattach produced no visible output; suppressing queue drain/,
+  'failed or empty resume reattach must leave an installed-bundle marker for queue drain suppression',
+);
+assert.match(
+  resumeHandler,
+  /messageQueueService\.onStreamEnd\(sessionId, \{\s*drain: shouldDrainAfterResume,\s*\}\);/,
+  'failed or empty resume reattach must not drain queued prompts as if a turn completed',
+);
 
 const drainHandler = claudeIpc.match(/messageQueueService\.on\('drain-ready'[\s\S]*?\n {2}\}\);/)?.[0] || '';
 const sessionIndex = drainHandler.indexOf('const session = await sessionService.getSession(sessionId)');

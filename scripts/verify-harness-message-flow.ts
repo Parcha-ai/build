@@ -346,6 +346,8 @@ const completedFromAutoSafetyNet = buildCompletedStreamMessage({
 });
 assert.equal(completedFromAutoSafetyNet.harness, 'cursor');
 assert.equal(completedFromAutoSafetyNet.toolCalls?.[0]?.id, 'auto-safety-tool');
+assert.match(completedFromAutoSafetyNet.content, /stopped after tool activity without returning a final text response/);
+assert.deepEqual(completedFromAutoSafetyNet.contentBlocks?.map((block) => block.type), ['tool_use', 'text']);
 
 const completedWithPartialBackendArtifacts = buildCompletedStreamMessage({
   message: message('partial-backend', 'assistant', 'backend text', '2026-05-24T01:03:45.000Z', {

@@ -765,9 +765,12 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
 
           const completedSession = await sessionService.getSession(sessionId).catch(() => null);
           if (completedSession?.sshConfig) {
-            await sshService.cleanupDetachedBridgeProcessesForNewTurn(sessionId, completedSession.sshConfig, {
+            void sshService.cleanupDetachedBridgeProcessesForNewTurn(sessionId, completedSession.sshConfig, {
               killActive: hadError,
+            }).catch((error) => {
+              console.warn('[Claude IPC] Background stream-end SSH cleanup failed:', error);
             });
+            console.log(`[Claude IPC] Stream-end SSH cleanup scheduled in background for ${sessionId}`);
           }
 
           if (!hadError && !suppressUserMessage && fullMessageContent.trim()) {
@@ -824,6 +827,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
       let accumulatedThinkingResume = '';
       let hadError = false;
       let sentStreamEnd = false;
+      let resumeProducedVisibleOutput = false;
       let latestResolvedModel: string | undefined = model;
       const accumulatedToolCalls: ToolCall[] = [];
       const accumulatedContentBlocks: ContentBlock[] = [];
@@ -877,6 +881,9 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
               batcher.addText(streamEvent.content || '', streamEvent.agentId);
               appendTextContentBlock(streamEvent.content, streamEvent.agentId);
               fullMessageContent += streamEvent.content || '';
+              if ((streamEvent.content || '').trim()) {
+                resumeProducedVisibleOutput = true;
+              }
               persistTranscriptSnapshot();
               break;
 
@@ -888,6 +895,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
             case 'tool_use':
               upsertAccumulatedToolCall(streamEvent.toolCall as ToolCall | undefined);
               appendToolContentBlock(streamEvent.toolCall as ToolCall | undefined, streamEvent.agentId);
+              resumeProducedVisibleOutput = true;
               persistTranscriptSnapshot(true);
               sendToSender(IPC_CHANNELS.CLAUDE_TOOL_CALL, {
                 sessionId,
@@ -899,6 +907,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
             case 'tool_result':
               upsertAccumulatedToolCall(streamEvent.toolCall as ToolCall | undefined);
               appendToolContentBlock(streamEvent.toolCall as ToolCall | undefined, streamEvent.agentId);
+              resumeProducedVisibleOutput = true;
               persistTranscriptSnapshot(true);
               sendToSender(IPC_CHANNELS.CLAUDE_TOOL_RESULT, {
                 sessionId,
@@ -946,7 +955,14 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
                 accumulatedThinking: accumulatedThinkingResume,
                 resolvedModel: streamEvent.resolvedModel || latestResolvedModel,
               });
-              recordCompletedStreamMessage(sessionId, finalizedMessage);
+              resumeProducedVisibleOutput = Boolean(
+                (finalizedMessage.content || '').trim()
+                || finalizedMessage.toolCalls?.length
+                || finalizedMessage.contentBlocks?.length
+              );
+              if (resumeProducedVisibleOutput) {
+                recordCompletedStreamMessage(sessionId, finalizedMessage);
+              }
               sentStreamEnd = true;
               sendToSender(IPC_CHANNELS.CLAUDE_STREAM_END, {
                 sessionId,
@@ -990,7 +1006,14 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
             resolvedModel: latestResolvedModel,
             interrupted: hadError,
           });
-          recordCompletedStreamMessage(sessionId, finalizedMessage);
+          resumeProducedVisibleOutput = Boolean(
+            (finalizedMessage.content || '').trim()
+            || finalizedMessage.toolCalls?.length
+            || finalizedMessage.contentBlocks?.length
+          );
+          if (resumeProducedVisibleOutput) {
+            recordCompletedStreamMessage(sessionId, finalizedMessage);
+          }
           sendToSender(IPC_CHANNELS.CLAUDE_STREAM_END, {
             sessionId,
             message: finalizedMessage,
@@ -999,13 +1022,22 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
 
         const completedSession = await sessionService.getSession(sessionId).catch(() => null);
         if (completedSession?.sshConfig) {
-          await sshService.cleanupDetachedBridgeProcessesForNewTurn(sessionId, completedSession.sshConfig, {
+          void sshService.cleanupDetachedBridgeProcessesForNewTurn(sessionId, completedSession.sshConfig, {
             killActive: hadError,
+          }).catch((error) => {
+            console.warn('[Claude IPC] Background resume SSH cleanup failed:', error);
           });
+          console.log(`[Claude IPC] Resume SSH cleanup scheduled in background for ${sessionId}`);
         }
 
         // Notify queue service that streaming has ended (resume).
-        messageQueueService.onStreamEnd(sessionId, { drain: true });
+        const shouldDrainAfterResume = !hadError && resumeProducedVisibleOutput;
+        if (!shouldDrainAfterResume) {
+          console.log(`[Claude IPC] Resume reattach produced no visible output; suppressing queue drain for ${sessionId}`);
+        }
+        messageQueueService.onStreamEnd(sessionId, {
+          drain: shouldDrainAfterResume,
+        });
       }
     }
   );
