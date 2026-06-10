@@ -30,6 +30,13 @@ const settingsStore = new Store({ name: 'claudette-settings' }) as any;
 const COMPLETED_STREAM_MESSAGE_LIMIT = 100;
 const STALE_QUEUE_DRAIN_ACTIVE_QUERY_GRACE_MS = 30_000;
 const STALE_QUEUE_DRAIN_REMOTE_PROCESS_GRACE_MS = 30_000;
+// A live remote turn is only "stale" when its log stops growing for this long.
+// Progressing turns are never killed — the renderer reattaches to them instead.
+const STALE_QUEUE_DRAIN_REMOTE_STUCK_MS = 5 * 60_000;
+
+// Per-session progress watermark for the latest active detached job, used to
+// distinguish a working remote turn from a genuinely hung one during drains.
+const drainRemoteJobProgress = new Map<string, { jobDir: string; logBytes: number; lastProgressAt: number }>();
 
 // Durable buffer for harness responses that are not backed by a Claude transcript.
 // Keep this out of electron-store: that store rewrites the whole JSON file
@@ -765,12 +772,31 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
 
           const completedSession = await sessionService.getSession(sessionId).catch(() => null);
           if (completedSession?.sshConfig) {
+            // A local stream error does NOT mean the remote turn died — lid
+            // close and transport drops error the local stream while the
+            // detached remote turn keeps working. Never kill active remote
+            // work here; instead, if a live job survives the error, ask the
+            // renderer to reattach so the turn streams to completion.
             void sshService.cleanupDetachedBridgeProcessesForNewTurn(sessionId, completedSession.sshConfig, {
-              killActive: hadError,
+              killActive: false,
             }).catch((error) => {
               console.warn('[Claude IPC] Background stream-end SSH cleanup failed:', error);
             });
             console.log(`[Claude IPC] Stream-end SSH cleanup scheduled in background for ${sessionId}`);
+
+            if (hadError) {
+              void (async () => {
+                try {
+                  const job = await sshService.getLatestRecoverableRemoteProcess(sessionId, completedSession.sshConfig!);
+                  if (job?.active) {
+                    console.log(`[Claude IPC] Remote turn survived local stream error for ${sessionId}; requesting renderer reattach`);
+                    getMainWindow()?.webContents.send(IPC_CHANNELS.CLAUDE_REMOTE_TURN_RECOVERABLE, { sessionId });
+                  }
+                } catch (probeError) {
+                  console.warn('[Claude IPC] Post-error remote turn probe failed:', probeError);
+                }
+              })();
+            }
           }
 
           if (!hadError && !suppressUserMessage && fullMessageContent.trim()) {
@@ -1022,8 +1048,11 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
 
         const completedSession = await sessionService.getSession(sessionId).catch(() => null);
         if (completedSession?.sshConfig) {
+          // Never kill active remote work because a reattach failed — reattach
+          // errors are usually local/transport problems while the remote turn
+          // is still making progress. Only explicit user cancel kills it.
           void sshService.cleanupDetachedBridgeProcessesForNewTurn(sessionId, completedSession.sshConfig, {
-            killActive: hadError,
+            killActive: false,
           }).catch((error) => {
             console.warn('[Claude IPC] Background resume SSH cleanup failed:', error);
           });
@@ -1298,10 +1327,41 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
     }
 
     if (remoteActive && session?.sshConfig && deferredMs >= STALE_QUEUE_DRAIN_REMOTE_PROCESS_GRACE_MS) {
+      // The remote process outlived the local stream (laptop sleep, app
+      // restart, transport drop). If its log is still growing it is a live
+      // working turn — reattach and let it finish; never kill it for a drain.
+      const jobs = await sshService.listDetachedBridgeJobs(sessionId, session.sshConfig).catch(() => []);
+      const activeJob = jobs.find((job) => job.active);
+      const previousProgress = drainRemoteJobProgress.get(sessionId);
+      const progressed = !!activeJob
+        && (!previousProgress || previousProgress.jobDir !== activeJob.jobDir || activeJob.logBytes > previousProgress.logBytes);
+      if (activeJob && progressed) {
+        drainRemoteJobProgress.set(sessionId, {
+          jobDir: activeJob.jobDir,
+          logBytes: activeJob.logBytes,
+          lastProgressAt: Date.now(),
+        });
+      }
+      const stuckMs = activeJob && previousProgress && previousProgress.jobDir === activeJob.jobDir && !progressed
+        ? Date.now() - previousProgress.lastProgressAt
+        : 0;
+
+      if (activeJob && stuckMs < STALE_QUEUE_DRAIN_REMOTE_STUCK_MS) {
+        console.warn(
+          `[Queue] Remote turn still progressing for ${sessionId} ` +
+          `(logBytes=${activeJob.logBytes}, stuckMs=${stuckMs}); requesting reattach and deferring drain`
+        );
+        const mainWindow = getMainWindow();
+        mainWindow?.webContents.send(IPC_CHANNELS.CLAUDE_REMOTE_TURN_RECOVERABLE, { sessionId });
+        messageQueueService.deferDrain(sessionId, 5000);
+        return;
+      }
+
       console.warn(
         `[Queue] Clearing stale remote process before drain for ${sessionId}; ` +
-        `deferredMs=${deferredMs}`
+        `deferredMs=${deferredMs}, stuckMs=${stuckMs}`
       );
+      drainRemoteJobProgress.delete(sessionId);
       await sshService.cleanupDetachedBridgeProcessesForNewTurn(sessionId, session.sshConfig, {
         killActive: true,
       });

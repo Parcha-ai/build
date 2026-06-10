@@ -11,6 +11,7 @@ class PowerService {
   private blockerId: number | null = null;
   private activeSessionCount = 0;
   private isOnAC = true;
+  private systemResumeListeners = new Set<() => void>();
 
   init() {
     // Check initial power state
@@ -29,6 +30,28 @@ class PowerService {
       this.isOnAC = false;
       this.updateBlocker();
     });
+
+    // Wake-from-sleep: SSH connections died while asleep, but detached remote
+    // turns kept running. Listeners reattach to them.
+    powerMonitor.on('resume', () => {
+      console.log('[Power] System resumed from sleep — notifying resume listeners');
+      for (const listener of this.systemResumeListeners) {
+        try {
+          listener();
+        } catch (error) {
+          console.warn('[Power] System resume listener failed:', error);
+        }
+      }
+    });
+  }
+
+  /**
+   * Register a callback fired when the system wakes from sleep.
+   * Returns an unsubscribe function.
+   */
+  onSystemResume(listener: () => void): () => void {
+    this.systemResumeListeners.add(listener);
+    return () => this.systemResumeListeners.delete(listener);
   }
 
   /**

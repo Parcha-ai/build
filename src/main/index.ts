@@ -946,6 +946,13 @@ app.on('ready', async () => {
   migrateFromGrepBuild();
   registerIPCHandlers();
   powerService.init();
+  // On wake from sleep, tell renderers to reattach to any SSH remote turns
+  // that kept running while the connection was down.
+  powerService.onSystemResume(() => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      win.webContents.send(IPC_CHANNELS.SSH_SYSTEM_RESUMED);
+    }
+  });
   mcpService.syncLocalHarnessConfigs().catch((error) => {
     console.warn('[Main] Failed to sync local MCP harness configs on startup:', error);
   });

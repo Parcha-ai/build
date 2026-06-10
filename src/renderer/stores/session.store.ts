@@ -652,7 +652,7 @@ function startRunningSshProcessMonitors(
 }
 
 function isRecentRunningSshSession(session: Session): boolean {
-  if (session.status !== 'running' || !Boolean((session as any).sshConfig)) return false;
+  if (session.status !== 'running' || !(session as any).sshConfig) return false;
   const updatedAt = new Date(session.updatedAt).getTime();
   if (!Number.isFinite(updatedAt)) return false;
   return Date.now() - updatedAt <= SSH_STARTUP_REATTACH_WINDOW_MS;
@@ -3457,6 +3457,24 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // For idle disconnects, stay silent — reconnection is automatic on next message.
     });
 
+    // Main process detected a remote turn that survived a local stream error
+    // or a queue stall — reattach so it keeps streaming to completion.
+    const unsubRemoteTurnRecoverable = window.electronAPI.ssh.onRemoteTurnRecoverable?.(({ sessionId }: { sessionId: string }) => {
+      console.log(`[SessionStore] Remote turn recoverable for ${sessionId}; starting reattach monitor`);
+      const { loadMessages } = get();
+      startRemoteProcessMonitor(sessionId, get, set, loadMessages, { recoverableKnown: true });
+    }) || noop;
+
+    // On wake from sleep, SSH transports are dead but detached remote turns
+    // kept working — sweep running SSH sessions and reattach.
+    const unsubSystemResumed = window.electronAPI.ssh.onSystemResumed?.(() => {
+      const runningSshSessions = get().sessions.filter(isRecentRunningSshSession);
+      if (runningSshSessions.length === 0) return;
+      console.log(`[SessionStore] System resumed from sleep; checking ${runningSshSessions.length} running SSH session(s) for detached turns`);
+      const { loadMessages } = get();
+      startRunningSshProcessMonitors(runningSshSessions, get, set, loadMessages);
+    }) || noop;
+
     // Listen for wakeup timer fires — auto-send the prompt to the session
     const unsubWakeup = window.electronAPI.claude.onWakeupFired?.((data: { sessionId: string; prompt: string; reason: string }) => {
       console.log(`[SessionStore] Wakeup fired for ${data.sessionId}: ${data.reason}`);
@@ -3570,6 +3588,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       unsubPlanApproval();
       unsubPermissionModeChanged();
       unsubConnectionLost();
+      unsubRemoteTurnRecoverable();
+      unsubSystemResumed();
       unsubWakeup();
       unsubQueueSendNext();
       unsubQueueStateChanged();

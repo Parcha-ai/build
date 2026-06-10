@@ -7182,7 +7182,7 @@ Begin by creating the task structure now.
         this.recordAutoBuildLeadFailure(sessionId, autoOrchestrationPlan, errorMessage);
         yield {
           type: 'error',
-          error: `Remote Claude process exited unexpectedly (${errorMessage}). Messages already streamed are saved on the remote. Send another message to reconnect and continue.`,
+          error: `Connection to the remote Claude turn was interrupted (${errorMessage}). If the turn is still running on the remote, Build will reattach automatically and continue streaming.`,
         };
       } else if (errorMessage.match(/unauthorized|api.?key.*invalid|invalid.*api.?key|not authenticated|login required|authentication_error/i)) {
         console.error('[Claude SDK] Auth error caught:', errorMessage);

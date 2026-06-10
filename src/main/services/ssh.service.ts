@@ -680,24 +680,28 @@ export class SSHService {
     for (const [sessionId, conn] of this.connections.entries()) {
       try {
         const bridgeDir = this.getDetachedBridgeSessionDir(sessionId);
-        // Only clean up COMPLETED or STALE bridge jobs — never kill active ones.
-        // A job is safe to clean if:
-        //   - Its stdout.log contains a "result" line (query completed), OR
+        // Only clean up RECOVERED or STALE bridge jobs — never kill active ones,
+        // and never delete completed output that has not been replayed into the
+        // Build transcript yet. A turn that finished while the app was closed is
+        // exactly what the startup reattach probe needs to recover; deleting it
+        // here loses the turn's output. A job is safe to clean only if:
+        //   - It completed AND was marked recovered (output already replayed), OR
         //   - Its directory is older than 6 hours (abandoned)
-        // Active processes (no result, recent) are left alone so reconnection works.
         await this.execCommand(conn.client,
           `if test -d ${this.quoteForShell(bridgeDir)}; then ` +
           `for jobdir in ${this.quoteForShell(bridgeDir)}/*/; do ` +
           'test -d "$jobdir" || continue; ' +
-          'completed=0; stale=0; ' +
+          'completed=0; recovered=0; stale=0; ' +
           // Check if job completed (has result in stdout.log)
           'test -f "$jobdir/stdout.log" && grep -q \'"type":"result"\' "$jobdir/stdout.log" 2>/dev/null && completed=1; ' +
           // Check if job has an exit.json (process already exited)
           'test -f "$jobdir/exit.json" && completed=1; ' +
+          // Check if the job output was already replayed into the transcript
+          'test -f "$jobdir/recovered.json" && recovered=1; ' +
           // Check if directory is older than 6 hours (abandoned)
           'find "$jobdir" -maxdepth 0 -mmin +360 2>/dev/null | grep -q . && stale=1; ' +
-          // Only kill + clean if completed or stale
-          'if [ "$completed" = "1" ] || [ "$stale" = "1" ]; then ' +
+          // Only kill + clean if (completed AND recovered) or stale
+          'if { [ "$completed" = "1" ] && [ "$recovered" = "1" ]; } || [ "$stale" = "1" ]; then ' +
           'pid="$(cat "$jobdir/pid" 2>/dev/null || true)"; ' +
           'test -n "$pid" && kill "$pid" 2>/dev/null || true; ' +
           'test -n "$pid" && pkill -P "$pid" 2>/dev/null || true; ' +
