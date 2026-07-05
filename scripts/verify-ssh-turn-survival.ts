@@ -66,10 +66,29 @@ assert.match(sessionStore, /startRemoteProcessMonitor\(sessionId, get, set, load
 const sshService = fs.readFileSync(path.join(root, 'src/main/services/ssh.service.ts'), 'utf8');
 assert.match(sshService, /\{ \[ "\$completed" = "1" \] && \[ "\$recovered" = "1" \]; \} \|\| \[ "\$stale" = "1" \]/);
 assert.match(sshService, /never delete completed output that has not been replayed/);
+assert.ok(
+  sshService.includes(
+    'elif test "$active" = "0" && test -f "$log" && grep -q \\\'"type":"result"\\\' "$log"'
+  ),
+  'Claude stdout result must not mark an active detached bridge job completed'
+);
+assert.match(
+  sshService,
+  /job\.active && !job\.recovered/,
+  'active detached bridge jobs must remain active even after Claude emits a lead result'
+);
+assert.doesNotMatch(
+  sshService,
+  /job\.active && !job\.completed && !job\.recovered/,
+  'active detached bridge jobs must not depend on the completed flag'
+);
 
 // 7. The SSH-exit stream error tells the user reattachment is automatic, and
 // explicit user cancel still kills remote work (the one intentional kill).
 assert.match(claudeService, /Build will reattach automatically and continue streaming/);
+assert.match(claudeService, /formatRemoteClaudeProcessExitError/);
+assert.match(claudeService, /Boolean\(recoverableJob\?\.active\)/);
+assert.match(claudeService, /Remote Claude failed to start because the SSH remote workdir was not found or is not accessible/);
 const cancelQueryStart = claudeService.indexOf('cancelQuery(sessionId: string)');
 const cancelQueryBlock = claudeService.slice(cancelQueryStart, cancelQueryStart + 1600);
 assert.match(cancelQueryBlock, /killActive: true/, 'explicit cancel must still kill remote work');

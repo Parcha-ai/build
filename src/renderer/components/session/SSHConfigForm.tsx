@@ -91,6 +91,20 @@ export default function SSHConfigForm({ onBack, onConnect, teleportSource, onTel
   const [showFileBrowser, setShowFileBrowser] = useState(false);
   const [showDirBrowser, setShowDirBrowser] = useState(false);
 
+  // Host whose saved config is currently applied to the form, so switching
+  // hosts recalls that host's settings without clobbering in-progress edits.
+  const [appliedHostKey, setAppliedHostKey] = useState('');
+
+  const applySavedConfig = (saved: SavedSSHConfig) => {
+    setPort(saved.port || '22');
+    setUsername(saved.username || '');
+    setPrivateKeyPath(saved.privateKeyPath || '');
+    setRemoteWorkdir(saved.remoteWorkdir || '');
+    setSessionName(saved.sessionName || '');
+    setWorktreeScript(saved.worktreeScript || '');
+    setSyncSettings(saved.syncSettings ?? true);
+  };
+
   // Load saved config on mount
   useEffect(() => {
     const loadConfig = async () => {
@@ -98,13 +112,8 @@ export default function SSHConfigForm({ onBack, onConnect, teleportSource, onTel
         const saved = await window.electronAPI.ssh.getSavedConfig();
         if (saved) {
           setHost(saved.host || '');
-          setPort(saved.port || '22');
-          setUsername(saved.username || '');
-          setPrivateKeyPath(saved.privateKeyPath || '');
-          setRemoteWorkdir(saved.remoteWorkdir || '');
-          setSessionName(saved.sessionName || '');
-          setWorktreeScript(saved.worktreeScript || '');
-          setSyncSettings(saved.syncSettings ?? true);
+          applySavedConfig(saved);
+          setAppliedHostKey((saved.host || '').trim().toLowerCase());
         }
       } catch (error) {
         console.error('Failed to load saved SSH config:', error);
@@ -114,6 +123,28 @@ export default function SSHConfigForm({ onBack, onConnect, teleportSource, onTel
     };
     loadConfig();
   }, []);
+
+  // Recall this host's last-used settings when the hostname changes
+  useEffect(() => {
+    if (isLoading) return;
+    const key = host.trim().toLowerCase();
+    if (!key || key === appliedHostKey) return;
+
+    const timeoutId = setTimeout(async () => {
+      try {
+        const saved = await window.electronAPI.ssh.getHostConfig(key);
+        if (saved) {
+          applySavedConfig(saved);
+        }
+      } catch (error) {
+        console.error('Failed to load saved config for host:', error);
+      } finally {
+        setAppliedHostKey(key);
+      }
+    }, 600);
+
+    return () => clearTimeout(timeoutId);
+  }, [host, isLoading, appliedHostKey]);
 
   // Reset test result when connection fields change
   useEffect(() => {

@@ -318,6 +318,8 @@ export default function SettingsDialog() {
   const [showDeepseekApiKey, setShowDeepseekApiKey] = useState(false);
   const [geminiApiKey, setGeminiApiKey] = useState('');
   const [showGeminiApiKey, setShowGeminiApiKey] = useState(false);
+  const [zaiApiKey, setZaiApiKey] = useState('');
+  const [showZaiApiKey, setShowZaiApiKey] = useState(false);
   const [cerebrasApiKey, setCerebrasApiKey] = useState('');
   const [showCerebrasApiKey, setShowCerebrasApiKey] = useState(false);
   const [xaiApiKey, setXaiApiKey] = useState('');
@@ -388,14 +390,14 @@ export default function SettingsDialog() {
   }, []);
 
   // Auto-save app settings (toggles and time picker)
-  const autoSaveAppSettings = useCallback(async (updates: { qmdEnabled?: boolean; ultraPlanMode?: boolean; showClearContextOnPlanAccept?: boolean; lunchReminderEnabled?: boolean; lunchReminderTime?: string; bedtimeReminderEnabled?: boolean; bedtimeReminderTime?: string; dailyReviewEnabled?: boolean; dailyReviewTime?: string; bedtimeTaskReviewEnabled?: boolean; foundryEnabled?: boolean; foundryBaseUrl?: string; foundryApiKey?: string; foundryDefaultSonnetModel?: string; foundryDefaultHaikuModel?: string; foundryDefaultOpusModel?: string; customModels?: typeof customModels; cursorApiKey?: string; deepseekApiKey?: string; geminiApiKey?: string; xaiApiKey?: string; cerebrasApiKey?: string; autoRouterConfig?: any }) => {
+  const autoSaveAppSettings = useCallback(async (updates: { qmdEnabled?: boolean; ultraPlanMode?: boolean; showClearContextOnPlanAccept?: boolean; lunchReminderEnabled?: boolean; lunchReminderTime?: string; bedtimeReminderEnabled?: boolean; bedtimeReminderTime?: string; dailyReviewEnabled?: boolean; dailyReviewTime?: string; bedtimeTaskReviewEnabled?: boolean; foundryEnabled?: boolean; foundryBaseUrl?: string; foundryApiKey?: string; foundryDefaultSonnetModel?: string; foundryDefaultHaikuModel?: string; foundryDefaultOpusModel?: string; customModels?: typeof customModels; cursorApiKey?: string; deepseekApiKey?: string; geminiApiKey?: string; zaiApiKey?: string; xaiApiKey?: string; cerebrasApiKey?: string; autoRouterConfig?: any }) => {
     showSaveIndicator();
     try {
       await window.electronAPI.settings.set(updates);
       console.log('[SettingsDialog] Auto-saved app settings:', updates);
 
       // Reload available models if model-affecting settings changed
-      const isModelUpdate = 'foundryEnabled' in updates || 'foundryDefaultSonnetModel' in updates || 'foundryDefaultHaikuModel' in updates || 'foundryDefaultOpusModel' in updates || 'customModels' in updates || 'cursorApiKey' in updates || 'deepseekApiKey' in updates || 'geminiApiKey' in updates || 'xaiApiKey' in updates;
+      const isModelUpdate = 'foundryEnabled' in updates || 'foundryDefaultSonnetModel' in updates || 'foundryDefaultHaikuModel' in updates || 'foundryDefaultOpusModel' in updates || 'customModels' in updates || 'cursorApiKey' in updates || 'deepseekApiKey' in updates || 'geminiApiKey' in updates || 'zaiApiKey' in updates || 'xaiApiKey' in updates;
       if (isModelUpdate) {
         console.log('[SettingsDialog] Model-affecting settings changed, reloading available models');
         await loadAvailableModels();
@@ -510,6 +512,7 @@ export default function SettingsDialog() {
           setCursorApiKey((appSettings as any).cursorApiKey || '');
           setDeepseekApiKey((appSettings as any).deepseekApiKey || '');
           setGeminiApiKey((appSettings as any).geminiApiKey || '');
+          setZaiApiKey((appSettings as any).zaiApiKey || '');
           setCerebrasApiKey((appSettings as any).cerebrasApiKey || '');
           setXaiApiKey((appSettings as any).xaiApiKey || '');
           // Auto Build config
@@ -2000,6 +2003,36 @@ export default function SettingsDialog() {
             onClick={(e) => {
               e.preventDefault();
               window.electronAPI.app?.openExternal?.('https://platform.openai.com/api-keys');
+            }}
+            className="text-claude-accent hover:underline"
+          >
+            Get key
+          </a>
+        </p>
+      </div>
+
+      {/* Z.AI API Key */}
+      <div className="space-y-2 pt-4 border-t border-claude-border">
+        <label className="block text-xs font-mono text-claude-text-secondary uppercase tracking-wider">
+          Z.AI API Key
+        </label>
+        <ApiKeyInput
+          value={zaiApiKey}
+          onChange={setZaiApiKey}
+          show={showZaiApiKey}
+          onToggleShow={() => setShowZaiApiKey(!showZaiApiKey)}
+          placeholder="zai-..."
+          onSave={(value) => autoSaveAppSettings({ zaiApiKey: value })}
+          isLoading={isLoading}
+          handleDebouncedChange={handleDebouncedChange}
+        />
+        <p className="text-[10px] font-mono text-claude-text-secondary">
+          Enables GLM 5.2 in both Claude Code proxy mode and Codex CLI mode. Build uses Z.AI&apos;s Anthropic-compatible endpoint for Claude Code and OpenAI-compatible endpoint for Codex.{' '}
+          <a
+            href="#"
+            onClick={(e) => {
+              e.preventDefault();
+              window.electronAPI.app?.openExternal?.('https://z.ai/api-keys');
             }}
             className="text-claude-accent hover:underline"
           >

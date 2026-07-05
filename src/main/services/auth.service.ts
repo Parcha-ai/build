@@ -175,17 +175,24 @@ export class AuthService {
 
       const data = await response.json();
 
-      return data.map((repo: any) => ({
-        id: repo.id,
-        name: repo.name,
-        fullName: repo.full_name,
-        description: repo.description || '',
-        private: repo.private,
-        cloneUrl: repo.clone_url,
-        sshUrl: repo.ssh_url,
-        defaultBranch: repo.default_branch,
-        updatedAt: repo.updated_at,
-      }));
+      if (!Array.isArray(data)) {
+        console.error('Unexpected GitHub repos response:', data);
+        return [];
+      }
+
+      return data
+        .filter((repo: unknown): repo is Record<string, unknown> => !!repo && typeof repo === 'object')
+        .map((repo) => ({
+          id: Number(repo.id) || 0,
+          name: typeof repo.name === 'string' ? repo.name : '',
+          fullName: typeof repo.full_name === 'string' ? repo.full_name : '',
+          description: typeof repo.description === 'string' ? repo.description : '',
+          private: Boolean(repo.private),
+          cloneUrl: typeof repo.clone_url === 'string' ? repo.clone_url : '',
+          sshUrl: typeof repo.ssh_url === 'string' ? repo.ssh_url : '',
+          defaultBranch: typeof repo.default_branch === 'string' ? repo.default_branch : 'main',
+          updatedAt: typeof repo.updated_at === 'string' ? repo.updated_at : '',
+        }));
     } catch (error) {
       console.error('Error fetching repos:', error);
       return [];

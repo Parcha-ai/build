@@ -264,6 +264,7 @@ export interface HistoricalImportSummary {
 // Pricing per 1M tokens (USD)
 const MODEL_PRICING: Record<string, { input: number; output: number; cacheRead: number; cacheWrite: number }> = {
   'claude-fable-5': { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.50 },
+  'claude-sonnet-5': { input: 3, output: 15, cacheRead: 0.30, cacheWrite: 3.75 },
   'claude-opus-4-8': { input: 5, output: 25, cacheRead: 0.50, cacheWrite: 6.25 },
   'claude-opus-4-7': { input: 5, output: 25, cacheRead: 0.50, cacheWrite: 6.25 },
   'claude-opus-4-6': { input: 5, output: 25, cacheRead: 0.50, cacheWrite: 6.25 },
@@ -291,6 +292,7 @@ const MODEL_PRICING: Record<string, { input: number; output: number; cacheRead: 
   'deepseek-reasoner': { input: 0.55, output: 2.19, cacheRead: 0.14, cacheWrite: 0.55 },
   'deepseek-v3.2': { input: 0.27, output: 1.10, cacheRead: 0.07, cacheWrite: 0.27 },
   'deepseek-chat': { input: 0.27, output: 1.10, cacheRead: 0.07, cacheWrite: 0.27 },
+  'glm-5.2': { input: 1.40, output: 4.40, cacheRead: 0.26, cacheWrite: 0 },
 };
 
 const DEFAULT_PRICING = { input: 3, output: 15, cacheRead: 0.30, cacheWrite: 3.75 };
@@ -315,11 +317,12 @@ function getPricingForModel(modelId: string): typeof DEFAULT_PRICING {
   if (normalized.includes('fable')) return MODEL_PRICING['claude-fable-5'];
   if (normalized.includes('opus')) return MODEL_PRICING['claude-opus-4-7'];
   if (normalized.includes('haiku')) return MODEL_PRICING['claude-haiku-4-5'];
-  if (normalized.includes('sonnet')) return MODEL_PRICING['claude-sonnet-4-6'];
+  if (normalized.includes('sonnet')) return MODEL_PRICING['claude-sonnet-5'];
   if (normalized.includes('composer')) return MODEL_PRICING['composer-2.5'];
   if (normalized.includes('gemini') && normalized.includes('flash')) return MODEL_PRICING['gemini-2.5-flash'];
   if (normalized.includes('gemini') && normalized.includes('pro')) return MODEL_PRICING['gemini-2.5-pro'];
   if (normalized.includes('deepseek')) return MODEL_PRICING['deepseek-chat'];
+  if (normalized.includes('glm-5.2') || normalized.includes('zai-glm')) return MODEL_PRICING['glm-5.2'];
   return DEFAULT_PRICING;
 }
 
@@ -408,13 +411,16 @@ function classifyHistoricalTaskTier(message: string): { tier: TaskTier; reason: 
 
 function inferOverrideModelFromUserMessage(message: string): string | undefined {
   const lower = message.toLowerCase();
+  if (/\b(glm|z\.ai|zai)\b/.test(lower)) {
+    return /\b(codex|openai)\b/.test(lower) ? 'codex:glm-5.2' : 'custom:zai-glm-5.2';
+  }
   if (/\b(cursor|cursor agent|composer)\b/.test(lower)) return 'cursor:composer-2.5';
   if (/\b(codex|openai)\b/.test(lower)) return 'codex:gpt-5.5';
   if (/\b(gemini)\b/.test(lower)) return 'gemini:gemini-3.5-flash';
   if (/\b(opencode|deepseek)\b/.test(lower)) return 'opencode:deepseek-v4-pro';
   if (/\b(fable)\b/.test(lower)) return 'claude-fable-5';
   if (/\b(haiku)\b/.test(lower)) return 'claude-haiku-4-5';
-  if (/\b(sonnet)\b/.test(lower)) return 'claude-sonnet-4-6';
+  if (/\b(sonnet)\b/.test(lower)) return 'claude-sonnet-5';
   if (/\b(opus)\b/.test(lower)) return 'claude-opus-4-7';
   return undefined;
 }

@@ -38,14 +38,39 @@ import { findUsableLocalExecutable } from '../utils/local-executable';
 import { transcriptEntriesToChatMessages, transcriptService, type TranscriptEntry } from './transcript.service';
 import { filterInternalPromptEchoes, hasRecoverableOutput, mergeRecoveredStreamMessages } from '../../shared/utils/message-recovery';
 import { translateHarnessPolicy } from './harness-policy.service';
+import {
+  ZAI_ANTHROPIC_BASE_URL,
+  ZAI_GLM_CLAUDE_MODEL_ID,
+  ZAI_GLM_CLAUDE_MODEL_PICKER_ID,
+  ZAI_GLM_CODEX_MODEL_PICKER_ID,
+  ZAI_GLM_CONTEXT_WINDOW,
+  ZAI_GLM_FAST_MODEL_ID,
+  isZaiGlmClaudePickerModel,
+} from '../../shared/config/zai-glm';
 import { hasExistingSessionTitle, rememberAutoSessionTitle, sanitizeSessionTitle } from './session-title.service';
+import { hasFileAttachments, prepareFileAttachmentsForHarness } from './attachment-file-assets';
 
 const STREAM_DEBUG = process.env.GREP_DEBUG_STREAMING === '1';
+const ATTACHMENT_ONLY_PROMPT = 'Use the attached file(s) as input for the current task. Continue from the existing session context and the latest user request instead of asking me to restate the task.';
 const ANSI_ESCAPE = String.fromCharCode(27);
 const ANSI_BELL = String.fromCharCode(7);
 const ANSI_COLOR_CODE_RE = new RegExp(`${ANSI_ESCAPE}\\[[0-9;]*m`, 'g');
 const ANSI_M_CODE_RE = new RegExp(`${ANSI_ESCAPE}\\[[^m]*m`, 'g');
 const OSC8_LINK_RE = new RegExp(`${ANSI_ESCAPE}\\]8;;[^${ANSI_BELL}${ANSI_ESCAPE}]*(${ANSI_BELL}|${ANSI_ESCAPE}\\\\)`, 'g');
+const NOISY_SDK_SYSTEM_SUBTYPES = new Set(['thinking_tokens', 'status']);
+const QUIET_IGNORED_SDK_SESSION_ID_SUBTYPES = new Set([
+  ...NOISY_SDK_SYSTEM_SUBTYPES,
+  'commands_changed',
+  'hook_started',
+  'hook_response',
+  'task_notification',
+  'task_progress',
+  'task_started',
+  'task_updated',
+]);
+const SDK_STATUS_NOTICE_INTERVAL_MS = 15_000;
+const TASK_PROGRESS_EMIT_INTERVAL_MS = 2_000;
+const TASK_PROGRESS_TEXT_CHANGE_INTERVAL_MS = 5_000;
 
 interface HarnessContextLimits {
   maxConversationChars?: number;
@@ -184,6 +209,9 @@ export class ClaudeService {
   // Track Claude SDK context usage so over-full native transcripts are not resumed.
   private sessionContextPercentage: Map<string, number> = new Map();
   private sshSdkResumeRepairChecks: Map<string, { sdkSessionId?: string; checkedAt: number }> = new Map();
+  private ignoredSdkSessionIdLogState: Map<string, { count: number; lastLoggedAt: number }> = new Map();
+  private sdkStatusNoticeAt: Map<string, number> = new Map();
+  private taskProgressEmitState: Map<string, { lastText: string; lastEmittedAt: number; suppressed: number }> = new Map();
   private readonly SSH_SDK_RESUME_REPAIR_TTL_MS = 30 * 60 * 1000;
 
   // Performance optimization: Cache parsed messages and transcript paths
@@ -204,6 +232,24 @@ export class ClaudeService {
     this.store = new Store({ name: 'claudette-settings' });
     this.sessionStore = new CachedStore({ name: getSessionStoreName() }) as any;
     this.messageCacheStore = new CachedStore({ name: 'claudette-message-cache' }) as any;
+  }
+
+  private formatRemoteClaudeProcessExitError(
+    errorMessage: string,
+    session: Session | undefined,
+    canReattach: boolean,
+  ): string {
+    if (canReattach) {
+      return `Connection to the remote Claude turn was interrupted (${errorMessage}). If the turn is still running on the remote, Build will reattach automatically and continue streaming.`;
+    }
+
+    if (/process exited with code\s+66\b/i.test(errorMessage)) {
+      const remoteWorkdir = session?.sshConfig?.remoteWorkdir;
+      const workdirDetail = remoteWorkdir ? ` Configured remote workdir: ${remoteWorkdir}.` : '';
+      return `Remote Claude failed to start because the SSH remote workdir was not found or is not accessible.${workdirDetail} Update the session's remote directory or recreate the worktree, then retry. (${errorMessage})`;
+    }
+
+    return `Remote Claude exited before completing (${errorMessage}). It is not running anymore, so there is nothing to reattach to.`;
   }
 
   setMainWindow(window: BrowserWindow | null): void {
@@ -278,6 +324,9 @@ export class ClaudeService {
    */
   private getCustomModelEnvVars(selectedModel?: string): Record<string, string> {
     if (!selectedModel?.startsWith('custom:')) return {};
+    if (isZaiGlmClaudePickerModel(selectedModel)) {
+      return this.getZaiGlmClaudeEnvVars();
+    }
     const customId = selectedModel.replace('custom:', '');
     const settings = this.store.get('settings', {}) as Record<string, unknown>;
     const customModels = (settings.customModels || []) as Array<{ id: string; modelId: string; baseUrl: string; apiKey: string }>;
@@ -305,10 +354,39 @@ export class ClaudeService {
     return vars;
   }
 
+  private getZaiApiKey(): string | undefined {
+    const settings = this.store.get('settings', {}) as Record<string, unknown>;
+    const storedKey = typeof settings.zaiApiKey === 'string' ? settings.zaiApiKey.trim() : '';
+    const topLevelKey = this.store.get('zaiApiKey') as string | undefined;
+    return storedKey || topLevelKey?.trim() || process.env.ZAI_API_KEY || process.env.Z_AI_API_KEY || undefined;
+  }
+
+  private getZaiGlmClaudeEnvVars(): Record<string, string> {
+    const apiKey = this.getZaiApiKey();
+    const vars: Record<string, string> = {
+      ANTHROPIC_BASE_URL: ZAI_ANTHROPIC_BASE_URL,
+      ANTHROPIC_MODEL: ZAI_GLM_CLAUDE_MODEL_ID,
+      ANTHROPIC_SMALL_FAST_MODEL: ZAI_GLM_FAST_MODEL_ID,
+      ANTHROPIC_DEFAULT_SONNET_MODEL: ZAI_GLM_CLAUDE_MODEL_ID,
+      ANTHROPIC_DEFAULT_OPUS_MODEL: ZAI_GLM_CLAUDE_MODEL_ID,
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: ZAI_GLM_FAST_MODEL_ID,
+      CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(ZAI_GLM_CONTEXT_WINDOW),
+      CLAUDE_CODE_ALWAYS_ENABLE_EFFORT: '1',
+    };
+
+    if (apiKey) {
+      vars.ANTHROPIC_API_KEY = apiKey;
+      vars.ANTHROPIC_AUTH_TOKEN = apiKey;
+    }
+
+    return vars;
+  }
+
   /**
    * Resolve a custom:* model ID to the actual model name to send to the API.
    */
   private resolveCustomModelId(selectedModel: string): string {
+    if (isZaiGlmClaudePickerModel(selectedModel)) return ZAI_GLM_CLAUDE_MODEL_ID;
     if (!selectedModel.startsWith('custom:')) return selectedModel;
     const customId = selectedModel.replace('custom:', '');
     const settings = this.store.get('settings', {}) as Record<string, unknown>;
@@ -579,6 +657,7 @@ export class ClaudeService {
     console.log('[Claude Service] Using default Anthropic model list');
     const models: Array<{ id: string; name: string; description: string }> = [
       { id: 'auto', name: 'Auto Build', description: 'Harness orchestration — picks the lead model, helper handoffs, and shared context per task' },
+      { id: 'claude-sonnet-5', name: 'Sonnet 5', description: 'Latest Claude Sonnet - strong coding and agentic work with Sonnet-tier speed' },
       { id: 'claude-fable-5', name: 'Fable 5', description: 'Most capable Claude model - best for demanding coding and long-horizon agentic work' },
       { id: 'claude-opus-4-8', name: 'Opus 4.8', description: 'Latest and most capable model - best for complex tasks' },
       { id: 'claude-opus-4-7', name: 'Opus 4.7', description: 'Highly capable model' },
@@ -588,11 +667,13 @@ export class ClaudeService {
       { id: 'claude-sonnet-4-5-20250929', name: 'Sonnet 4.5', description: 'Balanced performance and speed' },
       { id: 'claude-sonnet-4-20250514', name: 'Sonnet 4', description: 'Fast and capable' },
       { id: 'claude-haiku-4-5-20251001', name: 'Haiku 4.5', description: 'Fastest model - best for simple tasks' },
+      { id: ZAI_GLM_CLAUDE_MODEL_PICKER_ID, name: 'GLM 5.2 [1M] (Claude Code)', description: 'Z.AI GLM-5.2 via Claude Code Anthropic-compatible endpoint' },
       { id: 'codex:gpt-5.5', name: 'GPT-5.5 (Codex)', description: 'OpenAI latest — most capable coding model' },
       { id: 'codex:gpt-5.4', name: 'GPT-5.4 (Codex)', description: 'OpenAI flagship — best for complex coding tasks' },
       { id: 'codex:gpt-5.4-mini', name: 'GPT-5.4 Mini (Codex)', description: 'OpenAI fast — good balance of speed and capability' },
       { id: 'codex:gpt-5.3-codex', name: 'GPT-5.3 Codex (Codex)', description: 'OpenAI coding-optimised — purpose-built for agents' },
       { id: 'codex:o3', name: 'o3 (Codex)', description: 'OpenAI o3 — deep reasoning model' },
+      { id: ZAI_GLM_CODEX_MODEL_PICKER_ID, name: 'GLM 5.2 (Codex)', description: 'Z.AI GLM-5.2 via Codex CLI OpenAI-compatible endpoint' },
     ];
 
     // Append custom models from settings (Kimi, Gemini, etc via API proxy)
@@ -666,6 +747,7 @@ export class ClaudeService {
    */
   private supportsComputerUse(model: string): boolean {
     const supportedModels = [
+      'claude-sonnet-5',
       'claude-fable-5',
       'claude-opus-4-6',
       'claude-opus-4-5',
@@ -682,8 +764,8 @@ export class ClaudeService {
    * Get Computer Use beta header for the model
    */
   private getComputerUseBetaHeader(model: string): string {
-    // Fable 5, Opus 4.6/4.5, and Sonnet 4.6 use newer beta version
-    if (model.includes('fable-5') || model.includes('opus-4-6') || model.includes('opus-4-5') || model.includes('sonnet-4-6')) {
+    // Sonnet 5, Fable 5, Opus 4.6/4.5, and Sonnet 4.6 use newer beta version
+    if (model.includes('sonnet-5') || model.includes('fable-5') || model.includes('opus-4-6') || model.includes('opus-4-5') || model.includes('sonnet-4-6')) {
       return 'computer-use-2025-11-24';
     }
     // Other models use older beta version
@@ -1454,6 +1536,72 @@ Read or source that file if you need the actual values. Do not print secret valu
     return !!systemMsg.session_id && (!systemMsg.subtype || systemMsg.subtype === 'init');
   }
 
+  private logIgnoredSdkSessionId(sessionId: string, source: string, subtype: string): void {
+    const key = `${sessionId}:${source}:${subtype}`;
+    const now = Date.now();
+    const state = this.ignoredSdkSessionIdLogState.get(key) || { count: 0, lastLoggedAt: 0 };
+    state.count += 1;
+
+    if (QUIET_IGNORED_SDK_SESSION_ID_SUBTYPES.has(subtype)) {
+      if (STREAM_DEBUG && now - state.lastLoggedAt > 10_000) {
+        console.log(
+          `[Claude SDK] Ignored ${state.count} non-conversation ${subtype} session_id event(s) from ${source} for ${sessionId}`
+        );
+        state.count = 0;
+        state.lastLoggedAt = now;
+      }
+      this.ignoredSdkSessionIdLogState.set(key, state);
+      return;
+    }
+
+    if (state.count === 1 || now - state.lastLoggedAt > 60_000) {
+      const suffix = state.count > 1 ? ` (${state.count}x since last log)` : '';
+      console.log(`[Claude SDK] Ignoring non-conversation session_id from ${source}:${subtype} for ${sessionId}${suffix}`);
+      state.count = 0;
+      state.lastLoggedAt = now;
+    }
+    this.ignoredSdkSessionIdLogState.set(key, state);
+  }
+
+  private shouldForwardTaskProgress(
+    sessionId: string,
+    taskId: string | undefined,
+    toolUseId: string | undefined,
+    text: string
+  ): boolean {
+    const key = `${sessionId}:${taskId || toolUseId || 'task'}`;
+    const now = Date.now();
+    const state = this.taskProgressEmitState.get(key) || { lastText: '', lastEmittedAt: 0, suppressed: 0 };
+    const textChanged = text !== state.lastText;
+    const elapsed = now - state.lastEmittedAt;
+
+    if (
+      state.lastEmittedAt === 0
+      || elapsed >= TASK_PROGRESS_EMIT_INTERVAL_MS
+      || (textChanged && elapsed >= TASK_PROGRESS_TEXT_CHANGE_INTERVAL_MS)
+    ) {
+      this.taskProgressEmitState.set(key, {
+        lastText: text,
+        lastEmittedAt: now,
+        suppressed: 0,
+      });
+      return true;
+    }
+
+    state.suppressed += 1;
+    this.taskProgressEmitState.set(key, state);
+    return false;
+  }
+
+  private shouldEmitSdkStatusNotice(sessionId: string, status: string): boolean {
+    const key = `${sessionId}:${status}`;
+    const now = Date.now();
+    const last = this.sdkStatusNoticeAt.get(key) || 0;
+    if (now - last < SDK_STATUS_NOTICE_INTERVAL_MS) return false;
+    this.sdkStatusNoticeAt.set(key, now);
+    return true;
+  }
+
   private rememberCanonicalSdkSessionId(
     sessionId: string,
     systemMsg: { subtype?: string; session_id?: string },
@@ -1462,7 +1610,7 @@ Read or source that file if you need the actual values. Do not print secret valu
     if (!systemMsg.session_id) return undefined;
 
     if (!this.isCanonicalSdkSessionSystemMessage(systemMsg)) {
-      console.log(`[Claude SDK] Ignoring non-conversation session_id from ${source}:${systemMsg.subtype || 'unknown'} for ${sessionId}`);
+      this.logIgnoredSdkSessionId(sessionId, source, systemMsg.subtype || 'unknown');
       return undefined;
     }
 
@@ -1486,6 +1634,7 @@ Read or source that file if you need the actual values. Do not print secret valu
   private getContextWindowSize(model?: string): number {
     const currentModel = model || '';
     const hasLargeContext = currentModel.includes('fable-5')
+      || currentModel.includes('sonnet-5')
       || currentModel.includes('opus-4-8')
       || currentModel.includes('opus-4-7')
       || currentModel.includes('opus-4-6')
@@ -1825,6 +1974,7 @@ ${planContent}
     projectPath: string,
     autoOrchestrationContext: string,
     prefetchedTranscriptMessages?: ChatMessage[],
+    options: { includeCurrentHarnessMessages?: boolean } = {},
   ): Promise<string> {
     const transcriptMessages = prefetchedTranscriptMessages
       ?? await this.getCanonicalMessages(sessionId, ROUTING_TRANSCRIPT_LIMIT, { allowSdkFallback: false });
@@ -1850,7 +2000,7 @@ ${planContent}
 
     let context = buildUnifiedHarnessContext({
       messages: mergedMessages,
-      currentHarness,
+      currentHarness: options.includeCurrentHarnessMessages ? undefined : currentHarness,
       projectPath,
       additionalProjectContext: remoteProjectContext,
       orchestrationContext: orchestrationAndPlanContext,
@@ -4515,12 +4665,17 @@ ${leadContent.slice(0, leadContextLimit)}
     if (!userMessage || userMessage.trim() === '') {
       // Check if we have image attachments - if so, use a placeholder message
       const hasImages = attachments?.some(a => a.type === 'image');
-      if (!hasImages) {
+      const hasFiles = hasFileAttachments(attachments);
+      const hasDomElements = attachments?.some(a => a.type === 'dom_element');
+      if (!hasImages && !hasFiles && !hasDomElements) {
         yield { type: 'error', error: 'Please enter a message before sending.' };
         return;
       }
-      // For image-only messages, use a minimal placeholder
-      userMessage = 'Please analyze this image.';
+      userMessage = hasFiles
+        ? ATTACHMENT_ONLY_PROMPT
+        : hasDomElements
+          ? 'Use the attached browser/DOM context as input for the current task.'
+          : 'Please analyze this image.';
     }
     if (!session) {
       yield { type: 'error', error: 'Session not found' };
@@ -4897,31 +5052,38 @@ ${leadContent.slice(0, leadContextLimit)}
         }
 
         const isManualCodexSelection = selectionMode === 'manual';
-        const lastHarnessForCodex = isManualCodexSelection
+        const isAutoBuildCodexSelection = selectionMode === 'auto';
+        const usesNativeCodexThread = isManualCodexSelection || isAutoBuildCodexSelection;
+        const codexSelectionLabel = isAutoBuildCodexSelection ? 'Auto Build Codex' : 'Manual Codex';
+        const lastHarnessForCodex = usesNativeCodexThread
           ? await this.resolveLastAssistantHarness(
             sessionId,
             normalizedSupplementalMessages,
             prefetchedRoutingMessages,
           )
           : undefined;
-        let codexThreadId = isManualCodexSelection ? codexService.getThreadId(sessionId) : undefined;
+        let codexThreadId = usesNativeCodexThread ? codexService.getThreadId(sessionId) : undefined;
         let shouldBuildCodexContext = true;
 
-        if (isManualCodexSelection) {
+        if (usesNativeCodexThread) {
           if (lastHarnessForCodex && lastHarnessForCodex !== 'codex') {
-            console.log(`[Claude Service] Manual Codex selected after ${lastHarnessForCodex}; starting fresh native Codex thread with Build handoff context`);
+            console.log(`[Claude Service] ${codexSelectionLabel} selected after ${lastHarnessForCodex}; starting fresh native Codex thread with Build handoff context`);
             codexService.clearThreadId(sessionId);
             codexThreadId = undefined;
           } else if (codexThreadId) {
-            console.log(`[Claude Service] Manual Codex resuming native thread ${codexThreadId} for session ${sessionId.substring(0, 8)}`);
+            console.log(`[Claude Service] ${codexSelectionLabel} resuming native thread ${codexThreadId} for session ${sessionId.substring(0, 8)}`);
             shouldBuildCodexContext = false;
           } else {
-            console.log('[Claude Service] Manual Codex has no native thread yet; seeding a new native thread from Build context');
+            console.log(`[Claude Service] ${codexSelectionLabel} has no native thread yet; seeding a new native thread from Build context`);
           }
         }
 
         let conversationContext = '';
         if (shouldBuildCodexContext) {
+          const includeCurrentCodexHistory = !codexThreadId;
+          if (includeCurrentCodexHistory) {
+            console.log('[Claude Service] Codex context includes current harness history because no native Codex thread is available');
+          }
           try {
             conversationContext = await this.buildUnifiedContextForHarness(
               sessionId,
@@ -4931,6 +5093,7 @@ ${leadContent.slice(0, leadContextLimit)}
               projectPath,
               autoOrchestrationContext,
               prefetchedRoutingMessages,
+              { includeCurrentHarnessMessages: includeCurrentCodexHistory },
             );
             if (conversationContext) {
               console.log(`[Claude Service] Codex unified harness context: ${conversationContext.length} chars`);
@@ -4956,7 +5119,7 @@ ${leadContent.slice(0, leadContextLimit)}
           attachments,
           autoBuildLeadPermissionMode,
           leadHarnessPolicy,
-          { resumeThreadId: codexThreadId, persistThread: isManualCodexSelection },
+          { resumeThreadId: codexThreadId, persistThread: usesNativeCodexThread },
         ) as AsyncIterable<StreamEvent>;
         for await (const event of this.streamLeadWithAutoBuildStages(
           codexEvents,
@@ -4989,6 +5152,7 @@ ${leadContent.slice(0, leadContextLimit)}
         let chatId: string | null | undefined = cursorCliService.getChatId(sessionId);
         let cursorContext = '';
         let needsFreshChat = !chatId;
+        const workDir = session.worktreePath || session.repoPath || session.sshConfig?.remoteWorkdir || process.cwd();
 
         if (chatId) {
           const lastHarness = await this.resolveLastAssistantHarness(
@@ -5005,7 +5169,6 @@ ${leadContent.slice(0, leadContextLimit)}
         }
 
         if (needsFreshChat) {
-          const workDir = session.worktreePath || session.repoPath || session.sshConfig?.remoteWorkdir || process.cwd();
           if (session.sshConfig) {
             const remoteDir = session.worktreePath || session.sshConfig.remoteWorkdir || '~';
             chatId = await cursorCliService.createSshChat(session.sshConfig, remoteDir);
@@ -5041,7 +5204,7 @@ ${leadContent.slice(0, leadContextLimit)}
         }
 
         const baseMessage = cursorContext ? `${cursorContext}\n\n${userMessage}` : userMessage;
-        const { message: fullMessage, cleanup: cursorCleanup } = await this.prepareCliAttachments(sessionId, baseMessage, attachments, session.sshConfig);
+        const { message: fullMessage, cleanup: cursorCleanup } = await this.prepareCliAttachments(sessionId, baseMessage, workDir, attachments, session.sshConfig);
 
         try {
           if (session.sshConfig) {
@@ -5143,7 +5306,7 @@ ${leadContent.slice(0, leadContextLimit)}
         }
 
         const baseGeminiMessage = geminiContext ? `${geminiContext}\n\n${userMessage}` : userMessage;
-        const { message: fullMessage, cleanup: geminiCleanup } = await this.prepareCliAttachments(sessionId, baseGeminiMessage, attachments, session.sshConfig);
+        const { message: fullMessage, cleanup: geminiCleanup } = await this.prepareCliAttachments(sessionId, baseGeminiMessage, workDir, attachments, session.sshConfig);
         try {
           const geminiEvents = geminiService.streamMessage(sessionId, fullMessage, workDir, selectedModel, session.sshConfig, leadHarnessPolicy) as AsyncIterable<StreamEvent>;
           for await (const event of this.streamLeadWithAutoBuildStages(
@@ -5194,7 +5357,7 @@ ${leadContent.slice(0, leadContextLimit)}
 
         const openCodeHandoffContext = [secureEnvContext, openCodeContext].filter(Boolean).join('\n\n');
         const baseOpenCodeMessage = openCodeHandoffContext ? `${openCodeHandoffContext}\n\n${userMessage}` : userMessage;
-        const { message: fullMessage, cleanup: openCodeCleanup } = await this.prepareCliAttachments(sessionId, baseOpenCodeMessage, attachments, session.sshConfig);
+        const { message: fullMessage, cleanup: openCodeCleanup } = await this.prepareCliAttachments(sessionId, baseOpenCodeMessage, workDir, attachments, session.sshConfig);
         try {
           const openCodeEvents = openCodeService.streamMessage(sessionId, fullMessage, workDir, selectedModel, session.sshConfig, autoBuildLeadPermissionMode, leadHarnessPolicy) as AsyncIterable<StreamEvent>;
           for await (const event of this.streamLeadWithAutoBuildStages(
@@ -5336,13 +5499,42 @@ ${leadContent.slice(0, leadContextLimit)}
         }
       );
 
+      const attachmentWorkingDir = session.sshConfig
+        ? session.worktreePath || session.repoPath || session.sshConfig.remoteWorkdir || process.cwd()
+        : this.resolveValidCwd(session);
+      let fileAttachmentPrompt = '';
+      if (hasFileAttachments(attachments)) {
+        try {
+          const preparedFiles = await prepareFileAttachmentsForHarness(
+            sessionId,
+            attachments,
+            attachmentWorkingDir,
+            session.sshConfig,
+          );
+          fileAttachmentPrompt = preparedFiles.promptBlock;
+          if (preparedFiles.files.length > 0) {
+            console.log(`[Claude Service] Prepared ${preparedFiles.files.length} file attachment(s) for harness input`);
+          }
+        } catch (error) {
+          console.error('[Claude Service] Failed to prepare file attachments:', error);
+          yield {
+            type: 'error',
+            error: `Failed to prepare file attachments: ${error instanceof Error ? error.message : String(error)}`,
+          };
+          return;
+        }
+      }
+
       // GStack mode is injected via system prompt append only (buildSystemPromptAppend)
       let fullTextMessage = resolvedMessage;
+      if (fileAttachmentPrompt) {
+        fullTextMessage = `${fileAttachmentPrompt}\n\n${fullTextMessage || ATTACHMENT_ONLY_PROMPT}`;
+      }
       if (hasDomElements) {
         const domContext = domElementAttachments.map((el, i) => {
           return `<selected-element index="${i + 1}" selector="${el.name}">\n${el.content}\n</selected-element>`;
         }).join('\n\n');
-        fullTextMessage = `${domContext}\n\n${userMessage}`;
+        fullTextMessage = `${domContext}\n\n${fullTextMessage}`;
         console.log('[Claude Service] Added DOM element context to message');
       }
 
@@ -5779,10 +5971,10 @@ Begin by creating the task structure now.
           includePartialMessages: true,
           // Use computed model — resolve custom:* IDs to actual API model names
           model: this.resolveCustomModelId(selectedModel),
-          // 1M context is native for Fable 5, Opus 4.6, and Sonnet 4.6.
+          // 1M context is native for Sonnet 5, Fable 5, Opus 4.6, and Sonnet 4.6.
           // Legacy models (Sonnet 4.5, Sonnet 4) still need the beta until Apr 30 2026
-          // Skip betas for Foundry (custom betas not supported)
-          ...(!settings.foundryEnabled && !selectedModel.includes('fable-5') && !selectedModel.includes('opus-4-6') && !selectedModel.includes('sonnet-4-6')
+          // Skip betas for Foundry and third-party Claude-compatible proxies.
+          ...(!settings.foundryEnabled && !selectedModel.startsWith('custom:') && !selectedModel.includes('sonnet-5') && !selectedModel.includes('fable-5') && !selectedModel.includes('opus-4-6') && !selectedModel.includes('sonnet-4-6')
             ? { betas: ['context-1m-2025-08-07' as const] }
             : {}),
           ...(claudePolicy?.thinking ? { thinking: claudePolicy.thinking } : {}),
@@ -5813,7 +6005,7 @@ Begin by creating the task structure now.
           // Pass environment with API key and enable agent teams
           env: (() => {
             // Start with process.env but STRIP any stale custom model vars
-            const { ANTHROPIC_BASE_URL: _, ANTHROPIC_MODEL: _m, ANTHROPIC_SMALL_FAST_MODEL: _s, ...cleanEnv } = process.env;
+            const { ANTHROPIC_BASE_URL: _, ANTHROPIC_MODEL: _m, ANTHROPIC_SMALL_FAST_MODEL: _s, ANTHROPIC_AUTH_TOKEN: _t, ...cleanEnv } = process.env;
             const customVars = this.getCustomModelEnvVars(selectedModel);
             const foundryVars = this.getFoundryEnvVars();
             const finalEnv = {
@@ -6202,7 +6394,9 @@ Begin by creating the task structure now.
           case 'system': {
             // System messages can have different subtypes
             const subtype = (msg as any).subtype;
-            if (subtype && subtype !== 'status') {
+            if (subtype && subtype !== 'status' && !NOISY_SDK_SYSTEM_SUBTYPES.has(subtype)) {
+              console.log('[Claude SDK] System message subtype:', subtype, JSON.stringify(msg).slice(0, 300));
+            } else if (STREAM_DEBUG && subtype) {
               console.log('[Claude SDK] System message subtype:', subtype, JSON.stringify(msg).slice(0, 300));
             }
             const systemMsg = msg as SDKMessage & {
@@ -6246,12 +6440,16 @@ Begin by creating the task structure now.
             if (systemMsg.subtype === 'status') {
               // "requesting" = waiting for API slot (rate limited or queued)
               if (systemMsg.status === 'requesting') {
-                console.log('[Claude SDK] Status: requesting (waiting for API)');
-                yield { type: 'thinking_delta', content: 'Claude is waiting for an API slot.\n' };
+                if (this.shouldEmitSdkStatusNotice(sessionId, 'requesting')) {
+                  console.log('[Claude SDK] Status: requesting (waiting for API)');
+                  yield { type: 'thinking_delta', content: 'Claude is waiting for an API slot.\n' };
+                }
                 break;
               }
               const isCompacting = systemMsg.status === 'compacting';
-              console.log('[Claude SDK] Compaction status:', isCompacting ? 'COMPACTING' : 'idle');
+              if (this.shouldEmitSdkStatusNotice(sessionId, `compaction:${isCompacting ? 'on' : 'off'}`)) {
+                console.log('[Claude SDK] Compaction status:', isCompacting ? 'COMPACTING' : 'idle');
+              }
 
               const compactionStatus: CompactionStatus = {
                 sessionId,
@@ -6298,100 +6496,7 @@ Begin by creating the task structure now.
               break;
             }
 
-            // Handle SDK notifications (Monitor tool events, loop notifications).
-            // These are real-time updates from background monitors — the key
-            // identifies the source, text is the event content.
-            if (systemMsg.subtype === 'notification') {
-              const notif = systemMsg as typeof systemMsg & {
-                key?: string; text?: string; priority?: string;
-              };
-              console.log('[Claude SDK] Notification:', notif.key, notif.text?.slice(0, 100));
-              if (this.mainWindow && notif.text) {
-                this.mainWindow.webContents.send(IPC_CHANNELS.CLAUDE_TASK_PROGRESS, {
-                  sessionId,
-                  taskId: notif.key,
-                  description: notif.text,
-                });
-              }
-              break;
-            }
-
-            // Handle task_started (background task beginning)
-            if (systemMsg.subtype === 'task_started') {
-              const started = systemMsg as typeof systemMsg & {
-                task_id?: string; description?: string; task_type?: string;
-              };
-              console.log('[Claude SDK] Task started:', started.task_id, started.description?.slice(0, 80));
-              if (this.mainWindow) {
-                this.mainWindow.webContents.send(IPC_CHANNELS.CLAUDE_TASK_PROGRESS, {
-                  sessionId,
-                  taskId: started.task_id,
-                  description: `Started: ${started.description || started.task_type || 'task'}`,
-                });
-              }
-              break;
-            }
-
-            // Handle task_notification (background task completed/failed/stopped)
-            if (systemMsg.subtype === 'task_notification') {
-              const notif = systemMsg as typeof systemMsg & {
-                task_id?: string; status?: string; output_file?: string;
-                summary?: string; usage?: Record<string, unknown>;
-              };
-              console.log('[Claude SDK] Task notification:', notif.task_id, notif.status, notif.summary?.slice(0, 80));
-              if (this.mainWindow) {
-                this.mainWindow.webContents.send(IPC_CHANNELS.CLAUDE_TASK_NOTIFICATION, {
-                  sessionId,
-                  taskId: notif.task_id,
-                  status: notif.status,
-                  outputFile: notif.output_file,
-                  summary: notif.summary,
-                });
-              }
-              break;
-            }
-
-            // Handle task_progress (intermediate background task progress)
-            if (systemMsg.subtype === 'task_progress') {
-              const prog = systemMsg as typeof systemMsg & {
-                task_id?: string; description?: string; summary?: string;
-                last_tool_name?: string; usage?: Record<string, unknown>;
-              };
-              if (STREAM_DEBUG) {
-                console.log('[Claude SDK] Task progress:', prog.task_id, prog.description?.slice(0, 80));
-              }
-              if (this.mainWindow) {
-                this.mainWindow.webContents.send(IPC_CHANNELS.CLAUDE_TASK_PROGRESS, {
-                  sessionId,
-                  taskId: prog.task_id,
-                  description: prog.description,
-                  summary: prog.summary,
-                  lastToolName: prog.last_tool_name,
-                });
-              }
-              break;
-            }
-
-            // Handle task_updated (real-time status delta patches for background tasks)
-            if (systemMsg.subtype === 'task_updated') {
-              const update = systemMsg as typeof systemMsg & {
-                task_id?: string;
-                patch?: {
-                  status?: 'pending' | 'running' | 'completed' | 'failed' | 'killed';
-                  description?: string;
-                  end_time?: number;
-                  error?: string;
-                  is_backgrounded?: boolean;
-                };
-              };
-              console.log('[Claude SDK] Task updated:', update.task_id, JSON.stringify(update.patch));
-              if (this.mainWindow && update.task_id && update.patch) {
-                this.mainWindow.webContents.send(IPC_CHANNELS.CLAUDE_TASK_UPDATED, {
-                  sessionId,
-                  taskId: update.task_id,
-                  patch: update.patch,
-                });
-              }
+            if (this.forwardTaskSystemMessage(sessionId, systemMsg)) {
               break;
             }
 
@@ -7022,6 +7127,9 @@ Begin by creating the task structure now.
           }
 
           default:
+            if (this.forwardTaskSystemMessage(sessionId, msg)) {
+              break;
+            }
             // Log unhandled types so we can catch notifications/monitors we're missing
             if (STREAM_DEBUG || (msg as any).subtype === 'notification' || (msg as any).subtype === 'task_notification' || (msg as any).subtype === 'task_progress' || (msg as any).subtype === 'task_started') {
               console.log('[Claude SDK] Unhandled message type:', msg.type, 'subtype:', (msg as any).subtype, JSON.stringify(msg).slice(0, 200));
@@ -7033,11 +7141,10 @@ Begin by creating the task structure now.
         // but start a background listener for task events from running monitors/agents
         if (queryComplete) {
           console.log('[Claude SDK] Query complete, exiting message loop');
-          // The SDK transport is closed after the result message. Keep the
-          // outer active query alive for Auto Build helper stages, but remove
-          // the injection target so browser/console messages do not try to
-          // stream into a closed Claude process.
-          this.activeQueryObjects.delete(sessionId);
+          // Keep the Query object available while the iterator remains alive.
+          // Background task events can continue after the result message, and
+          // queued user follow-ups should still be able to enter Claude Code via
+          // Query.streamInput instead of waiting behind the monitor/agent loop.
 
           // Keep reading from the iterator in the background for task lifecycle events.
           // The CC process stays alive between turns (especially SSH sessions), so
@@ -7180,9 +7287,13 @@ Begin by creating the task structure now.
       } else if (errorMessage.match(/process exited with code|process terminated by signal/) && session?.sshConfig) {
         console.error('[Claude SDK] SSH process exit caught:', errorMessage);
         this.recordAutoBuildLeadFailure(sessionId, autoOrchestrationPlan, errorMessage);
+        const recoverableJob = await sshService.getLatestRecoverableRemoteProcess(sessionId, session.sshConfig).catch((probeError) => {
+          console.warn('[Claude SDK] Failed to probe remote Claude recovery after process exit:', probeError);
+          return null;
+        });
         yield {
           type: 'error',
-          error: `Connection to the remote Claude turn was interrupted (${errorMessage}). If the turn is still running on the remote, Build will reattach automatically and continue streaming.`,
+          error: this.formatRemoteClaudeProcessExitError(errorMessage, session, Boolean(recoverableJob?.active)),
         };
       } else if (errorMessage.match(/unauthorized|api.?key.*invalid|invalid.*api.?key|not authenticated|login required|authentication_error/i)) {
         console.error('[Claude SDK] Auth error caught:', errorMessage);
@@ -7251,6 +7362,29 @@ Begin by creating the task structure now.
       }
 
       attachedJobDir = attached.job.jobDir;
+
+      // Dispatch replay by the harness that owns the bridge job. Every
+      // harness spawned through the detached bridge survives disconnects;
+      // each recoverable command has its own stdout parser here.
+      const bridgeCommand = attached.job.command || 'claude';
+      if (bridgeCommand === 'codex') {
+        for await (const chatEvent of codexService.replayDetachedAsChat(attached.process, session.model) as AsyncIterable<StreamEvent>) {
+          if (chatEvent.type === 'message_complete') {
+            recoveredCompletely = true;
+          }
+          yield chatEvent;
+        }
+        if (attachedJobDir && recoveredCompletely) {
+          // The spawning app may have died before closing the job's stdin —
+          // signal EOF so the remote process exits instead of idling forever.
+          await sshService.signalDetachedBridgeJobStdinEof(sessionId, session.sshConfig, attachedJobDir);
+          await sshService.markDetachedBridgeJobRecovered(sessionId, session.sshConfig, attachedJobDir);
+        } else if (!recoveredCompletely) {
+          yield { type: 'error', error: 'Recovered remote Codex turn ended without a result.' };
+        }
+        return;
+      }
+
       let selectedModel = model || session.model || 'claude-sonnet-4-6';
       let fullContent = '';
       const toolCalls: ToolCall[] = [];
@@ -7645,11 +7779,17 @@ Begin by creating the task structure now.
               console.warn('[Claude Service] Skipping non-JSON recovered bridge line:', trimmed.slice(0, 200), error);
             }
           }
+
+          // The result message is the turn's terminal event. Stop replaying —
+          // a process whose stdin was orphaned by an app close never exits on
+          // its own, and tailing it would pin this stream open forever.
+          if (queryComplete) break;
         }
+        if (queryComplete) break;
       }
 
       const trailing = pending.trim();
-      if (trailing) {
+      if (!queryComplete && trailing) {
         const jsonStart = trailing.indexOf('{');
         if (jsonStart >= 0) {
           try {
@@ -7680,6 +7820,10 @@ Begin by creating the task structure now.
       }
 
       if (attachedJobDir && recoveredCompletely) {
+        // The spawning app may have died before closing the job's stdin —
+        // signal EOF so claude (--input-format stream-json) exits instead of
+        // idling for a next message that will never arrive.
+        await sshService.signalDetachedBridgeJobStdinEof(sessionId, session.sshConfig, attachedJobDir);
         await sshService.markDetachedBridgeJobRecovered(sessionId, session.sshConfig, attachedJobDir);
       }
     } catch (error) {
@@ -7695,6 +7839,119 @@ Begin by creating the task structure now.
   // Active background task listeners — one per session, cancelled on next query or cleanup
   private backgroundListeners = new Map<string, AbortController>();
 
+  private forwardTaskSystemMessage(sessionId: string, msg: SDKMessage | (SDKMessage & { subtype?: string })): boolean {
+    const taskSubtypes = new Set(['notification', 'task_updated', 'task_notification', 'task_progress', 'task_started']);
+    const raw = msg as SDKMessage & {
+      subtype?: string;
+      key?: string;
+      text?: string;
+      priority?: string;
+      task_id?: string;
+      tool_use_id?: string;
+      status?: string;
+      output_file?: string;
+      summary?: string;
+      description?: string;
+      task_type?: string;
+      subagent_type?: string;
+      workflow_name?: string;
+      last_tool_name?: string;
+      patch?: {
+        status?: 'pending' | 'running' | 'completed' | 'failed' | 'killed' | 'paused';
+        description?: string;
+        end_time?: number;
+        total_paused_ms?: number;
+        error?: string;
+        is_backgrounded?: boolean;
+      };
+    };
+    const subtype = raw.subtype || (taskSubtypes.has(String((msg as SDKMessage).type)) ? String((msg as SDKMessage).type) : undefined);
+    if (!subtype || !taskSubtypes.has(subtype)) return false;
+
+    if (subtype === 'notification') {
+      console.log('[Claude SDK] Notification:', raw.key, raw.text?.slice(0, 100));
+      if (this.mainWindow && raw.text) {
+        this.mainWindow.webContents.send(IPC_CHANNELS.CLAUDE_TASK_PROGRESS, {
+          sessionId,
+          taskId: raw.key,
+          description: raw.text,
+        });
+      }
+      return true;
+    }
+
+    if (subtype === 'task_started') {
+      const label = raw.description || raw.subagent_type || raw.workflow_name || raw.task_type || 'task';
+      console.log('[Claude SDK] Task started:', raw.task_id, label.slice(0, 80));
+      if (this.mainWindow) {
+        this.mainWindow.webContents.send(IPC_CHANNELS.CLAUDE_TASK_PROGRESS, {
+          sessionId,
+          taskId: raw.task_id,
+          toolUseId: raw.tool_use_id,
+          description: `Started: ${label}`,
+          summary: raw.summary,
+          lastToolName: raw.last_tool_name,
+        });
+      }
+      return true;
+    }
+
+    if (subtype === 'task_notification') {
+      console.log('[Claude SDK] Task notification:', raw.task_id, raw.status, raw.summary?.slice(0, 80));
+      if (this.mainWindow) {
+        this.mainWindow.webContents.send(IPC_CHANNELS.CLAUDE_TASK_NOTIFICATION, {
+          sessionId,
+          taskId: raw.task_id,
+          toolUseId: raw.tool_use_id,
+          status: raw.status,
+          outputFile: raw.output_file,
+          summary: raw.summary,
+        });
+      }
+      return true;
+    }
+
+    if (subtype === 'task_progress') {
+      const progressText = raw.description || raw.summary || raw.last_tool_name || '';
+      if (!this.shouldForwardTaskProgress(sessionId, raw.task_id, raw.tool_use_id, progressText)) {
+        return true;
+      }
+      if (STREAM_DEBUG) {
+        console.log('[Claude SDK] Task progress:', raw.task_id, raw.description?.slice(0, 80));
+      }
+      if (this.mainWindow) {
+        this.mainWindow.webContents.send(IPC_CHANNELS.CLAUDE_TASK_PROGRESS, {
+          sessionId,
+          taskId: raw.task_id,
+          toolUseId: raw.tool_use_id,
+          description: raw.description,
+          summary: raw.summary,
+          lastToolName: raw.last_tool_name,
+        });
+      }
+      return true;
+    }
+
+    if (subtype === 'task_updated') {
+      if (raw.patch?.status === 'completed' || raw.patch?.status === 'failed' || raw.patch?.status === 'killed') {
+        console.log('[Claude SDK] Task updated:', raw.task_id, raw.patch.status);
+      } else if (STREAM_DEBUG) {
+        console.log('[Claude SDK] Task updated:', raw.task_id, JSON.stringify(raw.patch));
+      }
+      if (this.mainWindow && raw.task_id && raw.patch) {
+        this.mainWindow.webContents.send(IPC_CHANNELS.CLAUDE_TASK_UPDATED, {
+          sessionId,
+          taskId: raw.task_id,
+          toolUseId: raw.tool_use_id,
+          patch: raw.patch,
+        });
+      }
+      return true;
+    }
+
+    return false;
+  }
+
   /**
    * Continue reading the SDK message iterator after a query turn completes.
    * Background tasks (Monitor, Agent) keep producing events on the same process
@@ -7709,7 +7966,7 @@ Begin by creating the task structure now.
     const controller = new AbortController();
     this.backgroundListeners.set(sessionId, controller);
 
-    const taskSubtypes = new Set(['task_updated', 'task_notification', 'task_progress', 'task_started']);
+    const taskSubtypes = new Set(['notification', 'task_updated', 'task_notification', 'task_progress', 'task_started']);
 
     (async () => {
       try {
@@ -7718,47 +7975,19 @@ Begin by creating the task structure now.
           if (controller.signal.aborted || parentSignal.aborted) break;
           const msg = result.value;
 
-          // Always advance the iterator before any continue/skip logic.
-          // Without this, `continue` would re-enter the loop on the same
-          // stale result and spin forever.
-          result = await iterator.next();
-
-          if (msg.type !== 'system') continue;
-          const systemMsg = msg as typeof msg & { subtype?: string };
-          if (!systemMsg.subtype || !taskSubtypes.has(systemMsg.subtype)) continue;
-
-          console.log(`[Claude SDK] Background listener (${sessionId.slice(0, 8)}): ${systemMsg.subtype}`, JSON.stringify(msg).slice(0, 200));
-
-          if (!this.mainWindow) continue;
-
-          if (systemMsg.subtype === 'task_updated') {
-            const update = systemMsg as typeof systemMsg & { task_id?: string; patch?: Record<string, unknown> };
-            if (update.task_id && update.patch) {
-              this.mainWindow.webContents.send(IPC_CHANNELS.CLAUDE_TASK_UPDATED, {
-                sessionId,
-                taskId: update.task_id,
-                patch: update.patch,
-              });
+          if (msg.type === 'system') {
+            const systemMsg = msg as typeof msg & { subtype?: string };
+            if (systemMsg.subtype && taskSubtypes.has(systemMsg.subtype)) {
+              if (STREAM_DEBUG) {
+                console.log(`[Claude SDK] Background listener (${sessionId.slice(0, 8)}): ${systemMsg.subtype}`);
+              }
+              this.forwardTaskSystemMessage(sessionId, systemMsg);
             }
-          } else if (systemMsg.subtype === 'task_notification') {
-            const notif = systemMsg as typeof systemMsg & { task_id?: string; status?: string; output_file?: string; summary?: string };
-            this.mainWindow.webContents.send(IPC_CHANNELS.CLAUDE_TASK_NOTIFICATION, {
-              sessionId,
-              taskId: notif.task_id,
-              status: notif.status,
-              outputFile: notif.output_file,
-              summary: notif.summary,
-            });
-          } else if (systemMsg.subtype === 'task_progress' || systemMsg.subtype === 'task_started') {
-            const prog = systemMsg as typeof systemMsg & { task_id?: string; description?: string; summary?: string; last_tool_name?: string };
-            this.mainWindow.webContents.send(IPC_CHANNELS.CLAUDE_TASK_PROGRESS, {
-              sessionId,
-              taskId: prog.task_id,
-              description: prog.description || (systemMsg.subtype === 'task_started' ? `Started: ${prog.summary || 'task'}` : undefined),
-              summary: prog.summary,
-              lastToolName: prog.last_tool_name,
-            });
+          } else {
+            this.forwardTaskSystemMessage(sessionId, msg);
           }
+
+          result = await iterator.next();
         }
       } catch (err) {
         if (!controller.signal.aborted && !parentSignal.aborted) {
@@ -7868,12 +8097,40 @@ Begin by creating the task structure now.
     // Validate message is not empty to prevent API error
     let safeMessage = message;
     const hasImages = attachments?.some(a => a.type === 'image');
+    const hasFiles = hasFileAttachments(attachments);
     if (!message || message.trim() === '') {
-      if (!hasImages) {
+      if (!hasImages && !hasFiles) {
         console.log('[Claude Service] injectMessage: Empty message with no images, skipping');
         return false;
       }
-      safeMessage = 'Please analyze this image.';
+      safeMessage = hasFiles ? ATTACHMENT_ONLY_PROMPT : 'Please analyze this image.';
+    }
+
+    if (hasFiles) {
+      const session = (this.sessionStore.get(`sessions.${sessionId}`) as Session | undefined)
+        || (this.sessionStore.get(`discoveredSessions.${sessionId}`) as Session | undefined);
+      if (!session) {
+        console.warn('[Claude Service] injectMessage: Cannot prepare file attachments; session not found', sessionId);
+        return false;
+      }
+      const attachmentWorkingDir = session.sshConfig
+        ? session.worktreePath || session.repoPath || session.sshConfig.remoteWorkdir || process.cwd()
+        : this.resolveValidCwd(session);
+      try {
+        const preparedFiles = await prepareFileAttachmentsForHarness(
+          sessionId,
+          attachments,
+          attachmentWorkingDir,
+          session.sshConfig,
+        );
+        if (preparedFiles.promptBlock) {
+          safeMessage = `${preparedFiles.promptBlock}\n\n${safeMessage || ATTACHMENT_ONLY_PROMPT}`;
+          console.log(`[Claude Service] injectMessage: Prepared ${preparedFiles.files.length} file attachment(s)`);
+        }
+      } catch (error) {
+        console.error('[Claude Service] injectMessage: Failed to prepare file attachments:', error);
+        return false;
+      }
     }
 
     console.log('[Claude Service] injectMessage: Injecting queued message via Query.streamInput for session', sessionId);
@@ -7950,6 +8207,24 @@ Begin by creating the task structure now.
   }
 
   /**
+   * Clear a stale local stream wrapper without killing the remote SSH turn.
+   * Used when the queue sees a surviving remote process but the local Query
+   * object is gone, so async injection cannot work and resumeRemoteTurn would
+   * otherwise reject because activeQueries still contains the session.
+   */
+  clearLocalActiveQueryForRemoteReattach(sessionId: string): boolean {
+    const controller = this.activeQueries.get(sessionId);
+    if (!controller) return false;
+
+    controller.abort();
+    const cleared = this.clearActiveQuery(sessionId, controller);
+    if (cleared) {
+      powerService.sessionEnded();
+    }
+    return cleared;
+  }
+
+  /**
    * Get project slug from path - matches SDK's convention
    * The SDK uses: leading dash, preserve case, replace / with -
    */
@@ -7999,6 +8274,7 @@ Begin by creating the task structure now.
   private async prepareCliAttachments(
     sessionId: string,
     message: string,
+    workingDir: string,
     attachments?: Attachment[],
     sshConfig?: import('../../shared/types').SSHConfig,
   ): Promise<{ message: string; cleanup: () => Promise<void> }> {
@@ -8013,6 +8289,14 @@ Begin by creating the task structure now.
         `<selected-element index="${i + 1}" selector="${el.name}">\n${el.content}\n</selected-element>`
       ).join('\n\n');
       result = `${domContext}\n\n${result}`;
+    }
+
+    if (hasFileAttachments(attachments)) {
+      const preparedFiles = await prepareFileAttachmentsForHarness(sessionId, attachments, workingDir, sshConfig);
+      if (preparedFiles.promptBlock) {
+        result = `${preparedFiles.promptBlock}\n\n${result || ATTACHMENT_ONLY_PROMPT}`;
+        console.log(`[Claude Service] Prepared ${preparedFiles.files.length} file attachment(s) for CLI harness`);
+      }
     }
 
     const images = this.getImageAttachmentsForHarness(attachments);

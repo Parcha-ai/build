@@ -1,9 +1,9 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { GitBranch, Image, Target, FileCode } from 'lucide-react';
 import ToolCallCard from './ToolCallCard';
-import HtmlContentBlock from './HtmlContentBlock';
+import HtmlArtifactLink from './HtmlArtifactLink';
 import { SpeakerButton } from './SpeakerButton';
 import { useEditorStore } from '../../stores/editor.store';
 import { useUIStore } from '../../stores/ui.store';
@@ -11,43 +11,61 @@ import { useSessionStore } from '../../stores/session.store';
 import { isHtmlResponse, extractHtml } from '../../utils/htmlDetector';
 import type { ChatMessage, ToolCall } from '../../../shared/types';
 import { AGENT_COLORS } from '../../../shared/types';
-import { buildMissingToolCall, getMessageRenderArtifacts } from '../../../shared/utils/message-rendering';
+import { buildMissingToolCall, getMessageRenderArtifacts, getRenderedBlockText } from '../../../shared/utils/message-rendering';
 import { isTranscriptVisibleToolCall } from '../../../shared/utils/tool-call-transformer';
 
 // Regex to match file paths with optional line numbers
 // Matches: /path/to/file.ext or /path/to/file.ext:123
 const FILE_PATH_REGEX = /(\/(?:Users|home|var|etc|opt|tmp|usr|app|src|lib|pkg|workspace)[^\s:,;)}\]"'`<>]*\.[a-zA-Z0-9]+(?::\d+)?)/g;
+const RECENT_TOOL_CARD_LIMIT = 80;
+const HISTORICAL_PREVIEW_HEAD_CHARS = 700;
+const HISTORICAL_PREVIEW_TAIL_CHARS = 500;
 
 interface MessageBubbleProps {
+  sessionId?: string;
   message: ChatMessage;
   isStreaming?: boolean;
   streamingToolCalls?: ToolCall[];
   isLatestMessage?: boolean; // True only for the most recent message in the conversation
   isOldMessage?: boolean; // True for messages older than 10 from the end - collapse tool cards by default
   isLatestUserMessage?: boolean; // True for the most recent user message (don't show rewind)
+  renderHtmlResponse?: boolean; // True when this session is in HTML response mode
   onRewind?: (messageId: string) => void; // Callback when rewind button is clicked
 }
 
 // Extracted component for rendering text content blocks with markdown
 interface TextContentBlockProps {
+  sessionId?: string;
   content: string;
   messageId: string;
   showSpeaker: boolean;
   openFile: (path: string, line?: number) => void;
   toggleBrowserPanel: () => void;
   isBrowserPanelOpen: boolean;
+  renderHtmlResponse?: boolean;
+  autoOpenHtmlArtifact?: boolean;
 }
 
 function TextContentBlock({
+  sessionId,
   content,
   messageId,
   showSpeaker,
   openFile,
   toggleBrowserPanel,
   isBrowserPanelOpen,
+  renderHtmlResponse = false,
+  autoOpenHtmlArtifact = false,
 }: TextContentBlockProps) {
-  if (isHtmlResponse(content)) {
-    return <HtmlContentBlock html={extractHtml(content)} messageId={messageId} />;
+  if (isHtmlResponse(content, { allowFragment: renderHtmlResponse })) {
+    return (
+      <HtmlArtifactLink
+        sessionId={sessionId}
+        html={extractHtml(content)}
+        messageId={messageId}
+        autoOpen={autoOpenHtmlArtifact}
+      />
+    );
   }
 
   return (
@@ -241,10 +259,94 @@ function TextContentBlock({
   );
 }
 
-function MessageBubble({ message, isStreaming, streamingToolCalls, isLatestMessage = false, isOldMessage = false, isLatestUserMessage = false, onRewind }: MessageBubbleProps) {
+function CollapsedToolSummary({ count }: { count: number }) {
+  if (count <= 0) return null;
+
+  return (
+    <div className="flex items-center gap-2 text-[11px] font-mono text-claude-text-secondary border-l-2 border-claude-border pl-2 py-1 bg-claude-surface/20">
+      <FileCode size={12} className="text-claude-text-secondary flex-shrink-0" />
+      <span>
+        {count} historical tool call{count === 1 ? '' : 's'} collapsed
+      </span>
+    </div>
+  );
+}
+
+function getHistoricalPreview(message: ChatMessage): string {
+  const text = (message.content || getRenderedBlockText(message.contentBlocks)).trim();
+  if (!text) return '';
+
+  const maxLength = HISTORICAL_PREVIEW_HEAD_CHARS + HISTORICAL_PREVIEW_TAIL_CHARS;
+  if (text.length <= maxLength) return text;
+
+  return `${text.slice(0, HISTORICAL_PREVIEW_HEAD_CHARS).trimEnd()}\n...\n${text.slice(-HISTORICAL_PREVIEW_TAIL_CHARS).trimStart()}`;
+}
+
+function countHistoricalToolBlocks(message: ChatMessage, visibleToolCallCount: number): number {
+  const metadataCount = Number(message.metadata?.historicalToolCallCount);
+  if (Number.isFinite(metadataCount) && metadataCount > 0) {
+    return metadataCount;
+  }
+
+  const blockCount = (message.contentBlocks || [])
+    .filter((block) => block.type === 'tool_use' && block.toolCallId)
+    .length;
+  return Math.max(visibleToolCallCount, blockCount);
+}
+
+function HistoricalAssistantSummary({
+  preview,
+  toolCount,
+  onExpand,
+}: {
+  preview: string;
+  toolCount: number;
+  onExpand: () => void;
+}) {
+  return (
+    <div className="border-l-2 border-claude-border pl-3 py-2 bg-claude-surface/10 space-y-2">
+      {preview ? (
+        <p
+          className="whitespace-pre-wrap text-sm text-claude-text-secondary font-mono break-words"
+          style={{ overflowWrap: 'anywhere' }}
+        >
+          {preview}
+        </p>
+      ) : (
+        <p className="text-sm text-claude-text-secondary font-mono">
+          Historical assistant response collapsed.
+        </p>
+      )}
+      <div className="flex flex-wrap items-center gap-2">
+        <CollapsedToolSummary count={toolCount} />
+        <button
+          type="button"
+          onClick={onExpand}
+          className="px-2 py-1 text-[11px] font-mono font-bold text-claude-accent border border-claude-border hover:bg-claude-surface"
+          style={{ borderRadius: 0 }}
+        >
+          SHOW DETAILS
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function MessageBubble({
+  sessionId,
+  message,
+  isStreaming,
+  streamingToolCalls,
+  isLatestMessage = false,
+  isOldMessage = false,
+  isLatestUserMessage = false,
+  renderHtmlResponse = false,
+  onRewind,
+}: MessageBubbleProps) {
   const isUser = message.role === 'user';
   const isSystem = message.role === 'system';
   const [isRewinding, setIsRewinding] = useState(false);
+  const [showHistoricalDetail, setShowHistoricalDetail] = useState(false);
   const openFile = useEditorStore((state) => state.openFile);
   const toggleBrowserPanel = useUIStore((state) => state.toggleBrowserPanel);
   const isBrowserPanelOpen = useUIStore((state) => state.isBrowserPanelOpen);
@@ -272,11 +374,33 @@ function MessageBubble({ message, isStreaming, streamingToolCalls, isLatestMessa
     isToolOnlyMessage,
     toolOnlySummary,
   } = getMessageRenderArtifacts(message, streamingToolCalls);
-  const hiddenToolCallIds = new Set(
+  const hiddenToolCallIds = useMemo(() => new Set(
     (streamingToolCalls || message.toolCalls || [])
       .filter((toolCall) => !isTranscriptVisibleToolCall(toolCall))
       .map((toolCall) => toolCall.id),
-  );
+  ), [message.toolCalls, streamingToolCalls]);
+  const toolCallById = useMemo(() => new Map(
+    toolCalls.map((toolCall) => [toolCall.id, toolCall] as const),
+  ), [toolCalls]);
+  const firstTextBlockIndex = useMemo(() => (
+    message.contentBlocks?.findIndex((block) => block.type === 'text') ?? -1
+  ), [message.contentBlocks]);
+  const toolCardRenderLimit = isOldMessage && !isLatestMessage && !isStreaming
+    ? 0
+    : RECENT_TOOL_CARD_LIMIT;
+  const historicalCollapsed = !isUser && !isSystem && isOldMessage && !isLatestMessage && !isStreaming && !showHistoricalDetail;
+  const historicalPreview = useMemo(() => getHistoricalPreview(message), [message]);
+  const historicalToolCount = useMemo(() => countHistoricalToolBlocks(message, toolCalls.length), [message, toolCalls.length]);
+  const assistantTextContent = useMemo(() => {
+    const renderedBlockText = getRenderedBlockText(message.contentBlocks);
+    return renderedBlockText.trim() ? renderedBlockText : (message.content || '');
+  }, [message.content, message.contentBlocks]);
+  const shouldRenderAssistantTextAsHtml = renderHtmlResponse
+    && !isUser
+    && !isSystem
+    && !historicalCollapsed
+    && Boolean(assistantTextContent.trim())
+    && isHtmlResponse(assistantTextContent, { allowFragment: true });
 
   return (
     <div className="flex gap-2 min-w-0">
@@ -375,7 +499,13 @@ function MessageBubble({ message, isStreaming, streamingToolCalls, isLatestMessa
             )}
 
             {/* Render content blocks in chronological order when available */}
-            {message.contentBlocks && message.contentBlocks.length > 0 ? (
+            {historicalCollapsed ? (
+              <HistoricalAssistantSummary
+                preview={historicalPreview || toolOnlySummary}
+                toolCount={historicalToolCount}
+                onExpand={() => setShowHistoricalDetail(true)}
+              />
+            ) : message.contentBlocks && message.contentBlocks.length > 0 ? (
               (() => {
                 // Build an agent colour map for this message's blocks
                 const blockAgentMap = new Map<string, number>();
@@ -386,7 +516,11 @@ function MessageBubble({ message, isStreaming, streamingToolCalls, isLatestMessa
                   }
                 });
 
-                return message.contentBlocks!.map((block, blockIndex) => {
+                const renderedBlocks: React.ReactNode[] = [];
+                let renderedToolCards = 0;
+                let omittedToolCards = 0;
+
+                message.contentBlocks!.forEach((block, blockIndex) => {
                   const isTeammate = !!block.agentId;
                   const blockColor = isTeammate && block.agentId
                     ? AGENT_COLORS[blockAgentMap.get(block.agentId)! % AGENT_COLORS.length]
@@ -397,13 +531,18 @@ function MessageBubble({ message, isStreaming, streamingToolCalls, isLatestMessa
 
                   if (block.type === 'tool_use' && block.toolCallId) {
                     if (hiddenToolCallIds.has(block.toolCallId)) {
-                      return null;
+                      return;
                     }
-                    const toolCall = toolCalls.find(tc => tc.id === block.toolCallId) || buildMissingToolCall(block.toolCallId, block.agentId);
+                    const toolCall = toolCallById.get(block.toolCallId) || buildMissingToolCall(block.toolCallId, block.agentId);
                     if (!isTranscriptVisibleToolCall(toolCall)) {
-                      return null;
+                      return;
                     }
-                    return (
+                    if (renderedToolCards >= toolCardRenderLimit) {
+                      omittedToolCards += 1;
+                      return;
+                    }
+                    renderedToolCards += 1;
+                    renderedBlocks.push(
                       <div key={toolCall.id} style={agentStyle}>
                         <ToolCallCard
                           toolCall={toolCall}
@@ -414,45 +553,79 @@ function MessageBubble({ message, isStreaming, streamingToolCalls, isLatestMessa
                       </div>
                     );
                   } else if (block.type === 'text' && block.text) {
-                    return (
+                    if (shouldRenderAssistantTextAsHtml) {
+                      return;
+                    }
+                    renderedBlocks.push(
                       <div key={`text-${blockIndex}`} style={agentStyle}>
                         <TextContentBlock
+                          sessionId={sessionId}
                           content={block.text}
                           messageId={message.id}
-                          showSpeaker={blockIndex === message.contentBlocks!.findIndex(b => b.type === 'text')}
+                          showSpeaker={blockIndex === firstTextBlockIndex}
                           openFile={openFile}
                           toggleBrowserPanel={toggleBrowserPanel}
                           isBrowserPanelOpen={isBrowserPanelOpen}
+                          renderHtmlResponse={renderHtmlResponse}
+                          autoOpenHtmlArtifact={isLatestMessage || Boolean(isStreaming)}
                         />
                       </div>
                     );
                   }
-                  return null;
-                }).concat(unrenderedToolCalls.map((toolCall, index) => (
-                  <ToolCallCard
-                    key={`unrendered-tool-${toolCall.id}`}
-                    toolCall={toolCall}
-                    isLatestToolCall={isLatestMessage && index === unrenderedToolCalls.length - 1}
-                    isStreaming={isStreaming}
-                    defaultCollapsed={isOldMessage}
-                  />
-                ))).concat(unrenderedMessageContent ? [(
-                  <TextContentBlock
-                    key="message-content-fallback"
-                    content={unrenderedMessageContent}
-                    messageId={message.id}
-                    showSpeaker={false}
-                    openFile={openFile}
-                    toggleBrowserPanel={toggleBrowserPanel}
-                    isBrowserPanelOpen={isBrowserPanelOpen}
-                  />
-                )] : []);
+                });
+
+                const unrenderedToolBlocks: React.ReactNode[] = [];
+                unrenderedToolCalls.forEach((toolCall, index) => {
+                  if (renderedToolCards >= toolCardRenderLimit) {
+                    omittedToolCards += 1;
+                    return;
+                  }
+                  renderedToolCards += 1;
+                  unrenderedToolBlocks.push(
+                    <ToolCallCard
+                      key={`unrendered-tool-${toolCall.id}`}
+                      toolCall={toolCall}
+                      isLatestToolCall={isLatestMessage && index === unrenderedToolCalls.length - 1}
+                      isStreaming={isStreaming}
+                      defaultCollapsed={isOldMessage}
+                    />
+                  );
+                });
+
+                return [
+                  omittedToolCards > 0 ? <CollapsedToolSummary key="collapsed-tools" count={omittedToolCards} /> : null,
+                  ...renderedBlocks,
+                  shouldRenderAssistantTextAsHtml ? (
+                    <HtmlArtifactLink
+                      key="html-response-artifact"
+                      sessionId={sessionId}
+                      html={extractHtml(assistantTextContent)}
+                      messageId={message.id}
+                      autoOpen={isLatestMessage || Boolean(isStreaming)}
+                    />
+                  ) : null,
+                  ...unrenderedToolBlocks,
+                  unrenderedMessageContent ? (
+                    <TextContentBlock
+                      sessionId={sessionId}
+                      key="message-content-fallback"
+                      content={unrenderedMessageContent}
+                      messageId={message.id}
+                      showSpeaker={false}
+                      openFile={openFile}
+                      toggleBrowserPanel={toggleBrowserPanel}
+                      isBrowserPanelOpen={isBrowserPanelOpen}
+                      renderHtmlResponse={renderHtmlResponse}
+                      autoOpenHtmlArtifact={isLatestMessage || Boolean(isStreaming)}
+                    />
+                  ) : null,
+                ];
               })()
             ) : (
               /* Fallback for messages without contentBlocks (backwards compat) */
               <>
                 {/* Tool calls execute (during action) */}
-                {toolCalls.map((toolCall, index) => (
+                {toolCalls.slice(0, toolCardRenderLimit).map((toolCall, index) => (
                   <ToolCallCard
                     key={toolCall.id}
                     toolCall={toolCall}
@@ -461,11 +634,17 @@ function MessageBubble({ message, isStreaming, streamingToolCalls, isLatestMessa
                     defaultCollapsed={isOldMessage}
                   />
                 ))}
+                <CollapsedToolSummary count={Math.max(0, toolCalls.length - toolCardRenderLimit)} />
 
                 {/* Final content streams last (summary/response) */}
                 {message.content && (
-              isHtmlResponse(message.content) ? (
-                <HtmlContentBlock html={extractHtml(message.content)} messageId={message.id} />
+              isHtmlResponse(message.content, { allowFragment: renderHtmlResponse }) ? (
+                <HtmlArtifactLink
+                  sessionId={sessionId}
+                  html={extractHtml(message.content)}
+                  messageId={message.id}
+                  autoOpen={isLatestMessage || Boolean(isStreaming)}
+                />
               ) : (
               <div className="relative group">
                 {/* Speaker button - top right, brutalist style */}
@@ -666,7 +845,7 @@ function MessageBubble({ message, isStreaming, streamingToolCalls, isLatestMessa
               </>
             )}
 
-            {toolOnlySummary && (
+            {!historicalCollapsed && toolOnlySummary && (
               <div className="text-xs font-mono text-claude-text-secondary border-l-2 border-claude-border pl-2">
                 {toolOnlySummary}
               </div>

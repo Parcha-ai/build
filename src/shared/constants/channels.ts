@@ -197,6 +197,7 @@ export const IPC_CHANNELS = {
   SSH_SYNC_SETTINGS: 'ssh:sync-settings',
   SSH_RUN_WORKTREE_SCRIPT: 'ssh:run-worktree-script',
   SSH_GET_SAVED_CONFIG: 'ssh:get-saved-config',
+  SSH_GET_HOST_CONFIG: 'ssh:get-host-config',
   SSH_SAVE_CONFIG: 'ssh:save-config',
   SSH_SETUP_PROGRESS: 'ssh:setup-progress',
   SSH_CHECK_CONNECTION: 'ssh:check-connection',

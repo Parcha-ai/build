@@ -334,13 +334,38 @@ export function registerSSHHandlers(ipcMain: IpcMain): void {
     }
   );
 
+  const normalizeHostKey = (host: string) => host.trim().toLowerCase();
+
   /**
-   * Save SSH configuration
+   * Get the last-used SSH configuration for a specific host.
+   * Falls back to lastSSHConfig so pre-existing saves migrate transparently.
+   */
+  ipcMain.handle(
+    IPC_CHANNELS.SSH_GET_HOST_CONFIG,
+    async (_event, host: string) => {
+      const key = normalizeHostKey(host || '');
+      if (!key) return null;
+      const byHost = (settingsStore.get('sshConfigsByHost') as Record<string, SavedSSHConfig> | undefined) || {};
+      if (byHost[key]) return byHost[key];
+      const last = settingsStore.get('lastSSHConfig') as SavedSSHConfig | null;
+      if (last && normalizeHostKey(last.host || '') === key) return last;
+      return null;
+    }
+  );
+
+  /**
+   * Save SSH configuration (globally as last-used, and per-host for recall)
    */
   ipcMain.handle(
     IPC_CHANNELS.SSH_SAVE_CONFIG,
     async (_event, config: SavedSSHConfig) => {
       settingsStore.set('lastSSHConfig', config);
+      const key = normalizeHostKey(config.host || '');
+      if (key) {
+        const byHost = (settingsStore.get('sshConfigsByHost') as Record<string, SavedSSHConfig> | undefined) || {};
+        byHost[key] = config;
+        settingsStore.set('sshConfigsByHost', byHost);
+      }
     }
   );
 

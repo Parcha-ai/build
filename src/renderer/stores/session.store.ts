@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import type { Session, ChatMessage, ToolCall, ContentBlock, PermissionRequest, PermissionResponse, QuestionRequest, QuestionResponse, SetupProgressEvent, CompactionStatus, PlanApprovalRequest, PlanApprovalResponse, GStackMode, Harness, TaskTier } from '../../shared/types';
 import { AGENT_COLORS } from '../../shared/types';
 import { normalizeToolCall } from '../../shared/utils/tool-call-transformer';
-import { contentBlockSignature, filterInternalPromptEchoes, hasRecoverableOutput, isCloseContentDuplicate, isCloseTimelineDuplicate, isInterruptedSafetyNetDuplicate, toolSignature } from '../../shared/utils/message-recovery';
+import { contentBlockSignature, filterInternalPromptEchoes, hasRecoverableOutput, isCloseContentDuplicate, isCloseTimelineDuplicate, isExactLongAssistantDuplicate, isInterruptedSafetyNetDuplicate, isPrefixAssistantDuplicate, toolSignature } from '../../shared/utils/message-recovery';
 import { buildCompletedStreamMessage } from '../../shared/utils/stream-finalization';
 import { extractContentBlockText, stringifyToolResultForDisplay } from '../../shared/utils/content-block-text';
 import { useAudioStore } from './audio.store';
@@ -11,6 +11,60 @@ import { getSessionDisplayName } from '../utils/session-display';
 // Check if running in Electron environment
 const hasElectronAPI = typeof window !== 'undefined' && !!window.electronAPI;
 const noop = () => undefined;
+const MAX_LIVE_THINKING_CHARS = 20_000;
+const MAX_LIVE_MONITOR_EVENT_CHARS = 4_000;
+const MAX_LIVE_TOOL_RESULT_STREAM_CHARS = 12_000;
+const MAX_MONITOR_EVENTS = 80;
+const TOOL_EVENT_DEBUG_STORAGE_KEY = 'grep-debug-tool-events';
+
+function capTextMiddle(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  const headChars = Math.floor(maxChars * 0.65);
+  const tailChars = maxChars - headChars;
+  return [
+    text.slice(0, headChars),
+    `\n\n... truncated ${text.length - maxChars} chars for live UI ...\n\n`,
+    text.slice(-tailChars),
+  ].join('');
+}
+
+function capTextTail(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  return `[older thinking truncated]\n${text.slice(-maxChars)}`;
+}
+
+function capLiveMonitorText(text: string): string {
+  return capTextMiddle(text, MAX_LIVE_MONITOR_EVENT_CHARS);
+}
+
+function isToolEventDebugEnabled(): boolean {
+  try {
+    return typeof localStorage !== 'undefined' && localStorage.getItem(TOOL_EVENT_DEBUG_STORAGE_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function logToolEvent(kind: string, toolCall?: ToolCall): void {
+  if (!isToolEventDebugEnabled() || !toolCall) return;
+  let inputPreview = '';
+  try {
+    inputPreview = capTextMiddle(JSON.stringify(toolCall.input || {}), 500);
+  } catch {
+    inputPreview = '[unserializable input]';
+  }
+  console.debug(`[SessionStore] ${kind}:`, toolCall.name, 'id:', toolCall.id, 'input:', inputPreview);
+}
+
+function collectSessionHtmlRenderModes(sessions: Session[]): Record<string, 'md' | 'html'> {
+  const modes: Record<string, 'md' | 'html'> = {};
+  for (const session of sessions) {
+    if (session.htmlRenderMode === 'md' || session.htmlRenderMode === 'html') {
+      modes[session.id] = session.htmlRenderMode;
+    }
+  }
+  return modes;
+}
 
 export function isSessionNotFoundError(error: unknown, sessionId: string): boolean {
   const message = String((error as { message?: string } | undefined)?.message || error || '');
@@ -48,8 +102,10 @@ const CODEX_PERMISSION_MODES: PermissionMode[] = ALL_PERMISSION_MODES.filter(
 );
 const SUPPLEMENTAL_MESSAGES_STORAGE_PREFIX = 'grep-supplemental-messages-';
 const AUTO_BUILD_SECTION_MARKERS = ['\n\n---\n\nFollow-up ', '\n\n---\n\nAuto Build '];
+const UNANSWERED_DUPLICATE_USER_PROMPT_WINDOW_MS = 30_000;
 const queueDrainSuppressedUntil: Record<string, number> = {};
 const messageLoadGenerations = new Map<string, number>();
+const consumedQueueMessageIds = new Map<string, Set<string>>();
 const DEBUG_SESSION_SEND = false;
 type HarnessSelectionTrigger = 'model-picker' | 'plan-nudge' | 'compaction-handoff' | 'api' | 'other';
 
@@ -64,7 +120,10 @@ function hasSameSessionListIdentity(current: Session[], next: Session[]): boolea
       a.updatedAt !== b.updatedAt ||
       a.branch !== b.branch ||
       a.name !== b.name ||
+      a.manualName !== b.manualName ||
+      a.manuallyRenamedAt !== b.manuallyRenamedAt ||
       a.forkName !== b.forkName ||
+      a.aiGeneratedName !== b.aiGeneratedName ||
       a.lastBrowserUrl !== b.lastBrowserUrl
     ) {
       return false;
@@ -115,6 +174,19 @@ const suppressQueueDrain = (sessionId: string, ms = 3000) => {
 const isQueueDrainSuppressed = (sessionId: string) => {
   return Date.now() < (queueDrainSuppressedUntil[sessionId] || 0);
 };
+
+function markQueueMessagesConsumed(sessionId: string, messageIds: string[]): void {
+  const ids = messageIds.filter(Boolean);
+  if (ids.length === 0) return;
+  const existing = consumedQueueMessageIds.get(sessionId) || new Set<string>();
+  for (const id of ids) existing.add(id);
+  consumedQueueMessageIds.set(sessionId, existing);
+  console.log(`[SessionStore] Marked ${ids.length} queued message id(s) consumed for hydration guard`);
+}
+
+function isConsumedQueueMessage(sessionId: string, message: ChatMessage): boolean {
+  return message.role === 'user' && Boolean(consumedQueueMessageIds.get(sessionId)?.has(message.id));
+}
 
 function parseGoalSlashCommand(message: string): string | undefined {
   const match = message.match(/^\/goal(?:\s+([\s\S]*))?$/i);
@@ -245,9 +317,11 @@ interface SessionState {
   // Monitor tool instances per session (streaming background watches)
   monitorInstances: Record<string, Array<{
     id: string;
+    aliases?: string[];
     description: string;
     events: Array<{ id: string; text: string; timestamp: number }>;
     active: boolean;
+    kind?: 'monitor' | 'subagent';
     persistent?: boolean;
     startedAt: number;
   }>>;
@@ -422,6 +496,76 @@ interface SessionState {
   subscribeToRemoteControl: () => () => void;
 }
 
+type MonitorEntry = SessionState['monitorInstances'][string][number];
+
+function findMonitorIndex(monitors: MonitorEntry[], taskId?: string, toolUseId?: string): number {
+  const ids = [taskId, toolUseId].filter((id): id is string => Boolean(id));
+  if (ids.length === 0) return -1;
+  return monitors.findIndex((monitor) => (
+    ids.includes(monitor.id) || monitor.aliases?.some((alias) => ids.includes(alias))
+  ));
+}
+
+function makeMonitorEvent(prefix: string, text: string) {
+  return {
+    id: `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    text: capLiveMonitorText(text),
+    timestamp: Date.now(),
+  };
+}
+
+function appendMonitorEvent(events: MonitorEntry['events'], event: MonitorEntry['events'][number]): MonitorEntry['events'] {
+  return [...(events || []), event].slice(-MAX_MONITOR_EVENTS);
+}
+
+function taskStatusText(status?: string): string | undefined {
+  if (!status) return undefined;
+  if (status === 'running') return 'Running...';
+  if (status === 'pending') return 'Pending...';
+  if (status === 'paused') return 'Paused';
+  return `Status: ${status}`;
+}
+
+function compactMonitorText(text: string, maxLength = 160): string {
+  const compacted = text.replace(/\s+/g, ' ').trim();
+  return compacted.length > maxLength ? `${compacted.slice(0, maxLength - 1)}...` : compacted;
+}
+
+function asyncAgentDescription(toolCall: ToolCall): string {
+  const input = (toolCall.input || {}) as {
+    subagent_type?: string;
+    prompt?: string;
+    description?: string;
+    task?: string;
+    summary?: string;
+  };
+  const taskText = input.description || input.task || input.summary || compactMonitorText(input.prompt || '', 90);
+  return input.subagent_type
+    ? `${input.subagent_type}: ${taskText || 'background agent'}`
+    : taskText || `${toolCall.name} background agent`;
+}
+
+function parseAsyncAgentLaunch(text: string): { agentId: string; summary?: string } | null {
+  const agentMatch = text.match(/Async agent launched successfully\.\s*agentId:\s*([a-zA-Z0-9_-]+)/i);
+  if (!agentMatch?.[1]) return null;
+  const summaryMatch = text.match(/summary:\s*'([^']+)'/i) || text.match(/summary:\s*"([^"]+)"/i);
+  return {
+    agentId: agentMatch[1],
+    summary: summaryMatch?.[1],
+  };
+}
+
+function appendUniqueAlias(entry: MonitorEntry, alias?: string, nextId = entry.id): string[] | undefined {
+  if (!alias || alias === nextId) return entry.aliases;
+  const aliases = entry.aliases || [];
+  return aliases.includes(alias) ? aliases : [...aliases, alias];
+}
+
+function nextMonitorId(entry: MonitorEntry, taskId?: string): string {
+  if (!taskId || entry.aliases?.includes(taskId)) return entry.id;
+  return taskId;
+}
+
 export function isCodexModel(model?: string | null): boolean {
   return model?.startsWith('codex:') ?? false;
 }
@@ -454,6 +598,7 @@ export function normalizePermissionModeForModel(model?: string | null, mode?: Pe
 }
 
 const PREFERRED_CLAUDE_FALLBACK_MODELS = [
+  'claude-sonnet-5',
   'claude-sonnet-4-6',
   'claude-sonnet-4-5-20250929',
   'claude-sonnet-4-20250514',
@@ -475,7 +620,13 @@ interface LoadMessagesOptions {
   replaceWhileStreaming?: boolean;
 }
 
+interface LoadedMessagesApplyOptions {
+  requestedLimit?: number;
+  replaceWhileStreaming?: boolean;
+}
+
 const remoteProcessPollers = new Set<string>();
+const remoteProcessAttachRequests = new Set<string>();
 const MAX_CONCURRENT_SSH_REATTACH_CHECKS = 1;
 const SSH_STARTUP_REATTACH_WINDOW_MS = 24 * 60 * 60 * 1000;
 const SSH_STARTUP_REATTACH_DELAY_MS = 15_000;
@@ -483,10 +634,42 @@ const SSH_STARTUP_REATTACH_STREAM_BACKOFF_MS = 2_000;
 
 interface StartRemoteProcessMonitorOptions {
   recoverableKnown?: boolean;
+  attachStream?: boolean;
 }
 
 function hasActiveStreamingSession(state: SessionState): boolean {
   return Object.values(state.isStreaming).some(Boolean);
+}
+
+function markRemoteProcessStreaming(
+  sessionId: string,
+  getState: () => SessionState,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  setState: any,
+): void {
+  setState((state: SessionState) => ({
+    isStreaming: { ...state.isStreaming, [sessionId]: true },
+    sessionActivity: { ...state.sessionActivity, [sessionId]: 'active' },
+    streamGeneration: {
+      ...state.streamGeneration,
+      [sessionId]: state.isStreaming[sessionId]
+        ? (state.streamGeneration[sessionId] || 0)
+        : (state.streamGeneration[sessionId] || 0) + 1,
+    },
+    streamStartTime: {
+      ...state.streamStartTime,
+      [sessionId]: state.streamStartTime[sessionId] || Date.now(),
+    },
+    activeStreamModel: {
+      ...state.activeStreamModel,
+      [sessionId]: state.activeStreamModel[sessionId] || getSessionModel(getState(), sessionId),
+    },
+  }));
+}
+
+async function hasLiveRemoteProcess(sessionId: string, state: SessionState): Promise<boolean> {
+  if (!state.sessions.find((session) => session.id === sessionId)?.sshConfig) return false;
+  return window.electronAPI.ssh.hasActiveRemoteProcess(sessionId).catch(() => false);
 }
 
 async function waitForNoActiveStream(getState: () => SessionState): Promise<void> {
@@ -507,6 +690,8 @@ function scheduleStartupRemoteProcessMonitor(
   setTimeout(() => {
     void (async () => {
       await waitForNoActiveStream(getState);
+      // Active session: attach the live stream so a turn that survived an app
+      // restart resumes visibly instead of freezing at the last snapshot.
       startRemoteProcessMonitor(sessionId, getState, setState, loadMessages);
     })();
   }, SSH_STARTUP_REATTACH_DELAY_MS);
@@ -520,7 +705,17 @@ function startRemoteProcessMonitor(
   loadMessages: (sessionId: string, options?: LoadMessagesOptions) => Promise<void>,
   options: StartRemoteProcessMonitorOptions = {},
 ) {
-  if (remoteProcessPollers.has(sessionId)) return;
+  const shouldAttachStream = options.attachStream !== false;
+  if (shouldAttachStream) {
+    remoteProcessAttachRequests.add(sessionId);
+  }
+
+  if (remoteProcessPollers.has(sessionId)) {
+    if (shouldAttachStream) {
+      console.log(`[SessionStore] Queued stream attach request for existing SSH process monitor: ${sessionId}`);
+    }
+    return;
+  }
   remoteProcessPollers.add(sessionId);
 
   const hasRecoverableProcess = options.recoverableKnown
@@ -537,22 +732,7 @@ function startRemoteProcessMonitor(
       }
 
       console.log(`[SessionStore] SSH session ${sessionId} has recoverable remote Claude process — attaching stream state`);
-      setState((state: SessionState) => ({
-        isStreaming: { ...state.isStreaming, [sessionId]: true },
-        sessionActivity: { ...state.sessionActivity, [sessionId]: 'active' },
-        streamGeneration: {
-          ...state.streamGeneration,
-          [sessionId]: (state.streamGeneration[sessionId] || 0) + 1,
-        },
-        streamStartTime: {
-          ...state.streamStartTime,
-          [sessionId]: Date.now(),
-        },
-        activeStreamModel: {
-          ...state.activeStreamModel,
-          [sessionId]: getSessionModel(state, sessionId),
-        },
-      }));
+      markRemoteProcessStreaming(sessionId, getState, setState);
 
       void (async () => {
         try {
@@ -563,19 +743,49 @@ function startRemoteProcessMonitor(
             await loadMessages(sessionId, { replaceWhileStreaming: true });
           }
 
-          const backendAlreadyStreaming = await window.electronAPI.claude.hasActiveQuery(sessionId).catch(() => false);
-          if (!backendAlreadyStreaming) {
+          const attachRemoteStreamIfRequested = async (): Promise<'attached' | 'completed' | 'skipped'> => {
+            if (!remoteProcessAttachRequests.has(sessionId)) {
+              return 'skipped';
+            }
+
+            const backendAlreadyStreaming = await window.electronAPI.claude.hasActiveQuery(sessionId).catch(() => false);
+            if (backendAlreadyStreaming) {
+              remoteProcessAttachRequests.delete(sessionId);
+              return 'attached';
+            }
+
+            remoteProcessAttachRequests.delete(sessionId);
             console.log(`[SessionStore] Reattaching to detached SSH turn for ${sessionId}`);
             await window.electronAPI.claude.resumeRemoteTurn(sessionId, getSessionModel(getState(), sessionId));
             await new Promise(resolve => setTimeout(resolve, 1000));
-            await loadMessages(sessionId);
+            const stillActive = await hasLiveRemoteProcess(sessionId, getState());
+            if (stillActive) {
+              console.warn(`[SessionStore] Reattach returned while remote Claude process is still active for ${sessionId}; keeping UI active`);
+              markRemoteProcessStreaming(sessionId, getState, setState);
+              return 'attached';
+            } else {
+              await loadMessages(sessionId);
+              return 'completed';
+            }
+          };
+
+          const initialAttachResult = await attachRemoteStreamIfRequested();
+          if (initialAttachResult === 'completed') {
             return;
+          }
+          if (initialAttachResult === 'skipped') {
+            console.log(`[SessionStore] Monitoring recoverable SSH session without stream attach: ${sessionId}`);
           }
 
           while (remoteProcessPollers.has(sessionId)) {
             await new Promise(resolve => setTimeout(resolve, 5000));
             const stillActive = await window.electronAPI.ssh.hasActiveRemoteProcess(sessionId);
             if (stillActive) {
+              markRemoteProcessStreaming(sessionId, getState, setState);
+              const attachResult = await attachRemoteStreamIfRequested();
+              if (attachResult === 'completed') {
+                break;
+              }
               // DON'T reload messages while the process is running — the SDK
               // stream delivers content via IPC and loadMessages would replace
               // in-memory messages with a stale transcript snapshot.
@@ -585,9 +795,16 @@ function startRemoteProcessMonitor(
             console.log(`[SessionStore] Remote Claude process finished for ${sessionId}; refreshing transcript`);
             // DON'T clear currentStreamContent here — onStreamEnd needs it
             // to add the final message. Only clear activity state.
+            const latestState = getState();
+            const keepActiveForRunningTools = hasUnfinishedToolCalls(latestState.currentToolCalls[sessionId]);
             setState((state: SessionState) => ({
-              isStreaming: { ...state.isStreaming, [sessionId]: false },
-              sessionActivity: { ...state.sessionActivity, [sessionId]: 'idle' },
+              isStreaming: keepActiveForRunningTools
+                ? state.isStreaming
+                : { ...state.isStreaming, [sessionId]: false },
+              sessionActivity: {
+                ...state.sessionActivity,
+                [sessionId]: keepActiveForRunningTools ? 'active' : 'idle',
+              },
               activeUserPrompt: { ...state.activeUserPrompt, [sessionId]: null },
             }));
             // Wait for onStreamEnd to fire and add the final message before
@@ -602,11 +819,13 @@ function startRemoteProcessMonitor(
           console.warn('[SessionStore] Failed while polling remote SSH process:', error);
         } finally {
           remoteProcessPollers.delete(sessionId);
+          remoteProcessAttachRequests.delete(sessionId);
         }
       })();
     })
     .catch((error) => {
       remoteProcessPollers.delete(sessionId);
+      remoteProcessAttachRequests.delete(sessionId);
       console.warn('[SessionStore] Failed to check active remote SSH process:', error);
     });
 }
@@ -639,6 +858,9 @@ function startRunningSshProcessMonitors(
 
         startRemoteProcessMonitor(session.id, getState, setState, loadMessages, {
           recoverableKnown: true,
+          // Background sessions poll without attaching; the active session
+          // attaches so the surviving turn streams live in the visible chat.
+          attachStream: session.id === getState().activeSessionId,
         });
       } catch (error) {
         console.warn('[SessionStore] Failed to check recoverable SSH process during startup reattach:', session.id, error);
@@ -709,6 +931,46 @@ function hasActiveOrQueuedTurn(state: Pick<SessionState, 'isStreaming' | 'isProc
 
 function canChangePermissionModeDuringActiveTurn(mode: PermissionMode): boolean {
   return mode === 'bypassPermissions';
+}
+
+function isUnfinishedToolCall(toolCall: ToolCall | undefined): boolean {
+  if (!toolCall) return false;
+  const status = normalizeToolCall(toolCall).status;
+  return status === 'running' || status === 'pending';
+}
+
+function hasUnfinishedToolCalls(toolCalls: ToolCall[] | undefined): boolean {
+  return (toolCalls || []).some(isUnfinishedToolCall);
+}
+
+function collectUnfinishedToolCalls(...toolCallGroups: Array<ToolCall[] | undefined>): ToolCall[] {
+  const byId = new Map<string, ToolCall>();
+  for (const toolCalls of toolCallGroups) {
+    for (const toolCall of toolCalls || []) {
+      const normalized = normalizeToolCall(toolCall);
+      const existing = byId.get(normalized.id);
+      const merged = existing ? mergeToolCall(existing, normalized) : normalized;
+      byId.set(merged.id, merged);
+    }
+  }
+  return [...byId.values()].filter(isUnfinishedToolCall);
+}
+
+function settleUnfinishedToolCalls(toolCalls: ToolCall[] | undefined): ToolCall[] | undefined {
+  if (!toolCalls?.length) return toolCalls;
+  let changed = false;
+  const settled = toolCalls.map((toolCall) => {
+    const normalized = normalizeToolCall(toolCall);
+    if (!isUnfinishedToolCall(normalized)) return normalized;
+    changed = true;
+    return {
+      ...normalized,
+      status: 'error' as const,
+      error: normalized.error || 'Tool call ended before completion.',
+      completedAt: normalized.completedAt || new Date(),
+    };
+  });
+  return changed ? settled : toolCalls.map(normalizeToolCall);
 }
 
 type PersistedChatMessage = Omit<ChatMessage, 'timestamp'> & { timestamp: string };
@@ -919,17 +1181,39 @@ function latestMessageTime(messages: ChatMessage[]): number {
   }, 0);
 }
 
-function mergeLoadedMessagesWithExisting(loadedMessages: ChatMessage[], existingMessages: ChatMessage[]): ChatMessage[] {
+function mergeLoadedMessagesWithExisting(
+  sessionId: string,
+  loadedMessages: ChatMessage[],
+  existingMessages: ChatMessage[],
+  options: { authoritativeBuildTranscript?: boolean; partialTranscript?: boolean } = {}
+): ChatMessage[] {
   const existing = filterInternalPromptEchoes(existingMessages || [])
+    .filter((message) => !isConsumedQueueMessage(sessionId, message))
     .filter((message) => message.role !== 'assistant' || hasRecoverableOutput(message));
   if (existing.length === 0) return loadedMessages;
 
   const loadedLatest = latestMessageTime(loadedMessages);
   const preserved = existing.filter((message) => {
     const normalized = normalizeChatMessageTimestamp(message);
+    const hasLoadedDuplicate = loadedMessages.some((loadedMessage) => isCloseReloadDuplicate(loadedMessage, message));
+    if (options.authoritativeBuildTranscript) {
+      if (options.partialTranscript && !hasLoadedDuplicate) {
+        return true;
+      }
+      // Build transcript is authoritative for messages it contains, but
+      // in-memory messages without a loaded duplicate may not have been
+      // flushed to disk yet or may come from older history not yet
+      // backfilled — preserve them regardless of role.
+      if (!hasLoadedDuplicate) return true;
+      // Duplicate exists in loaded set — let the transcript version win.
+      // Exception: user messages newer than the transcript's latest
+      // timestamp were sent after the read and must survive.
+      return message.role !== 'assistant' && normalized.timestamp.getTime() > loadedLatest;
+    }
     if (normalized.timestamp.getTime() > loadedLatest) return true;
     if (message.harness && message.harness !== 'claude') return true;
-    return !loadedMessages.some((loadedMessage) => isCloseReloadDuplicate(loadedMessage, message));
+    if (options.partialTranscript && !hasLoadedDuplicate) return true;
+    return !hasLoadedDuplicate;
   });
 
   if (preserved.length === 0) return loadedMessages;
@@ -938,6 +1222,8 @@ function mergeLoadedMessagesWithExisting(loadedMessages: ChatMessage[], existing
   console.warn(
     `[SessionStore] Preserving ${preserved.length} in-memory messages during transcript hydration`
     + ` (loaded=${loadedMessages.length}, existing=${existing.length}, loadedLatest=${loadedLatest}, existingLatest=${existingLatest})`
+    + `${options.authoritativeBuildTranscript ? ' [authoritative Build transcript]' : ''}`
+    + `${options.partialTranscript ? ' [partial transcript slice]' : ''}`
   );
   return mergeTimelineMessages(loadedMessages, preserved);
 }
@@ -988,6 +1274,19 @@ function mergeTimelineMessages(primary: ChatMessage[], supplemental: ChatMessage
       if (existingIndex !== undefined) {
         deduped[existingIndex] = mergeDuplicateTimelineMessage(deduped[existingIndex], message);
       }
+      continue;
+    }
+
+    const duplicateContentIndex = deduped.findIndex((existing) => {
+      if (isExactLongAssistantDuplicate(existing, message)) {
+        const delta = Math.abs(existing.timestamp.getTime() - message.timestamp.getTime());
+        return delta < 300_000;
+      }
+      if (isPrefixAssistantDuplicate(existing, message)) return true;
+      return false;
+    });
+    if (duplicateContentIndex >= 0) {
+      deduped[duplicateContentIndex] = mergeDuplicateTimelineMessage(deduped[duplicateContentIndex], message);
       continue;
     }
 
@@ -1322,6 +1621,30 @@ function hasVisibleAssistantActivity(state: SessionState, sessionId: string): bo
   });
 }
 
+function hasRecentUnansweredDuplicateUserPrompt(state: SessionState, sessionId: string, message: string): boolean {
+  const normalizedPrompt = normalizeContentForTimelineCompare(message);
+  if (!normalizedPrompt) return false;
+
+  const messages = state.messages[sessionId] || [];
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const existingMessage = normalizeChatMessageTimestamp(messages[i]);
+    if (existingMessage.role === 'assistant' && hasRecoverableOutput(existingMessage)) {
+      return false;
+    }
+    if (existingMessage.role !== 'user') {
+      continue;
+    }
+
+    const ageMs = Date.now() - existingMessage.timestamp.getTime();
+    if (!Number.isFinite(ageMs) || ageMs > UNANSWERED_DUPLICATE_USER_PROMPT_WINDOW_MS) {
+      return false;
+    }
+    return normalizeContentForTimelineCompare(existingMessage.content) === normalizedPrompt;
+  }
+
+  return false;
+}
+
 function combineUserPrompts(first: string, second: string): string {
   return [first.trimEnd(), second.trimStart()].filter(Boolean).join('\n\n');
 }
@@ -1508,6 +1831,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // 5. If the app was closed while a detached SSH run continued remotely,
       // preserve streaming/queue semantics until that remote process exits.
       // Only start if not already monitoring (avoid duplicate monitors on tab switch).
+      // The user is looking at this session — attach the live stream so an
+      // in-flight remote turn streams visibly instead of freezing at the last
+      // persisted snapshot. Attach only fires when a recoverable turn exists.
       if (session?.sshConfig && !get().isStreaming[sessionId]) {
         startRemoteProcessMonitor(sessionId, get, set, loadMessages);
       }
@@ -1585,6 +1911,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             ),
           }
         : {};
+      const restoredHtmlRenderMode = collectSessionHtmlRenderModes(sessions);
 
       set({
         sessions,
@@ -1592,6 +1919,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         isLoadingSessions: false,
         selectedModel: restoredModel,
         permissionMode: restoredPermission,
+        htmlRenderMode: restoredHtmlRenderMode,
       });
 
       // Persist auto-selected session
@@ -1693,6 +2021,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     import('./ui.store').then(({ useUIStore }) => {
       useUIStore.getState().cleanupSessionBrowser(sessionId);
       useUIStore.getState().clearPlanContent(sessionId);
+      useUIStore.getState().clearHtmlArtifact(sessionId);
     });
 
     // Clean up TTS audio chunks keyed by messageId
@@ -1751,6 +2080,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       if (!session?.id) return;
       set((state) => ({
         sessions: state.sessions.map((s) => (s.id === session.id ? session : s)),
+        htmlRenderMode: session.htmlRenderMode === 'md' || session.htmlRenderMode === 'html'
+          ? {
+              ...state.htmlRenderMode,
+              [session.id]: session.htmlRenderMode,
+            }
+          : state.htmlRenderMode,
       }));
     });
 
@@ -1764,7 +2099,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         return;
       }
       console.log('[SessionStore] Received sessions update from background discovery:', sessions.length);
-      set({ sessions, isLoadingSessions: false });
+      set({ sessions, isLoadingSessions: false, htmlRenderMode: collectSessionHtmlRenderModes(sessions) });
     });
 
     return () => {
@@ -1866,7 +2201,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     set((state) => ({
       currentThinkingContent: {
         ...state.currentThinkingContent,
-        [sessionId]: (state.currentThinkingContent[sessionId] || '') + content,
+        [sessionId]: capTextTail((state.currentThinkingContent[sessionId] || '') + content, MAX_LIVE_THINKING_CHARS),
       },
     }));
 
@@ -1888,12 +2223,28 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     set((state) => {
       const existingToolCalls = state.currentToolCalls[sessionId] || [];
       const existingIndex = existingToolCalls.findIndex(tc => tc.id === normalizedToolCall.id);
+      const markActive = isUnfinishedToolCall(normalizedToolCall) && !isQueueDrainSuppressed(sessionId);
+      const activeState = markActive
+        ? {
+            isStreaming: { ...state.isStreaming, [sessionId]: true },
+            sessionActivity: { ...state.sessionActivity, [sessionId]: 'active' as const },
+            streamStartTime: {
+              ...state.streamStartTime,
+              [sessionId]: state.streamStartTime[sessionId] || Date.now(),
+            },
+            activeStreamModel: {
+              ...state.activeStreamModel,
+              [sessionId]: state.activeStreamModel[sessionId] || getSessionModel(state, sessionId),
+            },
+          }
+        : {};
 
       // If tool call already exists, update it instead of adding duplicate
       if (existingIndex !== -1) {
         const updatedToolCalls = [...existingToolCalls];
         updatedToolCalls[existingIndex] = mergeToolCall(existingToolCalls[existingIndex], normalizedToolCall);
         return {
+          ...activeState,
           currentToolCalls: {
             ...state.currentToolCalls,
             [sessionId]: updatedToolCalls,
@@ -1905,6 +2256,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
       // New tool call - add to both arrays
       return {
+        ...activeState,
         currentToolCalls: {
           ...state.currentToolCalls,
           [sessionId]: [...existingToolCalls, normalizedToolCall],
@@ -2294,6 +2646,16 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       console.log(`[SessionStore] Message: "${message.slice(0, 80)}..."`);
     }
 
+    if (
+      !fromQueueDrain &&
+      !suppressUserMessage &&
+      !opts?.existingMessageId &&
+      hasRecentUnansweredDuplicateUserPrompt(state, sessionId, message)
+    ) {
+      console.warn(`[SessionStore] Suppressing duplicate unanswered user prompt for ${sessionId}`);
+      return;
+    }
+
     // If the user sends a quick follow-up before the agent has visibly started,
     // restart the turn with both prompts together instead of making the second
     // prompt wait behind a doomed first draft.
@@ -2372,8 +2734,18 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       return;
     }
 
-    // If already streaming or queue handoff is in progress, queue the message.
-    if (!fromQueueDrain && (state.isStreaming[sessionId] || state.isProcessingQueue[sessionId])) {
+    let backendActiveQuery = false;
+    if (!fromQueueDrain && !state.isStreaming[sessionId] && !state.isProcessingQueue[sessionId]) {
+      backendActiveQuery = await window.electronAPI.claude.hasActiveQuery(sessionId).catch(() => false);
+      if (backendActiveQuery) {
+        console.warn(`[SessionStore] Backend still has active query for ${sessionId}; queueing instead of starting duplicate turn`);
+        state = get();
+      }
+    }
+
+    // If already streaming, queue handoff is in progress, or the backend still
+    // owns an active query after renderer state went stale, queue the message.
+    if (!fromQueueDrain && (state.isStreaming[sessionId] || state.isProcessingQueue[sessionId] || backendActiveQuery)) {
       const normalizedMessage = message.trim();
       const existingQueue = state.messageQueue[sessionId] || [];
       const recentlyQueuedSame = normalizedMessage.length > 0 && existingQueue.some((queuedMessage) =>
@@ -2546,7 +2918,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           suppressUserMessage,
           deferDrain: true,
         });
-        console.log(`[SessionStore] Remote Claude process still active for ${sessionId}; queued message after optimistic send`);
+        console.log(`[SessionStore] Remote Claude process still active for ${sessionId}; queued message after optimistic send and requesting reattach`);
+        const { loadMessages } = get();
+        startRemoteProcessMonitor(sessionId, get, set, loadMessages, {
+          recoverableKnown: true,
+          attachStream: true,
+        });
         return;
       }
     }
@@ -2660,7 +3037,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       return;
     }
 
-    const applyLoadedMessages = (transcriptMessages: ChatMessage[]) => {
+    const startedAsEmptyActiveSession = Boolean(get().isStreaming[sessionId] && (get().messages[sessionId] || []).length === 0);
+    const applyLoadedMessages = (transcriptMessages: ChatMessage[], applyOptions: LoadedMessagesApplyOptions = {}) => {
       if (!isCurrentLoad()) {
         console.log(`[SessionStore] loadMessages: Ignoring stale apply for ${sessionId}`);
         return [];
@@ -2682,17 +3060,27 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
           // Normal live streams own their in-memory state. Reconnected SSH
           // sessions have no attached stream reader, so poll the transcript.
-          if (state.isStreaming[sessionId] && !options.replaceWhileStreaming) {
+          const existingMessages = state.messages[sessionId] || [];
+          const allowStreamingReplace = options.replaceWhileStreaming || applyOptions.replaceWhileStreaming;
+          if (state.isStreaming[sessionId] && !allowStreamingReplace && existingMessages.length > 0) {
             console.log(`[SessionStore] loadMessages: Skipping replacement for ${sessionId} — currently streaming`);
             return { isLoadingMessages: { ...state.isLoadingMessages, [sessionId]: false } };
+          }
+          if (state.isStreaming[sessionId] && !allowStreamingReplace && existingMessages.length === 0) {
+            console.log(`[SessionStore] loadMessages: Hydrating empty active session from transcript for ${sessionId}`);
           }
 
           // Use the transcript as the loaded base, but never let hydration
           // delete messages that arrived in memory after the read started, or
           // non-Claude harness messages that may not exist in Claude-native logs.
           const finalMessages = mergeLoadedMessagesWithExisting(
+            sessionId,
             mergedMessages,
-            state.messages[sessionId] || []
+            existingMessages,
+            {
+              authoritativeBuildTranscript: hasAuthoritativeBuildTranscript,
+              partialTranscript: Boolean(applyOptions.requestedLimit && mergedMessages.length >= applyOptions.requestedLimit),
+            }
           );
 
           return {
@@ -2716,7 +3104,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // Show the newest slice first so the latest messages appear immediately.
       const recentTranscriptMessages = await window.electronAPI.claude.getMessages(sessionId, RECENT_MESSAGE_LIMIT);
       if (!isCurrentLoad()) return;
-      applyLoadedMessages(recentTranscriptMessages || []);
+      applyLoadedMessages(recentTranscriptMessages || [], { requestedLimit: RECENT_MESSAGE_LIMIT });
 
       // Then backfill older transcript history above the fold.
       // Cap at 500 messages — fetching unlimited (limit: 0) downloads entire
@@ -2731,7 +3119,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         const fullTranscriptMessages = await window.electronAPI.claude.getMessages(sessionId, BACKFILL_LIMIT);
         if (!isCurrentLoad()) return;
         if ((fullTranscriptMessages?.length || 0) > (recentTranscriptMessages?.length || 0)) {
-          applyLoadedMessages(fullTranscriptMessages || []);
+          applyLoadedMessages(fullTranscriptMessages || [], {
+            requestedLimit: BACKFILL_LIMIT,
+            replaceWhileStreaming: startedAsEmptyActiveSession,
+          });
         } else {
           set((state) => ({
             isLoadingMessages: isCurrentLoad()
@@ -2766,7 +3157,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const unsubToolCall = window.electronAPI.claude.onToolCall(({ sessionId, toolCall }) => {
 
       const tc = normalizeToolCall(toolCall as ToolCall);
-      console.log('[SessionStore] onToolCall received:', tc?.name, 'input:', JSON.stringify(tc?.input || {}));
+      logToolEvent('onToolCall received', tc);
       addToolCall(sessionId, tc);
 
       // Sub-agent tool activity: inject progress into chat stream so the user
@@ -2796,8 +3187,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
                   {
                     id: tc.id,              // swapped for shell_id when Bash result arrives
                     description,
-                    events: [],
+                    events: [makeMonitorEvent(tc.id, `Started: ${description}`)],
                     active: true,
+                    kind: 'monitor',
                     startedAt: Date.now(),
                   },
                 ],
@@ -2807,35 +3199,56 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         }
       }
 
+      if (tc?.name === 'Monitor' && tc.id) {
+        const input = (tc.input || {}) as { task?: string; description?: string; summary?: string };
+        const description = input.task || input.description || input.summary || 'monitor';
+        set((state) => {
+          const existing = state.monitorInstances[sessionId] || [];
+          if (existing.some((m) => m.id === tc.id)) return state;
+          return {
+            monitorInstances: {
+              ...state.monitorInstances,
+              [sessionId]: [
+                ...existing,
+                {
+                  id: tc.id,
+                  description,
+                  events: [makeMonitorEvent(tc.id, `Started: ${description}`)],
+                  active: true,
+                  kind: 'monitor',
+                  startedAt: Date.now(),
+                },
+              ],
+            },
+          };
+        });
+      }
+
       // Teammate spawning (Agent Teams feature). The model invokes `Agent` /
-      // `Task` with a `subagent_type` to run a named teammate asynchronously
-      // (Scaramanga, Q, Moneypenny, etc). Track the lifecycle so the Monitor
-      // pane shows which teammates are in-flight. Result completion arrives
-      // via onToolResult below.
+      // `Task` to launch asynchronous agents. Some Claude Code builds omit
+      // `subagent_type`, so treat every Agent/Task call as background work.
       if ((tc?.name === 'Agent' || tc?.name === 'Task') && tc.id) {
-        const input = (tc.input || {}) as { subagent_type?: string; prompt?: string; description?: string };
-        if (input.subagent_type) {
-          const description = `${input.subagent_type}: ${input.description || (input.prompt || '').slice(0, 60) || 'teammate'}`;
-          set((state) => {
-            const existing = state.monitorInstances[sessionId] || [];
-            if (existing.some((m) => m.id === tc.id)) return state;
-            return {
-              monitorInstances: {
-                ...state.monitorInstances,
-                [sessionId]: [
-                  ...existing,
-                  {
-                    id: tc.id,
-                    description,
-                    events: [],
-                    active: true,
-                    startedAt: Date.now(),
-                  },
-                ],
-              },
-            };
-          });
-        }
+        const description = asyncAgentDescription(tc);
+        set((state) => {
+          const existing = state.monitorInstances[sessionId] || [];
+          if (findMonitorIndex(existing, tc.id) >= 0) return state;
+          return {
+            monitorInstances: {
+              ...state.monitorInstances,
+              [sessionId]: [
+                ...existing,
+                {
+                  id: tc.id,
+                  description,
+                  events: [makeMonitorEvent(tc.id, `Launching: ${description}`)],
+                  active: true,
+                  kind: 'subagent',
+                  startedAt: Date.now(),
+                },
+              ],
+            },
+          };
+        });
       }
     });
 
@@ -2843,7 +3256,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
       if (!toolCall) return;
       const tc = normalizeToolCall(toolCall as ToolCall);
-      console.log('[SessionStore] onToolResult received:', tc.name, 'input:', JSON.stringify(tc.input || {}));
+      logToolEvent('onToolResult received', tc);
       // Update all fields that might have changed, including input which may have been streamed
       updateToolCall(sessionId, tc.id, {
         name: tc.name,
@@ -2880,7 +3293,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
                   ...updated[idx],
                   id: shellId,
                   events: resultText
-                    ? [...updated[idx].events, { id: `${shellId}-seed`, text: resultText, timestamp: Date.now() }]
+                    ? appendMonitorEvent(updated[idx].events, { id: `${shellId}-seed`, text: capLiveMonitorText(resultText), timestamp: Date.now() })
                     : updated[idx].events,
                 };
                 return { monitorInstances: { ...state.monitorInstances, [sessionId]: updated } };
@@ -2903,10 +3316,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
               if (resultText.trim()) {
                 updated[idx] = {
                   ...updated[idx],
-                  events: [
-                    ...updated[idx].events,
-                    { id: `${shellId}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, text: resultText, timestamp: Date.now() },
-                  ],
+                  events: appendMonitorEvent(
+                    updated[idx].events,
+                    { id: `${shellId}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, text: capLiveMonitorText(resultText), timestamp: Date.now() },
+                  ),
                 };
               }
               // Completed status in the Bash process is reflected when the shell exits;
@@ -2935,33 +3348,62 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           }
         }
 
-        // Teammate (Agent/Task) result — append the teammate's final message
-        // and mark inactive. Also inject into the main chat stream so the user
-        // sees output. The SDK doesn't stream sub-agent text_delta events over
-        // SSH JSONL, so without this the chat stays blank while agents work.
+        // Agent/Task result can be either a final answer or just the async
+        // launch receipt. The launch receipt means the agent is now running.
         if ((tc.name === 'Agent' || tc.name === 'Task') && tc.id) {
-          const monitorExists = (get().monitorInstances[sessionId] || []).some((m) => m.id === tc.id);
-          if (monitorExists) {
-            set((state) => {
-              const existing = state.monitorInstances[sessionId] || [];
-              const idx = existing.findIndex((m) => m.id === tc.id);
-              if (idx < 0) return state;
-              const isDone = tc.status === 'completed' || tc.status === 'error';
-              const updated = [...existing];
-              updated[idx] = {
-                ...updated[idx],
-                events: resultText.trim()
-                  ? [...updated[idx].events, { id: `${tc.id}-done`, text: resultText, timestamp: Date.now() }]
-                  : updated[idx].events,
-                active: !isDone,
-              };
-              return { monitorInstances: { ...state.monitorInstances, [sessionId]: updated } };
-            });
-          }
+          const launch = parseAsyncAgentLaunch(resultText);
+          const description = asyncAgentDescription(tc);
+          const eventText = launch
+            ? `Running in background: ${launch.summary || description}`
+            : compactMonitorText(resultText, 240);
+          const isDone = !launch && (tc.status === 'completed' || tc.status === 'error');
 
-          // Inject agent result into chat stream so text appears in main chat
-          if (resultText.trim() && get().isStreaming[sessionId]) {
-            updateStreamContent(sessionId, resultText, tc.id);
+          set((state) => {
+            const existing = state.monitorInstances[sessionId] || [];
+            const idx = findMonitorIndex(existing, launch?.agentId, tc.id);
+            if (idx < 0) {
+              const newEntry: MonitorEntry = {
+                id: launch?.agentId || tc.id,
+                aliases: launch && launch.agentId !== tc.id ? [tc.id] : undefined,
+                description,
+                events: eventText ? [makeMonitorEvent(launch ? 'launch' : 'done', eventText)] : [],
+                active: launch ? true : !isDone,
+                kind: 'subagent',
+                startedAt: Date.now(),
+              };
+              return {
+                monitorInstances: {
+                  ...state.monitorInstances,
+                  [sessionId]: [...existing, newEntry],
+                },
+              };
+            }
+
+            const updated = [...existing];
+            const entry = updated[idx];
+            const previousEvents = entry.events || [];
+            const lastEvent = previousEvents[previousEvents.length - 1];
+            const nextEvents = eventText && lastEvent?.text !== eventText
+              ? appendMonitorEvent(previousEvents, makeMonitorEvent(launch ? 'launch' : 'done', eventText))
+              : previousEvents;
+            updated[idx] = {
+              ...entry,
+              id: launch?.agentId || entry.id,
+              aliases: launch ? appendUniqueAlias(entry, tc.id, launch.agentId) : entry.aliases,
+              description: entry.description || description,
+              events: nextEvents,
+              active: launch ? true : !isDone,
+              kind: 'subagent',
+            };
+            return { monitorInstances: { ...state.monitorInstances, [sessionId]: updated } };
+          });
+
+          if (launch) {
+            if (get().isStreaming[sessionId]) {
+              updateStreamContent(sessionId, `\n> **Background agent running:** ${description}\n\n`, launch.agentId);
+            }
+          } else if (resultText.trim() && get().isStreaming[sessionId]) {
+            updateStreamContent(sessionId, capTextMiddle(resultText, MAX_LIVE_TOOL_RESULT_STREAM_CHARS), tc.id);
           }
         }
 
@@ -2976,6 +3418,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
               const existing = state.monitorInstances[sessionId] || [];
               // Match by description prefix, e.g. "scaramanga: ..."
               const idx = existing.findIndex((m) =>
+                m.id === target ||
+                m.aliases?.includes(target) ||
                 m.description.toLowerCase().startsWith(`${target.toLowerCase()}:`)
               );
               if (idx < 0) return state;
@@ -2989,7 +3433,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
                 ],
               };
               if (resultText.trim()) {
-                updated[idx].events.push({ id: `${tc.id}-reply`, text: resultText, timestamp: Date.now() });
+                updated[idx].events = appendMonitorEvent(updated[idx].events, { id: `${tc.id}-reply`, text: capLiveMonitorText(resultText), timestamp: Date.now() });
               }
               return { monitorInstances: { ...state.monitorInstances, [sessionId]: updated } };
             });
@@ -3074,7 +3518,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       });
     });
 
-    const unsubEnd = window.electronAPI.claude.onStreamEnd(({ sessionId, message }) => {
+    const unsubEnd = window.electronAPI.claude.onStreamEnd(async ({ sessionId, message }) => {
       const currentState = get();
 
       // Guard against stale STREAM_END from a cancelled stream racing in after a
@@ -3110,14 +3554,68 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       console.log(`[SessionStore] onStreamEnd received for ${sessionId}. Backend message length: ${message.content?.length || 0}, streamed content length: ${streamedContent.length}`);
       console.log(`[SessionStore] onStreamEnd - Queue has ${queueLength} messages waiting`);
 
+      const rawCurrentToolCalls = currentState.currentToolCalls[sessionId] || [];
+      const unfinishedToolCalls = collectUnfinishedToolCalls(rawCurrentToolCalls, message.toolCalls);
+      const hasUnfinishedVisibleTools = unfinishedToolCalls.length > 0;
+      if (hasUnfinishedVisibleTools && currentState.isStreaming[sessionId] && !isQueueDrainSuppressed(sessionId)) {
+        set((state) => ({
+          isStreaming: { ...state.isStreaming, [sessionId]: true },
+          sessionActivity: { ...state.sessionActivity, [sessionId]: 'active' },
+          streamStartTime: {
+            ...state.streamStartTime,
+            [sessionId]: state.streamStartTime[sessionId] || Date.now(),
+          },
+          activeStreamModel: {
+            ...state.activeStreamModel,
+            [sessionId]: state.activeStreamModel[sessionId] || getSessionModel(state, sessionId),
+          },
+        }));
+
+        // STREAM_END can be a safety-net event while an SSH turn is still
+        // recoverable. Give the generator a moment to unwind so normal final
+        // events do not look active just because cleanup is still in-flight.
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        const [backendActive, remoteActive] = await Promise.all([
+          window.electronAPI.claude.hasActiveQuery(sessionId).catch(() => false),
+          window.electronAPI.ssh.hasActiveRemoteProcess(sessionId).catch(() => false),
+        ]);
+        if (backendActive || remoteActive) {
+          console.warn(
+            `[SessionStore] Deferring STREAM_END for ${sessionId}; ` +
+            `${unfinishedToolCalls.length} visible tool call(s) still running ` +
+            `(backendActive=${backendActive ? 'yes' : 'no'}, remoteActive=${remoteActive ? 'yes' : 'no'})`
+          );
+          if (remoteActive) {
+            const { loadMessages } = get();
+            startRemoteProcessMonitor(sessionId, get, set, loadMessages, { recoverableKnown: true });
+          }
+          return;
+        }
+        console.warn(`[SessionStore] Settling ${unfinishedToolCalls.length} dangling tool call(s) before STREAM_END for inactive runtime`);
+      }
+
+      if (currentState.isStreaming[sessionId] && !isQueueDrainSuppressed(sessionId)) {
+        const remoteActive = await hasLiveRemoteProcess(sessionId, currentState);
+        if (remoteActive) {
+          console.warn(`[SessionStore] Deferring STREAM_END for ${sessionId}; remote Claude process is still active`);
+          markRemoteProcessStreaming(sessionId, get, set);
+          const { loadMessages } = get();
+          startRemoteProcessMonitor(sessionId, get, set, loadMessages, { recoverableKnown: true });
+          return;
+        }
+      }
+
       setStreaming(sessionId, false);
 
       const autoBuildDecision = currentState.autoRouteDecision[sessionId];
       const resolvedStreamModel = streamModel === 'auto' ? autoBuildDecision?.resolvedModel : streamModel;
+      const messageForFinal = hasUnfinishedVisibleTools && message.toolCalls?.length
+        ? { ...message, toolCalls: settleUnfinishedToolCalls(message.toolCalls) }
+        : message;
       const finalMessage = buildCompletedStreamMessage({
-        message,
+        message: messageForFinal,
         content: streamedContent,
-        toolCalls: currentState.currentToolCalls[sessionId] || [],
+        toolCalls: hasUnfinishedVisibleTools ? settleUnfinishedToolCalls(rawCurrentToolCalls) : rawCurrentToolCalls,
         contentBlocks: buildContentBlocksFromStreamEvents(currentState.streamEvents[sessionId] || []),
         model: streamModel,
         resolvedModel: resolvedStreamModel,
@@ -3270,7 +3768,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }
     });
 
-    const unsubError = window.electronAPI.claude.onStreamError(({ sessionId, error }) => {
+    const unsubError = window.electronAPI.claude.onStreamError(async ({ sessionId, error }) => {
       const currentState = get();
 
       // Guard against stale errors from a cancelled stream racing in after a
@@ -3303,17 +3801,64 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       const partialToolCalls = currentState.currentToolCalls[sessionId] || [];
       const partialContentBlocks = buildContentBlocksFromStreamEvents(currentState.streamEvents[sessionId] || []);
       const hasPartialOutput = Boolean(streamedContent.trim() || partialToolCalls.length || partialContentBlocks?.length);
+      const unfinishedToolCalls = collectUnfinishedToolCalls(partialToolCalls);
+
+      if (unfinishedToolCalls.length > 0 && !isQueueDrainSuppressed(sessionId)) {
+        set((state) => ({
+          isStreaming: { ...state.isStreaming, [sessionId]: true },
+          sessionActivity: { ...state.sessionActivity, [sessionId]: 'active' },
+          streamStartTime: {
+            ...state.streamStartTime,
+            [sessionId]: state.streamStartTime[sessionId] || Date.now(),
+          },
+          activeStreamModel: {
+            ...state.activeStreamModel,
+            [sessionId]: state.activeStreamModel[sessionId] || getSessionModel(state, sessionId),
+          },
+        }));
+
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        const [backendActive, remoteActive] = await Promise.all([
+          window.electronAPI.claude.hasActiveQuery(sessionId).catch(() => false),
+          window.electronAPI.ssh.hasActiveRemoteProcess(sessionId).catch(() => false),
+        ]);
+        if (backendActive || remoteActive) {
+          console.warn(
+            `[SessionStore] Deferring STREAM_ERROR cleanup for ${sessionId}; ` +
+            `${unfinishedToolCalls.length} visible tool call(s) still running ` +
+            `(backendActive=${backendActive ? 'yes' : 'no'}, remoteActive=${remoteActive ? 'yes' : 'no'}): ${error}`
+          );
+          if (remoteActive) {
+            const { loadMessages } = get();
+            startRemoteProcessMonitor(sessionId, get, set, loadMessages, { recoverableKnown: true });
+          }
+          return;
+        }
+        console.warn(`[SessionStore] Settling ${unfinishedToolCalls.length} dangling tool call(s) before STREAM_ERROR for inactive runtime`);
+      }
+
+      if (!isQueueDrainSuppressed(sessionId)) {
+        const remoteActive = await hasLiveRemoteProcess(sessionId, currentState);
+        if (remoteActive) {
+          console.warn(`[SessionStore] Deferring STREAM_ERROR cleanup for ${sessionId}; remote Claude process is still active: ${error}`);
+          markRemoteProcessStreaming(sessionId, get, set);
+          const { loadMessages } = get();
+          startRemoteProcessMonitor(sessionId, get, set, loadMessages, { recoverableKnown: true });
+          return;
+        }
+      }
 
       // If we have streamed output, save it as a partial message before showing error.
       // Tool-only harness turns still need a visible message; checking only text
       // dropped tool cards when the process errored before final prose.
       if (hasPartialOutput) {
+        const settledPartialToolCalls = settleUnfinishedToolCalls(partialToolCalls);
         const partialMessage: ChatMessage = {
           id: `partial-${Date.now()}`,
           role: 'assistant',
           content: streamedContent,
           contentBlocks: partialContentBlocks,
-          toolCalls: partialToolCalls.length > 0 ? partialToolCalls : undefined,
+          toolCalls: settledPartialToolCalls && settledPartialToolCalls.length > 0 ? settledPartialToolCalls : undefined,
           timestamp: new Date(),
           interrupted: true,
           harness: harnessFromModel(resolvedStreamModel),
@@ -3461,6 +4006,18 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // or a queue stall — reattach so it keeps streaming to completion.
     const unsubRemoteTurnRecoverable = window.electronAPI.ssh.onRemoteTurnRecoverable?.(({ sessionId }: { sessionId: string }) => {
       console.log(`[SessionStore] Remote turn recoverable for ${sessionId}; starting reattach monitor`);
+      set((state) => ({
+        isStreaming: { ...state.isStreaming, [sessionId]: true },
+        sessionActivity: { ...state.sessionActivity, [sessionId]: 'active' },
+        streamStartTime: {
+          ...state.streamStartTime,
+          [sessionId]: state.streamStartTime[sessionId] || Date.now(),
+        },
+        activeStreamModel: {
+          ...state.activeStreamModel,
+          [sessionId]: state.activeStreamModel[sessionId] || getSessionModel(state, sessionId),
+        },
+      }));
       const { loadMessages } = get();
       startRemoteProcessMonitor(sessionId, get, set, loadMessages, { recoverableKnown: true });
     }) || noop;
@@ -3511,7 +4068,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         const existingMessages = latestState.messages[sessionId] || [];
         const existingMessageId = sourceIds.find((id: string) =>
           existingMessages.some((message) => message.id === id)
-        ) || msg.id;
+        );
+        const hadVisibleQueuedMessage = Boolean(existingMessageId);
+        markQueueMessagesConsumed(sessionId, sourceIds);
 
         // Remove every drained message from the local queue display and collapse
         // visible queued user bubbles into the single prompt we are about to send.
@@ -3542,8 +4101,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         // Send the combined prompt through the normal flow. `fromQueueDrain`
         // prevents stale renderer stream flags from re-enqueuing this same turn.
         get().sendMessage(sessionId, msg.text, msg.attachments, {
-          existingMessageId,
-          suppressUserMessage: msg.suppressUserMessage,
+          existingMessageId: existingMessageId || msg.id,
+          suppressUserMessage: Boolean(msg.suppressUserMessage) || !hadVisibleQueuedMessage,
           fromQueueDrain: true,
         });
       };
@@ -3555,13 +4114,25 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // main-process queue (source of truth).
     const unsubQueueStateChanged = window.electronAPI.claude.onQueueStateChanged((sessionId: string, state: any) => {
       set((s) => ({
+        ...(() => {
+          const incomingMessages = Array.isArray(state.messages) ? state.messages : [];
+          const previousQueue = s.messageQueue[sessionId] || [];
+          if (
+            previousQueue.length > 0 &&
+            incomingMessages.length === 0 &&
+            (s.isStreaming[sessionId] || Boolean(state.isProcessing))
+          ) {
+            markQueueMessagesConsumed(sessionId, previousQueue.map((message) => message.id));
+          }
+          return {};
+        })(),
         isProcessingQueue: {
           ...s.isProcessingQueue,
           [sessionId]: Boolean(state.isProcessing),
         },
         messageQueue: {
           ...s.messageQueue,
-          [sessionId]: (state.messages || []).map((m: any) => ({
+          [sessionId]: (Array.isArray(state.messages) ? state.messages : []).map((m: any) => ({
             id: m.id,
             message: m.text,
             attachments: m.attachments,
@@ -4109,18 +4680,21 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
       // Update MonitorBlock — mark matching task as inactive + append summary,
       // then auto-remove after 10 seconds so completed monitors don't accumulate.
-      if (data.taskId) {
+      if (data.taskId || data.toolUseId) {
         set((state) => {
           const existing = state.monitorInstances[data.sessionId] || [];
-          const idx = existing.findIndex((m) => m.id === data.taskId);
+          const idx = findMonitorIndex(existing, data.taskId, data.toolUseId);
           if (idx < 0) return state;
           const updated = [...existing];
+          const text = data.summary || taskStatusText(data.status) || 'Task finished';
           updated[idx] = {
             ...updated[idx],
+            id: nextMonitorId(updated[idx], data.taskId),
             active: false,
-            events: data.summary
-              ? [...updated[idx].events, { id: `${data.taskId}-done`, text: `[${data.status}] ${data.summary}`, timestamp: Date.now() }]
-              : updated[idx].events,
+            events: appendMonitorEvent(
+              updated[idx].events,
+              makeMonitorEvent(data.taskId || data.toolUseId || 'task', `[${data.status || 'done'}] ${text}`),
+            ),
           };
           return { monitorInstances: { ...state.monitorInstances, [data.sessionId]: updated } };
         });
@@ -4129,7 +4703,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         setTimeout(() => {
           set((state) => {
             const existing = state.monitorInstances[data.sessionId] || [];
-            const filtered = existing.filter((m) => m.id !== data.taskId);
+            const filtered = existing.filter((m) => findMonitorIndex([m], data.taskId, data.toolUseId) < 0);
             return { monitorInstances: { ...state.monitorInstances, [data.sessionId]: filtered } };
           });
         }, 10000);
@@ -4158,11 +4732,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // Appends progress descriptions to the MonitorBlock entry for live feedback.
     const unsubTaskProg = window.electronAPI.claude.onTaskProgress?.((data) => {
       if (!data.taskId && !data.toolUseId) return;
-      const monitorId = data.taskId || data.toolUseId!;
+      const monitorId = data.taskId || data.toolUseId || 'task';
       const text = data.description || data.summary || (data.toolName ? `${data.toolName}...` : 'working...');
       set((state) => {
         const existing = state.monitorInstances[data.sessionId] || [];
-        let idx = existing.findIndex((m) => m.id === monitorId);
+        let idx = findMonitorIndex(existing, data.taskId, data.toolUseId);
 
         // Auto-create a monitor entry if one doesn't exist yet.
         // Monitor tool events arrive as SDK notifications with a key but
@@ -4173,12 +4747,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             description: data.description || monitorId,
             events: [],
             active: true,
+            kind: 'monitor' as const,
             startedAt: Date.now(),
           };
           const withNew = [...existing, newEntry];
           idx = withNew.length - 1;
           // Dedupe check
-          const newEvent = { id: `prog-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, text, timestamp: Date.now() };
+          const newEvent = makeMonitorEvent('prog', text);
           withNew[idx] = { ...withNew[idx], events: [newEvent] };
           return { monitorInstances: { ...state.monitorInstances, [data.sessionId]: withNew } };
         }
@@ -4189,7 +4764,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         if (lastEvent?.text === text) return state;
         updated[idx] = {
           ...updated[idx],
-          events: [...updated[idx].events, { id: `prog-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, text, timestamp: Date.now() }],
+          id: nextMonitorId(updated[idx], data.taskId),
+          description: data.description || updated[idx].description,
+          events: appendMonitorEvent(updated[idx].events, makeMonitorEvent('prog', text)),
         };
         return { monitorInstances: { ...state.monitorInstances, [data.sessionId]: updated } };
       });
@@ -4199,9 +4776,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // This is the primary mechanism for tracking task lifecycle — task_notification
     // only fires on terminal states but task_updated fires on every transition.
     const unsubTaskUpdated = window.electronAPI.claude.onTaskUpdated?.((data) => {
-      const { taskId, patch, sessionId: sid } = data;
+      const { taskId, toolUseId, patch, sessionId: sid } = data;
       const terminalStatuses = ['completed', 'failed', 'killed'];
       const isTerminal = patch.status && terminalStatuses.includes(patch.status);
+      const text = patch.description || patch.error || taskStatusText(patch.status);
 
       if (isTerminal) {
         console.log('[SessionStore] Task updated (terminal):', taskId, patch.status);
@@ -4209,7 +4787,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
       set((state) => {
         const existing = state.monitorInstances[sid] || [];
-        const idx = existing.findIndex((m) => m.id === taskId);
+        const idx = findMonitorIndex(existing, taskId, toolUseId);
 
         // Auto-create monitor entry if we get an update for an unknown task
         if (idx < 0) {
@@ -4217,8 +4795,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           const newEntry = {
             id: taskId,
             description: patch.description || taskId,
-            events: [],
+            events: text ? [makeMonitorEvent('upd', text)] : [],
             active: true,
+            kind: 'monitor' as const,
             startedAt: Date.now(),
           };
           const withNew = [...existing, newEntry];
@@ -4226,23 +4805,17 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         }
 
         const updated = [...existing];
+        const previousEvents = updated[idx].events || [];
+        const lastEvent = previousEvents[previousEvents.length - 1];
+        const nextEvents = text && lastEvent?.text !== text
+          ? appendMonitorEvent(previousEvents, makeMonitorEvent(patch.error ? 'err' : 'upd', patch.error ? `Error: ${patch.error}` : text))
+          : previousEvents;
         updated[idx] = {
           ...updated[idx],
+          id: nextMonitorId(updated[idx], taskId),
+          description: patch.description || updated[idx].description,
           ...(isTerminal ? { active: false } : {}),
-          ...(patch.description ? {
-            events: [...updated[idx].events, {
-              id: `upd-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-              text: patch.description,
-              timestamp: Date.now(),
-            }],
-          } : {}),
-          ...(patch.error ? {
-            events: [...(updated[idx].events || []), {
-              id: `err-${Date.now()}`,
-              text: `Error: ${patch.error}`,
-              timestamp: Date.now(),
-            }],
-          } : {}),
+          events: nextEvents,
         };
         return { monitorInstances: { ...state.monitorInstances, [sid]: updated } };
       });
@@ -4252,7 +4825,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         setTimeout(() => {
           set((state) => {
             const existing = state.monitorInstances[sid] || [];
-            return { monitorInstances: { ...state.monitorInstances, [sid]: existing.filter((m) => m.id !== taskId) } };
+            return { monitorInstances: { ...state.monitorInstances, [sid]: existing.filter((m) => findMonitorIndex([m], taskId, toolUseId) < 0) } };
           });
         }, 10000);
       }
@@ -4555,13 +5128,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           return;
         }
 
-        console.log('[SessionStore] Auto-resuming SSH Build It session by reattaching:', sessionId);
-        state.setActiveSession(sessionId);
         set((s) => ({
           permissionMode: { ...s.permissionMode, [sessionId]: 'bypassPermissions' },
         }));
+        markRemoteProcessStreaming(sessionId, get, set);
+        console.log('[SessionStore] SSH Build It session is recoverable; reattaching to startup stream:', sessionId);
+        void state.setActiveSession(sessionId);
         startRemoteProcessMonitor(sessionId, get, set, state.loadMessages, {
           recoverableKnown: true,
+          attachStream: true,
         });
         return;
       }
@@ -4678,20 +5253,48 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // DON'T clear parent session's streaming state — let it keep running
       // The fork is a separate conversation that doesn't affect the parent
 
-      // Add to session list (guard against duplicate from sessionsUpdated event race)
-      set(state => {
-        if (state.sessions.some(s => s.id === forkedSession.id)) return state;
-        return { sessions: [...state.sessions, forkedSession] };
-      });
-
-      // Update fork group tracking
-      // Find root session (walk up parentSessionId chain)
+      // Update fork group tracking — re-parent under the root so
+      // getForkSiblings (which collects direct children of root) finds it.
       const currentSession = sessions.find(s => s.id === activeSessionId);
       let rootId = activeSessionId;
-      let session = currentSession;
-      while (session?.parentSessionId) {
-        rootId = session.parentSessionId;
-        session = sessions.find(s => s.id === rootId);
+      let walkSession = currentSession;
+      while (walkSession?.parentSessionId) {
+        rootId = walkSession.parentSessionId;
+        walkSession = sessions.find(s => s.id === rootId);
+      }
+
+      // Add to session list, re-parented under root + added to root's children
+      set(state => {
+        if (state.sessions.some(s => s.id === forkedSession.id)) return state;
+        return {
+          sessions: [
+            ...state.sessions.map(s => {
+              if (s.id === rootId) {
+                const children = [...(s.childSessionIds || [])];
+                if (!children.includes(forkedSession.id)) children.push(forkedSession.id);
+                return { ...s, childSessionIds: children, isRoot: true } as typeof s;
+              }
+              return s;
+            }),
+            { ...forkedSession, parentSessionId: rootId } as any,
+          ],
+        };
+      });
+
+      // Persist re-parenting to backend
+      if (rootId !== activeSessionId) {
+        window.electronAPI.sessions.update(forkedSession.id, {
+          parentSessionId: rootId,
+        } as any).catch(e => console.warn('[SessionStore] Failed to re-parent fork:', e));
+        const rootSession = sessions.find(s => s.id === rootId);
+        const rootChildren = [...(rootSession?.childSessionIds || [])];
+        if (!rootChildren.includes(forkedSession.id)) {
+          rootChildren.push(forkedSession.id);
+          window.electronAPI.sessions.update(rootId, {
+            childSessionIds: rootChildren,
+            isRoot: true,
+          } as any).catch(e => console.warn('[SessionStore] Failed to update root children:', e));
+        }
       }
 
       // Switch to new fork
@@ -4730,15 +5333,25 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       depth++;
     }
 
-    // Collect root + direct children only (not deep descendants — deep
-    // trees with 17+ nodes caused O(n*d) iterations that froze React)
+    // Collect root + all descendants (shallow BFS capped at 3 passes to
+    // avoid perf issues with very deep trees — should be 1 pass now that
+    // createForkFromCurrent re-parents under root).
     const root = sessions.find(s => s.id === rootId);
     if (!root) return [];
 
     const forkGroup: Session[] = [root];
-    for (const s of sessions) {
-      if (s.parentSessionId === rootId && s.id !== rootId) {
-        forkGroup.push(s);
+    const groupIds = new Set<string>([rootId]);
+    let changed = true;
+    let passes = 0;
+    while (changed && passes < 3) {
+      changed = false;
+      passes++;
+      for (const s of sessions) {
+        if (!groupIds.has(s.id) && s.parentSessionId && groupIds.has(s.parentSessionId)) {
+          groupIds.add(s.id);
+          forkGroup.push(s);
+          changed = true;
+        }
       }
     }
 

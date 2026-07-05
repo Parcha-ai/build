@@ -10,6 +10,11 @@ function isBadSessionName(value: string | undefined): boolean {
   return !normalized || BAD_SESSION_NAMES.has(normalized);
 }
 
+function manualSessionName(session: Session): string | null {
+  const cleaned = session.manualName?.replace(/\s+/g, ' ').trim();
+  return cleaned || null;
+}
+
 function titleCaseBranchPart(part: string): string {
   const upper = part.toUpperCase();
   if (part.length <= 3 || ['ui', 'api', 'url', 'ssh', 'mcp', 'pdf'].includes(part.toLowerCase())) return upper;
@@ -45,6 +50,9 @@ function fallbackNameFromPath(session: Session): string | null {
 }
 
 export function getSessionDisplayName(session: Session): string {
+  const manualName = manualSessionName(session);
+  if (manualName) return manualName;
+
   const candidates = [
     session.aiGeneratedName,
     session.forkName,
@@ -107,5 +115,8 @@ export function getFirstVisibleTabSession(session: Session, sessions: Session[])
 }
 
 export function getSidebarSessionDisplayName(session: Session, sessions: Session[]): string {
+  const manualName = manualSessionName(session) || manualSessionName(getRootSession(session, sessions));
+  if (manualName) return manualName;
+
   return getSessionDisplayName(getFirstVisibleTabSession(session, sessions));
 }

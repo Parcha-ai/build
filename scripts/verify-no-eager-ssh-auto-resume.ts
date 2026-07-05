@@ -17,9 +17,11 @@ assert.ok(
   'startup, session selection, and SSH auto-resume must use startRemoteProcessMonitor',
 );
 
-assert.match(sessionStore, /if \(remoteProcessPollers\.has\(sessionId\)\) return;\s+remoteProcessPollers\.add\(sessionId\);/);
+assert.match(sessionStore, /const remoteProcessAttachRequests = new Set<string>\(\);/);
+assert.match(sessionStore, /if \(shouldAttachStream\) \{\s+remoteProcessAttachRequests\.add\(sessionId\);/);
+assert.match(sessionStore, /if \(remoteProcessPollers\.has\(sessionId\)\) \{[\s\S]*?Queued stream attach request for existing SSH process monitor/);
 assert.match(sessionStore, /remoteProcessPollers\.delete\(sessionId\);\s+return;/);
-assert.match(sessionStore, /startRemoteProcessMonitor\(sessionId, get, set, loadMessages\);/);
+assert.match(sessionStore, /startRemoteProcessMonitor\(sessionId, get, set, loadMessages(?:, \{ recoverableKnown: true \})?\);/);
 assert.match(sessionStore, /scheduleStartupRemoteProcessMonitor\(validActiveSessionId, get, set, loadMessages\);/);
 assert.match(sessionStore, /Startup SSH reattach delayed for active session/);
 assert.match(sessionStore, /Auto-reattaching running SSH sessions on startup after delay/);
@@ -31,6 +33,8 @@ assert.match(sessionStore, /SSH_STARTUP_REATTACH_STREAM_BACKOFF_MS = 2_000/);
 assert.match(sessionStore, /startRunningSshProcessMonitors/);
 assert.match(sessionStore, /isRecentRunningSshSession/);
 assert.match(sessionStore, /hasActiveStreamingSession/);
+assert.match(sessionStore, /function markRemoteProcessStreaming/);
+assert.match(sessionStore, /async function hasLiveRemoteProcess/);
 assert.match(sessionStore, /waitForNoActiveStream/);
 assert.match(sessionStore, /Date\.now\(\) - updatedAt <= SSH_STARTUP_REATTACH_WINDOW_MS/);
 assert.match(sessionStore, /workerCount = Math\.min\(MAX_CONCURRENT_SSH_REATTACH_CHECKS, sessions\.length\)/);
@@ -38,7 +42,12 @@ assert.match(sessionStore, /await waitForNoActiveStream\(getState\)/);
 assert.match(sessionStore, /recoverableKnown: true/);
 assert.match(sessionStore, /hasRecoverableRemoteProcess\(sessionId, \{ closeAfter: true \}\)/);
 assert.match(sessionStore, /hasRecoverableRemoteProcess\(session\.id, \{ closeAfter: true \}\)/);
-assert.match(sessionStore, /Auto-resuming SSH Build It session by reattaching/);
+assert.match(sessionStore, /Reattach returned while remote Claude process is still active/);
+assert.match(sessionStore, /attachRemoteStreamIfRequested/);
+assert.match(sessionStore, /markRemoteProcessStreaming\(sessionId, getState, setState\)/);
+assert.match(sessionStore, /Deferring STREAM_END for \$\{sessionId\}; remote Claude process is still active/);
+assert.match(sessionStore, /Deferring STREAM_ERROR cleanup for \$\{sessionId\}; remote Claude process is still active/);
+assert.match(sessionStore, /SSH Build It session is recoverable; reattaching to startup stream/);
 assert.doesNotMatch(sessionStore, /SSH remote reattach skipped on session selection/);
 assert.doesNotMatch(sessionStore, /SSH remote reattach skipped on startup/);
 assert.doesNotMatch(sessionStore, /SSH auto-resume suppressed on startup/);
@@ -66,6 +75,8 @@ const sshAutoResumeBranch = sessionStore.slice(sshAutoResumeStart, localAutoResu
 assert.match(sshAutoResumeBranch, /hasRecoverableRemoteProcess/);
 assert.match(sshAutoResumeBranch, /closeAfter: true/);
 assert.match(sshAutoResumeBranch, /recoverableKnown: true/);
+assert.match(sshAutoResumeBranch, /attachStream: true/);
+assert.match(sshAutoResumeBranch, /markRemoteProcessStreaming\(sessionId, get, set\)/);
 assert.match(sshAutoResumeBranch, /hasActiveRemoteProcess/);
 assert.doesNotMatch(sshAutoResumeBranch, /resumeRemoteTurn/);
 assert.match(sshAutoResumeBranch, /startRemoteProcessMonitor/);

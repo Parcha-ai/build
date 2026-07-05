@@ -96,6 +96,7 @@ out/
 # Build artifacts
 resources/qmd/
 /index.js
+.build/
 
 # Internal dev files
 .notes/

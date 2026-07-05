@@ -6,6 +6,7 @@ import ChatContainer from '../chat/ChatContainer';
 import ForkTabs from '../chat/ForkTabs';
 import TerminalContainer from '../terminal/TerminalContainer';
 import BrowserPreview from '../preview/BrowserPreview';
+import HtmlArtifactPanel from '../preview/HtmlArtifactPanel';
 import GitExplorer from '../git/GitExplorer';
 import EditorPanel from '../editor/EditorPanel';
 import ExtensionsExplorer from '../extensions/ExtensionsExplorer';
@@ -33,6 +34,7 @@ export default function MainContent() {
   const isGitPanelOpen = useUIStore((s) => s.isGitPanelOpen);
   const isExtensionsPanelOpen = useUIStore((s) => s.isExtensionsPanelOpen);
   const isPlanPanelOpen = useUIStore((s) => s.isPlanPanelOpen);
+  const isHtmlPanelOpen = useUIStore((s) => s.isHtmlPanelOpen);
   const terminalHeight = useUIStore((s) => s.terminalHeight);
   const toggleBrowserPanel = useUIStore((s) => s.toggleBrowserPanel);
   const toggleGitPanel = useUIStore((s) => s.toggleGitPanel);
@@ -103,6 +105,7 @@ export default function MainContent() {
   const browserTargetSession = browserTargetSessionId
     ? sessions.find((s) => s.id === browserTargetSessionId) || null
     : null;
+  const artifactTargetSessionId = browserTargetSessionId;
   const isSessionSetup = activeSession?.status === 'setup' || activeSetupProgress?.status === 'running';
 
   // When Command Center is deactivated, restore activeSessionId from the last focused cell
@@ -285,8 +288,8 @@ export default function MainContent() {
 
   // In Command Center mode, browser is a floating overlay — it doesn't consume side panel space
   const hasSidePanel = isCommandCenterActive
-    ? (isGitPanelOpen || isEditorOpen || isExtensionsPanelOpen || isPlanPanelOpen)
-    : (isBrowserPanelOpen || isGitPanelOpen || isEditorOpen || isExtensionsPanelOpen || isPlanPanelOpen);
+    ? (isGitPanelOpen || isEditorOpen || isExtensionsPanelOpen || isPlanPanelOpen || isHtmlPanelOpen)
+    : (isBrowserPanelOpen || isGitPanelOpen || isEditorOpen || isExtensionsPanelOpen || isPlanPanelOpen || isHtmlPanelOpen);
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden relative">
@@ -351,7 +354,7 @@ export default function MainContent() {
             <div
               className="flex overflow-hidden bg-claude-surface transition-all duration-200"
               style={{
-                flexBasis: (viewportMode === 'mobile' && isBrowserPanelOpen && !isGitPanelOpen && !isEditorOpen && !isExtensionsPanelOpen && !isPlanPanelOpen)
+                flexBasis: (viewportMode === 'mobile' && isBrowserPanelOpen && !isGitPanelOpen && !isEditorOpen && !isExtensionsPanelOpen && !isPlanPanelOpen && !isHtmlPanelOpen)
                   ? '420px'  // 375px device + padding + border
                   : flexBasis.side,
                 flexShrink: 0,
@@ -502,6 +505,18 @@ export default function MainContent() {
                     )}
                     <div className={`flex flex-col overflow-hidden ${(isGitPanelOpen || isEditorOpen || isExtensionsPanelOpen) ? 'flex-1' : 'h-full'}`}>
                       <PlanPanel />
+                    </div>
+                  </>
+                )}
+
+                {/* HTML response artifact panel */}
+                {isHtmlPanelOpen && !isBrowserPanelOpen && (
+                  <>
+                    {(isGitPanelOpen || isEditorOpen || isExtensionsPanelOpen || isPlanPanelOpen) && (
+                      <div className="h-px bg-claude-border" />
+                    )}
+                    <div className={`flex flex-col overflow-hidden ${(isGitPanelOpen || isEditorOpen || isExtensionsPanelOpen || isPlanPanelOpen) ? 'flex-1' : 'h-full'}`}>
+                      <HtmlArtifactPanel sessionId={artifactTargetSessionId} />
                     </div>
                   </>
                 )}

@@ -59,6 +59,9 @@ export class BrowserService {
   private debuggerListenersAttached = new Set<number>();
   // Track webviews that already have lifecycle cleanup listeners attached.
   private webviewDestroyListenersAttached = new Set<number>();
+  // Navigation requests can arrive before the browser panel/webview has mounted,
+  // especially in packaged builds. Keep the latest URL and replay it on register.
+  private pendingNavigations = new Map<string, string>();
 
   // Console and network capture storage (keyed by sessionId)
   private consoleLogs = new Map<string, ConsoleMessage[]>();
@@ -97,6 +100,16 @@ export class BrowserService {
         // connectOverCDP if it called Target.setAutoAttach before the webview was ready
         if (!hadSessionBrowser) {
           cdpProxyService.notifyNewTarget(data.sessionId);
+        }
+
+        const pendingUrl = this.pendingNavigations.get(data.sessionId);
+        if (pendingUrl) {
+          this.pendingNavigations.delete(data.sessionId);
+          setImmediate(() => {
+            this.navigate(data.sessionId, pendingUrl).catch((error) => {
+              console.error('[Browser Service] Failed to replay pending navigation:', error);
+            });
+          });
         }
       } else {
         console.error('[Browser Service] FAILED - webContents.fromId returned null for ID:', data.webContentsId);
@@ -342,9 +355,14 @@ export class BrowserService {
    * Navigate browser to a specific URL using CDP
    */
   async navigate(sessionId: string, url: string): Promise<void> {
-    // Check if browser panel is open - if not, silently ignore (might be called during initialization)
-    if (!this.hasAnyWebContents()) {
-      console.log('[Browser Service] Navigate called but no browser panels registered yet. Ignoring.');
+    if (!this.hasSessionWebContents(sessionId)) {
+      this.pendingNavigations.set(sessionId, url);
+
+      for (const win of BrowserWindow.getAllWindows()) {
+        win.webContents.send('browser:navigate', { sessionId, url });
+      }
+
+      console.log('[Browser Service] Navigate queued until browser webview registers:', sessionId, url);
       return;
     }
 

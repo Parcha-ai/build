@@ -7,36 +7,68 @@ const claudeService = fs.readFileSync(path.join(root, 'src/main/services/claude.
 const codexService = fs.readFileSync(path.join(root, 'src/main/services/codex.service.ts'), 'utf8');
 const terminalService = fs.readFileSync(path.join(root, 'src/main/services/terminal.service.ts'), 'utf8');
 const harnessCapabilities = fs.readFileSync(path.join(root, 'src/main/services/harness-capabilities.ts'), 'utf8');
+const messageQueueService = fs.readFileSync(path.join(root, 'src/main/services/message-queue.service.ts'), 'utf8');
+const claudeIpc = fs.readFileSync(path.join(root, 'src/main/ipc/claude.ipc.ts'), 'utf8');
 
 assert.match(
   claudeService,
   /isManualCodexSelection = selectionMode === 'manual'/,
-  'Codex native thread mode must be limited to manual Codex selection',
+  'Codex route must identify manual Codex selection',
 );
 assert.match(
   claudeService,
-  /Manual Codex selected after \$\{lastHarnessForCodex\}; starting fresh native Codex thread with Build handoff context/,
-  'manual Codex must create a fresh native thread when switching from another harness',
+  /isAutoBuildCodexSelection = selectionMode === 'auto'/,
+  'Auto Build Codex must participate in native Codex thread continuity',
+);
+assert.match(
+  claudeService,
+  /usesNativeCodexThread = isManualCodexSelection \|\| isAutoBuildCodexSelection/,
+  'native Codex thread continuity must cover both manual and Auto Build Codex',
+);
+assert.match(
+  claudeService,
+  /\$\{codexSelectionLabel\} selected after \$\{lastHarnessForCodex\}; starting fresh native Codex thread with Build handoff context/,
+  'Codex must create a fresh native thread when switching from another harness',
 );
 assert.match(
   claudeService,
   /codexService\.clearThreadId\(sessionId\)/,
-  'manual Codex handoff must clear any stale Codex thread before seeding a new one',
+  'Codex handoff must clear any stale Codex thread before seeding a new one',
 );
 assert.match(
   claudeService,
-  /Manual Codex resuming native thread \$\{codexThreadId\}/,
-  'manual Codex follow-ups must resume the native Codex thread',
+  /\$\{codexSelectionLabel\} resuming native thread \$\{codexThreadId\}/,
+  'Codex follow-ups must resume the native Codex thread',
 );
 assert.match(
   claudeService,
   /shouldBuildCodexContext = false/,
-  'manual Codex native resume must not paste Build transcript context on every follow-up',
+  'Codex native resume must not paste Build transcript context on every follow-up',
 );
 assert.match(
   claudeService,
-  /\{ resumeThreadId: codexThreadId, persistThread: isManualCodexSelection \}/,
-  'manual Codex must pass the native thread id and persist new native threads',
+  /includeCurrentCodexHistory = !codexThreadId/,
+  'fresh Codex native threads must include prior Codex messages from the Build transcript',
+);
+assert.match(
+  claudeService,
+  /includeCurrentHarnessMessages: includeCurrentCodexHistory/,
+  'Codex context builder must be told when to include current-harness history',
+);
+assert.match(
+  claudeService,
+  /currentHarness: options\.includeCurrentHarnessMessages \? undefined : currentHarness/,
+  'unified context must stop excluding current-harness messages when no native thread is available',
+);
+assert.match(
+  claudeService,
+  /\{ resumeThreadId: codexThreadId, persistThread: usesNativeCodexThread \}/,
+  'Codex must pass the native thread id and persist new native threads for manual and Auto Build routes',
+);
+assert.match(
+  claudeService,
+  /Auto Build Codex/,
+  'Auto Build Codex continuity logs must be present for installed-build verification',
 );
 
 assert.match(
@@ -84,6 +116,16 @@ assert.match(
   harnessCapabilities,
   /codex:\s+\{\s*supportsAsyncInjection: false,\s*supportsMultiTurn: true,/,
   'Codex must be modeled as sequentially multi-turn now that native thread resume is persisted',
+);
+assert.match(
+  messageQueueService,
+  /setActiveHarness\(sessionId: string, harness\?: string\): void/,
+  'queue service must allow Auto Build to replace the provisional auto/Claude harness with the resolved harness',
+);
+assert.match(
+  claudeIpc,
+  /messageQueueService\.setActiveHarness\(sessionId, resolvedHarness\)/,
+  'IPC stream handling must update queue harness when Auto Build emits a resolved model',
 );
 assert.match(
   terminalService,

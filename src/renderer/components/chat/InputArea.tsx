@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { X, Image, FileCode, Target, File, Folder, AtSign, Brain, Square, Code, Smartphone, RefreshCw, Slash, Eraser, Zap } from 'lucide-react';
+import { X, Image, FileCode, Target, File, Folder, AtSign, Brain, Square, Code, Smartphone, RefreshCw, Slash, Eraser, Activity } from 'lucide-react';
 import { useSessionStore, type PermissionMode, type ThinkingMode, type EffortLevel, migrateThinkingMode, normalizePermissionModeForModel } from '../../stores/session.store';
 import { useUIStore } from '../../stores/ui.store';
 import { useAudioStore } from '../../stores/audio.store';
@@ -261,13 +261,61 @@ interface Attachment {
   content: string;
   screenshot?: string;
   path?: string;
+  metadata?: Record<string, unknown>;
   subType?: 'file' | 'folder' | 'symbol'; // For mentions: preserves the original type
 }
 
 // Stable empty arrays to avoid reference changes when session data is missing
 const EMPTY_QUEUE: never[] = [];
+const EMPTY_MONITORS: never[] = [];
 const EMPTY_MODELS: never[] = [];
 const PLAN_MODE_NUDGE_SUPPRESSED_KEY = 'grep-plan-mode-nudge-suppressed';
+const SUBMITTED_INPUT_ECHO_SUPPRESS_MS = 60_000;
+const MAX_PASTED_FILE_BYTES = 5 * 1024 * 1024;
+const TEXT_FILE_EXTENSIONS = new Set([
+  'csv', 'tsv', 'txt', 'md', 'markdown', 'json', 'jsonl', 'yaml', 'yml', 'toml',
+  'xml', 'html', 'css', 'js', 'jsx', 'ts', 'tsx', 'py', 'rb', 'go', 'rs', 'java',
+  'kt', 'swift', 'c', 'cc', 'cpp', 'h', 'hpp', 'sql', 'sh', 'bash', 'zsh', 'env',
+  'log', 'psv',
+]);
+
+type ActiveWorkMonitor = {
+  description: string;
+  active: boolean;
+  kind?: 'monitor' | 'subagent';
+};
+
+function inferActiveWorkKind(monitor: ActiveWorkMonitor): 'monitor' | 'subagent' {
+  if (monitor.kind === 'subagent') return 'subagent';
+  if (monitor.kind === 'monitor') return 'monitor';
+  return /^[a-z0-9_-]+:\s/i.test(monitor.description) ? 'subagent' : 'monitor';
+}
+
+function formatActiveWorkSummary(monitors: ActiveWorkMonitor[]): {
+  total: number;
+  agentCount: number;
+  monitorCount: number;
+  label: string;
+  title: string;
+} {
+  const active = monitors.filter((monitor) => monitor.active);
+  const agentCount = active.filter((monitor) => inferActiveWorkKind(monitor) === 'subagent').length;
+  const monitorCount = active.length - agentCount;
+  const pieces = [
+    agentCount > 0 ? `${agentCount} AGENT${agentCount === 1 ? '' : 'S'}` : '',
+    monitorCount > 0 ? `${monitorCount} MONITOR${monitorCount === 1 ? '' : 'S'}` : '',
+  ].filter(Boolean);
+
+  return {
+    total: active.length,
+    agentCount,
+    monitorCount,
+    label: pieces.join(' · '),
+    title: active
+      .map((monitor) => `${inferActiveWorkKind(monitor) === 'subagent' ? 'Agent' : 'Monitor'}: ${monitor.description}`)
+      .join('\n'),
+  };
+}
 
 function isPlanModeNudgeSuppressed(): boolean {
   try {
@@ -283,6 +331,23 @@ function suppressPlanModeNudge(): void {
   } catch {
     // Ignore storage errors.
   }
+}
+
+function isSupportedTextFile(file: File): boolean {
+  if (file.type.startsWith('text/')) return true;
+  if (file.type === 'application/json' || file.type === 'application/xml') return true;
+  if (file.type === 'text/csv' || file.type === 'application/csv') return true;
+  const ext = file.name.split('.').pop()?.toLowerCase();
+  return !!ext && TEXT_FILE_EXTENSIONS.has(ext);
+}
+
+function readFileAsText(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(reader.error || new Error('Failed to read file'));
+    reader.readAsText(file);
+  });
 }
 
 function shouldSuggestPlanModeNudge(
@@ -333,14 +398,35 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
   const commandAutocompleteRef = useRef<CommandAutocompleteHandle>(null);
   const voiceModeRef = useRef<VoiceModeHandle>(null);
   const blurFromBrowserEditRef = useRef(false);
+  const submittedInputRef = useRef<{ texts: string[]; at: number } | null>(null);
 
   // Helper to safely get selection position
   const getSelectionStart = (): number | undefined => {
     return textareaRef.current?.selectionStart ?? undefined;
   };
 
+  const rememberSubmittedInput = useCallback((...texts: Array<string | undefined>) => {
+    const normalizedTexts = texts
+      .map((text) => (text || '').trim())
+      .filter((text, index, list) => text.length > 0 && list.indexOf(text) === index);
+    submittedInputRef.current = normalizedTexts.length > 0
+      ? { texts: normalizedTexts, at: Date.now() }
+      : null;
+  }, []);
+
+  const suppressSubmittedInputEcho = useCallback((text: string, source: string) => {
+    const submitted = submittedInputRef.current;
+    const normalizedText = text.trim();
+    if (!submitted || !normalizedText) return false;
+    if (Date.now() - submitted.at > SUBMITTED_INPUT_ECHO_SUPPRESS_MS) return false;
+    if (!submitted.texts.includes(normalizedText)) return false;
+    console.warn(`[InputArea] Suppressing stale submitted input echo from ${source}`);
+    return true;
+  }, []);
+
   // Per-session data selectors — only re-render when THIS session's data changes
   const isStreamingState = useSessionStore(useCallback((s) => s.isStreaming[sessionId] || false, [sessionId]));
+  const isProcessingQueueState = useSessionStore(useCallback((s) => s.isProcessingQueue[sessionId] || false, [sessionId]));
   const currentMode = useSessionStore(useCallback((s) => normalizePermissionModeForModel(
     s.selectedModel[sessionId] || 'auto',
     s.permissionMode[sessionId],
@@ -350,6 +436,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
   const currentHtmlMode = useSessionStore(useCallback((s) => s.htmlRenderMode[sessionId] || 'md', [sessionId]));
   const activeGStackMode = useSessionStore(useCallback((s) => s.gstackMode[sessionId] || null, [sessionId]));
   const queuedMessages = useSessionStore(useCallback((s) => s.messageQueue[sessionId] || EMPTY_QUEUE, [sessionId]));
+  const monitorInstances = useSessionStore(useCallback((s) => s.monitorInstances[sessionId] || EMPTY_MONITORS, [sessionId]));
   const currentModel = useSessionStore(useCallback((s) => s.selectedModel[sessionId] || 'auto', [sessionId]));
   const activeStreamModel = useSessionStore(useCallback((s) => s.activeStreamModel[sessionId], [sessionId]));
   const autoRouteDecision = useSessionStore(useCallback((s) => s.autoRouteDecision[sessionId] || null, [sessionId]));
@@ -421,8 +508,10 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
   const migratedThinkingMode = migrateThinkingMode(currentThinkingMode);
   const effortConfig = EFFORT_LEVEL_CONFIG[migratedThinkingMode] || EFFORT_LEVEL_CONFIG['high'];
 
-  const isSending = isStreamingState || (isStreamingProp ?? false);
+  const isSending = isStreamingState || isProcessingQueueState || (isStreamingProp ?? false);
   const hasQueuedMessages = queuedMessages.length > 0;
+  const activeWorkSummary = useMemo(() => formatActiveWorkSummary(monitorInstances), [monitorInstances]);
+  const hasActiveBackgroundWork = activeWorkSummary.total > 0;
   const modeChangeDisabled = disabled || isSending || hasQueuedMessages;
 
   useEffect(() => {
@@ -635,6 +724,12 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
 
       // Only set message if there's explicit content (not element metadata)
       if (content && content.trim()) {
+        if (suppressSubmittedInputEcho(content, 'browser-insert-chat')) {
+          setTimeout(() => {
+            textareaRef.current?.focus();
+          }, 100);
+          return;
+        }
         setMessage(prev => {
           if (prev.trim()) {
             return prev + '\n\n' + content;
@@ -651,7 +746,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
 
     window.addEventListener('grep-insert-chat', handleInsertChat as EventListener);
     return () => window.removeEventListener('grep-insert-chat', handleInsertChat as EventListener);
-  }, [sessionId]);
+  }, [sessionId, suppressSubmittedInputEcho]);
 
   // Listen for send-annotation events - sends IMMEDIATELY AND populates input for editing option
   useEffect(() => {
@@ -679,7 +774,9 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
 
       // Also populate the input and attachments so user can see/edit for next annotation
       if (alsoPopulateInput) {
-        setMessage(content);
+        if (!suppressSubmittedInputEcho(content, 'send-annotation')) {
+          setMessage(content);
+        }
         if (screenshot) {
           setAttachments([{
             type: 'image',
@@ -692,7 +789,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
 
     window.addEventListener('grep-send-annotation', handleSendAnnotation as EventListener);
     return () => window.removeEventListener('grep-send-annotation', handleSendAnnotation as EventListener);
-  }, [sessionId, sendMessage]);
+  }, [sessionId, sendMessage, suppressSubmittedInputEcho]);
 
   // Handle selected element from browser inspector
   useEffect(() => {
@@ -1054,6 +1151,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
     if (/^\/btw\s+/i.test(trimmed)) {
       const question = trimmed.replace(/^\/btw\s+/i, '').trim();
       if (question) {
+        rememberSubmittedInput(trimmed, question);
         setMessage('');
         await askBtw(sessionId, question);
         return;
@@ -1062,6 +1160,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
 
     // If waiting for plan approval, treat input as plan feedback
     if (pendingPlanApproval && trimmed) {
+      rememberSubmittedInput(trimmed);
       setMessage('');
       setAttachments([]);
       await rejectPlan(sessionId, trimmed);
@@ -1115,6 +1214,9 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
     }
 
     const otherAttachments = attachments.filter((a) => a.type !== 'mention');
+    if (!fullMessage && otherAttachments.some((attachment) => attachment.type === 'file')) {
+      fullMessage = 'Use the attached file(s) as input for the current task.';
+    }
     console.log('[InputArea] Submitting with attachments:', otherAttachments.length);
     otherAttachments.forEach((a, i) => {
       console.log(`[InputArea] Attachment ${i}: type=${a.type}, name=${a.name}, content length=${a.content?.length || 0}`);
@@ -1123,6 +1225,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
     // Capture attachments before clearing state
     const attachmentsToSend = otherAttachments.length > 0 ? [...otherAttachments] : undefined;
 
+    rememberSubmittedInput(message.trim(), fullMessage);
     setMessage('');
     setAttachments([]);
 
@@ -1231,6 +1334,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
       useSessionStore.getState().createForkFromCurrent(trimmedMessage);
 
       // Clear input (message already sent to fork)
+      rememberSubmittedInput(trimmedMessage);
       setMessage('');
       setAttachments([]);
       return;
@@ -1303,6 +1407,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
       const trimmedMessage = message.trim();
       if (!trimmedMessage && attachments.length === 0) return;
       const { interruptAndSend } = useSessionStore.getState();
+      rememberSubmittedInput(trimmedMessage);
       setMessage('');
       setAttachments([]);
       interruptAndSend(sessionId, trimmedMessage, attachments);
@@ -1384,6 +1489,9 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
         if (file.type.startsWith('image/')) {
           e.preventDefault();
           await processImageFile(file);
+        } else if (isSupportedTextFile(file)) {
+          e.preventDefault();
+          await processTextFile(file);
         }
       }
     }
@@ -1416,7 +1524,45 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
           if (!alreadyProcessed) {
             await processImageFile(file);
           }
+        } else if (item.kind === 'file') {
+          const file = item.getAsFile();
+          if (!file || !isSupportedTextFile(file)) continue;
+          e.preventDefault();
+
+          const alreadyProcessed = attachments.some(a =>
+            a.type === 'file' && a.name === file.name && a.metadata?.size === file.size
+          );
+          if (!alreadyProcessed) {
+            await processTextFile(file);
+          }
         }
+      }
+    }
+
+    async function processTextFile(file: File) {
+      console.log('[InputArea] Processing text file:', file.name, file.type, file.size);
+      if (file.size > MAX_PASTED_FILE_BYTES) {
+        console.warn('[InputArea] Pasted file too large to attach:', file.name, file.size);
+        return;
+      }
+
+      try {
+        const content = await readFileAsText(file);
+        const fileAttachment: Attachment = {
+          type: 'file',
+          name: file.name || `pasted-file-${Date.now()}.txt`,
+          content,
+          metadata: {
+            mimeType: file.type || 'text/plain',
+            size: file.size,
+            source: 'clipboard-file',
+          },
+        };
+
+        setAttachments(prev => [...prev, fileAttachment]);
+        console.log('[InputArea] Text file pasted and attached:', fileAttachment.name, 'content length:', content.length);
+      } catch (error) {
+        console.error('[InputArea] Failed to read pasted text file:', error);
       }
     }
 
@@ -1948,6 +2094,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
               sessionId={sessionId}
               onInterimTranscript={(text) => {
                 // Stream real-time transcript into the input box
+                if (suppressSubmittedInputEcho(text, 'voice-interim-transcript')) return;
                 setMessage(text);
               }}
               onTranscriptionComplete={async (text) => {
@@ -1962,6 +2109,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
                   setAudioMode(sessionId, true);
 
                   // Clear input and send
+                  rememberSubmittedInput(text.trim());
                   setMessage('');
 
                   // Build message with file context if there are attachments
@@ -2009,6 +2157,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
                 setAudioMode(sessionId, true);
 
                 // Clear input and send
+                rememberSubmittedInput(cleanedText, text);
                 setMessage('');
 
                 // Build message with file context if there are attachments
@@ -2027,6 +2176,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
                 // No trigger word - keep the text in input for editing/review
                 // But still enable audio mode since user is using voice
                 setAudioMode(sessionId, true);
+                if (suppressSubmittedInputEcho(text, 'voice-final-transcript')) return;
                 setMessage(text);
                 textareaRef.current?.focus();
               }
@@ -2273,6 +2423,19 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
             );
           })()}
         </div>
+        {hasActiveBackgroundWork && (
+          <div
+            className="flex items-center gap-1 text-[10px] text-amber-400 flex-shrink-0"
+            style={{ order: -1 }}
+            aria-label="Active background work"
+            title={`${activeWorkSummary.label} RUNNING\n${activeWorkSummary.title}`}
+          >
+            <Activity size={10} className="animate-pulse" />
+            <span className="font-bold uppercase whitespace-nowrap" style={{ letterSpacing: '0.05em' }}>
+              {activeWorkSummary.label} RUNNING
+            </span>
+          </div>
+        )}
         {/* Context usage indicator — pushed to far right */}
         {contextUsage && (
           <div className="flex items-center gap-1.5" style={{ order: -1 }} title={`${contextUsage.inputTokens.toLocaleString()} / ${contextUsage.contextWindowSize.toLocaleString()} tokens (${contextUsage.percentage}%)`}>

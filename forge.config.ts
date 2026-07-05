@@ -184,6 +184,11 @@ const config: ForgeConfig = {
             }
           }
 
+          if (process.env.GREP_SKIP_INSTALL === '1') {
+            console.log('[Packaging] Skipping /Applications install because GREP_SKIP_INSTALL=1');
+            continue;
+          }
+
           // Copy to /Applications
           const applicationsPath = '/Applications/Build.app';
           console.log(`[Packaging] Copying to ${applicationsPath}...`);

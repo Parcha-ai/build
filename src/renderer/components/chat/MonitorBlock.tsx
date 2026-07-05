@@ -9,9 +9,11 @@ export interface MonitorEvent {
 
 export interface MonitorInstance {
   id: string;             // tool_use id
+  aliases?: string[];     // alternate ids, e.g. tool_use id after async agent rekey
   description: string;    // "watching git log", etc
   events: MonitorEvent[]; // accumulated stdout lines
   active: boolean;        // true while the monitor is running
+  kind?: 'monitor' | 'subagent';
   persistent?: boolean;   // session-length watch
   startedAt: number;
 }
@@ -19,6 +21,16 @@ export interface MonitorInstance {
 interface MonitorBlockProps {
   monitors: MonitorInstance[];
   onStop?: (monitorId: string) => void;
+}
+
+function inferMonitorKind(monitor: MonitorInstance): 'monitor' | 'subagent' {
+  if (monitor.kind === 'subagent') return 'subagent';
+  if (monitor.kind === 'monitor') return 'monitor';
+  return /^[a-z0-9_-]+:\s/i.test(monitor.description) ? 'subagent' : 'monitor';
+}
+
+function pluralize(count: number, singular: string): string {
+  return `${count} ${singular}${count === 1 ? '' : 's'}`;
 }
 
 export default function MonitorBlock({ monitors, onStop }: MonitorBlockProps) {
@@ -36,7 +48,13 @@ export default function MonitorBlock({ monitors, onStop }: MonitorBlockProps) {
 
   // Active monitors first
   const activeCount = monitors.filter((m) => m.active).length;
+  const activeAgentCount = monitors.filter((m) => m.active && inferMonitorKind(m) === 'subagent').length;
+  const activeMonitorCount = monitors.filter((m) => m.active && inferMonitorKind(m) === 'monitor').length;
   const totalEvents = monitors.reduce((sum, m) => sum + m.events.length, 0);
+  const activeSummary = [
+    activeAgentCount > 0 ? pluralize(activeAgentCount, 'agent') : '',
+    activeMonitorCount > 0 ? pluralize(activeMonitorCount, 'monitor') : '',
+  ].filter(Boolean).join(' · ');
 
   // Get the most recent event across all monitors
   const latestEvent = monitors
@@ -58,6 +76,7 @@ export default function MonitorBlock({ monitors, onStop }: MonitorBlockProps) {
       <button
         onClick={() => setIsExpanded(!isExpanded)}
         className="w-full flex items-center gap-2 py-0.5 hover:bg-claude-surface/50 transition-colors text-left"
+        aria-label="Background agents and monitors"
       >
         {isExpanded ? (
           <ChevronDown size={14} className="text-claude-text-secondary flex-shrink-0" />
@@ -67,8 +86,13 @@ export default function MonitorBlock({ monitors, onStop }: MonitorBlockProps) {
         <div className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${dotColor}`} />
         <Activity size={14} className={`flex-shrink-0 ${accentColor}`} />
         <span className={`text-xs font-bold uppercase flex-shrink-0 ${accentColor}`} style={{ letterSpacing: '0.05em' }}>
-          Monitor {activeCount > 0 ? `(${activeCount})` : ''}
+          {activeCount > 0 ? activeSummary : 'Monitor'}
         </span>
+        {activeCount > 0 && (
+          <span className="text-[10px] text-amber-400 uppercase flex-shrink-0" style={{ letterSpacing: '0.05em' }}>
+            running
+          </span>
+        )}
         <span className="text-xs text-claude-text-secondary flex-shrink-0">
           {totalEvents} event{totalEvents === 1 ? '' : 's'}
         </span>
@@ -92,6 +116,11 @@ export default function MonitorBlock({ monitors, onStop }: MonitorBlockProps) {
                     monitor.active ? 'bg-amber-500 animate-pulse' : 'bg-claude-text-secondary/50'
                   }`}
                 />
+                <span className={`text-[9px] font-bold uppercase flex-shrink-0 ${
+                  inferMonitorKind(monitor) === 'subagent' ? 'text-purple-300' : 'text-amber-300'
+                }`} style={{ letterSpacing: '0.06em' }}>
+                  {inferMonitorKind(monitor) === 'subagent' ? 'agent' : 'monitor'}
+                </span>
                 <span className="text-xs font-bold text-claude-text truncate flex-1">
                   {monitor.description}
                 </span>

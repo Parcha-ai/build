@@ -59,7 +59,7 @@ export function normalizeMetaEffort(effort?: string): string | undefined {
 }
 
 function supportsClaudeAdaptiveThinking(model: string): boolean {
-  return /fable-5|opus-4-(?:6|7|8)|sonnet-4-6/i.test(model);
+  return /fable-5|opus-4-(?:6|7|8)|sonnet-(?:5|4-6)/i.test(model);
 }
 
 function claudeFallbackThinkingTokens(effort?: string, model = ''): number | undefined {

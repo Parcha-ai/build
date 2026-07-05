@@ -49,6 +49,11 @@ interface RemoteCommandProcessOptions {
   closeStdinOnEnd?: boolean;
 }
 
+// Bridge job commands that resumeRemoteTurn knows how to replay. Every harness
+// spawned through the detached bridge survives disconnects; recovery
+// additionally needs a stream parser for the command's stdout format.
+const RECOVERABLE_BRIDGE_COMMANDS = new Set(['claude', 'codex']);
+
 interface DetachedRemoteBridgeConfig {
   jobDir: string;
   socketPath: string;
@@ -75,6 +80,8 @@ export interface DetachedRemoteBridgeJob {
   completed: boolean;
   recovered: boolean;
   hasMetadata: boolean;
+  hasExitFile: boolean;
+  exitCode?: number | null;
   logBytes: number;
   updatedAt: number;
 }
@@ -393,24 +400,33 @@ export class SSHService {
     });
   }
 
+  private stripPathLineSuffix(filePath: string): string {
+    const match = filePath.match(/^(.+):(\d+)(?::\d+)?$/);
+    if (!match) return filePath;
+    const basePath = match[1];
+    if (!basePath.includes('/') && !basePath.includes('\\')) return filePath;
+    return basePath;
+  }
+
   /**
    * Read a file from the remote machine
    */
   async readRemoteFile(sessionId: string, config: SSHConfig, filePath: string): Promise<string> {
+    const normalizedFilePath = this.stripPathLineSuffix(filePath);
     const connectionInfo = this.connections.get(sessionId);
     if (!connectionInfo) {
       throw new Error(`No SSH connection found for session ${sessionId}`);
     }
 
     // Use cat to read the file, escape single quotes in path
-    const escapedPath = filePath.replace(/'/g, "'\\''");
+    const escapedPath = normalizedFilePath.replace(/'/g, "'\\''");
     const command = `cat '${escapedPath}'`;
 
     try {
       const content = await this.execCommand(connectionInfo.client, command);
       return content;
     } catch (error) {
-      throw new Error(`Failed to read remote file ${filePath}: ${(error as Error).message}`);
+      throw new Error(`Failed to read remote file ${normalizedFilePath}: ${(error as Error).message}`);
     }
   }
 
@@ -420,14 +436,15 @@ export class SSHService {
    * Creates temporary connection if one doesn't exist
    */
   async writeRemoteFile(sessionId: string, config: SSHConfig, filePath: string, content: string): Promise<void> {
+    const normalizedFilePath = this.stripPathLineSuffix(filePath);
     try {
       const client = await this.getConnection(sessionId, config);
 
       // Escape single quotes in path
-      const escapedPath = filePath.replace(/'/g, "'\\''");
+      const escapedPath = normalizedFilePath.replace(/'/g, "'\\''");
 
       // Create parent directory first (mkdir -p)
-      const dir = filePath.substring(0, filePath.lastIndexOf('/'));
+      const dir = normalizedFilePath.substring(0, normalizedFilePath.lastIndexOf('/'));
       if (dir) {
         const escapedDir = dir.replace(/'/g, "'\\''");
         await this.execCommand(client, `mkdir -p '${escapedDir}'`);
@@ -437,9 +454,9 @@ export class SSHService {
       const command = `cat > '${escapedPath}' << 'GREP_EOF'\n${content}\nGREP_EOF`;
       await this.execCommand(client, command);
 
-      console.log('[SSH Service] Wrote remote file:', filePath);
+      console.log('[SSH Service] Wrote remote file:', normalizedFilePath);
     } catch (error) {
-      throw new Error(`Failed to write remote file ${filePath}: ${(error as Error).message}`);
+      throw new Error(`Failed to write remote file ${normalizedFilePath}: ${(error as Error).message}`);
     }
   }
 
@@ -691,18 +708,19 @@ export class SSHService {
           `if test -d ${this.quoteForShell(bridgeDir)}; then ` +
           `for jobdir in ${this.quoteForShell(bridgeDir)}/*/; do ` +
           'test -d "$jobdir" || continue; ' +
+          'pid="$(cat "$jobdir/pid" 2>/dev/null || true)"; ' +
+          'active=0; test -n "$pid" && kill -0 "$pid" 2>/dev/null && active=1; ' +
           'completed=0; recovered=0; stale=0; ' +
-          // Check if job completed (has result in stdout.log)
-          'test -f "$jobdir/stdout.log" && grep -q \'"type":"result"\' "$jobdir/stdout.log" 2>/dev/null && completed=1; ' +
-          // Check if job has an exit.json (process already exited)
-          'test -f "$jobdir/exit.json" && completed=1; ' +
+          // exit.json is authoritative. A stdout result only completes inactive jobs;
+          // Claude Code can emit result before async subagents finish.
+          'if test -f "$jobdir/exit.json"; then completed=1; ' +
+          'elif test "$active" = "0" && test -f "$jobdir/stdout.log" && grep -q \'"type":"result"\' "$jobdir/stdout.log" 2>/dev/null; then completed=1; fi; ' +
           // Check if the job output was already replayed into the transcript
           'test -f "$jobdir/recovered.json" && recovered=1; ' +
           // Check if directory is older than 6 hours (abandoned)
           'find "$jobdir" -maxdepth 0 -mmin +360 2>/dev/null | grep -q . && stale=1; ' +
           // Only kill + clean if (completed AND recovered) or stale
           'if { [ "$completed" = "1" ] && [ "$recovered" = "1" ]; } || [ "$stale" = "1" ]; then ' +
-          'pid="$(cat "$jobdir/pid" 2>/dev/null || true)"; ' +
           'test -n "$pid" && kill "$pid" 2>/dev/null || true; ' +
           'test -n "$pid" && pkill -P "$pid" 2>/dev/null || true; ' +
           'rm -rf "$jobdir"; ' +
@@ -798,8 +816,8 @@ export class SSHService {
         'pid="$(cat "$jobdir/pid" 2>/dev/null || true)"; ' +
         'active=0; test -n "$pid" && kill -0 "$pid" 2>/dev/null && active=1; ' +
         'completed=0; ' +
-        'test -f "$jobdir/exit.json" && completed=1; ' +
-        'test -f "$jobdir/stdout.log" && grep -q \'"type":"result"\' "$jobdir/stdout.log" 2>/dev/null && completed=1; ' +
+        'if test -f "$jobdir/exit.json"; then completed=1; ' +
+        'elif test "$active" = "0" && test -f "$jobdir/stdout.log" && grep -q \'"type":"result"\' "$jobdir/stdout.log" 2>/dev/null; then completed=1; fi; ' +
         'should_kill=0; ' +
         'if test "$active" = "1" && test "$completed" = "1"; then should_kill=1; fi; ' +
         'if test "$active" = "1" && test "$kill_active" = "1"; then should_kill=1; fi; ' +
@@ -839,7 +857,7 @@ export class SSHService {
       const client = await this.getConnection(sessionId, config);
       const legacyTmuxName = `grep-${sessionId.substring(0, 8)}`;
       const jobs = await this.listDetachedBridgeJobs(sessionId, config);
-      if (jobs.some(job => job.active && !job.completed && !job.recovered && (!job.command || job.command === 'claude'))) {
+      if (jobs.some(job => job.active && !job.recovered && (!job.command || job.command === 'claude'))) {
         return true;
       }
 
@@ -868,9 +886,14 @@ export class SSHService {
       .map((line) => line.trim())
       .filter(Boolean)
       .map((line): DetachedRemoteBridgeJob | null => {
-        const [jobDir, pid, command, active, completed, recovered, hasMetadata, updatedAt, logBytes, logPath, exitPath] = line.split('\t');
+        const [jobDir, pid, command, active, completed, recovered, hasMetadata, updatedAt, logBytes, logPath, exitPath, hasExitFile, exitCode] = line.split('\t');
         if (!jobDir) return null;
         const normalizedJobDir = jobDir.replace(/\/+$/, '');
+        const parsedExitCode = exitCode === 'null'
+          ? null
+          : exitCode && /^-?\d+$/.test(exitCode)
+            ? Number(exitCode)
+            : undefined;
         return {
           jobDir: normalizedJobDir,
           socketPath: `${normalizedJobDir}/stdin.sock`,
@@ -884,6 +907,8 @@ export class SSHService {
           completed: completed === '1',
           recovered: recovered === '1',
           hasMetadata: hasMetadata === '1',
+          hasExitFile: hasExitFile === '1',
+          exitCode: parsedExitCode,
           logBytes: Number(logBytes || 0) || 0,
           updatedAt: Number(updatedAt || 0) || 0,
         };
@@ -907,14 +932,16 @@ export class SSHService {
         'pid="$(cat "$pidfile" 2>/dev/null || true)"; ' +
         'cmdname="$(sed -n \'s/^[[:space:]]*"command"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p\' "$jobdir/config.json" 2>/dev/null | head -1)"; ' +
         'active=0; test -n "$pid" && kill -0 "$pid" 2>/dev/null && active=1; ' +
+        'hasexit=0; test -f "$exitfile" && hasexit=1; ' +
+        'exitcode=""; test "$hasexit" = "1" && exitcode="$(sed -n \'s/.*"code"[[:space:]]*:[[:space:]]*\\(-\\{0,1\\}[0-9][0-9]*\\|null\\).*/\\1/p\' "$exitfile" 2>/dev/null | head -1)"; ' +
         'completed=0; ' +
-        'if test -f "$exitfile"; then completed=1; ' +
-        'elif test -f "$log" && grep -q \'"type":"result"\' "$log" 2>/dev/null; then completed=1; fi; ' +
+        'if test "$hasexit" = "1"; then completed=1; ' +
+        'elif test "$active" = "0" && test -f "$log" && grep -q \'"type":"result"\' "$log" 2>/dev/null; then completed=1; fi; ' +
         'recovered=0; test -f "$recoveredfile" && recovered=1; ' +
         'metadata=0; test -f "$jobdir/metadata.json" && metadata=1; ' +
         'updated="$(stat -c %Y "$jobdir" 2>/dev/null || stat -f %m "$jobdir" 2>/dev/null || echo 0)"; ' +
         'bytes="$(wc -c < "$log" 2>/dev/null || echo 0)"; ' +
-        'printf "%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n" "$jobdir" "$pid" "$cmdname" "$active" "$completed" "$recovered" "$metadata" "$updated" "$bytes" "$log" "$exitfile"; ' +
+        'printf "%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n" "$jobdir" "$pid" "$cmdname" "$active" "$completed" "$recovered" "$metadata" "$updated" "$bytes" "$log" "$exitfile" "$hasexit" "$exitcode"; ' +
         'done; ' +
         'fi; true'
       );
@@ -934,10 +961,13 @@ export class SSHService {
     const recentCompletedCutoff = Math.floor((Date.now() - 24 * 60 * 60 * 1000) / 1000);
     return jobs.find((job) => {
       if (job.recovered) return false;
-      if (job.command && job.command !== 'claude') return false;
+      // Recovery replay needs a harness-specific stream parser; only commands
+      // with one registered in resumeRemoteTurn are recoverable.
+      if (job.command && !RECOVERABLE_BRIDGE_COMMANDS.has(job.command)) return false;
       if (job.active) return true;
       if (!job.hasMetadata) return false;
       if (job.logBytes <= 0) return false;
+      if (job.hasExitFile && job.exitCode !== 0) return false;
       return job.completed && job.updatedAt >= recentCompletedCutoff;
     }) || null;
   }
@@ -965,6 +995,29 @@ export class SSHService {
     }
 
     return Boolean(await this.getLatestRecoverableRemoteProcess(sessionId, config));
+  }
+
+  /**
+   * Ask the bridge to close the child's stdin. Recovery calls this after a
+   * replayed turn reaches its terminal result: the app that spawned the job
+   * died before it could send EOF, so harnesses that wait for more stdin
+   * (claude --input-format stream-json) would otherwise idle forever as
+   * zombie processes and keep hasActiveRemoteProcess pinned true.
+   */
+  async signalDetachedBridgeJobStdinEof(sessionId: string, config: SSHConfig, jobDir: string): Promise<void> {
+    try {
+      const safeJobDir = jobDir.replace(/\/+$/, '');
+      if (!safeJobDir.startsWith(this.getDetachedBridgeSessionDir(sessionId) + '/')) {
+        throw new Error('Refusing to signal stdin EOF for unrelated bridge job');
+      }
+      const client = await this.getConnection(sessionId, config);
+      await this.execCommand(
+        client,
+        `touch ${this.quoteForShell(`${safeJobDir}/stdin.eof`)}`
+      );
+    } catch (error) {
+      console.warn(`[SSH Service] Failed to signal stdin EOF for bridge job of ${sessionId}:`, error);
+    }
   }
 
   async markDetachedBridgeJobRecovered(sessionId: string, config: SSHConfig, jobDir: string): Promise<void> {
@@ -1979,8 +2032,9 @@ detect_cli gemini gemini
 
         if (error instanceof Error && error.message.includes('Remote workdir not found')) {
           console.warn('[SSH Service] Detached bridge refused missing remote workdir:', error.message);
-          passThrough.stdout.write(Buffer.from(`${error.message}\n`));
-          await finalize(66, null, false);
+          emitter.emit('error', error);
+          passThrough.stdout.end();
+          options.signal?.removeEventListener('abort', abortHandler);
           return;
         }
 
@@ -2216,12 +2270,15 @@ detect_cli gemini gemini
         const client = await this.getConnection(sessionId, config);
         const output = await this.execCommand(
           client,
+          `pid="$(cat ${this.quoteForShell(bridge.pidPath)} 2>/dev/null || true)"; ` +
+          'active=0; test -n "$pid" && kill -0 "$pid" 2>/dev/null && active=1; ' +
           `if test -f ${this.quoteForShell(bridge.exitPath)}; then ` +
           `echo __EXIT__; cat ${this.quoteForShell(bridge.exitPath)}; ` +
+          'elif test "$active" = "1"; then ' +
+          'echo __RUNNING__; ' +
           `elif test -f ${this.quoteForShell(bridge.logPath)} && grep -q '"type":"result"' ${this.quoteForShell(bridge.logPath)} 2>/dev/null; then ` +
           'echo __RESULT__; ' +
-          `else pid="$(cat ${this.quoteForShell(bridge.pidPath)} 2>/dev/null || true)"; ` +
-          'if test -n "$pid" && kill -0 "$pid" 2>/dev/null; then echo __RUNNING__; else echo __GONE__; fi; fi'
+          'else echo __GONE__; fi'
         );
         const trimmed = output.trim();
         if (!trimmed || trimmed === '__RUNNING__') {
@@ -2276,7 +2333,7 @@ detect_cli gemini gemini
     void (async () => {
       try {
         if (job.completed && !job.active) {
-          await finalize(0, null, true);
+          await finalize(job.hasExitFile ? job.exitCode ?? 1 : 0, null, true);
           return;
         }
 
@@ -2925,8 +2982,17 @@ detect_cli gemini gemini
         // Try multiple files since different systems use different configs
         const sourceCmd = `source ~/.bash_profile 2>/dev/null; source ~/.profile 2>/dev/null; source ~/.bashrc 2>/dev/null; true`;
         // Run script, then echo marker to separate script output from working directory
-        // The working directory is captured BEFORE the marker by looking at the last line of script output
-        const command = `${sourceCmd}; cd ~ && ${script} && echo "___WORKDIR_END___"`;
+        // The working directory is captured BEFORE the marker by looking at the last line of script output.
+        // The script is wrapped in a brace group on its own lines: scripts routinely
+        // end with a trailing newline (or a comment), and naive `${script} && echo`
+        // interpolation strands the `&& echo` on its own line — a bash syntax error
+        // that aborts AFTER the script ran, falsely reporting setup failure.
+        const trimmedScript = script.trim();
+        if (!trimmedScript) {
+          resolve({ success: false, error: 'Worktree setup script is empty', output: '' });
+          return;
+        }
+        const command = `${sourceCmd}; cd ~ && {\n${trimmedScript}\n} && echo "___WORKDIR_END___"`;
         console.log('[SSH Service] Running worktree script:', command);
 
         client.exec(command, (err, channel) => {

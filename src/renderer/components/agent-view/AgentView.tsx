@@ -85,6 +85,7 @@ export default function AgentView() {
           {/* Messages */}
           <div className="flex-1 overflow-y-auto overflow-x-hidden">
             <MessageList
+              sessionId={selectedId || undefined}
               messages={sessionMessages}
               isStreaming={isSessionStreaming}
               isLoadingMessages={isLoadingMessages}

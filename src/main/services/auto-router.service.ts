@@ -8,6 +8,10 @@ import { execFileSync } from 'child_process';
 import * as os from 'os';
 import * as path from 'path';
 import { findUsableLocalExecutable, hasUsableLocalExecutable } from '../utils/local-executable';
+import {
+  ZAI_GLM_CLAUDE_MODEL_PICKER_ID,
+  isZaiGlmCodexModel,
+} from '../../shared/config/zai-glm';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const settingsStore = new Store({ name: 'claudette-settings' }) as any;
@@ -698,6 +702,12 @@ function isHarnessTemporarilyUnavailable(model: string, options?: ModelAvailabil
 
 function hasConfiguredCredentialForModel(model: string, options?: ModelAvailabilityOptions): boolean {
   const settings = getSettingsObject();
+  const hasZaiKey = !!(
+    settings.zaiApiKey
+    || settingsStore.get('zaiApiKey')
+    || process.env.ZAI_API_KEY
+    || process.env.Z_AI_API_KEY
+  );
 
   if (isHarnessTemporarilyUnavailable(model, options)) {
     return false;
@@ -708,6 +718,10 @@ function hasConfiguredCredentialForModel(model: string, options?: ModelAvailabil
   }
 
   if (model.startsWith('codex:')) {
+    if (isZaiGlmCodexModel(model)) {
+      return hasZaiKey && (options?.isSSH ? true : hasCodexCli());
+    }
+
     return !!(
       settingsStore.get('openAiApiKey') ||
       settingsStore.get('openaiApiKey') ||
@@ -736,6 +750,10 @@ function hasConfiguredCredentialForModel(model: string, options?: ModelAvailabil
   }
 
   if (model.startsWith('custom:')) {
+    if (model === ZAI_GLM_CLAUDE_MODEL_PICKER_ID) {
+      return hasZaiKey;
+    }
+
     const customId = model.replace('custom:', '');
     const customModels = (settings.customModels || []) as Array<{ id: string; apiKey?: string; baseUrl?: string; modelId?: string }>;
     const match = customModels.find((candidate) => candidate.id === customId);
@@ -1186,7 +1204,7 @@ function applyCostAwareDowngrade(
   // unless the user has explicitly chosen Fable/Opus for this tier.
   if (tier === 'plan' && /^claude-(?:fable|opus)/i.test(configured)) {
     if (isUserConfiguredModel('plan')) return configured;
-    return 'claude-sonnet-4-6';
+    return 'claude-sonnet-5';
   }
   return configured;
 }
@@ -1195,7 +1213,7 @@ function firstAvailable(candidates: string[], fallbackModel: string, options?: M
   for (const candidate of candidates) {
     if (hasConfiguredCredentialForModel(candidate, options)) return candidate;
   }
-  return hasConfiguredCredentialForModel(fallbackModel, options) ? fallbackModel : 'claude-sonnet-4-6';
+  return hasConfiguredCredentialForModel(fallbackModel, options) ? fallbackModel : 'claude-sonnet-5';
 }
 
 const HARNESS_REQUEST_PATTERNS: Record<Harness, RegExp> = {
@@ -1311,6 +1329,7 @@ function chooseContinuationModelForTier(
     ...candidateModelsForTier(tier, config, signals, options),
     ...configuredModelsForTier(tier, config),
     config.fallbackModel,
+    'claude-sonnet-5',
     'claude-sonnet-4-6',
   ].filter((model): model is string => Boolean(model));
 
@@ -1344,13 +1363,39 @@ function needsFrontierReasoning(tier: TaskTier, signals: TaskSignals): boolean {
     || (signals.asksForMultiHarness && signals.likelyNeedsProjectContext);
 }
 
+function isFableModel(model?: string): boolean {
+  return /^claude-fable-5$/i.test(model || '');
+}
+
+function implicitFrontierClaudeModels(): string[] {
+  return ['claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6'];
+}
+
+function frontierClaudeCandidatesForTier(tier: TaskTier, config: AutoRouterConfig): string[] {
+  const configured = resolveModelForTier(tier, config);
+  return isFableModel(configured)
+    ? [configured, ...implicitFrontierClaudeModels()]
+    : implicitFrontierClaudeModels();
+}
+
+function isFableAllowedForAutoTier(
+  tier: TaskTier,
+  config: AutoRouterConfig,
+  options?: ModelAvailabilityOptions,
+): boolean {
+  if (isFableModel(resolveModelForTier(tier, config))) return true;
+  return customCategoriesForController(options).some((category) => (
+    category.tier === tier && isFableModel(category.model)
+  ));
+}
+
 function researchPriorModelCandidates(
   tier: TaskTier,
   config: AutoRouterConfig,
   signals: TaskSignals,
 ): string[] {
   const candidates: string[] = [];
-  const addFrontierClaude = () => candidates.push('claude-fable-5', 'claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6');
+  const addFrontierClaude = () => candidates.push(...frontierClaudeCandidatesForTier(tier, config));
 
   if (signals.asksForCapabilityEscalation) {
     addFrontierClaude();
@@ -1360,13 +1405,13 @@ function researchPriorModelCandidates(
     case 'plan':
       if (needsFrontierReasoning(tier, signals)) {
         addFrontierClaude();
-        candidates.push(config.planModel, 'claude-sonnet-4-6');
+        candidates.push(config.planModel, 'claude-sonnet-5', 'claude-sonnet-4-6');
       }
       break;
     case 'build':
       candidates.push(config.buildModel, 'codex:gpt-5.5');
       if (signals.large || signals.asksForArchitecture || signals.asksForMultiHarness) {
-        candidates.push('claude-fable-5', 'claude-opus-4-8', 'claude-opus-4-7');
+        candidates.push(...frontierClaudeCandidatesForTier(tier, config));
       }
       break;
     case 'verify':
@@ -1402,6 +1447,7 @@ function candidateModelsForTier(
   const domainCandidates = domainModelCandidates(tier, config, signals);
   const priorCandidates = researchPriorModelCandidates(tier, config, signals);
   const allowedModels = new Set([configured, ...configuredCandidates, ...domainCandidates, ...priorCandidates]);
+  const allowFable = isFableAllowedForAutoTier(tier, config, options);
 
   const candidates: string[] = priorCandidates.length > 0
     ? [...priorCandidates, configured]
@@ -1423,6 +1469,7 @@ function candidateModelsForTier(
       })
       .map((insight) => insight.model)
       .filter((model, index, models) => models.indexOf(model) === index)
+      .filter((model) => allowFable || !isFableModel(model))
       .filter((model) => {
         if (allowedModels.has(model)) return true;
         const insight = analyticsService.getHarnessInsights().find((candidate) => candidate.model === model);
@@ -1439,7 +1486,9 @@ function candidateModelsForTier(
   candidates.push(...domainCandidates);
   candidates.push(...configuredCandidates);
 
-  return Array.from(new Set(candidates.filter(Boolean)));
+  return Array.from(new Set(candidates.filter((model) => (
+    !!model && (allowFable || !isFableModel(model))
+  ))));
 }
 
 function domainModelCandidates(
@@ -1449,7 +1498,7 @@ function domainModelCandidates(
 ): string[] {
   const candidates: string[] = [];
   if (signals.domain === 'copy') {
-    candidates.push('claude-sonnet-4-6');
+    candidates.push('claude-sonnet-5', 'claude-sonnet-4-6');
     if (tier === 'build' || tier === 'refine') {
       candidates.push(config.refineModel, 'cursor:composer-2.5');
     }
@@ -1461,7 +1510,7 @@ function domainModelCandidates(
     candidates.push(config.verifyModel, config.buildModel);
   }
   if (tier === 'plan') {
-    candidates.unshift(config.planModel, 'claude-sonnet-4-6');
+    candidates.unshift(config.planModel, 'claude-sonnet-5', 'claude-sonnet-4-6');
   }
   return Array.from(new Set(candidates.filter(Boolean)));
 }
@@ -1489,7 +1538,7 @@ function chooseModelForTier(
   const candidates = candidateModelsForTier(tier, config, signals, options);
   const priorCandidates = researchPriorModelCandidates(tier, config, signals);
   if (signals.asksForCapabilityEscalation) {
-    candidates.unshift('claude-fable-5', 'claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6', config.planModel, config.fallbackModel);
+    candidates.unshift(...frontierClaudeCandidatesForTier(tier, config), config.planModel, config.fallbackModel);
   }
   if (signals.asksForMultiHarness && signals.large && tier !== 'refine') {
     candidates.unshift(...configuredModelsForTier(tier, config).filter((model) => harnessFromModel(model) === 'claude'));
@@ -1748,8 +1797,9 @@ function metaCandidateModelsForTier(
   );
   candidates.push(config.fallbackModel);
 
+  const allowFable = isFableAllowedForAutoTier(tier, config, options);
   return Array.from(new Set(candidates.filter((model) =>
-    !!model && hasConfiguredCredentialForModel(model, options)
+    !!model && (allowFable || !isFableModel(model)) && hasConfiguredCredentialForModel(model, options)
   )));
 }
 

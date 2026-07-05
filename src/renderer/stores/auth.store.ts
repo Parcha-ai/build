@@ -69,9 +69,21 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     if (!hasElectronAPI) return;
     try {
       const repos = await window.electronAPI.auth.getRepos();
-      set({ repos });
+      if (!Array.isArray(repos)) {
+        set({
+          repos: [],
+          error: 'GitHub repository response was not a list',
+        });
+        throw new Error('GitHub repository response was not a list');
+      }
+      set({ repos, error: null });
     } catch (error) {
       console.error('Failed to load repos:', error);
+      set({
+        repos: [],
+        error: error instanceof Error ? error.message : 'Failed to load repositories',
+      });
+      throw error;
     }
   },
 

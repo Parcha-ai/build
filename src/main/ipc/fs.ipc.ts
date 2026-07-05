@@ -11,6 +11,14 @@ function debugFs(...args: unknown[]): void {
   if (FS_DEBUG) console.log(...args);
 }
 
+function stripPathLineSuffix(filePath: string): string {
+  const match = filePath.match(/^(.+):(\d+)(?::\d+)?$/);
+  if (!match) return filePath;
+  const basePath = match[1];
+  if (!basePath.includes('/') && !basePath.includes('\\')) return filePath;
+  return basePath;
+}
+
 export interface FileEntry {
   name: string;
   path: string;
@@ -197,31 +205,32 @@ export function registerFsHandlers(ipcMain: IpcMain): void {
   // Read file content - supports both local and SSH sessions
   ipcMain.handle(IPC_CHANNELS.FS_READ_FILE, async (_event, filePath: string, sessionId?: string) => {
     debugFs('[FS] FS_READ_FILE called, filePath:', filePath, 'sessionId:', sessionId);
+    const normalizedFilePath = stripPathLineSuffix(filePath);
     try {
       // If sessionId provided, check if it's an SSH session
       if (sessionId) {
         const session = await sessionService.getSession(sessionId);
         debugFs('[FS] Session found:', !!session, 'has sshConfig:', !!session?.sshConfig);
         if (session?.sshConfig) {
-          debugFs('[FS] Reading file from SSH session:', filePath);
-          const remoteContent = await sshService.readRemoteFile(sessionId, session.sshConfig, filePath);
+          debugFs('[FS] Reading file from SSH session:', normalizedFilePath);
+          const remoteContent = await sshService.readRemoteFile(sessionId, session.sshConfig, normalizedFilePath);
           debugFs('[FS] SSH read successful, content length:', remoteContent.length);
           return { success: true, content: remoteContent };
         }
       }
 
       // Local file read
-      debugFs('[FS] Reading local file:', filePath);
+      debugFs('[FS] Reading local file:', normalizedFilePath);
       // Read images as base64, everything else as UTF-8
-      const isImage = /\.(png|jpe?g|gif|svg|webp|ico|bmp)$/i.test(filePath);
+      const isImage = /\.(png|jpe?g|gif|svg|webp|ico|bmp)$/i.test(normalizedFilePath);
       if (isImage) {
-        const buffer = await fs.readFile(filePath);
+        const buffer = await fs.readFile(normalizedFilePath);
         const base64 = buffer.toString('base64');
-        const ext = filePath.split('.').pop()?.toLowerCase() || 'png';
+        const ext = normalizedFilePath.split('.').pop()?.toLowerCase() || 'png';
         const mime = ext === 'svg' ? 'svg+xml' : ext === 'jpg' ? 'jpeg' : ext;
         return { success: true, content: `data:image/${mime};base64,${base64}` };
       }
-      const content = await fs.readFile(filePath, 'utf-8');
+      const content = await fs.readFile(normalizedFilePath, 'utf-8');
       return { success: true, content };
     } catch (error) {
       console.error('[FS] Read file error:', error);
@@ -232,21 +241,22 @@ export function registerFsHandlers(ipcMain: IpcMain): void {
   // Write file content (creates parent directories if needed) - supports SSH sessions via sessionId
   ipcMain.handle(IPC_CHANNELS.FS_WRITE_FILE, async (_event, filePath: string, content: string, sessionId?: string) => {
     debugFs('[FS] FS_WRITE_FILE called, filePath:', filePath, 'sessionId:', sessionId);
+    const normalizedFilePath = stripPathLineSuffix(filePath);
     try {
       // If sessionId provided, check if it's an SSH session
       if (sessionId) {
         const session = await sessionService.getSession(sessionId);
         debugFs('[FS] Session found:', !!session, 'has sshConfig:', !!session?.sshConfig);
         if (session?.sshConfig) {
-          debugFs('[FS] Writing file to remote SSH session:', filePath);
-          await sshService.writeRemoteFile(sessionId, session.sshConfig, filePath, content);
+          debugFs('[FS] Writing file to remote SSH session:', normalizedFilePath);
+          await sshService.writeRemoteFile(sessionId, session.sshConfig, normalizedFilePath, content);
           debugFs('[FS] Remote write successful');
           return { success: true };
         }
       }
 
       // Local file write — validate path is within session's worktree
-      const resolvedPath = path.resolve(filePath);
+      const resolvedPath = path.resolve(normalizedFilePath);
       if (sessionId) {
         const session = await sessionService.getSession(sessionId);
         if (session?.worktreePath) {

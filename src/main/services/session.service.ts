@@ -646,6 +646,10 @@ Only return the title, nothing else.`
     return Object.values(sessions)
       .filter(s => s.name && s.repoPath)
       .map(s => {
+        const manualName = s.manualName?.replace(/\s+/g, ' ').trim();
+        if (manualName) {
+          return { ...s, name: manualName };
+        }
         const customName = sanitizeSessionTitle(this.store.get(`sessionNames.${s.id}`) as string | undefined);
         return customName ? { ...s, name: customName, aiGeneratedName: customName } : s;
       });

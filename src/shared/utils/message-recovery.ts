@@ -134,6 +134,29 @@ export function isCloseContentDuplicate(a: ChatMessage, b: ChatMessage, windowMs
   return timeDelta <= windowMs;
 }
 
+export function isExactLongAssistantDuplicate(a: ChatMessage, b: ChatMessage): boolean {
+  if (a.id === b.id) return true;
+  if (a.role !== 'assistant' || b.role !== 'assistant') return false;
+  if ((a.harness || '') !== (b.harness || '')) return false;
+
+  const aContent = normalizeContentForCompare(a.content);
+  const bContent = normalizeContentForCompare(b.content);
+  if (aContent.length < 200 || aContent !== bContent) return false;
+  return true;
+}
+
+export function isPrefixAssistantDuplicate(a: ChatMessage, b: ChatMessage): boolean {
+  if (a.role !== 'assistant' || b.role !== 'assistant') return false;
+  if ((a.harness || '') !== (b.harness || '')) return false;
+  const aContent = normalizeContentForCompare(a.content);
+  const bContent = normalizeContentForCompare(b.content);
+  if (aContent.length < 200 || bContent.length < 200) return false;
+  if (aContent.length === bContent.length) return false;
+  const shorter = aContent.length < bContent.length ? aContent : bContent;
+  const longer = aContent.length < bContent.length ? bContent : aContent;
+  return longer.startsWith(shorter);
+}
+
 export function isInterruptedSafetyNetDuplicate(existing: ChatMessage, incoming: ChatMessage): boolean {
   return Boolean(
     existing.interrupted
@@ -206,7 +229,12 @@ export function mergeRecoveredStreamMessages(
 
   const merged: ChatMessage[] = [];
   for (const message of [...transcriptMessages, ...recoveredMessages].sort((a, b) => messageTimestamp(a) - messageTimestamp(b))) {
-    const duplicateIndex = merged.findIndex((existing) => isDuplicateStreamMessage(existing, message));
+    const duplicateIndex = merged.findIndex((existing) =>
+      isDuplicateStreamMessage(existing, message)
+      || (isExactLongAssistantDuplicate(existing, message)
+          && Math.abs(messageTimestamp(existing) - messageTimestamp(message)) < 300_000)
+      || isPrefixAssistantDuplicate(existing, message)
+    );
     if (duplicateIndex >= 0) {
       merged[duplicateIndex] = mergeDuplicateRecoveredMessage(merged[duplicateIndex], message);
       continue;

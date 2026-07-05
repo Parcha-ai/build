@@ -105,6 +105,17 @@ function generateTabId(filePath: string): string {
   return `tab-${filePath.replace(/[^a-zA-Z0-9]/g, '-')}-${Date.now()}`;
 }
 
+function splitPathLineSuffix(filePath: string): { filePath: string; lineNumber?: number } {
+  const match = filePath.match(/^(.+):(\d+)(?::\d+)?$/);
+  if (!match) return { filePath };
+  const [, basePath, lineText] = match;
+  if (!basePath.includes('/') && !basePath.includes('\\')) return { filePath };
+  return {
+    filePath: basePath,
+    lineNumber: Number.parseInt(lineText, 10),
+  };
+}
+
 export const useEditorStore = create<EditorState>((set, get) => ({
   isEditorOpen: false,
   tabs: [],
@@ -115,7 +126,10 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   isFileSearchOpen: false,
 
   openFile: async (filePath: string, lineNumber?: number) => {
-    console.log('[EditorStore] openFile called:', filePath, 'lineNumber:', lineNumber);
+    const parsedPath = splitPathLineSuffix(filePath);
+    const normalizedFilePath = parsedPath.filePath;
+    const normalizedLineNumber = lineNumber ?? parsedPath.lineNumber;
+    console.log('[EditorStore] openFile called:', filePath, 'normalized:', normalizedFilePath, 'lineNumber:', normalizedLineNumber);
 
     if (!hasElectronAPI) {
       console.error('[EditorStore] No Electron API available');
@@ -132,7 +146,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     console.log('[EditorStore] Current tabs:', tabs.length);
 
     // Check if file is already open
-    const existingTab = tabs.find(tab => tab.filePath === filePath);
+    const existingTab = tabs.find(tab => tab.filePath === normalizedFilePath);
     if (existingTab) {
       console.log('[EditorStore] File already open, activating tab:', existingTab.id);
       set({
@@ -141,7 +155,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         // Update line number if provided
         tabs: tabs.map(tab =>
           tab.id === existingTab.id
-            ? { ...tab, lineNumber: lineNumber ?? tab.lineNumber }
+            ? { ...tab, lineNumber: normalizedLineNumber ?? tab.lineNumber }
             : tab
         )
       });
@@ -153,7 +167,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
     try {
       console.log('[EditorStore] Reading file via IPC, sessionId:', activeSessionId);
-      const result = await window.electronAPI.fs.readFile(filePath, activeSessionId || undefined);
+      const result = await window.electronAPI.fs.readFile(normalizedFilePath, activeSessionId || undefined);
       console.log('[EditorStore] Read result:', result);
 
       if (!result.success) {
@@ -163,19 +177,19 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       }
 
       const content = result.content || '';
-      const fileName = filePath.split('/').pop() || filePath;
-      const language = getLanguageFromPath(filePath);
+      const fileName = normalizedFilePath.split('/').pop() || normalizedFilePath;
+      const language = getLanguageFromPath(normalizedFilePath);
       console.log('[EditorStore] Creating new tab, fileName:', fileName, 'language:', language);
 
       const newTab: EditorTab = {
-        id: generateTabId(filePath),
-        filePath,
+        id: generateTabId(normalizedFilePath),
+        filePath: normalizedFilePath,
         fileName,
         content,
         originalContent: content,
         isDirty: false,
         language,
-        lineNumber,
+        lineNumber: normalizedLineNumber,
         // Default to preview mode for markdown files
         isPreviewMode: language === 'markdown',
       };
@@ -197,6 +211,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
           isBrowserPanelOpen: false,
           isExtensionsPanelOpen: false,
           isPlanPanelOpen: false,
+          isHtmlPanelOpen: false,
         });
         console.log('[EditorStore] Competing panels closed');
       });
@@ -327,6 +342,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         isBrowserPanelOpen: false,
         isExtensionsPanelOpen: false,
         isPlanPanelOpen: false,
+        isHtmlPanelOpen: false,
       });
     });
   },
@@ -344,6 +360,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         isBrowserPanelOpen: false,
         isExtensionsPanelOpen: false,
         isPlanPanelOpen: false,
+        isHtmlPanelOpen: false,
       });
     });
   },

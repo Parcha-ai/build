@@ -144,17 +144,20 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
     }
     const trimmed = renameValue.trim();
     try {
+      const manuallyRenamedAt = new Date().toISOString();
       // Optimistic update — apply immediately to the store so tabs reflect the
       // new name without waiting for the IPC round-trip.
       useSessionStore.setState((state) => ({
         sessions: state.sessions.map(s =>
           s.id === renamingId
-            ? { ...s, aiGeneratedName: trimmed, name: trimmed }
+            ? { ...s, manualName: trimmed, manuallyRenamedAt, aiGeneratedName: trimmed, name: trimmed }
             : s
         ),
       }));
       // Persist to backend
       await window.electronAPI.sessions.update(renamingId, {
+        manualName: trimmed,
+        manuallyRenamedAt,
         aiGeneratedName: trimmed,
         name: trimmed,
       } as any);

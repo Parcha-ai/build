@@ -17,6 +17,9 @@ class MessageQueueService extends EventEmitter {
   private drainTimers = new Map<string, NodeJS.Timeout>();
   // When a drain is being deferred because another runtime still appears active.
   private drainDeferredSince = new Map<string, number>();
+  // Set after a completed stream result. SSH bridge processes can remain alive
+  // briefly for background task events; one queued drain may pass that bridge.
+  private remoteActiveDrainAllowed = new Set<string>();
 
   // Enqueue a message for a session
   enqueue(sessionId: string, text: string, attachments?: unknown[], opts?: { id?: string; model?: string; suppressUserMessage?: boolean; deferDrain?: boolean }): QueuedMessage {
@@ -94,6 +97,7 @@ class MessageQueueService extends EventEmitter {
     this.queues.set(sessionId, []);
     this.processing.set(sessionId, false);
     this.drainDeferredSince.delete(sessionId);
+    this.remoteActiveDrainAllowed.delete(sessionId);
     const timer = this.drainTimers.get(sessionId);
     if (timer) { clearTimeout(timer); this.drainTimers.delete(sessionId); }
     this.emitStateChange(sessionId);
@@ -113,14 +117,26 @@ class MessageQueueService extends EventEmitter {
     this.streaming.set(sessionId, true);
     this.processing.set(sessionId, false);
     this.drainDeferredSince.delete(sessionId);
+    this.remoteActiveDrainAllowed.delete(sessionId);
     if (harness) this.activeHarness.set(sessionId, harness);
     this.emitStateChange(sessionId);
   }
 
+  setActiveHarness(sessionId: string, harness?: string): void {
+    if (!harness) return;
+    this.activeHarness.set(sessionId, harness);
+    this.emitStateChange(sessionId);
+  }
+
   // Called when a stream ends for a session -- triggers drain by default.
-  onStreamEnd(sessionId: string, opts?: { drain?: boolean }): void {
+  onStreamEnd(sessionId: string, opts?: { drain?: boolean; allowRemoteActiveDrain?: boolean }): void {
     this.streaming.set(sessionId, false);
     this.processing.set(sessionId, false);
+    if (opts?.allowRemoteActiveDrain) {
+      this.remoteActiveDrainAllowed.add(sessionId);
+    } else {
+      this.remoteActiveDrainAllowed.delete(sessionId);
+    }
     if (opts?.drain === false) {
       const timer = this.drainTimers.get(sessionId);
       if (timer) { clearTimeout(timer); this.drainTimers.delete(sessionId); }
@@ -151,15 +167,9 @@ class MessageQueueService extends EventEmitter {
     return msg;
   }
 
-  // Drain every pending message as a single ordered turn.
-  dequeueForDrain(sessionId: string): QueuedMessage | undefined {
-    const queue = this.queues.get(sessionId) || [];
+  // Build the next drain turn without mutating queue state.
+  private buildDrainMessage(queue: QueuedMessage[]): QueuedMessage | undefined {
     if (queue.length === 0) return undefined;
-
-    this.queues.set(sessionId, []);
-    this.processing.set(sessionId, true);
-    this.drainDeferredSince.delete(sessionId);
-    this.emitStateChange(sessionId);
 
     if (queue.length === 1) {
       return {
@@ -190,6 +200,52 @@ class MessageQueueService extends EventEmitter {
     };
   }
 
+  // Drain every pending message as a single ordered turn.
+  dequeueForDrain(sessionId: string): QueuedMessage | undefined {
+    const next = this.peekForDrain(sessionId);
+    if (!next) return undefined;
+
+    this.ackDrain(sessionId, next.sourceIds, { keepProcessing: true });
+    return next;
+  }
+
+  // Peek at the next drain batch without removing it. Active-query injection
+  // uses this so queued prompts are only removed after Query.streamInput acks.
+  peekForDrain(sessionId: string): QueuedMessage | undefined {
+    const queue = this.queues.get(sessionId) || [];
+    return this.buildDrainMessage(queue);
+  }
+
+  beginDrainAttempt(sessionId: string): void {
+    if (!this.hasMessages(sessionId)) return;
+    this.processing.set(sessionId, true);
+    this.emitStateChange(sessionId);
+  }
+
+  finishDrainAttempt(sessionId: string): void {
+    this.processing.set(sessionId, false);
+    this.emitStateChange(sessionId);
+  }
+
+  ackDrain(sessionId: string, sourceIds?: string[], opts?: { keepProcessing?: boolean; scheduleIfRemaining?: boolean }): void {
+    const queue = this.queues.get(sessionId) || [];
+    const ids = new Set(sourceIds && sourceIds.length > 0
+      ? sourceIds
+      : queue.map((message) => message.id));
+
+    this.queues.set(sessionId, queue.filter((message) => !ids.has(message.id)));
+    this.processing.set(sessionId, Boolean(opts?.keepProcessing));
+    this.drainDeferredSince.delete(sessionId);
+    if (!this.hasMessages(sessionId)) {
+      this.remoteActiveDrainAllowed.delete(sessionId);
+    }
+    this.emitStateChange(sessionId);
+
+    if (!opts?.keepProcessing && opts?.scheduleIfRemaining && this.hasMessages(sessionId)) {
+      this.scheduleDrain(sessionId, 0);
+    }
+  }
+
   // Check if there are queued messages
   hasMessages(sessionId: string): boolean {
     return (this.queues.get(sessionId)?.length || 0) > 0;
@@ -207,6 +263,7 @@ class MessageQueueService extends EventEmitter {
     this.activeHarness.delete(sessionId);
     this.streaming.delete(sessionId);
     this.drainDeferredSince.delete(sessionId);
+    this.remoteActiveDrainAllowed.delete(sessionId);
     const timer = this.drainTimers.get(sessionId);
     if (timer) { clearTimeout(timer); this.drainTimers.delete(sessionId); }
   }
@@ -221,6 +278,14 @@ class MessageQueueService extends EventEmitter {
   getDrainDeferredMs(sessionId: string): number {
     const startedAt = this.drainDeferredSince.get(sessionId);
     return startedAt ? Date.now() - startedAt : 0;
+  }
+
+  canDrainPastRemoteActive(sessionId: string): boolean {
+    return this.remoteActiveDrainAllowed.has(sessionId);
+  }
+
+  clearRemoteActiveDrainAllowance(sessionId: string): void {
+    this.remoteActiveDrainAllowed.delete(sessionId);
   }
 
   supportsActiveInjection(sessionId: string): boolean {

@@ -81,6 +81,8 @@ export interface Session {
   parentSessionId?: string; // ID of parent session (null for root conversation)
   childSessionIds?: string[]; // Array of child fork session IDs
   forkPoint?: string; // Message ID where this fork was created from parent
+  manualName?: string; // User-renamed session/sidebar title. Takes precedence over automatic tab titles.
+  manuallyRenamedAt?: Date | string; // Set when the user explicitly renames the session.
   aiGeneratedName?: string; // AI-generated short name (2-3 words) for fork tabs
   autoTitleGeneratedAt?: Date | string; // Set after the one allowed automatic session title
   isRoot?: boolean; // True for original conversation (no parent)
@@ -447,6 +449,8 @@ export interface AppSettings {
   deepseekApiKey?: string;
   // Google Gemini CLI
   geminiApiKey?: string;
+  // Z.AI GLM coding models via Claude Code / Codex-compatible endpoints
+  zaiApiKey?: string;
   // Custom models via API proxy (e.g. Kimi K2.6 via Anthropic-compatible endpoint)
   customModels?: CustomModelConfig[];
   focusTasks?: FocusTask[];

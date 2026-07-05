@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { Loader2 } from 'lucide-react';
 import MessageBubble from './MessageBubble';
+import HtmlArtifactLink from './HtmlArtifactLink';
 import ToolCallCard from './ToolCallCard';
 import ReleaseNotes from '../common/ReleaseNotes';
 import { getLatestRelease } from '../../../shared/config/release-notes';
@@ -10,6 +11,7 @@ import type { ChatMessage, ToolCall } from '../../../shared/types';
 import { GSTACK_MODE_META } from '../../../shared/types';
 import { isTranscriptVisibleToolCall } from '../../../shared/utils/tool-call-transformer';
 import type { StreamEvent } from '../../stores/session.store';
+import { extractHtml, isHtmlResponse } from '../../utils/htmlDetector';
 
 interface QueuedMessage {
   id: string;
@@ -19,6 +21,7 @@ interface QueuedMessage {
 }
 
 interface MessageListProps {
+  sessionId?: string;
   messages: ChatMessage[];
   isStreaming: boolean;
   isLoadingMessages?: boolean;
@@ -28,6 +31,27 @@ interface MessageListProps {
   currentToolCalls?: ToolCall[]; // Live-updated tool calls (not snapshots)
   queuedMessages?: QueuedMessage[];
   onBackgroundTask?: (toolCall: ToolCall) => void; // Callback to background a running Bash command
+}
+
+const MESSAGE_ROLE_ORDER: Record<ChatMessage['role'], number> = {
+  system: 0,
+  user: 1,
+  assistant: 2,
+};
+
+function messageListTimestamp(message: ChatMessage): number {
+  const timestamp = new Date(message.timestamp || 0).getTime();
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function compareVisibleMessages(a: ChatMessage, b: ChatMessage): number {
+  const timeDelta = messageListTimestamp(a) - messageListTimestamp(b);
+  if (timeDelta !== 0) return timeDelta;
+
+  const roleDelta = MESSAGE_ROLE_ORDER[a.role] - MESSAGE_ROLE_ORDER[b.role];
+  if (roleDelta !== 0) return roleDelta;
+
+  return (a.id || '').localeCompare(b.id || '');
 }
 
 function getAgentDividerLabel(agentId?: string): string {
@@ -49,6 +73,7 @@ function getAgentDividerLabel(agentId?: string): string {
 }
 
 export default function MessageList({
+  sessionId,
   messages,
   isStreaming,
   isLoadingMessages = false,
@@ -63,6 +88,14 @@ export default function MessageList({
   const rewindAndFork = useSessionStore((state) => state.rewindAndFork);
   const activeSessionId = useSessionStore((state) => state.activeSessionId);
   const getAgentColor = useSessionStore((state) => state.getAgentColor);
+  const effectiveSessionId = sessionId || activeSessionId || undefined;
+  const htmlRenderMode = useSessionStore(useCallback((state) => {
+    if (!effectiveSessionId) return 'md';
+    return state.htmlRenderMode[effectiveSessionId]
+      || state.sessions.find((session) => session.id === effectiveSessionId)?.htmlRenderMode
+      || 'md';
+  }, [effectiveSessionId]));
+  const renderHtmlResponse = htmlRenderMode === 'html';
 
   // Create a map for quick lookup of current tool call state by ID
   const toolCallMap = React.useMemo(() => {
@@ -86,11 +119,7 @@ export default function MessageList({
         // Filter out other system messages
         return msg.role !== 'system';
       })
-      .sort((a, b) => {
-        const timeA = new Date(a?.timestamp || 0).getTime();
-        const timeB = new Date(b?.timestamp || 0).getTime();
-        return timeA - timeB;
-      });
+      .sort(compareVisibleMessages);
   }, [messages]);
 
   // Check if we have any content to show (either messages, streaming content, or streaming tool calls)
@@ -124,6 +153,23 @@ export default function MessageList({
     }
     return -1;
   }, [sortedMessages]);
+
+  const streamRenderItems = React.useMemo(() => {
+    let previousAgentId: string | undefined;
+    return streamEvents.map((event) => {
+      if (event.type === 'thinking') return null;
+
+      const item = {
+        event,
+        previousAgentId,
+        agentChanged: event.agentId !== previousAgentId,
+        isTeammate: Boolean(event.agentId),
+        agentDividerLabel: getAgentDividerLabel(event.agentId),
+      };
+      previousAgentId = event.agentId;
+      return item;
+    });
+  }, [streamEvents]);
 
   // Callback for rewinding to a specific message
   // IMPORTANT: This hook must be called before any conditional returns to satisfy React's rules of hooks
@@ -182,11 +228,13 @@ export default function MessageList({
       {sortedMessages.map((message, index) => (
         <MessageBubble
           key={message.id}
+          sessionId={effectiveSessionId}
           message={message}
           isStreaming={false}
           isLatestMessage={!hasStreamingContent && index === sortedMessages.length - 1}
           isOldMessage={index < sortedMessages.length - 10}
           isLatestUserMessage={message.role === 'user' && index === lastUserMessageIndex}
+          renderHtmlResponse={renderHtmlResponse}
           onRewind={handleRewind}
         />
       ))}
@@ -196,18 +244,11 @@ export default function MessageList({
           vanishing when the watchdog or a stale event briefly clears isStreaming. */}
       {streamEvents.length > 0 && (
         <div className="space-y-2">
-          {streamEvents.map((event, idx) => {
-            // Skip thinking events - they're shown in the dedicated thinking section
-            if (event.type === 'thinking') {
-              return null;
-            }
+          {streamRenderItems.map((item) => {
+            if (!item) return null;
 
-            // Determine if we need to show an agent divider (agent changed from previous non-thinking event)
-            const prevEvent = idx > 0 ? streamEvents.slice(0, idx).filter(e => e.type !== 'thinking').pop() : null;
-            const agentChanged = event.agentId !== prevEvent?.agentId;
-            const isTeammate = !!event.agentId;
+            const { event, previousAgentId, agentChanged, isTeammate, agentDividerLabel } = item;
             const agentColor = (event.agentId && activeSessionId) ? getAgentColor(activeSessionId, event.agentId) : undefined;
-            const agentDividerLabel = getAgentDividerLabel(event.agentId);
 
             // Agent badge for teammate events when agent changes
             const agentBadge = (agentChanged && isTeammate && agentColor) ? (
@@ -227,7 +268,7 @@ export default function MessageList({
                 </div>
                 <div className="h-px flex-1 opacity-30" style={{ backgroundColor: agentColor }} />
               </div>
-            ) : (agentChanged && !isTeammate && prevEvent?.agentId) ? (
+            ) : (agentChanged && !isTeammate && previousAgentId) ? (
               <div className="flex items-center gap-2 py-1.5 mb-1">
                 <div className="h-px flex-1 bg-claude-border opacity-30" />
                 <div className="text-[10px] font-bold uppercase text-claude-text-secondary px-2 py-0.5 bg-claude-surface/50 border border-claude-border" style={{ letterSpacing: '0.08em' }}>
@@ -256,50 +297,64 @@ export default function MessageList({
                 </React.Fragment>
               );
             } else if (event.type === 'text' && event.content) {
+              const renderStreamTextAsHtml = renderHtmlResponse && isHtmlResponse(event.content, { allowFragment: true });
+              const textContainerStyle = {
+                overflowWrap: 'anywhere',
+                ...(isTeammate && agentColor ? { borderLeft: `2px solid ${agentColor}`, paddingLeft: '8px' } : {}),
+              } as React.CSSProperties;
+
               return (
                 <React.Fragment key={event.id}>
                   {agentBadge}
                   <div
-                    className="prose prose-invert max-w-none font-mono text-claude-text break-words min-w-0"
-                    style={{
-                      overflowWrap: 'anywhere',
-                      ...(isTeammate && agentColor ? { borderLeft: `2px solid ${agentColor}`, paddingLeft: '8px' } : {}),
-                    }}
+                    className={renderStreamTextAsHtml
+                      ? 'min-w-0'
+                      : 'prose prose-invert max-w-none font-mono text-claude-text break-words min-w-0'}
+                    style={textContainerStyle}
                   >
-                    <ReactMarkdown
-                      components={{
-                        code({ className, children, ...props }) {
-                          const match = /language-(\w+)/.exec(className || '');
-                          const isBlock = String(children).includes('\n') || match;
-                          if (isBlock) {
-                            return (
-                              <div className="overflow-hidden border border-claude-border my-2" style={{ borderRadius: 0 }}>
-                                {match && (
-                                  <div className="px-2 py-1 text-xs font-bold font-mono bg-claude-surface border-b border-claude-border text-claude-text-secondary" style={{ letterSpacing: '0.05em' }}>
-                                    {match[1].toUpperCase()}
-                                  </div>
-                                )}
-                                <pre className="p-3 bg-claude-bg m-0 whitespace-pre-wrap break-words">
-                                  <code className="text-sm font-mono text-claude-text" {...props}>{children}</code>
-                                </pre>
-                              </div>
-                            );
-                          }
-                          return <code className="px-1 py-0.5 text-sm font-mono bg-claude-surface text-claude-accent" style={{ borderRadius: 0 }} {...props}>{children}</code>;
-                        },
-                        p({ children }) { return <p className="my-1 leading-relaxed">{children}</p>; },
-                        ul({ children }) { return <ul className="my-1 ml-6 pl-0 list-disc list-outside">{children}</ul>; },
-                        ol({ children }) { return <ol className="my-1 ml-6 pl-0 list-decimal list-outside">{children}</ol>; },
-                        li({ children }) { return <li className="my-0.5 ml-0 pl-1">{children}</li>; },
-                        h1({ children }) { return <h1 className="text-lg font-bold mt-3 mb-1">{children}</h1>; },
-                        h2({ children }) { return <h2 className="text-base font-bold mt-2 mb-1">{children}</h2>; },
-                        h3({ children }) { return <h3 className="text-sm font-bold mt-2 mb-1">{children}</h3>; },
-                        strong({ children }) { return <strong className="font-bold text-claude-text">{children}</strong>; },
-                        em({ children }) { return <em className="italic">{children}</em>; },
-                      }}
-                    >
-                      {event.content}
-                    </ReactMarkdown>
+                    {renderStreamTextAsHtml ? (
+                      <HtmlArtifactLink
+                        sessionId={effectiveSessionId}
+                        html={extractHtml(event.content)}
+                        messageId={`${effectiveSessionId || 'stream'}-${event.id}`}
+                        autoOpen={true}
+                      />
+                    ) : (
+                      <ReactMarkdown
+                        components={{
+                          code({ className, children, ...props }) {
+                            const match = /language-(\w+)/.exec(className || '');
+                            const isBlock = String(children).includes('\n') || match;
+                            if (isBlock) {
+                              return (
+                                <div className="overflow-hidden border border-claude-border my-2" style={{ borderRadius: 0 }}>
+                                  {match && (
+                                    <div className="px-2 py-1 text-xs font-bold font-mono bg-claude-surface border-b border-claude-border text-claude-text-secondary" style={{ letterSpacing: '0.05em' }}>
+                                      {match[1].toUpperCase()}
+                                    </div>
+                                  )}
+                                  <pre className="p-3 bg-claude-bg m-0 whitespace-pre-wrap break-words">
+                                    <code className="text-sm font-mono text-claude-text" {...props}>{children}</code>
+                                  </pre>
+                                </div>
+                              );
+                            }
+                            return <code className="px-1 py-0.5 text-sm font-mono bg-claude-surface text-claude-accent" style={{ borderRadius: 0 }} {...props}>{children}</code>;
+                          },
+                          p({ children }) { return <p className="my-1 leading-relaxed">{children}</p>; },
+                          ul({ children }) { return <ul className="my-1 ml-6 pl-0 list-disc list-outside">{children}</ul>; },
+                          ol({ children }) { return <ol className="my-1 ml-6 pl-0 list-decimal list-outside">{children}</ol>; },
+                          li({ children }) { return <li className="my-0.5 ml-0 pl-1">{children}</li>; },
+                          h1({ children }) { return <h1 className="text-lg font-bold mt-3 mb-1">{children}</h1>; },
+                          h2({ children }) { return <h2 className="text-base font-bold mt-2 mb-1">{children}</h2>; },
+                          h3({ children }) { return <h3 className="text-sm font-bold mt-2 mb-1">{children}</h3>; },
+                          strong({ children }) { return <strong className="font-bold text-claude-text">{children}</strong>; },
+                          em({ children }) { return <em className="italic">{children}</em>; },
+                        }}
+                      >
+                        {event.content}
+                      </ReactMarkdown>
+                    )}
                   </div>
                 </React.Fragment>
               );

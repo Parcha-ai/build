@@ -278,12 +278,14 @@ function ElectronApp() {
   const isBrowserPanelOpen = useUIStore((s) => s.isBrowserPanelOpen);
   const isExtensionsPanelOpen = useUIStore((s) => s.isExtensionsPanelOpen);
   const isPlanPanelOpen = useUIStore((s) => s.isPlanPanelOpen);
+  const isHtmlPanelOpen = useUIStore((s) => s.isHtmlPanelOpen);
   const isGitPanelOpen = useUIStore((s) => s.isGitPanelOpen);
   const toggleSidebar = useUIStore((s) => s.toggleSidebar);
   const toggleTerminalPanel = useUIStore((s) => s.toggleTerminalPanel);
   const toggleBrowserPanel = useUIStore((s) => s.toggleBrowserPanel);
   const toggleExtensionsPanel = useUIStore((s) => s.toggleExtensionsPanel);
   const togglePlanPanel = useUIStore((s) => s.togglePlanPanel);
+  const toggleHtmlPanel = useUIStore((s) => s.toggleHtmlPanel);
   const toggleGitPanel = useUIStore((s) => s.toggleGitPanel);
   const cycleSplitRatio = useUIStore((s) => s.cycleSplitRatio);
   const openSettings = useUIStore((s) => s.openSettings);
@@ -813,6 +815,15 @@ function ElectronApp() {
             title="Toggle Plan"
           >
             <ClipboardList size={14} />
+          </button>
+          <button
+            onClick={toggleHtmlPanel}
+            className={`p-1 transition-colors hover:text-claude-text ${
+              isHtmlPanelOpen ? 'text-claude-text' : 'text-claude-text-secondary'
+            }`}
+            title="Toggle HTML Preview"
+          >
+            <FileText size={14} />
           </button>
           <button
             onClick={toggleEditorPanel}

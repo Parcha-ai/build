@@ -69,6 +69,8 @@ export function getStoredSessionTitle(sessionId: string): string | null {
 
 export function hasExistingSessionTitle(sessionId: string, session?: Session | null): boolean {
   return Boolean(
+    sanitizeSessionTitle(session?.manualName) ||
+    session?.manuallyRenamedAt ||
     getStoredSessionTitle(sessionId) ||
     sanitizeSessionTitle(session?.aiGeneratedName) ||
     session?.autoTitleGeneratedAt ||

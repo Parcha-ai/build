@@ -45,6 +45,8 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
   });
 
   ipcMain.handle(IPC_CHANNELS.GIT_LOG, async (_, sessionId: string, limit?: number) => {
+    // SSH sessions have no local worktree — local git would always fail
+    if (getStoredSession(sessionId)?.sshConfig) return [];
     try {
       return await gitService.getLog(sessionId, limit);
     } catch {
@@ -53,10 +55,12 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
   });
 
   ipcMain.handle(IPC_CHANNELS.GIT_BRANCHES, async (_, sessionId: string) => {
+    if (getStoredSession(sessionId)?.sshConfig) return [];
     try {
       return await gitService.getBranches(sessionId);
     } catch {
-      return { all: [], current: null };
+      // Must stay an array — the renderer maps/filters this directly
+      return [];
     }
   });
 
@@ -65,7 +69,12 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
   });
 
   ipcMain.handle(IPC_CHANNELS.GIT_DIFF, async (_, sessionId: string, commitHash?: string) => {
-    return gitService.getDiff(sessionId, commitHash);
+    if (getStoredSession(sessionId)?.sshConfig) return '';
+    try {
+      return await gitService.getDiff(sessionId, commitHash);
+    } catch {
+      return '';
+    }
   });
 
   ipcMain.handle(IPC_CHANNELS.GIT_COMMIT, async (_, sessionId: string, message: string) => {

@@ -1,10 +1,10 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { X, Search, Loader2, GitBranch, Lock, Globe, Folder, Github, Zap, ChevronDown, AlertTriangle, Edit3, Eye, FileText, Terminal as TerminalIcon, Server } from 'lucide-react';
 import { useAuthStore } from '../../stores/auth.store';
 import { cloneSupplementalMessages, useSessionStore } from '../../stores/session.store';
 import SSHConfigForm from './SSHConfigForm';
-import type { SSHConfig } from '../../../shared/types';
+import type { GitHubRepo, SSHConfig } from '../../../shared/types';
 
 interface NewSessionDialogProps {
   isOpen: boolean;
@@ -13,13 +13,100 @@ interface NewSessionDialogProps {
   initialName?: string; // Optional: initial session name
 }
 
+type GitHubRepoCandidate = Partial<GitHubRepo> & { id?: number | string };
+
+const GITHUB_REPO_UI_STABILITY_MARKER = 'github-new-session-stable-v1';
+
+function safeString(value: unknown, fallback = ''): string {
+  if (typeof value === 'string') return value;
+  if (value === null || value === undefined) return fallback;
+  return String(value);
+}
+
+function stripGitSuffix(value: string): string {
+  return value.replace(/\.git$/i, '').replace(/\/+$/, '');
+}
+
+function inferRepoName(value: string): string {
+  const trimmed = stripGitSuffix(value.trim());
+  if (!trimmed) return 'Repository';
+  const lastPathSegment = trimmed.split('/').filter(Boolean).pop();
+  const lastSshSegment = (lastPathSegment || trimmed).split(':').filter(Boolean).pop();
+  return stripGitSuffix(lastSshSegment || trimmed) || 'Repository';
+}
+
+function normalizeGitHubRepo(repo: GitHubRepoCandidate | null | undefined, index = 0): GitHubRepo | null {
+  if (!repo || typeof repo !== 'object') return null;
+
+  const fullName = safeString(repo.fullName).trim();
+  const name = safeString(repo.name).trim() || inferRepoName(fullName);
+  const normalizedFullName = fullName || name;
+  const cloneUrl =
+    safeString(repo.cloneUrl).trim() ||
+    (normalizedFullName.includes('/') ? `https://github.com/${stripGitSuffix(normalizedFullName)}.git` : '');
+
+  if (!normalizedFullName && !cloneUrl) return null;
+
+  const numericId = Number(repo.id);
+  return {
+    id: Number.isFinite(numericId) ? numericId : -(index + 1),
+    name: name || inferRepoName(cloneUrl),
+    fullName: normalizedFullName || inferRepoName(cloneUrl),
+    description: safeString(repo.description),
+    private: Boolean(repo.private),
+    cloneUrl,
+    sshUrl: safeString(repo.sshUrl),
+    defaultBranch: safeString(repo.defaultBranch).trim() || 'main',
+    updatedAt: safeString(repo.updatedAt).trim() || new Date(0).toISOString(),
+  };
+}
+
+function isGitHubRepo(repo: GitHubRepo | null): repo is GitHubRepo {
+  return repo !== null;
+}
+
+function normalizeManualRepoInput(input: string): GitHubRepo | null {
+  const raw = input.trim();
+  if (!raw) return null;
+
+  const trimmed = raw.replace(/\/+$/, '');
+  let repoName = inferRepoName(trimmed);
+  let fullName = trimmed;
+  let cloneUrl = trimmed;
+
+  const githubMatch = trimmed.match(/github\.com[/:]([\w.-]+)\/([\w.-]+?)(?:\.git)?$/i);
+  const shorthandMatch = trimmed.match(/^([\w.-]+)\/([\w.-]+?)(?:\.git)?$/);
+
+  if (githubMatch) {
+    repoName = stripGitSuffix(githubMatch[2]);
+    fullName = `${githubMatch[1]}/${repoName}`;
+    cloneUrl = trimmed.endsWith('.git') ? trimmed : `${trimmed}.git`;
+  } else if (shorthandMatch) {
+    repoName = stripGitSuffix(shorthandMatch[2]);
+    fullName = `${shorthandMatch[1]}/${repoName}`;
+    cloneUrl = `https://github.com/${fullName}.git`;
+  }
+
+  return {
+    id: Date.now(),
+    name: repoName,
+    fullName,
+    description: '',
+    private: false,
+    defaultBranch: 'main',
+    cloneUrl,
+    sshUrl: '',
+    updatedAt: new Date().toISOString(),
+  };
+}
+
 export default function NewSessionDialog({ isOpen, onClose, initialPath, initialName }: NewSessionDialogProps) {
-  const { repos } = useAuthStore();
+  const { repos, loadRepos } = useAuthStore();
   const { createSession, setActiveSession, addSession } = useSessionStore();
 
   const [step, setStep] = useState<'source' | 'repo' | 'folder' | 'config' | 'teleport' | 'ssh-config' | 'openclaw-config'>('source');
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedRepo, setSelectedRepo] = useState<typeof repos[0] | null>(null);
+  const [selectedRepo, setSelectedRepo] = useState<GitHubRepo | null>(null);
   const [selectedFolder, setSelectedFolder] = useState<string>('');
   const [sessionName, setSessionName] = useState('');
   const [branch, setBranch] = useState('');
@@ -45,6 +132,8 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
   const [isBranchDropdownOpen, setIsBranchDropdownOpen] = useState(false);
   const [branchFilter, setBranchFilter] = useState('');
   const [manualRepoUrl, setManualRepoUrl] = useState('');
+  const [isRepoListLoading, setIsRepoListLoading] = useState(false);
+  const [repoListError, setRepoListError] = useState<string | null>(null);
   const [openclawGatewayUrl, setOpenclawGatewayUrl] = useState('');
   const [openclawGatewayPassword, setOpenclawGatewayPassword] = useState('');
   const [openclawError, setOpenclawError] = useState<string | null>(null);
@@ -154,15 +243,38 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
     }
   }, [initialPath, initialName, isOpen]);
 
+  const safeRepos = useMemo(() => {
+    const repoList = Array.isArray(repos) ? repos : [];
+    return repoList.map((repo, index) => normalizeGitHubRepo(repo, index)).filter(isGitHubRepo);
+  }, [repos]);
+
+  const loadGitHubRepos = useCallback(async () => {
+    setIsRepoListLoading(true);
+    setRepoListError(null);
+    try {
+      await loadRepos();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to load GitHub repositories';
+      setRepoListError(message);
+    } finally {
+      setIsRepoListLoading(false);
+    }
+  }, [loadRepos]);
+
+  useEffect(() => {
+    if (isOpen && step === 'repo') {
+      void loadGitHubRepos();
+    }
+  }, [isOpen, step, loadGitHubRepos]);
+
   const filteredRepos = useMemo(() => {
-    if (!searchQuery) return repos;
-    const query = searchQuery.toLowerCase();
-    return repos.filter(
-      (repo) =>
-        repo.name.toLowerCase().includes(query) ||
-        repo.fullName.toLowerCase().includes(query)
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) return safeRepos;
+    return safeRepos.filter((repo) =>
+      [repo.name, repo.fullName, repo.description, repo.defaultBranch]
+        .some((value) => safeString(value).toLowerCase().includes(query))
     );
-  }, [repos, searchQuery]);
+  }, [safeRepos, searchQuery]);
 
   // Filter branches by search query
   const filteredBranches = useMemo(() => {
@@ -175,6 +287,7 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
 
   const handleSelectSource = (source: 'github' | 'local' | 'teleport' | 'ssh' | 'openclaw') => {
     if (source === 'github') {
+      setRepoListError(null);
       setStep('repo');
     } else if (source === 'teleport') {
       setStep('teleport');
@@ -240,45 +353,21 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
     }
   };
 
-  const handleSelectRepo = (repo: typeof repos[0]) => {
+  const handleSelectRepo = (repo: GitHubRepo) => {
     setSelectedRepo(repo);
-    setSessionName(repo.name);
-    setBranch(repo.defaultBranch);
+    setSessionName(repo.name || inferRepoName(repo.fullName || repo.cloneUrl));
+    setBranch(repo.defaultBranch || 'main');
     setStep('config');
   };
 
   // Handle manual repo URL entry
   const handleManualRepoUrl = () => {
-    if (!manualRepoUrl.trim()) return;
-
-    // Extract repo name from URL (e.g., https://github.com/owner/repo.git -> repo)
-    const url = manualRepoUrl.trim();
-    let repoName = 'Repository';
-    let fullName = url;
-
-    // Parse GitHub URL patterns
-    const githubMatch = url.match(/github\.com[/:]([\w-]+)\/([\w.-]+?)(?:\.git)?$/i);
-    if (githubMatch) {
-      repoName = githubMatch[2];
-      fullName = `${githubMatch[1]}/${githubMatch[2]}`;
-    }
-
-    // Create a synthetic repo object
-    const syntheticRepo = {
-      id: Date.now(),
-      name: repoName,
-      fullName,
-      description: '',
-      private: false,
-      defaultBranch: 'main',
-      cloneUrl: url.endsWith('.git') ? url : `${url}.git`,
-      sshUrl: '', // Not needed for HTTPS clone
-      updatedAt: new Date().toISOString(),
-    };
+    const syntheticRepo = normalizeManualRepoInput(manualRepoUrl);
+    if (!syntheticRepo) return;
 
     setSelectedRepo(syntheticRepo);
-    setSessionName(repoName);
-    setBranch('main');
+    setSessionName(syntheticRepo.name);
+    setBranch(syntheticRepo.defaultBranch);
     setStep('config');
   };
 
@@ -881,7 +970,10 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
             ) : step === 'repo' ? (
               <>
                 {/* Manual URL input */}
-                <div className="mb-4 p-3 bg-claude-bg border border-claude-border">
+                <div
+                  className="mb-4 p-3 bg-claude-bg border border-claude-border"
+                  data-build-fix={GITHUB_REPO_UI_STABILITY_MARKER}
+                >
                   <label
                     className="block text-[10px] font-bold mb-1.5 text-claude-text-secondary"
                     style={{ letterSpacing: '0.1em' }}
@@ -935,9 +1027,35 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
 
                 {/* Repo list - brutalist */}
                 <div className="max-h-[250px] overflow-y-auto space-y-0.5">
-                  {filteredRepos.map((repo) => (
+                  {repoListError && (
+                    <div className="p-3 mb-2 border border-red-500/50 bg-red-500/10">
+                      <p className="text-[10px] text-red-400 font-mono break-words">
+                        {repoListError}
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => void loadGitHubRepos()}
+                        className="mt-2 px-3 py-1.5 text-[10px] font-bold bg-claude-bg hover:bg-claude-surface border border-claude-border text-claude-text"
+                        style={{ borderRadius: 0, letterSpacing: '0.05em' }}
+                      >
+                        RETRY
+                      </button>
+                    </div>
+                  )}
+
+                  {isRepoListLoading && (
+                    <div
+                      className="py-6 flex items-center justify-center gap-2 text-xs text-claude-text-secondary"
+                      style={{ letterSpacing: '0.05em' }}
+                    >
+                      <Loader2 size={14} className="animate-spin" />
+                      LOADING REPOSITORIES
+                    </div>
+                  )}
+
+                  {!isRepoListLoading && filteredRepos.map((repo) => (
                     <button
-                      key={repo.id}
+                      key={`${repo.id}:${repo.fullName}`}
                       onClick={() => handleSelectRepo(repo)}
                       className="w-full p-2.5 text-left hover:bg-claude-bg transition-colors group"
                       style={{ borderRadius: 0 }}
@@ -959,19 +1077,30 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
                           )}
                           <div className="flex items-center gap-1 mt-1 text-[10px] text-claude-text-secondary">
                             <GitBranch size={10} />
-                            <span>{repo.defaultBranch}</span>
+                            <span>{repo.defaultBranch || 'main'}</span>
                           </div>
                         </div>
                       </div>
                     </button>
                   ))}
 
-                  {filteredRepos.length === 0 && (
+                  {!isRepoListLoading && filteredRepos.length === 0 && (
                     <div
-                      className="py-6 text-center text-xs text-claude-text-secondary"
+                      className="py-6 px-4 text-center text-xs text-claude-text-secondary"
                       style={{ letterSpacing: '0.05em' }}
                     >
-                      NO REPOSITORIES FOUND
+                      {searchQuery.trim() ? 'NO REPOSITORIES FOUND' : 'NO GITHUB REPOSITORIES LOADED'}
+                      <p className="mt-2 text-[10px] normal-case" style={{ letterSpacing: 0 }}>
+                        Use the repo URL field above, or refresh after connecting GitHub.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => void loadGitHubRepos()}
+                        className="mt-3 px-3 py-1.5 text-[10px] font-bold bg-claude-bg hover:bg-claude-surface border border-claude-border text-claude-text"
+                        style={{ borderRadius: 0, letterSpacing: '0.05em' }}
+                      >
+                        REFRESH
+                      </button>
                     </div>
                   )}
                 </div>

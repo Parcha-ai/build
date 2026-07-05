@@ -33,13 +33,33 @@ assert.match(
 
 assert.match(
   autoRouterService,
-  /candidates\.push\('claude-fable-5', 'claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6'\)/,
-  'Auto Build frontier Claude candidates must prefer Fable before Opus',
+  /function isFableModel\(model\?: string\): boolean \{[\s\S]*?claude-fable-5/,
+  'Auto Build must recognize Fable for explicit configured routing',
 );
 assert.match(
   autoRouterService,
-  /candidates\.unshift\('claude-fable-5', 'claude-opus-4-8'/,
-  'Capability-escalation routes must consider Fable first',
+  /function implicitFrontierClaudeModels\(\): string\[\] \{[\s\S]*?return \['claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6'\]/,
+  'Auto Build implicit frontier candidates must default to Opus, not silently Fable',
+);
+assert.match(
+  autoRouterService,
+  /isFableModel\(configured\)[\s\S]*?\? \[configured, \.\.\.implicitFrontierClaudeModels\(\)\][\s\S]*?: implicitFrontierClaudeModels\(\)/,
+  'Auto Build must include Fable only when the tier is explicitly configured to Fable',
+);
+assert.match(
+  autoRouterService,
+  /function isFableAllowedForAutoTier\([\s\S]*?resolveModelForTier\(tier, config\)[\s\S]*?customCategoriesForController\(options\)/,
+  'Auto Build must gate Fable on explicit tier or custom category configuration',
+);
+assert.match(
+  autoRouterService,
+  /allowFable \|\| !isFableModel\(model\)/,
+  'Auto Build learned/model candidate lists must filter unconfigured Fable',
+);
+assert.doesNotMatch(
+  autoRouterService,
+  /candidates\.(?:push|unshift)\('claude-fable-5'/,
+  'Auto Build must not hard-code Fable into implicit candidate lists',
 );
 assert.match(
   autoRouterService,

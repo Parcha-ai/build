@@ -247,7 +247,7 @@ const electronAPI = {
     respondToQuestion: (response: { requestId: string; answers: Record<string, string> }): Promise<void> =>
       ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_QUESTION_RESPONSE, response),
     // Task notification (background task completed/failed/stopped)
-    onTaskNotification: (callback: (data: { sessionId: string; taskId?: string; status?: string; outputFile?: string; summary?: string }) => void) => {
+    onTaskNotification: (callback: (data: { sessionId: string; taskId?: string; toolUseId?: string; status?: string; outputFile?: string; summary?: string }) => void) => {
       const handler = (_: IpcRendererEvent, data: any) => callback(data);
       ipcRenderer.on(IPC_CHANNELS.CLAUDE_TASK_NOTIFICATION, handler);
       return () => ipcRenderer.removeListener(IPC_CHANNELS.CLAUDE_TASK_NOTIFICATION, handler);
@@ -259,7 +259,7 @@ const electronAPI = {
       return () => ipcRenderer.removeListener(IPC_CHANNELS.CLAUDE_TASK_PROGRESS, handler);
     },
     // Task updated (real-time status delta patches — status, description, error, etc.)
-    onTaskUpdated: (callback: (data: { sessionId: string; taskId: string; patch: { status?: string; description?: string; end_time?: number; error?: string; is_backgrounded?: boolean } }) => void) => {
+    onTaskUpdated: (callback: (data: { sessionId: string; taskId: string; toolUseId?: string; patch: { status?: string; description?: string; end_time?: number; error?: string; is_backgrounded?: boolean } }) => void) => {
       const handler = (_: IpcRendererEvent, data: any) => callback(data);
       ipcRenderer.on(IPC_CHANNELS.CLAUDE_TASK_UPDATED, handler);
       return () => ipcRenderer.removeListener(IPC_CHANNELS.CLAUDE_TASK_UPDATED, handler);
@@ -852,6 +852,16 @@ const electronAPI = {
       worktreeScript: string;
       syncSettings: boolean;
     } | null> => ipcRenderer.invoke(IPC_CHANNELS.SSH_GET_SAVED_CONFIG),
+    getHostConfig: (host: string): Promise<{
+      host: string;
+      port: string;
+      username: string;
+      privateKeyPath: string;
+      remoteWorkdir: string;
+      sessionName: string;
+      worktreeScript: string;
+      syncSettings: boolean;
+    } | null> => ipcRenderer.invoke(IPC_CHANNELS.SSH_GET_HOST_CONFIG, host),
     saveConfig: (config: {
       host: string;
       port: string;

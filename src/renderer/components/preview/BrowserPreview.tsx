@@ -66,6 +66,14 @@ function getDocumentInfo(url: string): { isFile: boolean; filename: string; docT
   return { isFile: true, filename, docType, displayName };
 }
 
+function normalizeBrowserUrl(targetUrl: string): string {
+  const trimmed = targetUrl.trim();
+  if (!trimmed || /^(https?:|file:|about:)/i.test(trimmed)) {
+    return trimmed;
+  }
+  return `http://${trimmed}`;
+}
+
 // Icon component for document type
 function DocumentIcon({ docType, className }: { docType: string; className?: string }) {
   switch (docType) {
@@ -145,6 +153,9 @@ export default function BrowserPreview({ session, isVisible = true }: BrowserPre
   const [canGoBack, setCanGoBack] = useState(false);
   const [canGoForward, setCanGoForward] = useState(false);
   const [webviewReady, setWebviewReady] = useState(false);
+  // Keep the current browser URL available to effects that should only react to
+  // external session URL changes, not every local navigation state change.
+  const currentUrlRef = useRef<string>(url);
   // Track the last URL we told the webview to load, to avoid redundant loadURL calls
   const lastLoadedUrl = useRef<string>(url);
   // Initial URL for webview src - only used once, then loadURL is used for navigation
@@ -195,6 +206,10 @@ export default function BrowserPreview({ session, isVisible = true }: BrowserPre
     (element: unknown | null) => setSessionSelectedElement(session.id, element),
     [session.id, setSessionSelectedElement]
   );
+
+  useEffect(() => {
+    currentUrlRef.current = url;
+  }, [url]);
 
   // Initialize URL for this tab/session.
   useEffect(() => {
@@ -287,6 +302,7 @@ export default function BrowserPreview({ session, isVisible = true }: BrowserPre
       retryCount.current = 0;
       // Sync lastLoadedUrl so the navigation effect doesn't re-trigger loadURL
       lastLoadedUrl.current = e.url;
+      currentUrlRef.current = e.url;
       setUrl(e.url);
       setInputUrl(e.url);
       // Save the URL to session so it persists across reloads
@@ -1399,15 +1415,34 @@ ${data.textContent ? `**Text Content:** "${data.textContent.slice(0, 100)}${data
 
   const navigate = (targetUrl: string) => {
     logBrowserPreview('[BrowserPreview] navigate() called with:', targetUrl);
-    if (!targetUrl.startsWith('http') && !targetUrl.startsWith('file://')) {
-      targetUrl = 'http://' + targetUrl;
-    }
+    targetUrl = normalizeBrowserUrl(targetUrl);
+    if (!targetUrl) return;
     logBrowserPreview('[BrowserPreview] navigate() setting URL to:', targetUrl);
     // Setting url state triggers the navigation effect, which calls loadURL
     // if the URL differs from lastLoadedUrl
     setUrl(targetUrl);
     setInputUrl(targetUrl);
   };
+
+  // The session store is the source of truth when a URL is clicked before the
+  // browser webview is ready. Keep an already-mounted preview in sync with it.
+  useEffect(() => {
+    if (!session.lastBrowserUrl) return;
+    const nextUrl = normalizeBrowserUrl(session.lastBrowserUrl);
+    if (!nextUrl || nextUrl === currentUrlRef.current) return;
+
+    const currentWebviewUrl = webviewRef.current?.getURL?.();
+    if (currentWebviewUrl === nextUrl) {
+      lastLoadedUrl.current = nextUrl;
+      currentUrlRef.current = nextUrl;
+      setUrl(nextUrl);
+      setInputUrl(nextUrl);
+      return;
+    }
+
+    logBrowserPreview('[BrowserPreview] Syncing mounted preview to session URL:', nextUrl);
+    navigate(nextUrl);
+  }, [session.id, session.lastBrowserUrl]);
 
   const handleUrlSubmit = (e: React.FormEvent) => {
     e.preventDefault();

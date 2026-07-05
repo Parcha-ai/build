@@ -22,6 +22,14 @@ interface GitExplorerProps {
 }
 
 export default function GitExplorer({ session }: GitExplorerProps) {
+  return (
+    <GitPanelErrorBoundary>
+      <GitExplorerContent session={session} />
+    </GitPanelErrorBoundary>
+  );
+}
+
+function GitExplorerContent({ session }: GitExplorerProps) {
   const [activeTab, setActiveTab] = useState<'history' | 'branches' | 'changes'>('history');
   const [selectedCommit, setSelectedCommit] = useState<string | null>(null);
 
@@ -57,12 +65,20 @@ export default function GitExplorer({ session }: GitExplorerProps) {
   };
 
   const handlePush = async () => {
-    await withMaterializedSession(session.id, () => window.electronAPI.git.push(session.id));
+    try {
+      await withMaterializedSession(session.id, () => window.electronAPI.git.push(session.id));
+    } catch (error) {
+      console.error('[GitExplorer] Push failed:', error);
+    }
     handleRefresh();
   };
 
   const handlePull = async () => {
-    await withMaterializedSession(session.id, () => window.electronAPI.git.pull(session.id));
+    try {
+      await withMaterializedSession(session.id, () => window.electronAPI.git.pull(session.id));
+    } catch (error) {
+      console.error('[GitExplorer] Pull failed:', error);
+    }
     handleRefresh();
   };
 
@@ -81,14 +97,14 @@ export default function GitExplorer({ session }: GitExplorerProps) {
         <div className="flex items-center gap-2">
           <GitBranch size={18} className="text-claude-accent" />
           <span className="font-medium font-mono">{status?.current || session.branch}</span>
-          {status?.ahead && status.ahead > 0 && (
+          {(status?.ahead ?? 0) > 0 && (
             <span className="text-xs px-1.5 py-0.5 bg-green-500/20 text-green-500 rounded">
-              ↑{status.ahead}
+              ↑{status?.ahead}
             </span>
           )}
-          {status?.behind && status.behind > 0 && (
+          {(status?.behind ?? 0) > 0 && (
             <span className="text-xs px-1.5 py-0.5 bg-yellow-500/20 text-yellow-500 rounded">
-              ↓{status.behind}
+              ↓{status?.behind}
             </span>
           )}
         </div>
@@ -143,7 +159,7 @@ export default function GitExplorer({ session }: GitExplorerProps) {
       <div className="flex-1 overflow-y-auto">
         {activeTab === 'history' && (
           <CommitHistory
-            commits={commits || []}
+            commits={Array.isArray(commits) ? commits : []}
             isLoading={commitsLoading}
             selectedCommit={selectedCommit}
             onSelectCommit={setSelectedCommit}
@@ -151,13 +167,20 @@ export default function GitExplorer({ session }: GitExplorerProps) {
         )}
         {activeTab === 'branches' && (
           <BranchList
-            branches={branches || []}
+            branches={Array.isArray(branches) ? branches : []}
             currentBranch={status?.current}
-            onCheckout={(branch) => window.electronAPI.git.checkout(session.id, branch)}
+            onCheckout={(branch) => {
+              window.electronAPI.git.checkout(session.id, branch)
+                .then(() => handleRefresh())
+                .catch((error) => console.error('[GitExplorer] Checkout failed:', error));
+            }}
           />
         )}
         {activeTab === 'changes' && (
-          <ChangesList files={status?.files || []} diff={diff || ''} />
+          <ChangesList
+            files={Array.isArray(status?.files) ? status.files : []}
+            diff={typeof diff === 'string' ? diff : ''}
+          />
         )}
       </div>
     </div>
@@ -369,6 +392,43 @@ function StatusIcon({ status }: { status: string }) {
       return <FileCode size={14} className="text-yellow-500" />;
     default:
       return <FileCode size={14} className="text-claude-text-secondary" />;
+  }
+}
+
+// Contains crashes to the git panel so a render error here can never
+// unmount the whole app (React tears down to the nearest boundary).
+class GitPanelErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { error: Error | null }
+> {
+  state: { error: Error | null } = { error: null };
+
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+
+  componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
+    console.error('[GitExplorer] Panel crashed:', error, errorInfo);
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="h-full flex flex-col items-center justify-center gap-2 bg-claude-bg text-claude-text-secondary p-4">
+          <p className="text-sm">Git panel hit an error.</p>
+          <p className="text-xs font-mono text-red-400 text-center break-all">
+            {this.state.error.message}
+          </p>
+          <button
+            onClick={() => this.setState({ error: null })}
+            className="mt-2 px-3 py-1.5 text-xs border border-claude-border rounded hover:bg-claude-surface"
+          >
+            Retry
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
   }
 }
 

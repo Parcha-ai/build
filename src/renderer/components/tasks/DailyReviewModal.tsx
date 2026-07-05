@@ -9,7 +9,6 @@ import {
   ClipboardList,
   GripVertical,
   Plus,
-  Square,
   Target,
   X,
 } from 'lucide-react';
@@ -20,12 +19,10 @@ interface DailyReviewModalProps {
   onDismiss: () => void;
 }
 
-type ReviewStep = 'close' | 'capture' | 'stack' | 'commit';
+type ReviewStep = 'plan' | 'commit';
 
 const steps: Array<{ id: ReviewStep; label: string }> = [
-  { id: 'close', label: 'Close loops' },
-  { id: 'capture', label: 'Capture' },
-  { id: 'stack', label: 'Restack' },
+  { id: 'plan', label: 'Plan' },
   { id: 'commit', label: 'Commit' },
 ];
 
@@ -57,11 +54,11 @@ export default function DailyReviewModal({ onDismiss }: DailyReviewModalProps) {
   } = useTaskStore();
 
   const [stepIndex, setStepIndex] = useState(0);
-  const [reviewedOpenTaskIds, setReviewedOpenTaskIds] = useState<Set<string>>(new Set());
   const [brainDump, setBrainDump] = useState('');
+  const [newTaskTitle, setNewTaskTitle] = useState('');
+  const [taskTitleDrafts, setTaskTitleDrafts] = useState<Record<string, string>>({});
   const [successNote, setSuccessNote] = useState('');
   const [avoidNote, setAvoidNote] = useState('');
-  const [confirmedStack, setConfirmedStack] = useState(false);
   const [draggedTaskId, setDraggedTaskId] = useState<string | null>(null);
   const [dragOverTaskId, setDragOverTaskId] = useState<string | null>(null);
 
@@ -74,45 +71,90 @@ export default function DailyReviewModal({ onDismiss }: DailyReviewModalProps) {
   const sortedTasks = useMemo(() => [...tasks].sort((a, b) => a.order - b.order), [tasks]);
   const openTasks = useMemo(() => sortedTasks.filter((task) => task.status !== 'done'), [sortedTasks]);
   const completedTasks = useMemo(() => sortedTasks.filter((task) => task.status === 'done'), [sortedTasks]);
-  const reviewedVisibleOpenCount = openTasks.filter((task) => reviewedOpenTaskIds.has(task.id)).length;
   const currentStep = steps[stepIndex].id;
   const topTask = openTasks[0];
 
-  const openLoopReviewComplete = openTasks.every((task) => reviewedOpenTaskIds.has(task.id));
   const hasOpenTasks = openTasks.length > 0;
-  const hasSuccessNote = successNote.trim().length >= 3;
+  const hasDraftTasks = newTaskTitle.trim().length > 0 || brainDump.trim().length > 0;
+  const firstDraftTaskTitle = useMemo(() => {
+    const inlineTask = newTaskTitle.trim();
+    if (inlineTask) return inlineTask;
+    return brainDump
+      .split('\n')
+      .map(cleanBrainDumpLine)
+      .find(Boolean);
+  }, [brainDump, newTaskTitle]);
   const canContinue =
-    currentStep === 'close' ? openLoopReviewComplete :
-    currentStep === 'capture' ? hasOpenTasks || brainDump.trim().length > 0 :
-    currentStep === 'stack' ? hasOpenTasks :
-    confirmedStack && hasSuccessNote && hasOpenTasks;
-
-  const markOpenReviewed = useCallback((taskId: string) => {
-    setReviewedOpenTaskIds((prev) => {
-      const next = new Set(prev);
-      next.add(taskId);
-      return next;
-    });
-  }, []);
+    currentStep === 'plan' ? hasOpenTasks || hasDraftTasks :
+    hasOpenTasks;
 
   const clearCompletedTasks = useCallback(async () => {
     const remaining = sortedTasks.filter((task) => task.status !== 'done');
     await setTasks(remaining);
   }, [setTasks, sortedTasks]);
 
-  const handleKeepTask = useCallback((taskId: string) => {
-    markOpenReviewed(taskId);
-  }, [markOpenReviewed]);
-
   const handleMarkDone = useCallback(async (taskId: string) => {
     await updateTask(taskId, { status: 'done', completedAt: new Date().toISOString() });
-    markOpenReviewed(taskId);
-  }, [markOpenReviewed, updateTask]);
+  }, [updateTask]);
 
   const handleDeleteTask = useCallback(async (taskId: string) => {
     await deleteTask(taskId);
-    markOpenReviewed(taskId);
-  }, [deleteTask, markOpenReviewed]);
+    setTaskTitleDrafts((prev) => {
+      const next = { ...prev };
+      delete next[taskId];
+      return next;
+    });
+  }, [deleteTask]);
+
+  const handleAddTask = useCallback(async () => {
+    const trimmed = newTaskTitle.trim();
+    if (!trimmed) return;
+
+    await addTask(trimmed);
+    setNewTaskTitle('');
+  }, [addTask, newTaskTitle]);
+
+  const handleAddTaskKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      void handleAddTask();
+    } else if (e.key === 'Escape') {
+      setNewTaskTitle('');
+    }
+  }, [handleAddTask]);
+
+  const commitTaskTitleDraft = useCallback(async (task: FocusTask) => {
+    const draft = taskTitleDrafts[task.id];
+    if (draft === undefined) return;
+
+    const trimmed = draft.trim();
+    setTaskTitleDrafts((prev) => {
+      const next = { ...prev };
+      delete next[task.id];
+      return next;
+    });
+
+    if (!trimmed || trimmed === task.title) return;
+    await updateTask(task.id, { title: trimmed });
+  }, [taskTitleDrafts, updateTask]);
+
+  const cancelTaskTitleDraft = useCallback((taskId: string) => {
+    setTaskTitleDrafts((prev) => {
+      const next = { ...prev };
+      delete next[taskId];
+      return next;
+    });
+  }, []);
+
+  const handleTaskTitleKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>, task: FocusTask) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      e.currentTarget.blur();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      cancelTaskTitleDraft(task.id);
+    }
+  }, [cancelTaskTitleDraft]);
 
   const addBrainDumpTasks = useCallback(async () => {
     const lines = brainDump
@@ -140,7 +182,6 @@ export default function DailyReviewModal({ onDismiss }: DailyReviewModalProps) {
     const [moved] = reorderedOpen.splice(index, 1);
     reorderedOpen.splice(targetIndex, 0, moved);
     await setTasks([...reorderedOpen, ...done]);
-    setConfirmedStack(false);
   }, [setTasks, sortedTasks]);
 
   const reorderOpenTasks = useCallback(async (fromTaskId: string, toTaskId: string) => {
@@ -156,7 +197,6 @@ export default function DailyReviewModal({ onDismiss }: DailyReviewModalProps) {
     const [moved] = reorderedOpen.splice(fromIndex, 1);
     reorderedOpen.splice(toIndex, 0, moved);
     await setTasks([...reorderedOpen, ...done]);
-    setConfirmedStack(false);
   }, [setTasks, sortedTasks]);
 
   const handleDragStart = useCallback((e: React.DragEvent, taskId: string) => {
@@ -186,12 +226,12 @@ export default function DailyReviewModal({ onDismiss }: DailyReviewModalProps) {
     void reorderOpenTasks(sourceTaskId, targetTaskId);
   }, [draggedTaskId, reorderOpenTasks]);
 
-  const handleFinish = useCallback(() => {
-    if (!topTask || !canContinue) return;
+  const saveIntentAndDismiss = useCallback((requireTask = true, fallbackTopTaskTitle?: string) => {
+    if (requireTask && !topTask) return;
     try {
       localStorage.setItem(`daily-review-intent-${new Date().toDateString()}`, JSON.stringify({
-        topTaskId: topTask.id,
-        topTaskTitle: topTask.title,
+        topTaskId: topTask?.id,
+        topTaskTitle: topTask?.title ?? fallbackTopTaskTitle,
         successNote: successNote.trim(),
         avoidNote: avoidNote.trim(),
         completedAt: new Date().toISOString(),
@@ -200,21 +240,116 @@ export default function DailyReviewModal({ onDismiss }: DailyReviewModalProps) {
       // Non-critical; task state is already persisted separately.
     }
     onDismiss();
-  }, [avoidNote, canContinue, onDismiss, successNote, topTask]);
+  }, [avoidNote, onDismiss, successNote, topTask]);
+
+  const flushDraftTasks = useCallback(async () => {
+    if (newTaskTitle.trim()) {
+      await handleAddTask();
+    }
+    if (brainDump.trim()) {
+      await addBrainDumpTasks();
+    }
+  }, [addBrainDumpTasks, brainDump, handleAddTask, newTaskTitle]);
+
+  const handleAcceptCurrentStack = useCallback(async () => {
+    const fallbackTopTaskTitle = topTask?.title ?? firstDraftTaskTitle;
+    await flushDraftTasks();
+    if (!hasOpenTasks && !hasDraftTasks) return;
+    saveIntentAndDismiss(false, fallbackTopTaskTitle);
+  }, [firstDraftTaskTitle, flushDraftTasks, hasDraftTasks, hasOpenTasks, saveIntentAndDismiss, topTask]);
+
+  const handleFinish = useCallback(() => {
+    if (!topTask || !canContinue) return;
+    saveIntentAndDismiss();
+  }, [canContinue, saveIntentAndDismiss, topTask]);
 
   const goNext = useCallback(async () => {
-    if (currentStep === 'capture' && brainDump.trim()) {
-      await addBrainDumpTasks();
+    if (currentStep === 'plan') {
+      await flushDraftTasks();
     }
     if (!canContinue) return;
     if (stepIndex < steps.length - 1) {
       setStepIndex((idx) => idx + 1);
     }
-  }, [addBrainDumpTasks, brainDump, canContinue, currentStep, stepIndex]);
+  }, [canContinue, currentStep, flushDraftTasks, stepIndex]);
 
   const goBack = useCallback(() => {
     setStepIndex((idx) => Math.max(0, idx - 1));
   }, []);
+
+  const renderTaskTitleInput = useCallback((task: FocusTask, className = '') => (
+    <input
+      value={taskTitleDrafts[task.id] ?? task.title}
+      onChange={(e) => {
+        const value = e.target.value;
+        setTaskTitleDrafts((prev) => ({ ...prev, [task.id]: value }));
+      }}
+      onBlur={() => void commitTaskTitleDraft(task)}
+      onKeyDown={(e) => handleTaskTitleKeyDown(e, task)}
+      onMouseDown={(e) => e.stopPropagation()}
+      className={`w-full min-w-0 bg-transparent border-b border-transparent px-0 py-0.5 text-left focus:outline-none focus:border-emerald-500 ${className}`}
+      style={{ borderRadius: 0 }}
+    />
+  ), [commitTaskTitleDraft, handleTaskTitleKeyDown, taskTitleDrafts]);
+
+  const addTaskControl = (
+    <div className="flex items-center gap-2 border border-claude-border bg-claude-bg/50 px-3 py-2">
+      <Plus size={14} className="text-emerald-400 flex-shrink-0" />
+      <input
+        value={newTaskTitle}
+        onChange={(e) => setNewTaskTitle(e.target.value)}
+        onKeyDown={handleAddTaskKeyDown}
+        placeholder="Add task..."
+        className="flex-1 min-w-0 bg-transparent text-xs font-mono text-claude-text placeholder:text-claude-text-secondary focus:outline-none"
+        style={{ borderRadius: 0 }}
+      />
+      <button
+        onClick={() => void handleAddTask()}
+        disabled={!newTaskTitle.trim()}
+        className="px-3 py-1.5 bg-emerald-500/20 text-emerald-300 text-[10px] font-mono uppercase hover:bg-emerald-500/30 disabled:opacity-30"
+        style={{ borderRadius: 0 }}
+      >
+        Add
+      </button>
+    </div>
+  );
+
+  const renderEditableOpenTaskList = useCallback((emptyText: string) => (
+    <div className="border border-claude-border bg-claude-bg/50">
+      {openTasks.length === 0 ? (
+        <p className="px-3 py-4 text-xs text-claude-text-secondary font-mono">
+          {emptyText}
+        </p>
+      ) : (
+        openTasks.map((task, index) => (
+          <div key={task.id} className="flex items-center gap-2 px-3 py-2 border-b border-claude-border last:border-b-0">
+            <div className={`w-6 h-6 border flex items-center justify-center text-[10px] font-mono flex-shrink-0 ${
+              index === 0 ? 'border-emerald-500 text-emerald-300' : 'border-claude-border text-claude-text-secondary'
+            }`}>
+              {index + 1}
+            </div>
+            <div className="flex-1 min-w-0">
+              {renderTaskTitleInput(task, 'text-xs font-mono text-claude-text')}
+            </div>
+            <button
+              onClick={() => handleMarkDone(task.id)}
+              className="p-1 border border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/10"
+              title="Mark done"
+            >
+              <Check size={13} />
+            </button>
+            <button
+              onClick={() => handleDeleteTask(task.id)}
+              className="p-1 border border-red-500/30 text-red-300 hover:bg-red-500/10"
+              title="Drop task"
+            >
+              <X size={13} />
+            </button>
+          </div>
+        ))
+      )}
+    </div>
+  ), [handleDeleteTask, handleMarkDone, openTasks, renderTaskTitleInput]);
 
   return (
     <div className="fixed inset-0 bg-black/90 z-[9999] flex items-center justify-center p-4">
@@ -229,12 +364,12 @@ export default function DailyReviewModal({ onDismiss }: DailyReviewModalProps) {
                 Morning Priority Reset
               </h2>
               <p className="text-xs text-claude-text-secondary mt-1">
-                Close stale loops, capture what is in your head, restack the list, then commit to the first move.
+                Capture loose ends, clean up old work, rank the stack, then commit to the first move.
               </p>
             </div>
           </div>
 
-          <div className="grid grid-cols-4 gap-2 mt-5">
+          <div className="grid grid-cols-2 gap-2 mt-5">
             {steps.map((step, index) => (
               <div
                 key={step.id}
@@ -254,13 +389,44 @@ export default function DailyReviewModal({ onDismiss }: DailyReviewModalProps) {
         </div>
 
         <div className="flex-1 overflow-y-auto p-6">
-          {currentStep === 'close' && (
-            <div className="space-y-5">
-              <section>
+          {currentStep === 'plan' && (
+            <div className="grid grid-cols-1 lg:grid-cols-[minmax(260px,0.75fr)_minmax(360px,1.25fr)] gap-4">
+              <div className="space-y-4">
+                {addTaskControl}
+
+                <section>
+                  <div className="flex items-center gap-2">
+                    <ClipboardList size={16} className="text-emerald-400" />
+                    <h3 className="text-xs font-mono uppercase text-claude-text">Capture</h3>
+                  </div>
+                  <textarea
+                    value={brainDump}
+                    onChange={(e) => setBrainDump(e.target.value)}
+                    placeholder={"Paste loose loops, one per line"}
+                    className="mt-2 w-full h-24 px-3 py-3 bg-claude-bg border border-claude-border text-claude-text font-mono text-xs placeholder:text-claude-text-secondary focus:outline-none focus:border-emerald-500 resize-none"
+                    style={{ borderRadius: 0 }}
+                  />
+                  <div className="flex items-center justify-between mt-2">
+                    <span className="text-[10px] font-mono text-claude-text-secondary">
+                      {openTasks.length} open
+                    </span>
+                    <button
+                      onClick={addBrainDumpTasks}
+                      disabled={!brainDump.trim()}
+                      className="px-3 py-2 bg-emerald-500/20 text-emerald-300 text-xs font-mono uppercase hover:bg-emerald-500/30 disabled:opacity-30"
+                      style={{ borderRadius: 0 }}
+                    >
+                      <Plus size={13} className="inline mr-1" />
+                      Add lines
+                    </button>
+                  </div>
+                </section>
+
+                <section>
                 <div className="flex items-center justify-between mb-2">
                   <div className="flex items-center gap-2">
                     <CheckSquare size={15} className="text-emerald-400" />
-                    <h3 className="text-xs font-mono uppercase text-claude-text">Completed work</h3>
+                    <h3 className="text-xs font-mono uppercase text-claude-text">Close</h3>
                   </div>
                   {completedTasks.length > 0 && (
                     <button
@@ -271,7 +437,7 @@ export default function DailyReviewModal({ onDismiss }: DailyReviewModalProps) {
                     </button>
                   )}
                 </div>
-                <div className="border border-claude-border bg-claude-bg/50">
+                <div className="border border-claude-border bg-claude-bg/50 max-h-44 overflow-y-auto">
                   {completedTasks.length === 0 ? (
                     <p className="px-3 py-4 text-xs text-claude-text-secondary font-mono">
                       No completed tasks to clear.
@@ -280,9 +446,9 @@ export default function DailyReviewModal({ onDismiss }: DailyReviewModalProps) {
                     completedTasks.map((task) => (
                       <div key={task.id} className="flex items-center gap-2 px-3 py-2 border-b border-claude-border last:border-b-0">
                         <CheckSquare size={13} className="text-emerald-500 flex-shrink-0" />
-                        <span className="flex-1 min-w-0 truncate text-xs font-mono text-claude-text-secondary line-through">
-                          {task.title}
-                        </span>
+                        <div className="flex-1 min-w-0">
+                          {renderTaskTitleInput(task, 'text-xs font-mono text-claude-text-secondary line-through')}
+                        </div>
                         <button
                           onClick={() => deleteTask(task.id)}
                           className="text-claude-text-secondary hover:text-red-400"
@@ -294,58 +460,90 @@ export default function DailyReviewModal({ onDismiss }: DailyReviewModalProps) {
                     ))
                   )}
                 </div>
-              </section>
+                </section>
+              </div>
 
               <section>
                 <div className="flex items-center gap-2 mb-2">
                   <AlertTriangle size={15} className="text-amber-400" />
-                  <h3 className="text-xs font-mono uppercase text-claude-text">Open loops</h3>
-                  {openTasks.length > 0 && (
-                    <span className="text-[10px] font-mono text-amber-300">
-                      review {reviewedVisibleOpenCount}/{openTasks.length}
-                    </span>
-                  )}
+                  <h3 className="text-xs font-mono uppercase text-claude-text">Restack</h3>
+                  <span className="text-[10px] font-mono text-claude-text-secondary">
+                    drag, edit, done, or drop only if needed
+                  </span>
                 </div>
-                <div className="border border-claude-border bg-claude-bg/50">
+                <div className="border border-claude-border bg-claude-bg/50 max-h-[52vh] overflow-y-auto">
                   {openTasks.length === 0 ? (
                     <p className="px-3 py-4 text-xs text-claude-text-secondary font-mono">
-                      No open tasks to close.
+                      No open tasks yet.
                     </p>
                   ) : (
-                    openTasks.map((task) => {
-                      const reviewed = reviewedOpenTaskIds.has(task.id);
+                    openTasks.map((task, index) => {
                       const ageDays = getAgeDays(task);
                       const isStale = ageDays >= staleTaskDays;
                       return (
-                        <div key={task.id} className={`px-3 py-3 border-b border-claude-border last:border-b-0 ${reviewed ? 'opacity-55' : ''}`}>
-                          <div className="flex items-start gap-3">
-                            <div className="flex-1 min-w-0">
-                              <div className="text-xs font-mono text-claude-text truncate">{task.title}</div>
-                              <div className={`text-[10px] font-mono mt-1 ${isStale ? 'text-amber-300' : 'text-claude-text-secondary'}`}>
-                                {ageDays === 0 ? 'created today' : `${ageDays} day${ageDays === 1 ? '' : 's'} old`}
-                                {isStale ? ' - stale' : ''}
-                              </div>
+                        <div
+                          key={task.id}
+                          onDragOver={(e) => handleDragOver(e, task.id)}
+                          onDrop={(e) => handleDrop(e, task.id)}
+                          onDragEnd={handleDragEnd}
+                          className={`group flex flex-wrap items-start gap-3 px-3 py-3 border-b border-claude-border last:border-b-0 transition-colors ${
+                            index < 3 ? 'bg-emerald-500/5' : ''
+                          } ${
+                            dragOverTaskId === task.id && draggedTaskId !== task.id ? 'outline outline-1 outline-emerald-500/70 bg-emerald-500/10' : ''
+                          } ${
+                            draggedTaskId === task.id ? 'opacity-45' : ''
+                          }`}
+                        >
+                          <div
+                            draggable
+                            onDragStart={(e) => handleDragStart(e, task.id)}
+                            className="mt-1 cursor-grab text-claude-text-secondary/60 group-hover:text-emerald-300 flex-shrink-0"
+                            title="Drag to reorder"
+                          >
+                            <GripVertical size={14} />
+                          </div>
+                          <div className={`w-7 h-7 border flex items-center justify-center text-[10px] font-mono flex-shrink-0 ${
+                            index === 0 ? 'border-emerald-500 text-emerald-300' : 'border-claude-border text-claude-text-secondary'
+                          }`}>
+                            {index + 1}
+                          </div>
+                          <div className="flex-1 min-w-[220px]">
+                            {renderTaskTitleInput(task, 'text-xs font-mono text-claude-text')}
+                            <div className={`text-[10px] font-mono mt-1 ${isStale ? 'text-amber-300' : 'text-claude-text-secondary'}`}>
+                              {ageDays === 0 ? 'created today' : `${ageDays} day${ageDays === 1 ? '' : 's'} old`}
+                              {isStale ? ' - stale' : ''}
+                              {index === 0 ? ' - start here' : ''}
                             </div>
-                            <div className="flex items-center gap-1 flex-shrink-0">
-                              <button
-                                onClick={() => handleKeepTask(task.id)}
-                                className="px-2 py-1 text-[10px] font-mono uppercase border border-claude-border hover:border-emerald-500 hover:text-emerald-300"
-                              >
-                                Keep
-                              </button>
-                              <button
-                                onClick={() => handleMarkDone(task.id)}
-                                className="px-2 py-1 text-[10px] font-mono uppercase border border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/10"
-                              >
-                                Done
-                              </button>
-                              <button
-                                onClick={() => handleDeleteTask(task.id)}
-                                className="px-2 py-1 text-[10px] font-mono uppercase border border-red-500/30 text-red-300 hover:bg-red-500/10"
-                              >
-                                Drop
-                              </button>
-                            </div>
+                          </div>
+                          <div className="flex flex-wrap items-center justify-end gap-1 flex-shrink-0">
+                            <button
+                              onClick={() => moveTask(task.id, -1)}
+                              disabled={index === 0}
+                              className="p-1 border border-claude-border text-claude-text-secondary hover:text-claude-text disabled:opacity-25"
+                              title="Move up"
+                            >
+                              <ArrowUp size={13} />
+                            </button>
+                            <button
+                              onClick={() => moveTask(task.id, 1)}
+                              disabled={index === openTasks.length - 1}
+                              className="p-1 border border-claude-border text-claude-text-secondary hover:text-claude-text disabled:opacity-25"
+                              title="Move down"
+                            >
+                              <ArrowDown size={13} />
+                            </button>
+                            <button
+                              onClick={() => handleMarkDone(task.id)}
+                              className="px-2 py-1 text-[10px] font-mono uppercase border border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/10"
+                            >
+                              Done
+                            </button>
+                            <button
+                              onClick={() => handleDeleteTask(task.id)}
+                              className="px-2 py-1 text-[10px] font-mono uppercase border border-red-500/30 text-red-300 hover:bg-red-500/10"
+                            >
+                              Drop
+                            </button>
                           </div>
                         </div>
                       );
@@ -356,116 +554,26 @@ export default function DailyReviewModal({ onDismiss }: DailyReviewModalProps) {
             </div>
           )}
 
-          {currentStep === 'capture' && (
-            <div className="space-y-5">
-              <div className="flex items-center gap-2">
-                <ClipboardList size={16} className="text-emerald-400" />
-                <h3 className="text-xs font-mono uppercase text-claude-text">Brain dump open loops</h3>
-              </div>
-              <p className="text-xs text-claude-text-secondary">
-                Add one task per line. Empty task lists cannot pass this step.
-              </p>
-              <textarea
-                value={brainDump}
-                onChange={(e) => setBrainDump(e.target.value)}
-                placeholder={"Finish release notes\nReview blocked PRs\nBook dentist appointment"}
-                className="w-full h-40 px-3 py-3 bg-claude-bg border border-claude-border text-claude-text font-mono text-xs placeholder:text-claude-text-secondary focus:outline-none focus:border-emerald-500 resize-none"
-                style={{ borderRadius: 0 }}
-                autoFocus
-              />
-              <div className="flex items-center justify-between">
-                <span className="text-[10px] font-mono text-claude-text-secondary">
-                  {openTasks.length} open task{openTasks.length === 1 ? '' : 's'} in the stack
-                </span>
-                <button
-                  onClick={addBrainDumpTasks}
-                  disabled={!brainDump.trim()}
-                  className="px-3 py-2 bg-emerald-500/20 text-emerald-300 text-xs font-mono uppercase hover:bg-emerald-500/30 disabled:opacity-30"
-                  style={{ borderRadius: 0 }}
-                >
-                  <Plus size={13} className="inline mr-1" />
-                  Add lines
-                </button>
-              </div>
-            </div>
-          )}
-
-          {currentStep === 'stack' && (
-            <div className="space-y-5">
-              <div className="flex items-center gap-2">
-                <Target size={16} className="text-emerald-400" />
-                <h3 className="text-xs font-mono uppercase text-claude-text">Restack priorities</h3>
-              </div>
-              <p className="text-xs text-claude-text-secondary">
-                Put the real first task at the top. The first three become today&apos;s visible priority stack.
-              </p>
-              <div className="border border-claude-border bg-claude-bg/50">
-                {openTasks.map((task, index) => (
-                  <div
-                    key={task.id}
-                    draggable
-                    onDragStart={(e) => handleDragStart(e, task.id)}
-                    onDragOver={(e) => handleDragOver(e, task.id)}
-                    onDrop={(e) => handleDrop(e, task.id)}
-                    onDragEnd={handleDragEnd}
-                    className={`group flex items-center gap-3 px-3 py-2 border-b border-claude-border last:border-b-0 transition-colors ${
-                      index < 3 ? 'bg-emerald-500/5' : ''
-                    } ${
-                      dragOverTaskId === task.id && draggedTaskId !== task.id ? 'outline outline-1 outline-emerald-500/70 bg-emerald-500/10' : ''
-                    } ${
-                      draggedTaskId === task.id ? 'opacity-45' : ''
-                    }`}
-                  >
-                    <div
-                      className="cursor-grab text-claude-text-secondary/60 group-hover:text-emerald-300 flex-shrink-0"
-                      title="Drag to reorder"
-                    >
-                      <GripVertical size={14} />
-                    </div>
-                    <div className={`w-7 h-7 border flex items-center justify-center text-[10px] font-mono flex-shrink-0 ${
-                      index === 0 ? 'border-emerald-500 text-emerald-300' : 'border-claude-border text-claude-text-secondary'
-                    }`}>
-                      {index + 1}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="text-xs font-mono text-claude-text truncate">{task.title}</div>
-                      {index === 0 && (
-                        <div className="text-[10px] font-mono text-emerald-300 mt-0.5">start here</div>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-1 flex-shrink-0">
-                      <button
-                        onClick={() => moveTask(task.id, -1)}
-                        disabled={index === 0}
-                        className="p-1 border border-claude-border text-claude-text-secondary hover:text-claude-text disabled:opacity-25"
-                        title="Move up"
-                      >
-                        <ArrowUp size={13} />
-                      </button>
-                      <button
-                        onClick={() => moveTask(task.id, 1)}
-                        disabled={index === openTasks.length - 1}
-                        className="p-1 border border-claude-border text-claude-text-secondary hover:text-claude-text disabled:opacity-25"
-                        title="Move down"
-                      >
-                        <ArrowDown size={13} />
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
           {currentStep === 'commit' && (
             <div className="space-y-5">
               <div className="border border-emerald-500/40 bg-emerald-500/10 p-4">
                 <div className="text-[10px] font-mono uppercase text-emerald-300 mb-2">First task</div>
-                <div className="text-base font-mono text-claude-text">{topTask?.title || 'No task selected'}</div>
+                {topTask ? (
+                  renderTaskTitleInput(topTask, 'text-base font-mono text-claude-text')
+                ) : (
+                  <div className="text-base font-mono text-claude-text">No task selected</div>
+                )}
               </div>
+              <section>
+                <div className="flex items-center gap-2 mb-2">
+                  <Target size={15} className="text-emerald-400" />
+                  <h3 className="text-xs font-mono uppercase text-claude-text">Priority stack</h3>
+                </div>
+                {renderEditableOpenTaskList('No open tasks selected.')}
+              </section>
               <div>
                 <label className="block text-xs font-mono text-claude-text uppercase mb-2">
-                  What would make today successful?
+                  What would make today successful? <span className="text-claude-text-secondary normal-case">(optional)</span>
                 </label>
                 <input
                   value={successNote}
@@ -487,15 +595,6 @@ export default function DailyReviewModal({ onDismiss }: DailyReviewModalProps) {
                   style={{ borderRadius: 0 }}
                 />
               </div>
-              <button
-                onClick={() => setConfirmedStack(!confirmedStack)}
-                className="flex items-center gap-3 text-left w-full border border-claude-border bg-claude-bg/50 px-3 py-3 hover:border-emerald-500/40"
-              >
-                {confirmedStack ? <CheckSquare size={16} className="text-emerald-400" /> : <Square size={16} className="text-claude-text-secondary" />}
-                <span className="text-xs font-mono text-claude-text">
-                  I have reviewed old tasks, restacked the list, and know the first action.
-                </span>
-              </button>
             </div>
           )}
         </div>
@@ -510,19 +609,29 @@ export default function DailyReviewModal({ onDismiss }: DailyReviewModalProps) {
             Back
           </button>
           <div className="flex-1 text-[10px] font-mono text-claude-text-secondary">
-            {!canContinue && currentStep === 'close' && 'Review each stale open task before continuing.'}
-            {!canContinue && currentStep === 'capture' && 'Add at least one open task before continuing.'}
-            {!canContinue && currentStep === 'commit' && 'Write the success condition and confirm the stack.'}
+            {!canContinue && currentStep === 'plan' && 'Add or keep at least one open task before continuing.'}
+            {!canContinue && currentStep === 'commit' && 'Keep at least one open task before starting.'}
+            {canContinue && currentStep === 'plan' && 'No changes needed? Accept the current order and close this immediately.'}
           </div>
           {stepIndex < steps.length - 1 ? (
-            <button
-              onClick={goNext}
-              disabled={!canContinue}
-              className="px-5 py-2 bg-emerald-500 text-white text-xs font-mono font-bold uppercase hover:bg-emerald-400 disabled:opacity-30"
-              style={{ borderRadius: 0 }}
-            >
-              Next
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={goNext}
+                disabled={!canContinue}
+                className="px-4 py-2 border border-claude-border text-claude-text text-xs font-mono font-bold uppercase hover:border-emerald-500 hover:text-emerald-300 disabled:opacity-30"
+                style={{ borderRadius: 0 }}
+              >
+                Set Intention
+              </button>
+              <button
+                onClick={() => void handleAcceptCurrentStack()}
+                disabled={!canContinue}
+                className="px-5 py-2 bg-emerald-500 text-white text-xs font-mono font-bold uppercase hover:bg-emerald-400 disabled:opacity-30"
+                style={{ borderRadius: 0 }}
+              >
+                Accept Stack
+              </button>
+            </div>
           ) : (
             <button
               onClick={handleFinish}

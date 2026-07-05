@@ -15,7 +15,9 @@ import {
   filterInternalPromptEchoes,
   harnessFromModel,
   hasRecoverableOutput,
+  isExactLongAssistantDuplicate,
   mergeRecoveredStreamMessages,
+  normalizeContentForCompare,
 } from '../../shared/utils/message-recovery';
 
 // ---------------------------------------------------------------------------
@@ -42,6 +44,20 @@ function parseTranscriptJson(value: string | undefined): unknown {
   } catch {
     return value;
   }
+}
+
+const MAX_TRANSCRIPT_TOOL_PAYLOAD_CHARS = 50_000;
+
+function serializeTranscriptPayload(value: unknown): string | undefined {
+  if (value == null) return undefined;
+  const serialized = JSON.stringify(value);
+  if (serialized === undefined) return undefined;
+  if (serialized.length <= MAX_TRANSCRIPT_TOOL_PAYLOAD_CHARS) return serialized;
+  return JSON.stringify({
+    truncated: true,
+    originalChars: serialized.length,
+    preview: serialized.slice(0, MAX_TRANSCRIPT_TOOL_PAYLOAD_CHARS),
+  });
 }
 
 function normalizeTranscriptMessage(message: ChatMessage): ChatMessage | null {
@@ -96,8 +112,8 @@ export function chatMessageToTranscriptEntry(
   const toolCalls = message.toolCalls?.map(tc => ({
     id: tc.id,
     name: tc.name,
-    input: tc.input ? JSON.stringify(tc.input) : undefined,
-    result: tc.result != null ? JSON.stringify(tc.result) : undefined,
+    input: serializeTranscriptPayload(tc.input),
+    result: serializeTranscriptPayload(tc.result),
   }));
   if (toolCalls?.length) {
     entry.toolCalls = toolCalls;
@@ -155,6 +171,110 @@ class TranscriptService {
     }
   }
 
+  private mergeDuplicateAssistantEntry(existing: TranscriptEntry, incoming: TranscriptEntry): TranscriptEntry {
+    const existingLen = (existing.content || '').length;
+    const incomingLen = (incoming.content || '').length;
+    const keepIncomingContent = incomingLen > existingLen;
+    return {
+      ...existing,
+      ...(keepIncomingContent ? { content: incoming.content } : {}),
+      toolCalls: incoming.toolCalls?.length ? incoming.toolCalls : existing.toolCalls,
+      thinking: incoming.thinking || existing.thinking,
+      interrupted: incoming.interrupted || existing.interrupted,
+      contentBlocks: incoming.contentBlocks?.length ? incoming.contentBlocks : existing.contentBlocks,
+    };
+  }
+
+  private exactAssistantDuplicateKey(entry: TranscriptEntry): string | null {
+    if (entry.role !== 'assistant') return null;
+    const content = normalizeContentForCompare(entry.content);
+    if (content.length < 200) return null;
+    return `${entry.harness || ''}\0${content}`;
+  }
+
+  private findExactAssistantDuplicateIndex(entries: TranscriptEntry[], incoming: TranscriptEntry): number {
+    const incomingKey = this.exactAssistantDuplicateKey(incoming);
+    if (!incomingKey) return -1;
+    const incomingTime = new Date(incoming.timestamp || 0).getTime();
+    const directIndex = entries.findIndex((existing) => {
+      if (this.exactAssistantDuplicateKey(existing) !== incomingKey) return false;
+      const delta = Math.abs(new Date(existing.timestamp || 0).getTime() - incomingTime);
+      return delta < 300_000;
+    });
+    if (directIndex >= 0) return directIndex;
+
+    const incomingMessage = transcriptEntriesToChatMessages([incoming])[0];
+    if (!incomingMessage) return -1;
+    const exactIndex = entries.findIndex((existing) => {
+      const delta = Math.abs(new Date(existing.timestamp || 0).getTime() - incomingTime);
+      if (delta >= 300_000) return false;
+      const existingMessage = transcriptEntriesToChatMessages([existing])[0];
+      return Boolean(existingMessage && isExactLongAssistantDuplicate(existingMessage, incomingMessage));
+    });
+    if (exactIndex >= 0) return exactIndex;
+
+    // Prefix-collapse: when one assistant message's content is a strict prefix
+    // of the other (partial snapshot vs completed recovery), treat as a duplicate.
+    // No temporal guard — partial snapshots from killed sessions can be arbitrarily
+    // old relative to the recovery replay.
+    const incomingContent = normalizeContentForCompare(incoming.content);
+    if (incomingContent.length < 200) return -1;
+    const incomingHarness = incoming.harness || '';
+    return entries.findIndex((existing) => {
+      if (existing.role !== 'assistant') return false;
+      if ((existing.harness || '') !== incomingHarness) return false;
+      const existingContent = normalizeContentForCompare(existing.content);
+      if (existingContent.length < 200) return false;
+      const shorter = existingContent.length < incomingContent.length ? existingContent : incomingContent;
+      const longer = existingContent.length < incomingContent.length ? incomingContent : existingContent;
+      if (shorter.length === longer.length) return false;
+      return longer.startsWith(shorter);
+    });
+  }
+
+  private collapseExactAssistantDuplicates(entries: TranscriptEntry[]): TranscriptEntry[] {
+    const collapsed: TranscriptEntry[] = [];
+    const duplicateIndexByKey = new Map<string, { index: number; timestamp: number }>();
+    for (const entry of entries) {
+      const key = this.exactAssistantDuplicateKey(entry);
+      const existing = key ? duplicateIndexByKey.get(key) : undefined;
+      if (existing !== undefined) {
+        const entryTime = new Date(entry.timestamp || 0).getTime();
+        const delta = Math.abs(entryTime - existing.timestamp);
+        if (delta < 300_000) {
+          console.log('[TranscriptService] Collapsed duplicate assistant transcript row by content');
+          collapsed[existing.index] = this.mergeDuplicateAssistantEntry(collapsed[existing.index], entry);
+          continue;
+        }
+      }
+      // Prefix-collapse: a partial snapshot (killed mid-stream) is a strict
+      // prefix of the final recovered content. Merge keeps the longer version.
+      if (entry.role === 'assistant') {
+        const entryContent = normalizeContentForCompare(entry.content);
+        if (entryContent.length >= 200) {
+          const entryHarness = entry.harness || '';
+          const prefixIndex = collapsed.findIndex((c) => {
+            if (c.role !== 'assistant') return false;
+            if ((c.harness || '') !== entryHarness) return false;
+            const cContent = normalizeContentForCompare(c.content);
+            if (cContent.length < 200 || cContent.length === entryContent.length) return false;
+            const shorter = cContent.length < entryContent.length ? cContent : entryContent;
+            const longer = cContent.length < entryContent.length ? entryContent : cContent;
+            return longer.startsWith(shorter);
+          });
+          if (prefixIndex >= 0) {
+            console.log('[TranscriptService] Collapsed prefix-duplicate assistant transcript row');
+            collapsed[prefixIndex] = this.mergeDuplicateAssistantEntry(collapsed[prefixIndex], entry);
+            continue;
+          }
+        }
+      }
+      if (key) duplicateIndexByKey.set(key, { index: collapsed.length, timestamp: new Date(entry.timestamp || 0).getTime() });
+      collapsed.push(entry);
+    }
+    return collapsed;
+  }
+
   /**
    * Append a single message to the session's transcript file.
    * Uses synchronous I/O so the write is durable before we return --
@@ -164,6 +284,17 @@ class TranscriptService {
     this.ensureDir();
     const filePath = this.getTranscriptPath(sessionId);
     try {
+      if (entry.role === 'assistant') {
+        const existingEntries = this.loadMessages(sessionId);
+        const duplicateIndex = this.findExactAssistantDuplicateIndex(existingEntries, entry);
+        if (duplicateIndex >= 0) {
+          console.log('[TranscriptService] Collapsed duplicate assistant transcript row by content');
+          const nextEntries = [...existingEntries];
+          nextEntries[duplicateIndex] = this.mergeDuplicateAssistantEntry(nextEntries[duplicateIndex], entry);
+          this.replaceMessages(sessionId, nextEntries);
+          return;
+        }
+      }
       const line = JSON.stringify(entry) + '\n';
       fs.appendFileSync(filePath, line, 'utf-8');
     } catch (err) {
@@ -186,7 +317,14 @@ class TranscriptService {
         ...entry,
       };
     } else {
-      nextEntries.push(entry);
+      const duplicateIndex = this.findExactAssistantDuplicateIndex(nextEntries, entry);
+
+      if (duplicateIndex >= 0) {
+        console.log('[TranscriptService] Collapsed duplicate assistant transcript row by content');
+        nextEntries[duplicateIndex] = this.mergeDuplicateAssistantEntry(nextEntries[duplicateIndex], entry);
+      } else {
+        nextEntries.push(entry);
+      }
     }
 
     const previousPayload = existingEntries.map(existing => JSON.stringify(existing)).join('\n');
@@ -238,11 +376,12 @@ class TranscriptService {
     this.ensureDir();
     const filePath = this.getTranscriptPath(sessionId);
     try {
-      const payload = entries.length > 0
-        ? entries.map(entry => JSON.stringify(entry)).join('\n') + '\n'
+      const collapsedEntries = this.collapseExactAssistantDuplicates(entries);
+      const payload = collapsedEntries.length > 0
+        ? collapsedEntries.map(entry => JSON.stringify(entry)).join('\n') + '\n'
         : '';
       fs.writeFileSync(filePath, payload, 'utf-8');
-      return { written: entries.length };
+      return { written: collapsedEntries.length };
     } catch (err) {
       console.error('[TranscriptService] Failed to replace transcript:', err);
       return { written: 0 };

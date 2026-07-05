@@ -15,8 +15,15 @@ import { getSessionStoreName } from '../store-names';
 import { findUsableLocalExecutable, isUsableLocalExecutable } from '../utils/local-executable';
 import { prependPolicyPreamble, type HarnessPolicyTranslation, type CodexReasoningEffort } from './harness-policy.service';
 import { buildProjectInstructionContext, formatProjectInstructionContextFiles } from './codex-context';
+import { hasFileAttachments, prepareFileAttachmentsForHarness } from './attachment-file-assets';
+import {
+  ZAI_GLM_CONTEXT_WINDOW,
+  ZAI_OPENAI_COMPAT_BASE_URL,
+  isZaiGlmCodexModel,
+} from '../../shared/config/zai-glm';
 
 const STREAM_DEBUG = process.env.GREP_DEBUG_STREAMING === '1';
+const ATTACHMENT_ONLY_PROMPT = 'Use the attached file(s) as input for the current task. Continue from the existing session context and the latest user request instead of asking me to restate the task.';
 
 // Stream event types for Codex (parallel to Claude's StreamEvent but separate)
 export interface CodexStreamEvent {
@@ -125,6 +132,7 @@ interface CodexJsonEvent {
 
 interface PreparedCodexAssets {
   imagePaths: string[];
+  filePromptBlock: string;
   cleanup: () => Promise<void>;
 }
 
@@ -157,6 +165,48 @@ class CodexServiceImpl {
     const userKey = settingsStore.get('openAiApiKey') as string | undefined;
     if (userKey) return userKey;
     return settingsStore.get('openaiApiKey') as string | undefined;
+  }
+
+  private getSettingsObject(): Record<string, unknown> {
+    return settingsStore.get('settings', {}) as Record<string, unknown>;
+  }
+
+  private getZaiApiKey(): string | undefined {
+    const settings = this.getSettingsObject();
+    const storedKey = typeof settings.zaiApiKey === 'string' ? settings.zaiApiKey.trim() : '';
+    const topLevelKey = settingsStore.get('zaiApiKey') as string | undefined;
+    return storedKey || topLevelKey?.trim() || process.env.ZAI_API_KEY || process.env.Z_AI_API_KEY || undefined;
+  }
+
+  private getApiKeyForCodexModel(codexModel?: string): string | undefined {
+    if (isZaiGlmCodexModel(codexModel)) {
+      return this.getZaiApiKey();
+    }
+    return this.getOpenAiApiKey();
+  }
+
+  private appendProviderConfigArgs(args: string[], codexModel?: string): void {
+    if (!isZaiGlmCodexModel(codexModel)) return;
+
+    args.push('--config', 'model_provider="zai"');
+    args.push('--config', 'model_providers.zai.name="Z.AI GLM"');
+    args.push('--config', `model_providers.zai.base_url="${ZAI_OPENAI_COMPAT_BASE_URL}"`);
+    args.push('--config', 'model_providers.zai.env_key="ZAI_API_KEY"');
+    args.push('--config', `model_context_window=${ZAI_GLM_CONTEXT_WINDOW}`);
+  }
+
+  private applyProviderEnv(env: Record<string, string>, apiKey: string | undefined, codexModel?: string): void {
+    if (isZaiGlmCodexModel(codexModel)) {
+      if (apiKey) {
+        env.ZAI_API_KEY = apiKey;
+      }
+      return;
+    }
+
+    if (apiKey) {
+      env.CODEX_API_KEY = apiKey;
+      env.OPENAI_API_KEY = env.OPENAI_API_KEY || apiKey;
+    }
   }
 
   private getCodexBinary(): string {
@@ -393,7 +443,10 @@ class CodexServiceImpl {
    * Run Codex for the MCP tool invocation (blocks until complete, returns structured result).
    */
   async runForTool(sessionId: string, prompt: string, workingDir: string, sshConfig?: SSHConfig, codexModel?: string): Promise<CodexToolResult> {
-    const apiKey = this.getOpenAiApiKey();
+    const apiKey = this.getApiKeyForCodexModel(codexModel);
+    if (isZaiGlmCodexModel(codexModel) && !apiKey) {
+      throw new Error('Z.AI API key is required for GLM 5.2 via Codex. Set it in Settings -> Agents -> Z.AI API Key or export ZAI_API_KEY.');
+    }
     const promptWithInstructions = await this.prependCodexInstructionContext(sessionId, prompt, workingDir, sshConfig);
 
     const MAX_PROMPT_CHARS = 50000;
@@ -487,6 +540,7 @@ class CodexServiceImpl {
       '--skip-git-repo-check',
     ];
     this.appendExecutionModeArgs(args, executionMode);
+    this.appendProviderConfigArgs(args, codexModel);
     if (codexModel) {
       args.push('--model', codexModel);
     }
@@ -499,10 +553,7 @@ class CodexServiceImpl {
     }
 
     const env: Record<string, string> = { ...process.env as Record<string, string> };
-    if (apiKey) {
-      env.CODEX_API_KEY = apiKey;
-      env.OPENAI_API_KEY = env.OPENAI_API_KEY || apiKey;
-    }
+    this.applyProviderEnv(env, apiKey, codexModel);
     Object.assign(env, executionMode?.policy?.env || {});
     env.CODEX_SDK_ORIGINATOR = 'grep-build';
 
@@ -612,6 +663,7 @@ class CodexServiceImpl {
 
     const codexArgs = ['exec', '--json', '--skip-git-repo-check'];
     this.appendExecutionModeArgs(codexArgs, executionMode);
+    this.appendProviderConfigArgs(codexArgs, codexModel);
     if (codexModel) {
       codexArgs.push('--model', codexModel);
     }
@@ -623,14 +675,16 @@ class CodexServiceImpl {
       codexArgs.push('--image', imagePath);
     }
 
+    const remoteEnv: Record<string, string> = {
+      ...(executionMode?.policy?.env || {}),
+    };
+    this.applyProviderEnv(remoteEnv, apiKey, codexModel);
+
     const process = sshService.createDetachedCommandProcess(sessionId, sshConfig, {
       command: 'codex',
       args: codexArgs,
       cwd: workingDir,
-      env: {
-        ...(apiKey ? { CODEX_API_KEY: apiKey, OPENAI_API_KEY: apiKey } : {}),
-        ...(executionMode?.policy?.env || {}),
-      },
+      env: remoteEnv,
       closeStdinOnEnd: true,
     });
 
@@ -700,7 +754,11 @@ class CodexServiceImpl {
    */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async *streamDirect(sessionId: string, prompt: string, workingDir: string, sshConfig?: any, codexModel?: string, attachments?: Attachment[], permissionMode?: string, policy?: HarnessPolicyTranslation, nativeThread?: CodexNativeThreadOptions): AsyncGenerator<CodexStreamEvent> {
-    const apiKey = this.getOpenAiApiKey();
+    const apiKey = this.getApiKeyForCodexModel(codexModel);
+    if (isZaiGlmCodexModel(codexModel) && !apiKey) {
+      yield { type: 'error', error: 'Z.AI API key is required for GLM 5.2 via Codex. Set it in Settings -> Agents -> Z.AI API Key or export ZAI_API_KEY.' };
+      return;
+    }
 
     if (sshConfig) {
       const syncResult = await sshService.syncMcpConfigsToRemote(sessionId, sshConfig);
@@ -716,8 +774,26 @@ class CodexServiceImpl {
       }
     }
 
+    let preparedAssets: PreparedCodexAssets = {
+      imagePaths: [],
+      filePromptBlock: '',
+      cleanup: async () => undefined,
+    };
+    try {
+      preparedAssets = await this.prepareCodexAssets(sessionId, attachments || [], workingDir, sshConfig);
+    } catch (error) {
+      yield {
+        type: 'error',
+        error: `Failed to prepare Codex attachments: ${error instanceof Error ? error.message : String(error)}`,
+      };
+      return;
+    }
+
     const executionMode = this.getExecutionMode(permissionMode, policy);
-    const promptWithInstructions = await this.prependCodexInstructionContext(sessionId, prompt, workingDir, sshConfig);
+    const promptWithFiles = preparedAssets.filePromptBlock
+      ? `${preparedAssets.filePromptBlock}\n\n${prompt || ATTACHMENT_ONLY_PROMPT}`
+      : prompt;
+    const promptWithInstructions = await this.prependCodexInstructionContext(sessionId, promptWithFiles, workingDir, sshConfig);
     const promptWithModeContext = this.buildPromptWithExecutionMode(promptWithInstructions, executionMode);
     const MAX_PROMPT_CHARS = 50000;
     let safePrompt = prompt;
@@ -728,67 +804,16 @@ class CodexServiceImpl {
       safePrompt = promptWithModeContext;
     }
 
-    let preparedAssets: PreparedCodexAssets = {
-      imagePaths: [],
-      cleanup: async () => undefined,
-    };
-    try {
-      preparedAssets = await this.prepareCodexAssets(sessionId, attachments || [], sshConfig);
-    } catch (error) {
-      yield {
-        type: 'error',
-        error: `Failed to prepare Codex attachments: ${error instanceof Error ? error.message : String(error)}`,
-      };
-      return;
-    }
-
     // Choose local or SSH spawn
     const eventSource = sshConfig
       ? this.spawnCodexSSH(sessionId, safePrompt, workingDir, apiKey, sshConfig, codexModel, preparedAssets.imagePaths, executionMode, nativeThread)
       : this.spawnCodex(sessionId, safePrompt, workingDir, apiKey, codexModel, preparedAssets.imagePaths, executionMode, nativeThread);
 
     try {
-      // Codex --experimental-json emits multiple item.completed agent_message per turn
-      // (no item.updated streaming). Collect text and emit as text_deltas with separators.
-      let emittedMessageCount = 0;
-
-      for await (const event of eventSource) {
-        if (nativeThread?.persistThread && event.type === 'thread.started' && event.thread_id) {
-          this.rememberThreadId(sessionId, event.thread_id);
-        }
-
-        // For agent_message items, emit as text_delta with newline separator between items
-        if (event.type === 'item.completed' && event.item?.type === 'agent_message' && event.item.text) {
-          const prefix = emittedMessageCount > 0 ? '\n\n' : '';
-          emittedMessageCount++;
-          yield { type: 'text_delta', content: prefix + event.item.text };
-          continue;
-        }
-
-        // For reasoning items, emit as thinking_delta
-        if (event.type === 'item.completed' && event.item?.type === 'reasoning' && event.item.text) {
-          yield { type: 'thinking_delta', content: event.item.text };
-          continue;
-        }
-
-        // Skip item.updated for agent_message/reasoning (avoid duplicates if they appear)
-        if (event.type === 'item.updated' && event.item?.type === 'agent_message') continue;
-        if (event.type === 'item.updated' && event.item?.type === 'reasoning') continue;
-
-        const translated = this.translateEvent(event);
-        if (!translated) continue;
-
-        // If translateEvent returns 'complete' (from turn.completed), yield it and stop
-        if (translated.type === 'complete') {
-          yield translated;
-          return; // Don't yield a second complete after the loop
-        }
-
-        yield translated;
-      }
-
-      // Fallback complete if no turn.completed was received
-      yield { type: 'complete' };
+      yield* this.translateCodexEventStream(eventSource, {
+        sessionId,
+        persistThread: nativeThread?.persistThread,
+      });
     } catch (error) {
       if ((error as Error).name === 'AbortError') {
         yield { type: 'complete' };
@@ -799,6 +824,148 @@ class CodexServiceImpl {
       await preparedAssets.cleanup().catch((error) => {
         console.warn('[Codex Service] Failed to clean up prepared assets:', error);
       });
+    }
+  }
+
+  /**
+   * Translate raw Codex JSON events into CodexStreamEvents. Shared between the
+   * live stream path (streamDirect) and detached-bridge replay
+   * (replayDetachedAsChat) so both interpret Codex output identically.
+   * Codex --experimental-json emits multiple item.completed agent_message per
+   * turn (no item.updated streaming); text is emitted as text_deltas with
+   * separators. Ends after turn.completed, or with a fallback complete when
+   * the source stream finishes without one.
+   */
+  private async *translateCodexEventStream(
+    eventSource: AsyncIterable<CodexJsonEvent>,
+    options: { sessionId?: string; persistThread?: boolean } = {},
+  ): AsyncGenerator<CodexStreamEvent> {
+    let emittedMessageCount = 0;
+
+    for await (const event of eventSource) {
+      if (options.persistThread && options.sessionId && event.type === 'thread.started' && event.thread_id) {
+        this.rememberThreadId(options.sessionId, event.thread_id);
+      }
+
+      // For agent_message items, emit as text_delta with newline separator between items
+      if (event.type === 'item.completed' && event.item?.type === 'agent_message' && event.item.text) {
+        const prefix = emittedMessageCount > 0 ? '\n\n' : '';
+        emittedMessageCount++;
+        yield { type: 'text_delta', content: prefix + event.item.text };
+        continue;
+      }
+
+      // For reasoning items, emit as thinking_delta
+      if (event.type === 'item.completed' && event.item?.type === 'reasoning' && event.item.text) {
+        yield { type: 'thinking_delta', content: event.item.text };
+        continue;
+      }
+
+      // Skip item.updated for agent_message/reasoning (avoid duplicates if they appear)
+      if (event.type === 'item.updated' && event.item?.type === 'agent_message') continue;
+      if (event.type === 'item.updated' && event.item?.type === 'reasoning') continue;
+
+      const translated = this.translateEvent(event);
+      if (!translated) continue;
+
+      // If translateEvent returns 'complete' (from turn.completed), yield it and stop
+      if (translated.type === 'complete') {
+        yield translated;
+        return; // Don't yield a second complete after the loop
+      }
+
+      yield translated;
+    }
+
+    // Fallback complete if no turn.completed was received
+    yield { type: 'complete' };
+  }
+
+  /**
+   * Replay a detached-bridge Codex job's stdout as chat events. Used by
+   * resumeRemoteTurn when reattaching to a Codex turn that survived an app
+   * close or disconnect: the bridge replays the JSONL log from the start and
+   * tails live output until the job exits.
+   */
+  async *replayDetachedAsChat(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    detachedProcess: any,
+    codexModel?: string,
+  ): AsyncGenerator<{
+    type: string;
+    content?: string;
+    toolCall?: { id: string; name: string; input: Record<string, unknown>; status: string; result?: string };
+    error?: string;
+    systemInfo?: { tools: string[]; model: string };
+    message?: ChatMessage;
+    usage?: { inputTokens: number; outputTokens: number; cacheReadTokens?: number };
+  }> {
+    yield {
+      type: 'system',
+      systemInfo: { tools: ['Bash', 'Edit', 'Read', 'Write', 'Glob', 'Grep'], model: codexModel || 'codex' },
+    };
+
+    const rl = readline.createInterface({ input: detachedProcess.stdout });
+    async function* jsonEvents(): AsyncGenerator<CodexJsonEvent> {
+      for await (const line of rl) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        const jsonStart = trimmed.indexOf('{');
+        if (jsonStart < 0) continue;
+        try {
+          yield JSON.parse(trimmed.slice(jsonStart)) as CodexJsonEvent;
+        } catch {
+          // Non-JSON bridge/diagnostic output — skip
+        }
+      }
+    }
+
+    let outputContent = '';
+    try {
+      for await (const event of this.translateCodexEventStream(jsonEvents())) {
+        switch (event.type) {
+          case 'text_delta':
+            if (event.content) {
+              outputContent += event.content;
+              yield { type: 'text_delta', content: event.content };
+            }
+            break;
+          case 'thinking_start':
+          case 'thinking_delta':
+            if (event.content) {
+              yield { type: 'thinking_delta', content: event.content };
+            }
+            break;
+          case 'tool_use':
+            if (event.toolCall) {
+              yield { type: 'tool_use', toolCall: event.toolCall };
+            }
+            break;
+          case 'tool_result':
+            if (event.toolCall) {
+              yield { type: 'tool_result', toolCall: event.toolCall };
+            }
+            break;
+          case 'complete':
+            yield {
+              type: 'message_complete',
+              message: outputContent.trim() ? {
+                id: `codex-recovered-${Date.now()}`,
+                role: 'assistant',
+                content: outputContent,
+                timestamp: new Date(),
+                harness: 'codex',
+              } : undefined,
+              usage: event.usage,
+            };
+            return;
+          case 'error':
+            yield { type: 'error', error: event.error };
+            break;
+        }
+      }
+    } finally {
+      rl.close();
     }
   }
 
@@ -1015,7 +1182,7 @@ class CodexServiceImpl {
   private async prepareLocalImageFiles(sessionId: string, attachments: Attachment[]): Promise<PreparedCodexAssets> {
     const imageAttachments = this.getImageAttachmentsForCodex(attachments);
     if (imageAttachments.length === 0) {
-      return { imagePaths: [], cleanup: async () => undefined };
+      return { imagePaths: [], filePromptBlock: '', cleanup: async () => undefined };
     }
 
     const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), `claudette-codex-${sessionId}-`));
@@ -1034,6 +1201,7 @@ class CodexServiceImpl {
 
     return {
       imagePaths,
+      filePromptBlock: '',
       cleanup: async () => {
         await fs.promises.rm(tempDir, { recursive: true, force: true });
       },
@@ -1124,20 +1292,36 @@ class CodexServiceImpl {
 
     return {
       imagePaths: remotePaths,
+      filePromptBlock: '',
       cleanup: async () => {
         await this.execRemoteCommand(client, `rm -rf '${escapedRemoteDir}'`);
       },
     };
   }
 
-  private async prepareCodexAssets(sessionId: string, attachments: Attachment[], sshConfig?: SSHConfig): Promise<PreparedCodexAssets> {
-    if (this.getImageAttachmentsForCodex(attachments).length === 0) {
-      return { imagePaths: [], cleanup: async () => undefined };
+  private async prepareCodexAssets(sessionId: string, attachments: Attachment[], workingDir: string, sshConfig?: SSHConfig): Promise<PreparedCodexAssets> {
+    const imageAssets = this.getImageAttachmentsForCodex(attachments).length > 0
+      ? (sshConfig
+      ? this.prepareRemoteImageFiles(sessionId, attachments, sshConfig)
+      : this.prepareLocalImageFiles(sessionId, attachments))
+      : Promise.resolve({ imagePaths: [], filePromptBlock: '', cleanup: async () => undefined });
+    const preparedImages = await imageAssets;
+    const preparedFiles = hasFileAttachments(attachments)
+      ? await prepareFileAttachmentsForHarness(sessionId, attachments, workingDir, sshConfig)
+      : { promptBlock: '', cleanup: async () => undefined };
+
+    if (preparedFiles.promptBlock) {
+      console.log('[Codex Service] Prepared file attachments for Codex prompt');
     }
 
-    return sshConfig
-      ? this.prepareRemoteImageFiles(sessionId, attachments, sshConfig)
-      : this.prepareLocalImageFiles(sessionId, attachments);
+    return {
+      imagePaths: preparedImages.imagePaths,
+      filePromptBlock: preparedFiles.promptBlock,
+      cleanup: async () => {
+        await preparedImages.cleanup().catch(() => undefined);
+        await preparedFiles.cleanup().catch(() => undefined);
+      },
+    };
   }
 }
 

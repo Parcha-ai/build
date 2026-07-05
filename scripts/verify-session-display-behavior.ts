@@ -65,6 +65,18 @@ assert.equal(
   'Checkout Polish'
 );
 
+assert.equal(
+  getSessionDisplayName(session({
+    id: 'manual-name-session',
+    manualName: 'work',
+    manuallyRenamedAt: '2026-06-02T12:30:00.000Z',
+    aiGeneratedName: 'Checkout Polish',
+    name: 'This',
+    branch: 'feature/ignored',
+  })),
+  'work'
+);
+
 const root = session({
   id: 'root-session',
   name: 'root-name',
@@ -85,5 +97,19 @@ const secondFork = session({
 
 assert.equal(getFirstVisibleTabSession(secondFork, [secondFork, firstFork, root]).id, root.id);
 assert.equal(getSidebarSessionDisplayName(secondFork, [secondFork, firstFork, root]), 'root-name');
+
+const hiddenRoot = session({
+  ...root,
+  tabHidden: true,
+});
+assert.equal(getFirstVisibleTabSession(secondFork, [secondFork, firstFork, hiddenRoot]).id, firstFork.id);
+assert.equal(getSidebarSessionDisplayName(secondFork, [secondFork, firstFork, hiddenRoot]), 'First Fork');
+
+const renamedRoot = session({
+  ...hiddenRoot,
+  manualName: 'Pinned Sidebar Name',
+  manuallyRenamedAt: '2026-06-02T12:35:00.000Z',
+});
+assert.equal(getSidebarSessionDisplayName(secondFork, [secondFork, firstFork, renamedRoot]), 'Pinned Sidebar Name');
 
 console.log('session display behavior verifier passed');

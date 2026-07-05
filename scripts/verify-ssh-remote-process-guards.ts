@@ -31,6 +31,17 @@ assert.ok(
 assert.match(sshService, /Remote workdir not found:/);
 assert.match(sshService, /private async assertRemoteWorkdirExists\(sessionId: string, config: SSHConfig, remoteWorkdir\?: string\): Promise<void> \{/);
 assert.match(sshService, /await this\.assertRemoteWorkdirExists\(sessionId, config, bridge\.cwd\)/);
+assert.match(sshService, /hasExitFile: boolean;/);
+assert.match(sshService, /exitCode\?: number \| null;/);
+assert.match(sshService, /hasexit=0; test -f "\$exitfile" && hasexit=1/);
+assert.match(sshService, /exitcode=""; test "\$hasexit" = "1" && exitcode=/);
+assert.match(sshService, /job\.hasExitFile && job\.exitCode !== 0/);
+assert.match(sshService, /await finalize\(job\.hasExitFile \? job\.exitCode \?\? 1 : 0, null, true\)/);
+assert.doesNotMatch(
+  sshService,
+  /await finalize\(66, null, false\)/,
+  'Missing SSH workdirs must surface as spawn errors, not generic Claude exit code 66'
+);
 
 assert.match(remoteBridgeScript, /function normalizeCwd\(cwd\) \{/);
 assert.match(remoteBridgeScript, /if \(cwd === '~'\) return home;/);
@@ -61,9 +72,40 @@ assert.match(hasActiveRemoteProcessMethod, /@anthropic-ai\/claude-code/);
 assert.match(hasActiveRemoteProcessMethod, /cursor-agent/);
 assert.doesNotMatch(hasActiveRemoteProcessMethod, /buildSessionEnvProcessLoop\(sessionId, 'kill -0 "\$pid"/);
 assert.match(hasActiveRemoteProcessMethod, /active=1; break/);
+assert.match(hasActiveRemoteProcessMethod, /job\.active && !job\.recovered/);
+assert.doesNotMatch(
+  hasActiveRemoteProcessMethod,
+  /job\.active && !job\.completed/,
+  'active detached bridge jobs must count as active even after Claude emits a result event'
+);
+
+const listDetachedBridgeJobsMethod = sshService.match(/async listDetachedBridgeJobs\([\s\S]*?\n {2}\}/)?.[0] || '';
+assert.match(listDetachedBridgeJobsMethod, /active=0; test -n "\$pid" && kill -0 "\$pid"/);
+assert.ok(
+  listDetachedBridgeJobsMethod.includes(
+    'elif test "$active" = "0" && test -f "$log" && grep -q \\\'"type":"result"\\\' "$log"'
+  ),
+  'stdout result should only complete inactive detached bridge jobs'
+);
+
+const attachDetachedStart = sshService.indexOf('private attachDetachedCommandProcess');
+const launchDetachedStart = sshService.indexOf('private async launchDetachedRemoteBridge', attachDetachedStart);
+const attachDetachedMethod = sshService.slice(attachDetachedStart, launchDetachedStart);
+const resultPollIndex = attachDetachedMethod.indexOf('echo __RESULT__');
+assert.ok(resultPollIndex > 0, 'recovered attach poller must still handle inactive result fallback');
+assert.ok(
+  attachDetachedMethod.indexOf('kill -0 "$pid"', attachDetachedMethod.indexOf('const pollForExit')) < resultPollIndex,
+  'recovered attach poller must check PID liveness before accepting a stdout result as completion'
+);
 
 const cleanupMethod = sshService.match(/async cleanupDetachedBridgeProcessesForNewTurn\([\s\S]*?\n {2}\}/)?.[0] || '';
 assert.match(cleanupMethod, /this\.buildKillSessionEnvProcessesCommand\(sessionId\)/);
+assert.ok(
+  cleanupMethod.includes(
+    'elif test "$active" = "0" && test -f "$jobdir/stdout.log" && grep -q \\\'"type":"result"\\\' "$jobdir/stdout.log"'
+  ),
+  'new-turn cleanup must not treat active async-agent jobs as completed just because stdout has a result event'
+);
 
 const killMethod = sshService.match(/async killRemoteProcesses\(sessionId: string, config: SSHConfig\): Promise<void> \{[\s\S]*?\n {2}\}/)?.[0] || '';
 assert.match(killMethod, /this\.buildKillSessionEnvProcessesCommand\(sessionId\)/);

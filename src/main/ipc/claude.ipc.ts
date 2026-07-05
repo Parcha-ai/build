@@ -129,6 +129,7 @@ class CompletedStreamRecoveryStore {
 
 const completedStreamStore = new CompletedStreamRecoveryStore();
 const STREAM_DEBUG = process.env.GREP_DEBUG_STREAMING === '1';
+const MAX_RENDERER_TOOL_PAYLOAD_CHARS = 50_000;
 
 // Ralph Loop completion marker
 // Ralph Loop uses Stop hook in claude.service.ts (Anthropic SDK pattern)
@@ -139,6 +140,7 @@ const claudeService = new ClaudeService();
 claudeService.setOnSessionNameChanged(() => sessionService.refreshSessionList());
 
 const completedStreamMessages = new Map<string, ChatMessage[]>();
+const RENDERER_FULL_DETAIL_TAIL_MESSAGES = 12;
 
 function loadCompletedStreamMessages(sessionId: string): ChatMessage[] {
   const cached = completedStreamMessages.get(sessionId);
@@ -174,14 +176,122 @@ function mergeCompletedStreamMessages(transcriptMessages: ChatMessage[], session
   return mergeRecoveredStreamMessages(transcriptMessages, loadCompletedStreamMessages(sessionId), limit);
 }
 
+function countMessageToolActivity(message: ChatMessage): number {
+  const toolCallCount = message.toolCalls?.length || 0;
+  const blockToolCount = (message.contentBlocks || [])
+    .filter((block) => block.type === 'tool_use' && block.toolCallId)
+    .length;
+  return Math.max(toolCallCount, blockToolCount);
+}
+
+function slimHistoricalMessageForRenderer(message: ChatMessage): ChatMessage {
+  if (message.role !== 'assistant') return message;
+
+  const toolCount = countMessageToolActivity(message);
+  if (toolCount === 0 && !message.contentBlocks?.length) return message;
+
+  return {
+    ...message,
+    content: message.content || `Completed ${toolCount} historical tool call${toolCount === 1 ? '' : 's'}.`,
+    toolCalls: undefined,
+    contentBlocks: undefined,
+    metadata: {
+      ...message.metadata,
+      historicalToolCallCount: toolCount,
+    },
+  } as ChatMessage;
+}
+
+function slimMessagesForRenderer(messages: ChatMessage[], limit?: number): ChatMessage[] {
+  // Full transcript reads are used by history/export style views. Normal chat
+  // hydration asks for a positive limit and should not structured-clone old
+  // multi-MB tool payloads into the renderer on startup or tab switches.
+  if (!limit || limit <= 0 || messages.length <= RENDERER_FULL_DETAIL_TAIL_MESSAGES) {
+    return messages;
+  }
+
+  const fullDetailStart = Math.max(0, messages.length - RENDERER_FULL_DETAIL_TAIL_MESSAGES);
+  return messages.map((message, index) => (
+    index < fullDetailStart ? slimHistoricalMessageForRenderer(message) : message
+  ));
+}
+
+function truncateRendererString(value: string): string {
+  if (value.length <= MAX_RENDERER_TOOL_PAYLOAD_CHARS) return value;
+  const headChars = Math.floor(MAX_RENDERER_TOOL_PAYLOAD_CHARS * 0.65);
+  const tailChars = MAX_RENDERER_TOOL_PAYLOAD_CHARS - headChars;
+  return [
+    value.slice(0, headChars),
+    `\n\n... truncated ${value.length - MAX_RENDERER_TOOL_PAYLOAD_CHARS} chars for live UI ...\n\n`,
+    value.slice(-tailChars),
+  ].join('');
+}
+
+function slimPayloadForRenderer(value: unknown): unknown {
+  if (value == null) return value;
+  if (typeof value === 'string') return truncateRendererString(value);
+
+  let serialized: string | undefined;
+  try {
+    serialized = JSON.stringify(value);
+  } catch {
+    return value;
+  }
+
+  if (!serialized || serialized.length <= MAX_RENDERER_TOOL_PAYLOAD_CHARS) return value;
+  return {
+    truncated: true,
+    originalChars: serialized.length,
+    preview: serialized.slice(0, MAX_RENDERER_TOOL_PAYLOAD_CHARS),
+  };
+}
+
+function slimRecordPayloadForRenderer(value: Record<string, unknown> | undefined): Record<string, unknown> {
+  const slimmed = slimPayloadForRenderer(value || {});
+  return slimmed && typeof slimmed === 'object' && !Array.isArray(slimmed)
+    ? slimmed as Record<string, unknown>
+    : { value: slimmed };
+}
+
+function slimToolCallForRenderer(toolCall: ToolCall | undefined): ToolCall | undefined {
+  if (!toolCall) return undefined;
+  return {
+    ...toolCall,
+    input: slimRecordPayloadForRenderer(toolCall.input),
+    result: slimPayloadForRenderer(toolCall.result),
+  };
+}
+
+function slimMessageForRenderer(message: ChatMessage): ChatMessage {
+  if (!message.toolCalls?.length) return message;
+  return {
+    ...message,
+    toolCalls: message.toolCalls.map(tc => slimToolCallForRenderer(tc) || tc),
+  };
+}
+
 /** Serialize accumulated tool calls to the compact transcript format. */
+const MAX_TRANSCRIPT_TOOL_PAYLOAD_CHARS = 50_000;
+
+function serializeTranscriptPayload(value: unknown): string | undefined {
+  if (value == null) return undefined;
+  const serialized = JSON.stringify(value);
+  if (serialized === undefined) return undefined;
+  if (serialized.length <= MAX_TRANSCRIPT_TOOL_PAYLOAD_CHARS) return serialized;
+  return JSON.stringify({
+    truncated: true,
+    originalChars: serialized.length,
+    preview: serialized.slice(0, MAX_TRANSCRIPT_TOOL_PAYLOAD_CHARS),
+  });
+}
+
 function serializeToolCallsForTranscript(toolCalls?: ToolCall[]): TranscriptEntry['toolCalls'] | undefined {
   if (!toolCalls?.length) return undefined;
   return toolCalls.map(tc => ({
     id: tc.id,
     name: tc.name,
-    input: tc.input ? JSON.stringify(tc.input) : undefined,
-    result: tc.result != null ? JSON.stringify(tc.result) : undefined,
+    input: serializeTranscriptPayload(tc.input),
+    result: serializeTranscriptPayload(tc.result),
   }));
 }
 
@@ -212,9 +322,9 @@ function writeAssistantToTranscript(
   });
 }
 
-function createTranscriptSnapshotWriter(sessionId: string, model?: string | null) {
-  const id = randomUUID();
-  const timestamp = new Date();
+function createTranscriptSnapshotWriter(sessionId: string, model?: string | null, overrideId?: string) {
+  const id = overrideId || randomUUID();
+  const startedAt = new Date();
   let lastWriteAt = 0;
   let pendingTimer: NodeJS.Timeout | null = null;
   let latestSnapshot: {
@@ -233,7 +343,7 @@ function createTranscriptSnapshotWriter(sessionId: string, model?: string | null
       id,
       role: 'assistant',
       content: latestSnapshot.content,
-      timestamp,
+      timestamp: startedAt,
       toolCalls: latestSnapshot.toolCalls.length > 0 ? latestSnapshot.toolCalls : undefined,
       contentBlocks: latestSnapshot.contentBlocks.length > 0 ? latestSnapshot.contentBlocks : undefined,
       interrupted: latestSnapshot.interrupted,
@@ -281,7 +391,7 @@ function createTranscriptSnapshotWriter(sessionId: string, model?: string | null
       const finalizedMessage: ChatMessage = {
         ...finalMessage,
         id,
-        timestamp,
+        timestamp: new Date(),
         interrupted: opts.interrupted || finalMessage.interrupted,
         harness: finalMessage.harness || harnessFromModel(opts.resolvedModel || model),
       };
@@ -310,7 +420,8 @@ class ChunkBatcher {
   private textTimer: NodeJS.Timeout | null = null;
   private thinkingTimer: NodeJS.Timeout | null = null;
   private currentAgentId: string | undefined = undefined;
-  private readonly BATCH_DELAY = 100; // 10 updates/sec - much smoother for markdown parsing
+  private readonly TEXT_BATCH_DELAY = 250;
+  private readonly THINKING_BATCH_DELAY = 750;
 
   constructor(
     private sessionId: string,
@@ -326,14 +437,14 @@ class ChunkBatcher {
     this.currentAgentId = agentId;
     this.textBuffer += content;
     if (!this.textTimer) {
-      this.textTimer = setTimeout(() => this.flushText(), this.BATCH_DELAY);
+      this.textTimer = setTimeout(() => this.flushText(), this.TEXT_BATCH_DELAY);
     }
   }
 
   addThinking(content: string) {
     this.thinkingBuffer += content;
     if (!this.thinkingTimer) {
-      this.thinkingTimer = setTimeout(() => this.flushThinking(), this.BATCH_DELAY);
+      this.thinkingTimer = setTimeout(() => this.flushThinking(), this.THINKING_BATCH_DELAY);
     }
   }
 
@@ -433,8 +544,11 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
       let accumulatedThinking = '';
       let hadError = false;
       let sentStreamEnd = false;
+      let turnCompleted = false;
+      let notifiedQueueStreamEnd = false;
       let needsCompactionRetry = false;
       let latestResolvedModel: string | undefined;
+      let activeQueueHarness = harnessFromModel(model);
       const accumulatedToolCalls: ToolCall[] = [];
       const accumulatedContentBlocks: ContentBlock[] = [];
       const transcriptSnapshot = createTranscriptSnapshotWriter(sessionId, model);
@@ -471,6 +585,14 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
         if (accumulatedContentBlocks.some(block => block.type === 'tool_use' && block.toolCallId === toolCall.id)) return;
         accumulatedContentBlocks.push({ type: 'tool_use', toolCallId: toolCall.id, agentId: toolCall.agentId || agentId });
       };
+      const notifyQueueStreamEnd = (allowRemoteActiveDrain: boolean): void => {
+        if (notifiedQueueStreamEnd) return;
+        notifiedQueueStreamEnd = true;
+        messageQueueService.onStreamEnd(sessionId, {
+          drain: true,
+          allowRemoteActiveDrain,
+        });
+      };
 
         try {
           // Notify queue service that streaming has started
@@ -487,6 +609,13 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
             lastEventType = event.type;
             lastEventTime = Date.now();
             latestResolvedModel = event.resolvedModel || latestResolvedModel;
+            if (event.resolvedModel) {
+              const resolvedHarness = harnessFromModel(event.resolvedModel);
+              if (resolvedHarness !== activeQueueHarness) {
+                activeQueueHarness = resolvedHarness;
+                messageQueueService.setActiveHarness(sessionId, resolvedHarness);
+              }
+            }
             if (STREAM_DEBUG && event.type !== 'text_delta' && event.type !== 'thinking_delta') {
               console.log(`[Claude IPC] Event #${eventCount} type=${event.type} for ${sessionId.substring(0, 8)} (+${Date.now() - streamStartTime}ms)`);
             }
@@ -509,7 +638,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
                 persistTranscriptSnapshot(true);
                 sendToSender(IPC_CHANNELS.CLAUDE_TOOL_CALL, {
                   sessionId,
-                  toolCall: event.toolCall,
+                  toolCall: slimToolCallForRenderer(event.toolCall as ToolCall | undefined),
                   agentId: event.agentId,
                 });
                 break;
@@ -521,7 +650,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
                 persistTranscriptSnapshot(true);
                 sendToSender(IPC_CHANNELS.CLAUDE_TOOL_RESULT, {
                   sessionId,
-                  toolCall: event.toolCall,
+                  toolCall: slimToolCallForRenderer(event.toolCall as ToolCall | undefined),
                   agentId: event.agentId,
                 });
                 break;
@@ -580,6 +709,13 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
                   try {
                     for await (const retryEvent of claudeService.streamMessage(sessionId, message, attachments, permissionMode, thinkingMode, model, gstackMode, supplementalMessages, fastMode)) {
                       latestResolvedModel = retryEvent.resolvedModel || latestResolvedModel;
+                      if (retryEvent.resolvedModel) {
+                        const resolvedHarness = harnessFromModel(retryEvent.resolvedModel);
+                        if (resolvedHarness !== activeQueueHarness) {
+                          activeQueueHarness = resolvedHarness;
+                          messageQueueService.setActiveHarness(sessionId, resolvedHarness);
+                        }
+                      }
                       // Process retry events the same way
                       switch (retryEvent.type) {
                         case 'text_delta':
@@ -598,7 +734,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
                           persistTranscriptSnapshot(true);
                           sendToSender(IPC_CHANNELS.CLAUDE_TOOL_CALL, {
                             sessionId,
-                            toolCall: retryEvent.toolCall,
+                            toolCall: slimToolCallForRenderer(retryEvent.toolCall as ToolCall | undefined),
                             agentId: retryEvent.agentId,
                           });
                           break;
@@ -608,7 +744,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
                           persistTranscriptSnapshot(true);
                           sendToSender(IPC_CHANNELS.CLAUDE_TOOL_RESULT, {
                             sessionId,
-                            toolCall: retryEvent.toolCall,
+                            toolCall: slimToolCallForRenderer(retryEvent.toolCall as ToolCall | undefined),
                             agentId: retryEvent.agentId,
                           });
                           break;
@@ -629,6 +765,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
                           break;
                         case 'message_complete': {
                           batcher.flush();
+                          turnCompleted = true;
                           const finalRetryMessage = buildCompletedStreamMessage({
                             message: retryEvent.message,
                             content: fullMessageContent,
@@ -645,8 +782,9 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
                           sentStreamEnd = true;
                           sendToSender(IPC_CHANNELS.CLAUDE_STREAM_END, {
                             sessionId,
-                            message: finalizedRetryMessage,
+                            message: slimMessageForRenderer(finalizedRetryMessage),
                           });
+                          notifyQueueStreamEnd(true);
                           break;
                         }
                         case 'error':
@@ -673,6 +811,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
               case 'message_complete': {
                 // Flush any remaining batched content
                 batcher.flush();
+                turnCompleted = true;
                 console.log(`[Claude IPC] message_complete for ${sessionId}. fullMessageContent length: ${fullMessageContent.length}, sentStreamEnd was: ${sentStreamEnd}`);
 
                 // Send STREAM_END (Stop hook handles Ralph Loop iteration)
@@ -692,11 +831,12 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
                 sentStreamEnd = true;
                 sendToSender(IPC_CHANNELS.CLAUDE_STREAM_END, {
                   sessionId,
-                  message: finalizedMessage,
+                  message: slimMessageForRenderer(finalizedMessage),
                   // Surface terminal_reason from SDK result (v0.2.91+)
                   // Tells the UI why the query loop ended (e.g. 'completed', 'max_turns', 'aborted_tools')
                   ...((event as any).terminalReason ? { terminalReason: (event as any).terminalReason } : {}),
                 });
+                notifyQueueStreamEnd(true);
                 break;
               }
 
@@ -766,7 +906,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
             recordCompletedStreamMessage(sessionId, finalizedMessage);
             sendToSender(IPC_CHANNELS.CLAUDE_STREAM_END, {
               sessionId,
-              message: finalizedMessage,
+              message: slimMessageForRenderer(finalizedMessage),
             });
           }
 
@@ -814,7 +954,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
           // Notify queue service that streaming has ended.
           // Always drain — user-queued messages are their explicit intent.
           // After errors, the drain delay gives the runtime time to settle.
-          messageQueueService.onStreamEnd(sessionId, { drain: true });
+          notifyQueueStreamEnd(!hadError && turnCompleted);
         }
 
     }
@@ -843,6 +983,22 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
 
       claudeService.setMainWindow(mainWindow);
 
+      // Derive a deterministic transcript id from the bridge job directory so
+      // replaying the same remote job twice overwrites instead of appending.
+      let recoveryTranscriptId: string | undefined;
+      try {
+        const recoverySession = await sessionService.getSession(sessionId);
+        if (recoverySession?.sshConfig) {
+          const latestJob = await sshService.getLatestRecoverableRemoteProcess(sessionId, recoverySession.sshConfig);
+          if (latestJob?.jobDir) {
+            const jobId = path.basename(latestJob.jobDir.replace(/\/+$/, ''));
+            if (jobId) recoveryTranscriptId = `recovered-${jobId}`;
+          }
+        }
+      } catch {
+        // Non-fatal — fall back to random UUID
+      }
+
       const batcher = new ChunkBatcher(
         sessionId,
         (content, agentId) => sendToSender(IPC_CHANNELS.CLAUDE_STREAM_CHUNK, { sessionId, content, agentId }),
@@ -854,10 +1010,12 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
       let hadError = false;
       let sentStreamEnd = false;
       let resumeProducedVisibleOutput = false;
+      let resumeCompletedWithResult = false;
+      let notifiedQueueStreamEnd = false;
       let latestResolvedModel: string | undefined = model;
       const accumulatedToolCalls: ToolCall[] = [];
       const accumulatedContentBlocks: ContentBlock[] = [];
-      const transcriptSnapshot = createTranscriptSnapshotWriter(sessionId, model);
+      const transcriptSnapshot = createTranscriptSnapshotWriter(sessionId, model, recoveryTranscriptId);
       const persistTranscriptSnapshot = (force = false, interrupted = false): void => {
         transcriptSnapshot.update({
           content: fullMessageContent,
@@ -892,6 +1050,17 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
         if (accumulatedContentBlocks.some(block => block.type === 'tool_use' && block.toolCallId === toolCall.id)) return;
         accumulatedContentBlocks.push({ type: 'tool_use', toolCallId: toolCall.id, agentId: toolCall.agentId || agentId });
       };
+      const notifyQueueStreamEnd = (drain: boolean, allowRemoteActiveDrain: boolean): void => {
+        if (notifiedQueueStreamEnd) return;
+        notifiedQueueStreamEnd = true;
+        if (!drain) {
+          console.log(`[Claude IPC] Resume reattach produced no visible output; suppressing queue drain for ${sessionId}`);
+        }
+        messageQueueService.onStreamEnd(sessionId, {
+          drain,
+          allowRemoteActiveDrain,
+        });
+      };
 
       try {
         // Notify queue service that streaming has started (resume)
@@ -925,7 +1094,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
               persistTranscriptSnapshot(true);
               sendToSender(IPC_CHANNELS.CLAUDE_TOOL_CALL, {
                 sessionId,
-                toolCall: streamEvent.toolCall,
+                toolCall: slimToolCallForRenderer(streamEvent.toolCall as ToolCall | undefined),
                 agentId: streamEvent.agentId,
               });
               break;
@@ -937,7 +1106,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
               persistTranscriptSnapshot(true);
               sendToSender(IPC_CHANNELS.CLAUDE_TOOL_RESULT, {
                 sessionId,
-                toolCall: streamEvent.toolCall,
+                toolCall: slimToolCallForRenderer(streamEvent.toolCall as ToolCall | undefined),
                 agentId: streamEvent.agentId,
               });
               break;
@@ -969,6 +1138,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
 
             case 'message_complete': {
               batcher.flush();
+              resumeCompletedWithResult = true;
               const finalMessage = buildCompletedStreamMessage({
                 message: streamEvent.message,
                 content: fullMessageContent,
@@ -992,9 +1162,10 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
               sentStreamEnd = true;
               sendToSender(IPC_CHANNELS.CLAUDE_STREAM_END, {
                 sessionId,
-                message: finalizedMessage,
+                message: slimMessageForRenderer(finalizedMessage),
                 ...((streamEvent as any).terminalReason ? { terminalReason: (streamEvent as any).terminalReason } : {}),
               });
+              notifyQueueStreamEnd(resumeProducedVisibleOutput, resumeProducedVisibleOutput);
               break;
             }
 
@@ -1042,7 +1213,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
           }
           sendToSender(IPC_CHANNELS.CLAUDE_STREAM_END, {
             sessionId,
-            message: finalizedMessage,
+            message: slimMessageForRenderer(finalizedMessage),
           });
         }
 
@@ -1061,12 +1232,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
 
         // Notify queue service that streaming has ended (resume).
         const shouldDrainAfterResume = !hadError && resumeProducedVisibleOutput;
-        if (!shouldDrainAfterResume) {
-          console.log(`[Claude IPC] Resume reattach produced no visible output; suppressing queue drain for ${sessionId}`);
-        }
-        messageQueueService.onStreamEnd(sessionId, {
-          drain: shouldDrainAfterResume,
-        });
+        notifyQueueStreamEnd(shouldDrainAfterResume, shouldDrainAfterResume && resumeCompletedWithResult);
       }
     }
   );
@@ -1090,7 +1256,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
     // completedStreamStore is Build-owned local recovery, not a Claude transcript.
     // Keep merging it for older sessions until all historical rows have been
     // migrated into ~/.build/transcripts.
-    return mergeCompletedStreamMessages(canonicalMessages, sessionId, limit);
+    return slimMessagesForRenderer(mergeCompletedStreamMessages(canonicalMessages, sessionId, limit), limit);
   });
 
   ipcMain.handle(IPC_CHANNELS.CLAUDE_HAS_BUILD_TRANSCRIPT, async (_, sessionId: string) => {
@@ -1254,9 +1420,10 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
     const activeState = claudeService.getActiveQueryState(sessionId);
     const deferredMs = messageQueueService.getDrainDeferredMs(sessionId);
     const supportsActiveInjection = messageQueueService.supportsActiveInjection(sessionId);
+    const canDrainPastRemoteActive = messageQueueService.canDrainPastRemoteActive(sessionId);
     if (activeState.active) {
       if (activeState.injectable && supportsActiveInjection) {
-        const next = messageQueueService.dequeueForDrain(sessionId);
+        const next = messageQueueService.peekForDrain(sessionId);
         if (!next) return;
 
         if ((next.sourceCount || 0) > 1) {
@@ -1265,56 +1432,90 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
           console.log(`[Queue] Injecting queued message into active query for ${sessionId}`);
         }
 
+        messageQueueService.beginDrainAttempt(sessionId);
         const injected = await claudeService.injectMessage(
           sessionId,
           next.text,
           next.attachments as Attachment[] | undefined
         );
         if (injected) {
+          messageQueueService.ackDrain(sessionId, next.sourceIds, { scheduleIfRemaining: true });
           return;
         }
 
-        console.warn(`[Queue] Injection failed for ${sessionId}; sending queued message as a new turn`);
-        const mainWindow = getMainWindow();
-        if (mainWindow) {
-          mainWindow.webContents.send('queue:send-next', sessionId, next);
-        }
-        return;
-      }
-
-      if (remoteActive) {
-        console.warn(
-          `[Queue] Deferring drain for ${sessionId}; remote process is still active ` +
-          `(localActive=yes, injectable=${activeState.injectable ? 'yes' : 'no'}, ` +
-          `supportsActiveInjection=${supportsActiveInjection ? 'yes' : 'no'}, ` +
-          `deferredMs=${deferredMs}, idleMs=${activeState.idleMs})`
-        );
+        console.warn(`[Queue] Injection failed for ${sessionId}; leaving queued message pending for retry`);
+        messageQueueService.finishDrainAttempt(sessionId);
         messageQueueService.deferDrain(sessionId, 1000);
         return;
       }
 
-      const canTreatAsStale = (!activeState.injectable || !supportsActiveInjection)
-        && deferredMs >= STALE_QUEUE_DRAIN_ACTIVE_QUERY_GRACE_MS;
-      if (!canTreatAsStale) {
+      if (canDrainPastRemoteActive) {
         console.warn(
-          `[Queue] Deferring drain for ${sessionId}; runtime is still active ` +
+          `[Queue] Draining queued turn for ${sessionId} after completed stream while active runtime remains ` +
           `(injectable=${activeState.injectable ? 'yes' : 'no'}, ` +
           `supportsActiveInjection=${supportsActiveInjection ? 'yes' : 'no'}, ` +
-          `deferredMs=${deferredMs}, idleMs=${activeState.idleMs})`
+          `remoteActive=${remoteActive ? 'yes' : 'no'}, deferredMs=${deferredMs}, idleMs=${activeState.idleMs})`
         );
-        messageQueueService.deferDrain(sessionId, 1000);
-        return;
-      }
+      } else {
+        if (remoteActive) {
+          if (!activeState.injectable && supportsActiveInjection && deferredMs >= STALE_QUEUE_DRAIN_REMOTE_PROCESS_GRACE_MS) {
+            console.warn(
+              `[Queue] Active query for ${sessionId} lost its injectable Query object while remote process is still active; ` +
+              `clearing local wrapper, requesting reattach, and deferring drain ` +
+              `(deferredMs=${deferredMs}, idleMs=${activeState.idleMs})`
+            );
+            claudeService.clearLocalActiveQueryForRemoteReattach(sessionId);
+            const mainWindow = getMainWindow();
+            mainWindow?.webContents.send(IPC_CHANNELS.CLAUDE_REMOTE_TURN_RECOVERABLE, { sessionId });
+            messageQueueService.deferDrain(sessionId, 5000);
+            return;
+          }
 
-      console.warn(
-        `[Queue] Clearing stale active query before drain for ${sessionId}; ` +
-        `deferredMs=${deferredMs}, ageMs=${activeState.ageMs}, idleMs=${activeState.idleMs}`
-      );
-      claudeService.cancelQuery(sessionId);
+          console.warn(
+            `[Queue] Deferring drain for ${sessionId}; remote process is still active ` +
+            `(localActive=yes, injectable=${activeState.injectable ? 'yes' : 'no'}, ` +
+            `supportsActiveInjection=${supportsActiveInjection ? 'yes' : 'no'}, ` +
+            `deferredMs=${deferredMs}, idleMs=${activeState.idleMs})`
+          );
+          messageQueueService.deferDrain(sessionId, 1000);
+          return;
+        }
+
+        const canTreatAsStale = (!activeState.injectable || !supportsActiveInjection)
+          && deferredMs >= STALE_QUEUE_DRAIN_ACTIVE_QUERY_GRACE_MS;
+        if (!canTreatAsStale) {
+          console.warn(
+            `[Queue] Deferring drain for ${sessionId}; runtime is still active ` +
+            `(injectable=${activeState.injectable ? 'yes' : 'no'}, ` +
+            `supportsActiveInjection=${supportsActiveInjection ? 'yes' : 'no'}, ` +
+            `deferredMs=${deferredMs}, idleMs=${activeState.idleMs})`
+          );
+          messageQueueService.deferDrain(sessionId, 1000);
+          return;
+        }
+
+        console.warn(
+          `[Queue] Clearing stale active query before drain for ${sessionId}; ` +
+          `deferredMs=${deferredMs}, ageMs=${activeState.ageMs}, idleMs=${activeState.idleMs}`
+        );
+        claudeService.cancelQuery(sessionId);
+      }
     }
 
-    if (remoteActive) {
-      if (session?.sshConfig) {
+	    if (remoteActive && canDrainPastRemoteActive) {
+	      console.warn(`[Queue] Draining queued turn for ${sessionId} after completed stream while remote bridge remains active`);
+	      if (session?.sshConfig) {
+	        await sshService.cleanupDetachedBridgeProcessesForNewTurn(sessionId, session.sshConfig, {
+	          killActive: false,
+	        });
+	        remoteActive = await readRemoteActive();
+	        console.log(
+          `[Queue] Rechecked remote process after completed-stream bridge cleanup for ${sessionId}; ` +
+          `remoteActive=${remoteActive ? 'yes' : 'no'}`
+        );
+      }
+    } else if (remoteActive) {
+      if (session?.sshConfig && deferredMs === 0) {
         await sshService.cleanupDetachedBridgeProcessesForNewTurn(sessionId, session.sshConfig, {
           killActive: false,
         });
@@ -1326,7 +1527,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
       }
     }
 
-    if (remoteActive && session?.sshConfig && deferredMs >= STALE_QUEUE_DRAIN_REMOTE_PROCESS_GRACE_MS) {
+    if (remoteActive && !canDrainPastRemoteActive && session?.sshConfig && deferredMs >= STALE_QUEUE_DRAIN_REMOTE_PROCESS_GRACE_MS) {
       // The remote process outlived the local stream (laptop sleep, app
       // restart, transport drop). If its log is still growing it is a live
       // working turn — reattach and let it finish; never kill it for a drain.
@@ -1372,17 +1573,18 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
       );
     }
 
-    if (remoteActive) {
+    if (remoteActive && !canDrainPastRemoteActive) {
       console.warn(`[Queue] Deferring drain for ${sessionId}; remote process is still active`);
       messageQueueService.deferDrain(sessionId, 1000);
       return;
     }
 
-    const next = messageQueueService.dequeueForDrain(sessionId);
-    if (!next) return;
-
     const mainWindow = getMainWindow();
     if (!mainWindow) return;
+
+    const next = messageQueueService.dequeueForDrain(sessionId);
+    if (!next) return;
+    messageQueueService.clearRemoteActiveDrainAllowance(sessionId);
 
     if ((next.sourceCount || 0) > 1) {
       console.log(`[Queue] Draining ${next.sourceCount} queued messages as one turn for ${sessionId}`);

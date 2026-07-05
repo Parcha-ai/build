@@ -190,6 +190,7 @@ export default function CommandCenterCell({ session, forks, isFocused }: Command
       {/* Messages — scrollable, auto-scrolled to bottom */}
       <div ref={messagesContainerRef} className="flex-1 overflow-y-auto overflow-x-hidden min-w-0">
         <MessageList
+          sessionId={displayId}
           messages={sessionMessages}
           isStreaming={isSessionStreaming}
           isLoadingMessages={isLoadingMessages}

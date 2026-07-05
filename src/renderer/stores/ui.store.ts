@@ -6,6 +6,13 @@ type SplitRatio = 'equal' | 'main-focus' | 'side-focus';
 // Browser viewport mode: 'desktop' = full width, 'mobile' = 375px width (iPhone)
 type ViewportMode = 'desktop' | 'mobile';
 
+export interface HtmlArtifact {
+  html: string;
+  messageId: string;
+  title?: string;
+  updatedAt: number;
+}
+
 // Default mobile browser height (iPhone frame)
 const DEFAULT_MOBILE_BROWSER_HEIGHT = 667;
 
@@ -34,6 +41,7 @@ interface UIState {
   isGitPanelOpen: boolean;
   isExtensionsPanelOpen: boolean;
   isPlanPanelOpen: boolean;
+  isHtmlPanelOpen: boolean;
   isHistoryPanelOpen: boolean;
   isAnalyticsPanelOpen: boolean;
   isInspectorActive: boolean;
@@ -72,6 +80,8 @@ interface UIState {
   sessionSelectedElement: Record<string, unknown | null>;
   // Per-session plan content (markdown)
   sessionPlanContent: Record<string, string>;
+  // Per-session HTML response artifacts
+  sessionHtmlArtifacts: Record<string, HtmlArtifact>;
   // Per-session text editing state (used for loading animation during text replacement)
   sessionEditingText: Record<string, boolean>;
 
@@ -84,6 +94,8 @@ interface UIState {
   toggleExtensionsPanel: () => void;
   togglePlanPanel: () => void;
   showPlanPanel: () => void;
+  toggleHtmlPanel: () => void;
+  showHtmlPanel: () => void;
   toggleHistoryPanel: () => void;
   toggleAnalyticsPanel: () => void;
   setInspectorActive: (active: boolean) => void;
@@ -100,6 +112,8 @@ interface UIState {
   closeOnboarding: () => void;
   setPlanContent: (sessionId: string, content: string) => void;
   clearPlanContent: (sessionId: string) => void;
+  setHtmlArtifact: (sessionId: string, artifact: Omit<HtmlArtifact, 'updatedAt'> & { updatedAt?: number }) => void;
+  clearHtmlArtifact: (sessionId: string) => void;
 
   // Command Center methods
   toggleCommandCenter: () => void;
@@ -124,6 +138,7 @@ export const useUIStore = create<UIState>((set, get) => ({
   isGitPanelOpen: false,
   isExtensionsPanelOpen: false,
   isPlanPanelOpen: false,
+  isHtmlPanelOpen: false,
   isHistoryPanelOpen: false,
   isAnalyticsPanelOpen: false,
   isInspectorActive: false,
@@ -177,6 +192,7 @@ export const useUIStore = create<UIState>((set, get) => ({
   sessionInspectorActive: {},
   sessionSelectedElement: {},
   sessionEditingText: {},
+  sessionHtmlArtifacts: {},
   sessionPlanContent: (() => {
     // Plan content is no longer persisted to localStorage (was causing
     // silent data loss at 25MB+ localStorage). Plans are re-fetched from
@@ -195,7 +211,7 @@ export const useUIStore = create<UIState>((set, get) => ({
     set({
       isBrowserPanelOpen: !state.isBrowserPanelOpen,
       // Close competing panels when opening browser
-      ...((!state.isBrowserPanelOpen) ? { isExtensionsPanelOpen: false, isPlanPanelOpen: false, isHistoryPanelOpen: false } : {})
+      ...((!state.isBrowserPanelOpen) ? { isExtensionsPanelOpen: false, isPlanPanelOpen: false, isHtmlPanelOpen: false, isHistoryPanelOpen: false } : {})
     });
     // Also close editor when opening browser (dynamic import to avoid circular dependency)
     if (!state.isBrowserPanelOpen) {
@@ -210,7 +226,7 @@ export const useUIStore = create<UIState>((set, get) => ({
     set({
       isExtensionsPanelOpen: !state.isExtensionsPanelOpen,
       // Close competing panels when opening extensions
-      ...((!state.isExtensionsPanelOpen) ? { isBrowserPanelOpen: false, isPlanPanelOpen: false, isHistoryPanelOpen: false } : {})
+      ...((!state.isExtensionsPanelOpen) ? { isBrowserPanelOpen: false, isPlanPanelOpen: false, isHtmlPanelOpen: false, isHistoryPanelOpen: false } : {})
     });
     // Also close editor when opening extensions (dynamic import to avoid circular dependency)
     if (!state.isExtensionsPanelOpen) {
@@ -224,7 +240,7 @@ export const useUIStore = create<UIState>((set, get) => ({
     set({
       isPlanPanelOpen: !state.isPlanPanelOpen,
       // Close competing panels when opening plan
-      ...((!state.isPlanPanelOpen) ? { isBrowserPanelOpen: false, isExtensionsPanelOpen: false, isHistoryPanelOpen: false } : {})
+      ...((!state.isPlanPanelOpen) ? { isBrowserPanelOpen: false, isExtensionsPanelOpen: false, isHtmlPanelOpen: false, isHistoryPanelOpen: false } : {})
     });
     // Also close editor when opening plan (dynamic import to avoid circular dependency)
     if (!state.isPlanPanelOpen) {
@@ -234,8 +250,26 @@ export const useUIStore = create<UIState>((set, get) => ({
     }
   },
   showPlanPanel: () => {
-    set({ isPlanPanelOpen: true, isBrowserPanelOpen: false, isExtensionsPanelOpen: false, isHistoryPanelOpen: false });
+    set({ isPlanPanelOpen: true, isBrowserPanelOpen: false, isExtensionsPanelOpen: false, isHtmlPanelOpen: false, isHistoryPanelOpen: false });
     // Also close editor when showing plan (dynamic import to avoid circular dependency)
+    import('./editor.store').then(({ useEditorStore }) => {
+      useEditorStore.getState().closeEditor();
+    });
+  },
+  toggleHtmlPanel: () => {
+    const state = useUIStore.getState();
+    set({
+      isHtmlPanelOpen: !state.isHtmlPanelOpen,
+      ...((!state.isHtmlPanelOpen) ? { isBrowserPanelOpen: false, isExtensionsPanelOpen: false, isPlanPanelOpen: false, isHistoryPanelOpen: false } : {})
+    });
+    if (!state.isHtmlPanelOpen) {
+      import('./editor.store').then(({ useEditorStore }) => {
+        useEditorStore.getState().closeEditor();
+      });
+    }
+  },
+  showHtmlPanel: () => {
+    set({ isHtmlPanelOpen: true, isBrowserPanelOpen: false, isExtensionsPanelOpen: false, isPlanPanelOpen: false, isHistoryPanelOpen: false });
     import('./editor.store').then(({ useEditorStore }) => {
       useEditorStore.getState().closeEditor();
     });
@@ -245,7 +279,7 @@ export const useUIStore = create<UIState>((set, get) => ({
     set({
       isHistoryPanelOpen: !state.isHistoryPanelOpen,
       // Close competing panels when opening history
-      ...(!state.isHistoryPanelOpen ? { isBrowserPanelOpen: false, isExtensionsPanelOpen: false, isPlanPanelOpen: false, isAnalyticsPanelOpen: false } : {}),
+      ...(!state.isHistoryPanelOpen ? { isBrowserPanelOpen: false, isExtensionsPanelOpen: false, isPlanPanelOpen: false, isHtmlPanelOpen: false, isAnalyticsPanelOpen: false } : {}),
     });
     // Also close editor when opening history
     if (!state.isHistoryPanelOpen) {
@@ -258,7 +292,7 @@ export const useUIStore = create<UIState>((set, get) => ({
     const state = useUIStore.getState();
     set({
       isAnalyticsPanelOpen: !state.isAnalyticsPanelOpen,
-      ...((!state.isAnalyticsPanelOpen) ? { isBrowserPanelOpen: false, isExtensionsPanelOpen: false, isPlanPanelOpen: false, isHistoryPanelOpen: false } : {}),
+      ...((!state.isAnalyticsPanelOpen) ? { isBrowserPanelOpen: false, isExtensionsPanelOpen: false, isPlanPanelOpen: false, isHtmlPanelOpen: false, isHistoryPanelOpen: false } : {}),
     });
     if (!state.isAnalyticsPanelOpen) {
       import('./editor.store').then(({ useEditorStore }) => {
@@ -312,11 +346,47 @@ export const useUIStore = create<UIState>((set, get) => ({
   setPlanContent: (sessionId: string, content: string) => set((state) => ({
     sessionPlanContent: { ...state.sessionPlanContent, [sessionId]: content },
     isPlanPanelOpen: true,
+    isHtmlPanelOpen: false,
   })),
   clearPlanContent: (sessionId: string) => set((state) => {
     const newContent = { ...state.sessionPlanContent };
     delete newContent[sessionId];
     return { sessionPlanContent: newContent };
+  }),
+  setHtmlArtifact: (sessionId, artifact) => {
+    let shouldCloseEditor = false;
+    set((state) => ({
+      ...(() => {
+        shouldCloseEditor = !state.isHtmlPanelOpen
+          || state.isBrowserPanelOpen
+          || state.isExtensionsPanelOpen
+          || state.isPlanPanelOpen
+          || state.isHistoryPanelOpen;
+        return {};
+      })(),
+      sessionHtmlArtifacts: {
+        ...state.sessionHtmlArtifacts,
+        [sessionId]: {
+          ...artifact,
+          updatedAt: artifact.updatedAt || Date.now(),
+        },
+      },
+      isHtmlPanelOpen: true,
+      isBrowserPanelOpen: false,
+      isExtensionsPanelOpen: false,
+      isPlanPanelOpen: false,
+      isHistoryPanelOpen: false,
+    }));
+    if (shouldCloseEditor) {
+      import('./editor.store').then(({ useEditorStore }) => {
+        useEditorStore.getState().closeEditor();
+      });
+    }
+  },
+  clearHtmlArtifact: (sessionId) => set((state) => {
+    const artifacts = { ...state.sessionHtmlArtifacts };
+    delete artifacts[sessionId];
+    return { sessionHtmlArtifacts: artifacts };
   }),
 
   // Command Center methods

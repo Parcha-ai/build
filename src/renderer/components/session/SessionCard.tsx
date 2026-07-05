@@ -179,11 +179,16 @@ export default function SessionCard({ session, isActive, onClick, isFork = false
   };
 
   const saveRename = async () => {
-    if (editedName.trim() && editedName !== (session.forkName || session.name)) {
-      // Update forkName if it's a fork, otherwise update name
-      const updates = isFork || session.forkName
-        ? { forkName: editedName.trim() }
-        : { name: editedName.trim() };
+    const trimmedName = editedName.trim();
+    if (trimmedName && trimmedName !== resolvedDisplayName) {
+      const updates: Partial<Session> = {
+        name: trimmedName,
+        manualName: trimmedName,
+        manuallyRenamedAt: new Date().toISOString(),
+      };
+      if (isFork || session.forkName) {
+        updates.forkName = trimmedName;
+      }
       await updateSession(session.id, updates);
     }
     setIsRenaming(false);

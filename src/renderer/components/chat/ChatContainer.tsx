@@ -238,38 +238,7 @@ export default function ChatContainer({ session }: ChatContainerProps) {
   // Extract tasks from TaskCreate/TaskUpdate/TaskList tool calls (new SDK Tasks system)
   // Also supports legacy TodoWrite for backwards compatibility
   const currentTasks = useMemo((): Task[] => {
-    // Debug: Log all tool calls to understand what we're getting
-    if (streamingToolCalls.length > 0) {
-      console.log('[TasksBlock] All streaming tool calls:', streamingToolCalls.map(tc => tc.name));
-    }
-
-    // Debug: Log all task-related tool calls
-    const taskToolCalls = streamingToolCalls.filter(tc =>
-      tc.name === 'TaskCreate' || tc.name === 'TaskUpdate' || tc.name === 'TaskList' || tc.name === 'TaskGet'
-    );
-    if (taskToolCalls.length > 0) {
-      console.log('[TasksBlock] Found task tool calls in streaming:', taskToolCalls.map(tc => ({
-        name: tc.name,
-        input: tc.input,
-        result: tc.result,
-        status: tc.status,
-      })));
-    }
-
-    // Also check messages for task tool calls
-    const messageTaskCalls: any[] = [];
-    for (const msg of sessionMessages) {
-      if (msg?.toolCalls && Array.isArray(msg.toolCalls)) {
-        for (const tc of msg.toolCalls) {
-          if (tc?.name === 'TaskCreate' || tc?.name === 'TaskUpdate' || tc?.name === 'TaskList' || tc?.name === 'TaskGet') {
-            messageTaskCalls.push({ name: tc.name, input: tc.input, result: tc.result });
-          }
-        }
-      }
-    }
-    if (messageTaskCalls.length > 0) {
-      console.log('[TasksBlock] Found task tool calls in messages:', messageTaskCalls);
-    }
+    const recentMessages = sessionMessages.slice(-40);
 
     // Look for TaskList result first (gives complete picture)
     const taskListCall = [...streamingToolCalls]
@@ -279,7 +248,6 @@ export default function ChatContainer({ session }: ChatContainerProps) {
     if (taskListCall?.result) {
       // TaskList returns an array of tasks (or might be wrapped in an object)
       const taskListResult = taskListCall.result;
-      console.log('[TasksBlock] TaskList result:', taskListResult);
 
       // Handle both array and object-wrapped formats
       const tasksArray = Array.isArray(taskListResult)
@@ -304,7 +272,7 @@ export default function ChatContainer({ session }: ChatContainerProps) {
     const taskMap = new Map<string, Task>();
 
     // First, check message history for previous task tool calls
-    for (const msg of sessionMessages) {
+    for (const msg of recentMessages) {
       if (msg?.toolCalls && Array.isArray(msg.toolCalls)) {
         for (const tc of msg.toolCalls) {
           if (tc?.name === 'TaskCreate' && tc.result) {
@@ -415,8 +383,8 @@ export default function ChatContainer({ session }: ChatContainerProps) {
       }
 
       // Check message history for TodoWrite
-      for (let i = sessionMessages.length - 1; i >= 0; i--) {
-        const msg = sessionMessages[i];
+      for (let i = recentMessages.length - 1; i >= 0; i--) {
+        const msg = recentMessages[i];
         if (msg?.toolCalls && Array.isArray(msg.toolCalls)) {
           const todoWrite = [...msg.toolCalls]
             .reverse()
@@ -435,9 +403,6 @@ export default function ChatContainer({ session }: ChatContainerProps) {
     }
 
     const tasks = Array.from(taskMap.values());
-    if (tasks.length > 0) {
-      console.log('[TasksBlock] Extracted tasks:', tasks);
-    }
     return tasks;
   }, [session.id, streamingToolCalls, sessionMessages]);
 
@@ -766,6 +731,7 @@ export default function ChatContainer({ session }: ChatContainerProps) {
       {/* Messages */}
       <div ref={messagesContainerRef} className="flex-1 overflow-y-auto overflow-x-hidden min-w-0 relative">
         <MessageList
+          sessionId={session.id}
           messages={sessionMessages}
           isStreaming={isSessionStreaming}
           isLoadingMessages={isLoadingMessages}
