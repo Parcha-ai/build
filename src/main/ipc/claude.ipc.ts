@@ -37,6 +37,10 @@ const STALE_QUEUE_DRAIN_REMOTE_STUCK_MS = 5 * 60_000;
 // Per-session progress watermark for the latest active detached job, used to
 // distinguish a working remote turn from a genuinely hung one during drains.
 const drainRemoteJobProgress = new Map<string, { jobDir: string; logBytes: number; lastProgressAt: number }>();
+// Consecutive injection failures per session. After MAX_INJECTION_RETRIES the
+// drain falls back to sending the queued message as a new turn (old behavior).
+const drainInjectionFailures = new Map<string, number>();
+const MAX_INJECTION_RETRIES = 3;
 
 // Durable buffer for harness responses that are not backed by a Claude transcript.
 // Keep this out of electron-store: that store rewrites the whole JSON file
@@ -597,6 +601,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
         try {
           // Notify queue service that streaming has started
           messageQueueService.onStreamStart(sessionId, harnessFromModel(model));
+          drainInjectionFailures.delete(sessionId);
 
           // Stream the response (Stop hook handles Ralph Loop iteration)
           let eventCount = 0;
@@ -1065,6 +1070,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
       try {
         // Notify queue service that streaming has started (resume)
         messageQueueService.onStreamStart(sessionId, harnessFromModel(model));
+        drainInjectionFailures.delete(sessionId);
 
         console.log('[Claude IPC] resumeRemoteTurn received for:', sessionId, 'model:', model);
         for await (const streamEvent of claudeService.resumeRemoteTurn(sessionId, model)) {
@@ -1423,30 +1429,47 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
     const canDrainPastRemoteActive = messageQueueService.canDrainPastRemoteActive(sessionId);
     if (activeState.active) {
       if (activeState.injectable && supportsActiveInjection) {
-        const next = messageQueueService.peekForDrain(sessionId);
-        if (!next) return;
-
-        if ((next.sourceCount || 0) > 1) {
-          console.log(`[Queue] Injecting ${next.sourceCount} queued messages into active query for ${sessionId}`);
+        const failures = drainInjectionFailures.get(sessionId) || 0;
+        if (failures >= MAX_INJECTION_RETRIES) {
+          console.warn(
+            `[Queue] Injection failed ${failures} times for ${sessionId}; ` +
+            `waiting for STREAM_END to drain naturally`
+          );
+          // Don't clear the failure counter — keep it at max so re-entry
+          // from a spurious scheduleDrain doesn't restart injection attempts.
+          // Counter is cleared on the next stream start (SEND_MESSAGE / RESUME_REMOTE_TURN).
+          // Don't schedule another drain; onStreamEnd will trigger it when
+          // the current turn finishes.
+          messageQueueService.finishDrainAttempt(sessionId);
+          return;
         } else {
-          console.log(`[Queue] Injecting queued message into active query for ${sessionId}`);
-        }
+          const next = messageQueueService.peekForDrain(sessionId);
+          if (!next) return;
 
-        messageQueueService.beginDrainAttempt(sessionId);
-        const injected = await claudeService.injectMessage(
-          sessionId,
-          next.text,
-          next.attachments as Attachment[] | undefined
-        );
-        if (injected) {
-          messageQueueService.ackDrain(sessionId, next.sourceIds, { scheduleIfRemaining: true });
+          if ((next.sourceCount || 0) > 1) {
+            console.log(`[Queue] Injecting ${next.sourceCount} queued messages into active query for ${sessionId}`);
+          } else {
+            console.log(`[Queue] Injecting queued message into active query for ${sessionId}`);
+          }
+
+          messageQueueService.beginDrainAttempt(sessionId);
+          const injected = await claudeService.injectMessage(
+            sessionId,
+            next.text,
+            next.attachments as Attachment[] | undefined
+          );
+          if (injected) {
+            drainInjectionFailures.delete(sessionId);
+            messageQueueService.ackDrain(sessionId, next.sourceIds, { scheduleIfRemaining: true });
+            return;
+          }
+
+          drainInjectionFailures.set(sessionId, failures + 1);
+          console.warn(`[Queue] Injection failed for ${sessionId} (attempt ${failures + 1}/${MAX_INJECTION_RETRIES}); deferring`);
+          messageQueueService.finishDrainAttempt(sessionId);
+          messageQueueService.deferDrain(sessionId, 1000);
           return;
         }
-
-        console.warn(`[Queue] Injection failed for ${sessionId}; leaving queued message pending for retry`);
-        messageQueueService.finishDrainAttempt(sessionId);
-        messageQueueService.deferDrain(sessionId, 1000);
-        return;
       }
 
       if (canDrainPastRemoteActive) {

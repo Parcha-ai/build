@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { X, Image, FileCode, Target, File, Folder, AtSign, Brain, Square, Code, Smartphone, RefreshCw, Slash, Eraser, Activity } from 'lucide-react';
+import { X, Image, FileCode, Target, File, Folder, AtSign, Brain, Square, Code, Smartphone, RefreshCw, Slash, Eraser, Activity, Paperclip } from 'lucide-react';
 import { useSessionStore, type PermissionMode, type ThinkingMode, type EffortLevel, migrateThinkingMode, normalizePermissionModeForModel } from '../../stores/session.store';
 import { useUIStore } from '../../stores/ui.store';
 import { useAudioStore } from '../../stores/audio.store';
@@ -350,6 +350,20 @@ function readFileAsText(file: File): Promise<string> {
   });
 }
 
+function readFileAsBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result as string;
+      resolve(dataUrl.split(',')[1] || dataUrl);
+    };
+    reader.onerror = () => reject(reader.error || new Error('Failed to read file'));
+    reader.readAsDataURL(file);
+  });
+}
+
+const MAX_DROPPED_FILE_BYTES = 25 * 1024 * 1024;
+
 function shouldSuggestPlanModeNudge(
   text: string,
   attachments: Attachment[],
@@ -383,6 +397,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
   const [escapeTimeout, setEscapeTimeout] = useState<NodeJS.Timeout | null>(null);
   const [showEscapeWarning, setShowEscapeWarning] = useState(false);
   const [showPlanModeNudge, setShowPlanModeNudge] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
 
   // GStack skill launcher
   const [showGStack, setShowGStack] = useState(false);
@@ -395,6 +410,8 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const dragCounterRef = useRef(0);
   const commandAutocompleteRef = useRef<CommandAutocompleteHandle>(null);
   const voiceModeRef = useRef<VoiceModeHandle>(null);
   const blurFromBrowserEditRef = useRef(false);
@@ -1467,6 +1484,91 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
     setAttachments((prev) => prev.filter((_, i) => i !== index));
   };
 
+  const processFiles = useCallback(async (files: FileList | File[]) => {
+    const fileArray = Array.from(files);
+    for (const file of fileArray) {
+      if (file.size > MAX_DROPPED_FILE_BYTES) {
+        console.warn(`[InputArea] File too large to attach: ${file.name} (${(file.size / 1024 / 1024).toFixed(1)}MB)`);
+        continue;
+      }
+
+      try {
+        if (file.type.startsWith('image/')) {
+          const base64Data = await readFileAsBase64(file);
+          setAttachments(prev => [...prev, {
+            type: 'image',
+            name: file.name || `image-${Date.now()}.${file.type.split('/')[1] || 'png'}`,
+            content: base64Data,
+          }]);
+        } else if (isSupportedTextFile(file)) {
+          const content = await readFileAsText(file);
+          setAttachments(prev => [...prev, {
+            type: 'file',
+            name: file.name,
+            content,
+            metadata: { mimeType: file.type || 'text/plain', size: file.size, source: 'file-drop' },
+          }]);
+        } else {
+          const base64Data = await readFileAsBase64(file);
+          setAttachments(prev => [...prev, {
+            type: 'file',
+            name: file.name,
+            content: base64Data,
+            metadata: { mimeType: file.type || 'application/octet-stream', size: file.size, encoding: 'base64', source: 'file-drop' },
+          }]);
+        }
+        console.log(`[InputArea] Attached file: ${file.name} (${file.type}, ${file.size} bytes)`);
+      } catch (err) {
+        console.error(`[InputArea] Failed to read file ${file.name}:`, err);
+      }
+    }
+  }, []);
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+  }, []);
+
+  const handleDragEnter = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current++;
+    if (e.dataTransfer?.types.includes('Files')) {
+      setIsDragging(true);
+    }
+  }, []);
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current--;
+    if (dragCounterRef.current === 0) {
+      setIsDragging(false);
+    }
+  }, []);
+
+  const handleDrop = useCallback(async (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current = 0;
+    setIsDragging(false);
+
+    const files = e.dataTransfer?.files;
+    if (files && files.length > 0) {
+      await processFiles(files);
+    }
+  }, [processFiles]);
+
+  const handleFileInputChange = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (files && files.length > 0) {
+      await processFiles(files);
+    }
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  }, [processFiles]);
+
   // Handle paste event for images
   const handlePaste = async (e: React.ClipboardEvent) => {
     const clipboardData = e.clipboardData;
@@ -1705,8 +1807,31 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
 
       <div
         ref={containerRef}
-        className="px-4 py-2 relative font-mono border-t border-claude-border"
+        className={`px-4 py-2 relative font-mono border-t ${isDragging ? 'border-claude-accent bg-claude-accent/5' : 'border-claude-border'}`}
+        onDragOver={handleDragOver}
+        onDragEnter={handleDragEnter}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
       >
+        {/* Hidden file input for paperclip button */}
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          className="hidden"
+          onChange={handleFileInputChange}
+        />
+
+        {/* Drag overlay */}
+        {isDragging && (
+          <div className="absolute inset-0 z-50 flex items-center justify-center bg-claude-bg/80 border-2 border-dashed border-claude-accent pointer-events-none">
+            <div className="flex items-center gap-2 text-claude-accent font-mono text-sm">
+              <Paperclip size={16} />
+              <span>DROP FILES TO ATTACH</span>
+            </div>
+          </div>
+        )}
+
         {compactionSwitch && (
           <CompactionSwitchNotice
             notice={compactionSwitch}
@@ -1955,7 +2080,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
               onChange={handleInputChange}
               onKeyDown={handleKeyDown}
               onPaste={handlePaste}
-              placeholder={disabled ? 'session inactive...' : isVoiceModeActive ? 'add context or type message...' : isSending ? `type to queue message${hasQueuedMessages ? ` (${queuedMessages.length} queued)` : ''}...` : 'type here... (@ to mention, paste images)'}
+              placeholder={disabled ? 'session inactive...' : isVoiceModeActive ? 'add context or type message...' : isSending ? `type to queue message${hasQueuedMessages ? ` (${queuedMessages.length} queued)` : ''}...` : 'type here... (@ to mention, drop or paste files)'}
               disabled={disabled}
               className={`w-full py-0 resize-none focus:outline-none disabled:opacity-40 disabled:cursor-not-allowed min-h-[24px] max-h-[200px] font-mono bg-transparent text-base text-claude-text placeholder:text-claude-text-secondary leading-6 caret-claude-accent ${
                 useAudioStore.getState().recordingStates[sessionId]?.isRecording ? 'border-l-2 border-red-500 pl-2' : ''
@@ -2004,6 +2129,15 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
               />
             )}
           </div>
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={disabled}
+            className="p-1 transition-colors hover:bg-claude-bg disabled:opacity-40 disabled:cursor-not-allowed text-claude-text-secondary hover:text-claude-accent"
+            style={{ borderRadius: 0 }}
+            title="Attach files (or drag & drop)"
+          >
+            <Paperclip size={14} />
+          </button>
           <button
             onClick={handleAtButtonClick}
             disabled={disabled}

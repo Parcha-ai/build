@@ -2141,7 +2141,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         lastMessage.id === normalizedMessage.id;
 
       if (isDuplicateAssistantMessage) {
-        console.warn(`[SessionStore] Ignoring duplicate assistant message for ${sessionId}`);
+        console.warn(
+          `[SessionStore] Ignoring duplicate assistant message for ${sessionId}`
+          + ` | id=${normalizedMessage.id} contentLen=${(normalizedMessage.content || '').length}`
+          + ` toolCalls=${normalizedMessage.toolCalls?.length || 0}`
+        );
         return state;
       }
 
@@ -3083,6 +3087,18 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             }
           );
 
+          const totalInput = mergedMessages.length + existingMessages.length;
+          if (finalMessages.length < totalInput) {
+            const assistantsBefore = existingMessages.filter(m => m.role === 'assistant').length
+              + mergedMessages.filter(m => m.role === 'assistant').length;
+            const assistantsAfter = finalMessages.filter(m => m.role === 'assistant').length;
+            console.warn(
+              `[SessionStore] mergeLoadedMessages for ${sessionId}: ${totalInput} input → ${finalMessages.length} output`
+              + ` (loaded=${mergedMessages.length} existing=${existingMessages.length})`
+              + ` | assistants: ${assistantsBefore} → ${assistantsAfter}`
+            );
+          }
+
           return {
             messages: { ...state.messages, [sessionId]: finalMessages },
             isLoadingMessages: { ...state.isLoadingMessages, [sessionId]: false },
@@ -3648,6 +3664,17 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         addMessage(sessionId, finalMessage);
       } else if (alreadyRenderedFinal) {
         console.log(`[SessionStore] onStreamEnd skipped duplicate finalized output for ${sessionId}`);
+      } else if (!hasVisibleOutput) {
+        console.warn(
+          `[SessionStore] onStreamEnd DROPPED message for ${sessionId} — no visible output`
+          + ` | contentLen=${finalContent.length} toolCalls=${finalToolCalls.length}`
+          + ` contentBlocks=${finalContentBlocks?.length || 0}`
+          + ` streamedContentLen=${streamedContent.length}`
+          + ` backendContentLen=${message.content?.length || 0}`
+          + ` harness=${finalHarness || 'none'}`
+          + ` model=${streamModel || 'none'}`
+          + ` isAutoBuild=${isAutoBuildTurn}`
+        );
       }
 
       // Clear stream content after adding to messages

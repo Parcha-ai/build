@@ -13,6 +13,13 @@ export interface HtmlArtifact {
   updatedAt: number;
 }
 
+export interface MarkdownPanel {
+  content: string;
+  messageId: string;
+  title?: string;
+  updatedAt: number;
+}
+
 // Default mobile browser height (iPhone frame)
 const DEFAULT_MOBILE_BROWSER_HEIGHT = 667;
 
@@ -42,6 +49,7 @@ interface UIState {
   isExtensionsPanelOpen: boolean;
   isPlanPanelOpen: boolean;
   isHtmlPanelOpen: boolean;
+  isMarkdownPanelOpen: boolean;
   isHistoryPanelOpen: boolean;
   isAnalyticsPanelOpen: boolean;
   isInspectorActive: boolean;
@@ -82,6 +90,8 @@ interface UIState {
   sessionPlanContent: Record<string, string>;
   // Per-session HTML response artifacts
   sessionHtmlArtifacts: Record<string, HtmlArtifact>;
+  // Per-session markdown reader panel content
+  sessionMarkdownPanels: Record<string, MarkdownPanel>;
   // Per-session text editing state (used for loading animation during text replacement)
   sessionEditingText: Record<string, boolean>;
 
@@ -96,6 +106,10 @@ interface UIState {
   showPlanPanel: () => void;
   toggleHtmlPanel: () => void;
   showHtmlPanel: () => void;
+  toggleMarkdownPanel: () => void;
+  showMarkdownPanel: () => void;
+  setMarkdownPanel: (sessionId: string, panel: Omit<MarkdownPanel, 'updatedAt'>) => void;
+  clearMarkdownPanel: (sessionId: string) => void;
   toggleHistoryPanel: () => void;
   toggleAnalyticsPanel: () => void;
   setInspectorActive: (active: boolean) => void;
@@ -139,6 +153,7 @@ export const useUIStore = create<UIState>((set, get) => ({
   isExtensionsPanelOpen: false,
   isPlanPanelOpen: false,
   isHtmlPanelOpen: false,
+  isMarkdownPanelOpen: false,
   isHistoryPanelOpen: false,
   isAnalyticsPanelOpen: false,
   isInspectorActive: false,
@@ -193,6 +208,7 @@ export const useUIStore = create<UIState>((set, get) => ({
   sessionSelectedElement: {},
   sessionEditingText: {},
   sessionHtmlArtifacts: {},
+  sessionMarkdownPanels: {},
   sessionPlanContent: (() => {
     // Plan content is no longer persisted to localStorage (was causing
     // silent data loss at 25MB+ localStorage). Plans are re-fetched from
@@ -240,7 +256,7 @@ export const useUIStore = create<UIState>((set, get) => ({
     set({
       isPlanPanelOpen: !state.isPlanPanelOpen,
       // Close competing panels when opening plan
-      ...((!state.isPlanPanelOpen) ? { isBrowserPanelOpen: false, isExtensionsPanelOpen: false, isHtmlPanelOpen: false, isHistoryPanelOpen: false } : {})
+      ...((!state.isPlanPanelOpen) ? { isBrowserPanelOpen: false, isExtensionsPanelOpen: false, isHtmlPanelOpen: false, isHistoryPanelOpen: false, isMarkdownPanelOpen: false } : {})
     });
     // Also close editor when opening plan (dynamic import to avoid circular dependency)
     if (!state.isPlanPanelOpen) {
@@ -250,7 +266,7 @@ export const useUIStore = create<UIState>((set, get) => ({
     }
   },
   showPlanPanel: () => {
-    set({ isPlanPanelOpen: true, isBrowserPanelOpen: false, isExtensionsPanelOpen: false, isHtmlPanelOpen: false, isHistoryPanelOpen: false });
+    set({ isPlanPanelOpen: true, isBrowserPanelOpen: false, isExtensionsPanelOpen: false, isHtmlPanelOpen: false, isHistoryPanelOpen: false, isMarkdownPanelOpen: false });
     // Also close editor when showing plan (dynamic import to avoid circular dependency)
     import('./editor.store').then(({ useEditorStore }) => {
       useEditorStore.getState().closeEditor();
@@ -260,7 +276,7 @@ export const useUIStore = create<UIState>((set, get) => ({
     const state = useUIStore.getState();
     set({
       isHtmlPanelOpen: !state.isHtmlPanelOpen,
-      ...((!state.isHtmlPanelOpen) ? { isBrowserPanelOpen: false, isExtensionsPanelOpen: false, isPlanPanelOpen: false, isHistoryPanelOpen: false } : {})
+      ...((!state.isHtmlPanelOpen) ? { isBrowserPanelOpen: false, isExtensionsPanelOpen: false, isPlanPanelOpen: false, isHistoryPanelOpen: false, isMarkdownPanelOpen: false } : {})
     });
     if (!state.isHtmlPanelOpen) {
       import('./editor.store').then(({ useEditorStore }) => {
@@ -269,17 +285,57 @@ export const useUIStore = create<UIState>((set, get) => ({
     }
   },
   showHtmlPanel: () => {
-    set({ isHtmlPanelOpen: true, isBrowserPanelOpen: false, isExtensionsPanelOpen: false, isPlanPanelOpen: false, isHistoryPanelOpen: false });
+    set({ isHtmlPanelOpen: true, isBrowserPanelOpen: false, isExtensionsPanelOpen: false, isPlanPanelOpen: false, isHistoryPanelOpen: false, isMarkdownPanelOpen: false });
     import('./editor.store').then(({ useEditorStore }) => {
       useEditorStore.getState().closeEditor();
     });
   },
+  toggleMarkdownPanel: () => {
+    const state = useUIStore.getState();
+    set({
+      isMarkdownPanelOpen: !state.isMarkdownPanelOpen,
+      ...(!state.isMarkdownPanelOpen ? { isBrowserPanelOpen: false, isExtensionsPanelOpen: false, isPlanPanelOpen: false, isHtmlPanelOpen: false, isHistoryPanelOpen: false } : {}),
+    });
+    if (!state.isMarkdownPanelOpen) {
+      import('./editor.store').then(({ useEditorStore }) => {
+        useEditorStore.getState().closeEditor();
+      });
+    }
+  },
+  showMarkdownPanel: () => {
+    set({ isMarkdownPanelOpen: true, isBrowserPanelOpen: false, isExtensionsPanelOpen: false, isPlanPanelOpen: false, isHtmlPanelOpen: false, isHistoryPanelOpen: false });
+    import('./editor.store').then(({ useEditorStore }) => {
+      useEditorStore.getState().closeEditor();
+    });
+  },
+  setMarkdownPanel: (sessionId, panel) => {
+    set((state) => ({
+      sessionMarkdownPanels: {
+        ...state.sessionMarkdownPanels,
+        [sessionId]: { ...panel, updatedAt: Date.now() },
+      },
+      isMarkdownPanelOpen: true,
+      isBrowserPanelOpen: false,
+      isExtensionsPanelOpen: false,
+      isPlanPanelOpen: false,
+      isHtmlPanelOpen: false,
+      isHistoryPanelOpen: false,
+    }));
+    import('./editor.store').then(({ useEditorStore }) => {
+      useEditorStore.getState().closeEditor();
+    });
+  },
+  clearMarkdownPanel: (sessionId) => set((state) => {
+    const panels = { ...state.sessionMarkdownPanels };
+    delete panels[sessionId];
+    return { sessionMarkdownPanels: panels };
+  }),
   toggleHistoryPanel: () => {
     const state = useUIStore.getState();
     set({
       isHistoryPanelOpen: !state.isHistoryPanelOpen,
       // Close competing panels when opening history
-      ...(!state.isHistoryPanelOpen ? { isBrowserPanelOpen: false, isExtensionsPanelOpen: false, isPlanPanelOpen: false, isHtmlPanelOpen: false, isAnalyticsPanelOpen: false } : {}),
+      ...(!state.isHistoryPanelOpen ? { isBrowserPanelOpen: false, isExtensionsPanelOpen: false, isPlanPanelOpen: false, isHtmlPanelOpen: false, isMarkdownPanelOpen: false, isAnalyticsPanelOpen: false } : {}),
     });
     // Also close editor when opening history
     if (!state.isHistoryPanelOpen) {
@@ -292,7 +348,7 @@ export const useUIStore = create<UIState>((set, get) => ({
     const state = useUIStore.getState();
     set({
       isAnalyticsPanelOpen: !state.isAnalyticsPanelOpen,
-      ...((!state.isAnalyticsPanelOpen) ? { isBrowserPanelOpen: false, isExtensionsPanelOpen: false, isPlanPanelOpen: false, isHtmlPanelOpen: false, isHistoryPanelOpen: false } : {}),
+      ...((!state.isAnalyticsPanelOpen) ? { isBrowserPanelOpen: false, isExtensionsPanelOpen: false, isPlanPanelOpen: false, isHtmlPanelOpen: false, isMarkdownPanelOpen: false, isHistoryPanelOpen: false } : {}),
     });
     if (!state.isAnalyticsPanelOpen) {
       import('./editor.store').then(({ useEditorStore }) => {
@@ -347,6 +403,7 @@ export const useUIStore = create<UIState>((set, get) => ({
     sessionPlanContent: { ...state.sessionPlanContent, [sessionId]: content },
     isPlanPanelOpen: true,
     isHtmlPanelOpen: false,
+    isMarkdownPanelOpen: false,
   })),
   clearPlanContent: (sessionId: string) => set((state) => {
     const newContent = { ...state.sessionPlanContent };
@@ -376,6 +433,7 @@ export const useUIStore = create<UIState>((set, get) => ({
       isExtensionsPanelOpen: false,
       isPlanPanelOpen: false,
       isHistoryPanelOpen: false,
+      isMarkdownPanelOpen: false,
     }));
     if (shouldCloseEditor) {
       import('./editor.store').then(({ useEditorStore }) => {

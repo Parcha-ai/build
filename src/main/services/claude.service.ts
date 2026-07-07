@@ -5383,21 +5383,16 @@ ${leadContent.slice(0, leadContextLimit)}
         return;
       }
 
-      // If the last turn was handled by a different harness (Codex, Cursor, etc.),
-      // don't resume the stale Claude SDK session. But when the user manually
-      // stays on Claude Code, preserve Claude's native SDK transcript. That is
-      // the only path that gives Claude its own immediate prior-turn context
-      // without relying on copied Build transcript summaries.
+      // Always resume the Claude SDK session when available. Even if the last
+      // turn was handled by a non-Claude harness (Codex, Cursor), the SDK
+      // session carries Claude's own prior turns — dropping it loses all native
+      // conversation context and forces Claude to rely on Build transcript
+      // summaries alone, which causes "you have me at a disadvantage" responses.
+      // Non-Claude harness turns are captured in Build transcript supplemental
+      // context and injected alongside the SDK resume.
       let effectiveSdkSessionId = sdkSessionId;
-      if (sdkSessionId) {
-        const lastHarness = await this.resolveLastAssistantHarness(
-          sessionId, normalizedSupplementalMessages, prefetchedRoutingMessages);
-        if (lastHarness && lastHarness !== 'claude') {
-          console.log(`[Claude Service] Last turn was ${lastHarness}, not Claude — skipping Claude SDK resume and using Build transcript context`);
-          effectiveSdkSessionId = undefined;
-        } else if (session.sshConfig) {
-          console.log('[Claude Service] SSH foreground Claude turn: resuming stored Claude SDK session without repair scan');
-        }
+      if (sdkSessionId && session.sshConfig) {
+        console.log('[Claude Service] SSH foreground Claude turn: resuming stored Claude SDK session without repair scan');
       }
       if (effectiveSdkSessionId) {
         const contextPercentage = await this.resolveSessionContextPercentage(

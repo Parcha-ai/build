@@ -7,6 +7,7 @@ import ForkTabs from '../chat/ForkTabs';
 import TerminalContainer from '../terminal/TerminalContainer';
 import BrowserPreview from '../preview/BrowserPreview';
 import HtmlArtifactPanel from '../preview/HtmlArtifactPanel';
+import MarkdownResponsePanel from '../preview/MarkdownResponsePanel';
 import GitExplorer from '../git/GitExplorer';
 import EditorPanel from '../editor/EditorPanel';
 import ExtensionsExplorer from '../extensions/ExtensionsExplorer';
@@ -35,6 +36,7 @@ export default function MainContent() {
   const isExtensionsPanelOpen = useUIStore((s) => s.isExtensionsPanelOpen);
   const isPlanPanelOpen = useUIStore((s) => s.isPlanPanelOpen);
   const isHtmlPanelOpen = useUIStore((s) => s.isHtmlPanelOpen);
+  const isMarkdownPanelOpen = useUIStore((s) => s.isMarkdownPanelOpen);
   const terminalHeight = useUIStore((s) => s.terminalHeight);
   const toggleBrowserPanel = useUIStore((s) => s.toggleBrowserPanel);
   const toggleGitPanel = useUIStore((s) => s.toggleGitPanel);
@@ -288,8 +290,8 @@ export default function MainContent() {
 
   // In Command Center mode, browser is a floating overlay — it doesn't consume side panel space
   const hasSidePanel = isCommandCenterActive
-    ? (isGitPanelOpen || isEditorOpen || isExtensionsPanelOpen || isPlanPanelOpen || isHtmlPanelOpen)
-    : (isBrowserPanelOpen || isGitPanelOpen || isEditorOpen || isExtensionsPanelOpen || isPlanPanelOpen || isHtmlPanelOpen);
+    ? (isGitPanelOpen || isEditorOpen || isExtensionsPanelOpen || isPlanPanelOpen || isHtmlPanelOpen || isMarkdownPanelOpen)
+    : (isBrowserPanelOpen || isGitPanelOpen || isEditorOpen || isExtensionsPanelOpen || isPlanPanelOpen || isHtmlPanelOpen || isMarkdownPanelOpen);
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden relative">
@@ -354,7 +356,7 @@ export default function MainContent() {
             <div
               className="flex overflow-hidden bg-claude-surface transition-all duration-200"
               style={{
-                flexBasis: (viewportMode === 'mobile' && isBrowserPanelOpen && !isGitPanelOpen && !isEditorOpen && !isExtensionsPanelOpen && !isPlanPanelOpen && !isHtmlPanelOpen)
+                flexBasis: (viewportMode === 'mobile' && isBrowserPanelOpen && !isGitPanelOpen && !isEditorOpen && !isExtensionsPanelOpen && !isPlanPanelOpen && !isHtmlPanelOpen && !isMarkdownPanelOpen)
                   ? '420px'  // 375px device + padding + border
                   : flexBasis.side,
                 flexShrink: 0,
@@ -517,6 +519,18 @@ export default function MainContent() {
                     )}
                     <div className={`flex flex-col overflow-hidden ${(isGitPanelOpen || isEditorOpen || isExtensionsPanelOpen || isPlanPanelOpen) ? 'flex-1' : 'h-full'}`}>
                       <HtmlArtifactPanel sessionId={artifactTargetSessionId} />
+                    </div>
+                  </>
+                )}
+
+                {/* Markdown response reader panel */}
+                {isMarkdownPanelOpen && !isBrowserPanelOpen && (
+                  <>
+                    {(isGitPanelOpen || isEditorOpen || isExtensionsPanelOpen || isPlanPanelOpen || isHtmlPanelOpen) && (
+                      <div className="h-px bg-claude-border" />
+                    )}
+                    <div className={`flex flex-col overflow-hidden ${(isGitPanelOpen || isEditorOpen || isExtensionsPanelOpen || isPlanPanelOpen || isHtmlPanelOpen) ? 'flex-1' : 'h-full'}`}>
+                      <MarkdownResponsePanel sessionId={artifactTargetSessionId} />
                     </div>
                   </>
                 )}

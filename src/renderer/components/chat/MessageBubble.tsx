@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { GitBranch, Image, Target, FileCode } from 'lucide-react';
+import { GitBranch, Image, Target, FileCode, Maximize2 } from 'lucide-react';
 import ToolCallCard from './ToolCallCard';
 import HtmlArtifactLink from './HtmlArtifactLink';
 import { SpeakerButton } from './SpeakerButton';
@@ -20,6 +20,7 @@ const FILE_PATH_REGEX = /(\/(?:Users|home|var|etc|opt|tmp|usr|app|src|lib|pkg|wo
 const RECENT_TOOL_CARD_LIMIT = 80;
 const HISTORICAL_PREVIEW_HEAD_CHARS = 700;
 const HISTORICAL_PREVIEW_TAIL_CHARS = 500;
+const READER_PANEL_CHAR_THRESHOLD = 1500;
 
 interface MessageBubbleProps {
   sessionId?: string;
@@ -496,6 +497,26 @@ function MessageBubble({
               <div className="flex items-center gap-2 px-2 py-1 bg-amber-500/10 border-l-2 border-amber-500 text-amber-400 text-xs font-mono">
                 <span style={{ letterSpacing: '0.05em' }}>INTERRUPTED</span>
               </div>
+            )}
+
+            {/* Open in Reader button for large responses */}
+            {!historicalCollapsed && assistantTextContent.length >= READER_PANEL_CHAR_THRESHOLD && sessionId && (
+              <button
+                onClick={() => {
+                  const firstLine = assistantTextContent.split('\n').find(l => l.trim())?.replace(/^#+\s*/, '').trim();
+                  useUIStore.getState().setMarkdownPanel(sessionId, {
+                    content: assistantTextContent,
+                    messageId: message.id,
+                    title: firstLine && firstLine.length < 80 ? firstLine : undefined,
+                  });
+                }}
+                className="flex items-center gap-1.5 px-2 py-1 text-[10px] font-mono text-claude-text-secondary hover:text-claude-accent border border-claude-border hover:border-claude-accent transition-colors bg-claude-surface/50"
+                style={{ borderRadius: 0 }}
+                title="Open in side panel for easier reading"
+              >
+                <Maximize2 size={10} />
+                <span>OPEN IN READER{/\|.+\|/.test(assistantTextContent) ? ' (has tables)' : ''}</span>
+              </button>
             )}
 
             {/* Render content blocks in chronological order when available */}

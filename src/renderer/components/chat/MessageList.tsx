@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { Loader2 } from 'lucide-react';
 import MessageBubble from './MessageBubble';
 import HtmlArtifactLink from './HtmlArtifactLink';
@@ -321,6 +322,7 @@ export default function MessageList({
                       />
                     ) : (
                       <ReactMarkdown
+                        remarkPlugins={[remarkGfm]}
                         components={{
                           code({ className, children, ...props }) {
                             const match = /language-(\w+)/.exec(className || '');
@@ -350,6 +352,18 @@ export default function MessageList({
                           h3({ children }) { return <h3 className="text-sm font-bold mt-2 mb-1">{children}</h3>; },
                           strong({ children }) { return <strong className="font-bold text-claude-text">{children}</strong>; },
                           em({ children }) { return <em className="italic">{children}</em>; },
+                          table({ children }) {
+                            return (
+                              <div className="my-2 overflow-x-auto">
+                                <table className="min-w-full border border-claude-border" style={{ borderRadius: 0 }}>{children}</table>
+                              </div>
+                            );
+                          },
+                          thead({ children }) { return <thead className="bg-claude-surface">{children}</thead>; },
+                          tbody({ children }) { return <tbody>{children}</tbody>; },
+                          tr({ children }) { return <tr className="border-b border-claude-border">{children}</tr>; },
+                          th({ children }) { return <th className="px-3 py-2 text-left text-sm font-bold border-r border-claude-border last:border-r-0">{children}</th>; },
+                          td({ children }) { return <td className="px-3 py-2 text-sm border-r border-claude-border last:border-r-0">{children}</td>; },
                         }}
                       >
                         {event.content}
