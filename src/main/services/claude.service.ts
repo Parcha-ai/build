@@ -5956,10 +5956,30 @@ Begin by creating the task structure now.
       }
 
       const requiresDangerFlag = autoBuildLeadPermissionMode === 'bypassPermissions';
+
+      // Resolve the native CLI binary path explicitly.
+      // The SDK's own resolution uses import.meta.url which breaks when webpack
+      // externalises the module as commonjs — the URL doesn't point at the real
+      // node_modules location in packaged Electron apps.
+      let resolvedCliBinaryPath: string | undefined;
+      try {
+        const sdkPlatformPkg = require.resolve(`@anthropic-ai/claude-agent-sdk-${process.platform}-${process.arch}/package.json`);
+        resolvedCliBinaryPath = path.join(path.dirname(sdkPlatformPkg), 'claude');
+        if (!fs.existsSync(resolvedCliBinaryPath)) {
+          console.warn('[Claude Service] Resolved CLI binary path does not exist:', resolvedCliBinaryPath);
+          resolvedCliBinaryPath = undefined;
+        } else {
+          console.log('[Claude Service] Resolved native CLI binary:', resolvedCliBinaryPath);
+        }
+      } catch (e) {
+        console.warn('[Claude Service] Could not resolve native CLI binary path:', e);
+      }
+
       const messages = query({
         prompt,
         options: {
           cwd: projectPath,
+          ...(resolvedCliBinaryPath ? { pathToClaudeCodeExecutable: resolvedCliBinaryPath } : {}),
           abortController,
           permissionMode: autoBuildLeadPermissionMode,
           ...(requiresDangerFlag ? { allowDangerouslySkipPermissions: true } : {}),
