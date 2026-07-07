@@ -905,8 +905,10 @@ ${memoriesPrompt}
 
 ## ${supplementalConversationContextLabel}
 
-The following recent turns happened in this same Build session, but may not be present in the current Claude transcript.
-Use them to preserve continuity and avoid repeating work.
+CRITICAL: The following recent turns happened in this same session using a different AI coding agent (Codex, Cursor, etc.).
+This is YOUR prior work and context — you were the one doing this work, just through a different interface.
+Do NOT ask the user to repeat what was discussed. Do NOT say "I don't have context" or "you have me at a disadvantage."
+Continue seamlessly from where the conversation left off.
 
 ${supplementalConversationContext}
 `;
@@ -1848,6 +1850,13 @@ ${planContent}
       'which mission',
       'what would you like me to do with the evals',
       'leaves rather a lot to the imagination',
+      "haven't run anything yet",
+      'start of our conversation',
+      'no eval run to report',
+      'no context from previous',
+      'this is a new session',
+      "i don't have visibility into",
+      "i don't have access to previous",
     ].some((needle) => normalized.includes(needle));
   }
 
@@ -5429,6 +5438,12 @@ ${leadContent.slice(0, leadContextLimit)}
       try {
         const transcriptMessages = await this.getCanonicalMessages(sessionId, 200, { allowSdkFallback: false });
         const merged = mergeConversationMessages(transcriptMessages, normalizedSupplementalMessages);
+        const harnessBreakdown: Record<string, number> = {};
+        for (const m of merged) { harnessBreakdown[m.harness || 'unknown'] = (harnessBreakdown[m.harness || 'unknown'] || 0) + 1; }
+        console.log(
+          `[Claude Service] Cross-harness context inputs: transcript=${transcriptMessages.length} supplemental=${normalizedSupplementalMessages.length} merged=${merged.length}` +
+          ` sdkSession=${effectiveSdkSessionId ? 'yes' : 'NO'} harnesses=${JSON.stringify(harnessBreakdown)}`
+        );
         if (merged.length > 0) {
           const includeCurrentClaudeHarness = !effectiveSdkSessionId;
           const continuityMessages = includeCurrentClaudeHarness
@@ -5449,12 +5464,16 @@ ${leadContent.slice(0, leadContextLimit)}
           supplementalConversationContextLabel = includeCurrentClaudeHarness
             ? 'Recent Build Session Context'
             : 'Recent Session Context From Other Models';
-          if (supplementalConversationContext) {
-            console.log(
-              `[Claude Service] Claude ${includeCurrentClaudeHarness ? 'Build transcript' : 'cross-harness'} context: ` +
-              `${supplementalConversationContext.length} chars from ${continuityMessages.length}/${merged.length} messages`
-            );
+          console.log(
+            `[Claude Service] Claude ${includeCurrentClaudeHarness ? 'Build transcript' : 'cross-harness'} context: ` +
+            `${supplementalConversationContext.length} chars from ${continuityMessages.length}/${merged.length} messages` +
+            ` | includeClaudeHarness=${includeCurrentClaudeHarness} pinned=${pinnedBuildContinuityContext.length}ch crossHarness=${transcriptConversationContext.length}ch`
+          );
+          if (!supplementalConversationContext && merged.length > 0) {
+            console.warn(`[Claude Service] WARNING: ${merged.length} messages in transcript but cross-harness context is EMPTY — all filtered out?`);
           }
+        } else {
+          console.warn(`[Claude Service] WARNING: No messages available for Claude cross-harness context (transcript=${transcriptMessages.length} supplemental=${normalizedSupplementalMessages.length})`);
         }
       } catch (error) {
         console.warn('[Claude Service] Could not load transcript messages for Claude continuity context:', error);
@@ -6973,8 +6992,8 @@ Begin by creating the task structure now.
               console.error('[Claude SDK] Stale session ID — auto-healing:', resultMsg.result);
               this.clearSdkSessionId(sessionId);
               yield { type: 'text_delta', content: '⚠️ Remote session expired — reconnecting automatically...\n\n' };
-              // Retry with clean state — yield* delegates to a fresh generator
-              yield* this.streamMessage(sessionId, userMessage, attachments, permissionMode, thinkingMode, model, gstackMode, supplementalMessages);
+              // Pass selectedModel to skip re-routing on retry (same fix as stale-zero-token path)
+              yield* this.streamMessage(sessionId, userMessage, attachments, permissionMode, thinkingMode, selectedModel, gstackMode, supplementalMessages);
               return;
             }
 
@@ -6987,7 +7006,7 @@ Begin by creating the task structure now.
               await new Promise(r => setTimeout(r, 10000));
               if (abortController.signal.aborted) return;
               yield { type: 'text_delta', content: '🔄 Retrying...\n\n' };
-              yield* this.streamMessage(sessionId, userMessage, attachments, permissionMode, thinkingMode, model, gstackMode, supplementalMessages);
+              yield* this.streamMessage(sessionId, userMessage, attachments, permissionMode, thinkingMode, selectedModel, gstackMode, supplementalMessages);
               return;
             }
 
@@ -7032,7 +7051,12 @@ Begin by creating the task structure now.
                 console.warn(`[Claude SDK] Resume ${effectiveSdkSessionId} completed with empty zero-token result — clearing stale SDK session and retrying fresh`);
                 this.clearSdkSessionId(sessionId);
                 yield { type: 'text_delta', content: '⚠️ Remote session handle was stale — reconnecting automatically...\n\n' };
-                yield* this.streamMessage(sessionId, userMessage, attachments, permissionMode, thinkingMode, model, gstackMode, supplementalMessages);
+                // Pass selectedModel (the auto-router's resolved model) instead of
+                // 'auto' to skip re-routing on retry. The auto-router already chose
+                // Claude; re-running it wastes time and, critically, means the retry
+                // goes through a different code path that can lose cross-harness
+                // context vs the explicit-model path (which always works).
+                yield* this.streamMessage(sessionId, userMessage, attachments, permissionMode, thinkingMode, selectedModel, gstackMode, supplementalMessages);
                 return;
               }
 
@@ -7297,7 +7321,8 @@ Begin by creating the task structure now.
         console.error('[Claude SDK] Stale session ID (exception) — auto-healing:', errorMessage);
         this.clearSdkSessionId(sessionId);
         yield { type: 'text_delta', content: '⚠️ Remote session expired — reconnecting automatically...\n\n' };
-        yield* this.streamMessage(sessionId, userMessage, attachments, permissionMode, thinkingMode, model, gstackMode, supplementalMessages);
+        // Pass selectedModel to skip re-routing on retry (same fix as stale-zero-token path)
+        yield* this.streamMessage(sessionId, userMessage, attachments, permissionMode, thinkingMode, selectedModel, gstackMode, supplementalMessages);
         return;
       } else if (errorMessage.match(/process exited with code|process terminated by signal/) && session?.sshConfig) {
         console.error('[Claude SDK] SSH process exit caught:', errorMessage);
