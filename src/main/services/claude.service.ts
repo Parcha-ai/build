@@ -5721,6 +5721,27 @@ ${leadContent.slice(0, leadContextLimit)}
             session,
             includeCurrentClaudeHarness ? continuityMessages : this.filterMessagesForBuildContinuityContext(merged),
           );
+          // Fresh start (no SDK resume): deliver the full Build transcript as
+          // a <conversation_sync> block INSIDE the user message so the model
+          // treats it as its own conversation history, not as a system-prompt
+          // metadata appendix it can dismiss. This is the same mechanism used
+          // for cross-harness delta sync, extended to cover doomed-resume
+          // fresh restarts where the model would otherwise say "I don't have
+          // context from earlier in the conversation."
+          if (includeCurrentClaudeHarness && continuityMessages.length > 0 && !conversationSyncBlock) {
+            const freshSyncBody = buildCrossHarnessContext(continuityMessages, [], undefined, 120000, { withMeta: true });
+            if (freshSyncBody) {
+              conversationSyncBlock = [
+                '<conversation_sync>',
+                'You are CONTINUING an existing conversation. The messages below are YOUR prior conversation history from this session. They are authoritative — treat them as your own memory of what happened, not as external context.',
+                '',
+                freshSyncBody,
+                '</conversation_sync>',
+              ].join('\n');
+              console.log(`[Claude Service] Fresh-start conversation sync: ${conversationSyncBlock.length} chars from ${continuityMessages.length} messages`);
+            }
+          }
+
           supplementalConversationContext = [
             pinnedBuildContinuityContext,
             preBaselineContext,
