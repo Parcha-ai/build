@@ -190,6 +190,7 @@ export class ClaudeService {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private messageCacheStore: any;
   private activeQueries: Map<string, AbortController> = new Map();
+  private sessionTurnLocks: Map<string, { promise: Promise<void>; release: () => void; holder: string }> = new Map();
   private activeQueryStartedAt: Map<string, number> = new Map();
   private activeQueryLastEventAt: Map<string, number> = new Map();
   private activeQueryObjects: Map<string, Query> = new Map(); // Store Query objects for streamInput
@@ -474,6 +475,25 @@ export class ClaudeService {
     this.activeQueryLastEventAt.delete(sessionId);
     this.activeQueryObjects.delete(sessionId);
     return hadActiveQuery;
+  }
+
+  async acquireSessionTurnLock(sessionId: string, holder: string): Promise<() => void> {
+    const existing = this.sessionTurnLocks.get(sessionId);
+    if (existing) {
+      console.log(`[Claude Service] Turn lock for ${sessionId.substring(0, 8)} held by "${existing.holder}"; "${holder}" waiting`);
+      await existing.promise;
+    }
+    let release!: () => void;
+    const promise = new Promise<void>(resolve => { release = resolve; });
+    this.sessionTurnLocks.set(sessionId, { promise, release, holder });
+    console.log(`[Claude Service] Turn lock acquired for ${sessionId.substring(0, 8)} by "${holder}"`);
+    return () => {
+      if (this.sessionTurnLocks.get(sessionId)?.release === release) {
+        this.sessionTurnLocks.delete(sessionId);
+        console.log(`[Claude Service] Turn lock released for ${sessionId.substring(0, 8)} by "${holder}"`);
+      }
+      release();
+    };
   }
 
   noteActiveQueryEvent(sessionId: string): void {
@@ -4843,6 +4863,11 @@ ${leadContent.slice(0, leadContextLimit)}
       console.log(`[Claude Service] Foreground SSH cleanup scheduled in background for ${sessionId.substring(0, 8)}`);
     }
 
+    // Serialize remote process spawns per session to prevent reattach+drain races
+    const releaseTurnLock = session.sshConfig
+      ? await this.acquireSessionTurnLock(sessionId, 'streamMessage')
+      : undefined;
+
     // Rate limit auto-retry flag — set in rate_limit_event, checked in result handler
     let pendingRateLimitRetry = false;
 
@@ -7650,6 +7675,7 @@ Begin by creating the task structure now.
         if (sess?.sshConfig) sshService.markSessionInactive(sessionId);
         powerService.sessionEnded();
       }
+      releaseTurnLock?.();
     }
   }
 
@@ -7669,6 +7695,8 @@ Begin by creating the task structure now.
       yield { type: 'error', error: 'A stream is already active for this session.' };
       return;
     }
+
+    const releaseTurnLock = await this.acquireSessionTurnLock(sessionId, 'resumeRemoteTurn');
 
     const abortController = new AbortController();
     this.setActiveQuery(sessionId, abortController);
@@ -8162,6 +8190,7 @@ Begin by creating the task structure now.
         sshService.markSessionInactive(sessionId);
         powerService.sessionEnded();
       }
+      releaseTurnLock();
     }
   }
 

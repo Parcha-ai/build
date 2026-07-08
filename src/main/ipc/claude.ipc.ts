@@ -930,18 +930,31 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
             console.log(`[Claude IPC] Stream-end SSH cleanup scheduled in background for ${sessionId}`);
 
             if (hadError) {
-              void (async () => {
-                try {
-                  const job = await sshService.getLatestRecoverableRemoteProcess(sessionId, completedSession.sshConfig!);
-                  if (job?.active) {
-                    console.log(`[Claude IPC] Remote turn survived local stream error for ${sessionId}; requesting renderer reattach`);
-                    getMainWindow()?.webContents.send(IPC_CHANNELS.CLAUDE_REMOTE_TURN_RECOVERABLE, { sessionId });
-                  }
-                } catch (probeError) {
-                  console.warn('[Claude IPC] Post-error remote turn probe failed:', probeError);
+              // Await the reattach probe BEFORE notifying the queue to drain.
+              // Without this, the queue drain and reattach race each other,
+              // spawning rival remote processes milliseconds apart.
+              let remoteStillAlive = false;
+              try {
+                const job = await sshService.getLatestRecoverableRemoteProcess(sessionId, completedSession.sshConfig!);
+                if (job?.active) {
+                  remoteStillAlive = true;
+                  console.log(`[Claude IPC] Remote turn survived local stream error for ${sessionId}; requesting renderer reattach (queue drain suppressed)`);
+                  getMainWindow()?.webContents.send(IPC_CHANNELS.CLAUDE_REMOTE_TURN_RECOVERABLE, { sessionId });
                 }
-              })();
+              } catch (probeError) {
+                console.warn('[Claude IPC] Post-error remote turn probe failed:', probeError);
+              }
+              if (!remoteStillAlive) {
+                notifyQueueStreamEnd(false);
+              }
+              // When remoteStillAlive: the reattach handler (CLAUDE_RESUME_REMOTE_TURN)
+              // fires its own notifyQueueStreamEnd on completion — no drain needed here.
+            } else {
+              notifyQueueStreamEnd(turnCompleted);
             }
+          } else {
+            // Non-SSH session: drain immediately
+            notifyQueueStreamEnd(!hadError && turnCompleted);
           }
 
           if (!hadError && !suppressUserMessage && fullMessageContent.trim()) {
@@ -955,11 +968,6 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
               console.warn('[Claude IPC] Failed to update dynamic session title:', error);
             });
           }
-
-          // Notify queue service that streaming has ended.
-          // Always drain — user-queued messages are their explicit intent.
-          // After errors, the drain delay gives the runtime time to settle.
-          notifyQueueStreamEnd(!hadError && turnCompleted);
         }
 
     }

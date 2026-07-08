@@ -59,8 +59,13 @@ export function messageTimestamp(message: ChatMessage): number {
   return Number.isFinite(time) ? time : 0;
 }
 
+const STATUS_PREFIX_RE = /^(?:⚠️ Remote session hiccup — retrying\.\.\.|⏳ Rate limited — retrying in \d+s\.\.\.)\n*/gm;
+
 export function normalizeContentForCompare(content?: string): string {
-  return (content || '').replace(/\r\n/g, '\n').trim();
+  return (content || '')
+    .replace(/\r\n/g, '\n')
+    .replace(STATUS_PREFIX_RE, '')
+    .trim();
 }
 
 export function toolSignature(message: ChatMessage): string {
