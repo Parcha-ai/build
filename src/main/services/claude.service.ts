@@ -5508,11 +5508,21 @@ ${leadContent.slice(0, leadContextLimit)}
         // full Build transcript context injection below; the baseline
         // mechanism keeps this lossless.
         try {
-          const jobs = await sshService.listDetachedBridgeJobs(sessionId, session.sshConfig);
+          // Probe BOTH ownership signals: bridge job registry (fast, but only
+          // sees bridge-spawned processes whose command matched) and the
+          // remote process probe (catches survivors the registry filter
+          // misses). The 2026-07-08 cc87079c incident raced a live owner the
+          // bridge-jobs filter did not report — the resume then returned an
+          // empty zero-token "success" (reproduced deterministically: two
+          // concurrent --resume spawns on one session always empty out).
+          const [jobs, remoteProcessActive] = await Promise.all([
+            sshService.listDetachedBridgeJobs(sessionId, session.sshConfig).catch(() => []),
+            sshService.hasActiveRemoteProcess(sessionId, session.sshConfig).catch(() => false),
+          ]);
           const liveClaudeJob = jobs.find((job) => job.active && job.command === 'claude');
-          if (liveClaudeJob) {
+          if (liveClaudeJob || remoteProcessActive) {
             console.warn(
-              `[Claude Service] Live remote Claude process (pid ${liveClaudeJob.pid || '?'}) still owns SDK session ` +
+              `[Claude Service] Live remote Claude process (${liveClaudeJob ? `pid ${liveClaudeJob.pid || '?'}` : 'remote-process probe'}) still owns SDK session ` +
               `${sdkSessionId.substring(0, 8)} — starting fresh turn with full Build transcript context instead of a doomed resume`
             );
             effectiveSdkSessionId = undefined;
@@ -9319,10 +9329,25 @@ Begin by creating the task structure now.
     }
 
     if (options.allowSdkFallback === false) {
-      console.log(`[Claude] Skipping SDK transcript fallback for foreground context: ${sessionId.substring(0, 8)}`);
-      return filterInternalPromptEchoes(limit && limit > 0
-        ? usableBuildMessages.slice(-limit)
-        : usableBuildMessages);
+      // Latency guard: foreground turns normally skip the (possibly remote)
+      // SDK transcript fetch. EXCEPTION: a continuing session with a thin
+      // local Build transcript means the real history lives in the SDK
+      // transcript and has never been backfilled (e.g. first turn after an
+      // app restart, before the session was opened in the UI). Serving 4
+      // messages of context for a 140-message conversation causes turn-level
+      // amnesia (2026-07-08 cc87079c incident) — pay the one-time fetch.
+      const isContinuingSession = Boolean(this.sessionStore.get(`sdkSessionMappings.${sessionId}`));
+      const thinTranscript = usableBuildMessages.length < 10;
+      if (!(isContinuingSession && thinTranscript)) {
+        console.log(`[Claude] Skipping SDK transcript fallback for foreground context: ${sessionId.substring(0, 8)}`);
+        return filterInternalPromptEchoes(limit && limit > 0
+          ? usableBuildMessages.slice(-limit)
+          : usableBuildMessages);
+      }
+      console.warn(
+        `[Claude] Build transcript is thin (${usableBuildMessages.length} msgs) for continuing session ${sessionId.substring(0, 8)} — ` +
+        'fetching SDK transcript despite foreground context to avoid turn amnesia'
+      );
     }
 
     const claudeMessages = await this.getMessages(sessionId, limit).catch((error) => {

@@ -2149,6 +2149,28 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         return state;
       }
 
+      // Defense in depth against stale/resurrected stream finalizations
+      // (deferred STREAM_END + resume races can re-finalize buffered content
+      // under a NEW id): drop assistant messages whose content exactly
+      // duplicates a recent existing message, regardless of id.
+      if (normalizedMessage.role === 'assistant') {
+        const isResurrectedDuplicate = existingMessages.some((existing) =>
+          existing.role === 'assistant'
+          && isExactLongAssistantDuplicate(existing, normalizedMessage)
+          && Math.abs(
+            normalizeChatMessageTimestamp(existing).timestamp.getTime()
+            - normalizedMessage.timestamp.getTime()
+          ) < 300_000
+        );
+        if (isResurrectedDuplicate) {
+          console.warn(
+            `[SessionStore] Ignoring content-duplicate assistant message for ${sessionId}`
+            + ` | id=${normalizedMessage.id} contentLen=${(normalizedMessage.content || '').length}`
+          );
+          return state;
+        }
+      }
+
       return {
         messages: {
           ...state.messages,
@@ -3602,6 +3624,17 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             `(backendActive=${backendActive ? 'yes' : 'no'}, remoteActive=${remoteActive ? 'yes' : 'no'})`
           );
           if (remoteActive) {
+            // Clear buffered stream content before deferring — this handler
+            // will never re-fire, and any later resume STREAM_END that reads
+            // the leftover buffer would finalize it AGAIN as a duplicate
+            // assistant message. The authoritative copy is already in the
+            // Build transcript (transcriptSnapshot), which loadMessages
+            // restores. Scoped to remoteActive: a still-active LOCAL query may
+            // legitimately keep appending to this buffer.
+            set((state) => ({
+              currentStreamContent: { ...state.currentStreamContent, [sessionId]: '' },
+              currentThinkingContent: { ...state.currentThinkingContent, [sessionId]: '' },
+            }));
             const { loadMessages } = get();
             startRemoteProcessMonitor(sessionId, get, set, loadMessages, { recoverableKnown: true });
           }
@@ -3614,6 +3647,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         const remoteActive = await hasLiveRemoteProcess(sessionId, currentState);
         if (remoteActive) {
           console.warn(`[SessionStore] Deferring STREAM_END for ${sessionId}; remote Claude process is still active`);
+          // Clear buffered stream content before deferring (see comment on the
+          // tool-call defer path above) — prevents later resume STREAM_ENDs
+          // from resurrecting it as a duplicate message.
+          set((state) => ({
+            currentStreamContent: { ...state.currentStreamContent, [sessionId]: '' },
+            currentThinkingContent: { ...state.currentThinkingContent, [sessionId]: '' },
+          }));
           markRemoteProcessStreaming(sessionId, get, set);
           const { loadMessages } = get();
           startRemoteProcessMonitor(sessionId, get, set, loadMessages, { recoverableKnown: true });
