@@ -1648,6 +1648,26 @@ Read or source that file if you need the actual values. Do not print secret valu
     return systemMsg.session_id;
   }
 
+  /** Normalized comparable text for cross-transcript message matching. */
+  private comparableMessageText(m: ChatMessage): string {
+    const raw = (m.content || '').trim()
+      || (m.contentBlocks || []).map((b) => (b as { text?: string }).text || '').join(' ').trim();
+    return raw.replace(/\s+/g, ' ').toLowerCase().slice(0, 240);
+  }
+
+  /**
+   * Same-conversation-message match across transcripts (Build vs native SDK).
+   * Ids/harness tags differ between stores, so match on role + normalized
+   * content prefix. Contentless (tool-only) messages never match — callers
+   * must filter those out of delta computations.
+   */
+  private isSameConversationMessage(a: ChatMessage, b: ChatMessage): boolean {
+    if (a.role !== b.role) return false;
+    const na = this.comparableMessageText(a);
+    if (!na) return false;
+    return na === this.comparableMessageText(b);
+  }
+
   private getSdkSessionBaseline(sessionId: string): number | undefined {
     const baseline = this.sessionStore.get(`sdkSessionBaseline.${sessionId}`) as number | undefined;
     return typeof baseline === 'number' && Number.isFinite(baseline) ? baseline : undefined;
@@ -5563,6 +5583,11 @@ ${leadContent.slice(0, leadContextLimit)}
       // the continuity source and must include prior Claude turns too.
       let supplementalConversationContext = '';
       let supplementalConversationContextLabel = 'Recent Session Context From Other Models';
+      // Native-delta sync: messages missing from the resumed native transcript,
+      // delivered INSIDE the user message (models treat in-conversation sync
+      // blocks as events of THIS conversation; system-prompt context reads as
+      // metadata about "some other conversation" and gets dismissed).
+      let conversationSyncBlock = '';
       try {
         const transcriptMessages = await this.getCanonicalMessages(sessionId, 200, { allowSdkFallback: false });
         const merged = mergeConversationMessages(transcriptMessages, normalizedSupplementalMessages);
@@ -5588,22 +5613,63 @@ ${leadContent.slice(0, leadContextLimit)}
             const t = m.timestamp instanceof Date ? m.timestamp.getTime() : Date.parse(String(m.timestamp || ''));
             return Number.isFinite(t) ? t : 0;
           };
+          // Preferred path when resuming a native SDK session: compute the TRUE
+          // delta — which Build-transcript messages are absent from the native
+          // session's own transcript — and inject only those, framed as one
+          // merged timeline. The baseline-time approximation below remains the
+          // fallback; it over-injects (whole-history dumps when baseline is
+          // missing) and presents the model with a second, conflicting
+          // "conversation" after harness switches or recovery forks
+          // (2026-07-08 8d00908d incident: Sonnet trusted its diverged native
+          // thread and dismissed the injected real history).
+          let nativeDeltaMessages: ChatMessage[] | undefined;
+          if (!includeCurrentClaudeHarness) {
+            try {
+              const nativeMessages = await Promise.race([
+                this.getMessages(sessionId, 200),
+                new Promise<ChatMessage[]>((_, reject) => setTimeout(() => reject(new Error('native transcript fetch timeout')), 6000)),
+              ]);
+              if (nativeMessages.length > 0) {
+                nativeDeltaMessages = this.filterMessagesForBuildContinuityContext(
+                  merged.filter((m) =>
+                    this.comparableMessageText(m).length > 0
+                    && !nativeMessages.some((n) => this.isSameConversationMessage(m, n)))
+                );
+                console.log(
+                  `[Claude Service] Native-delta context: native=${nativeMessages.length} merged=${merged.length} missing=${nativeDeltaMessages.length}`
+                );
+                if (nativeDeltaMessages.length > 0) {
+                  const deltaBody = buildCrossHarnessContext(nativeDeltaMessages, [], undefined, 120000, { withMeta: true });
+                  conversationSyncBlock = [
+                    '<conversation_sync>',
+                    'Your transcript for this session is MISSING the messages below — they are part of THIS SAME conversation but ran under a different model/harness or in a parallel recovery turn. Merge them chronologically with the history you already have: the combined timeline is ONE continuous session. Where they conflict with your memory, these are authoritative.',
+                    '',
+                    deltaBody,
+                    '</conversation_sync>',
+                  ].join('\n');
+                }
+              }
+            } catch (deltaError) {
+              console.warn('[Claude Service] Native transcript delta unavailable, falling back to baseline split:', deltaError instanceof Error ? deltaError.message : deltaError);
+            }
+          }
+
           const sdkBaseline = !includeCurrentClaudeHarness ? this.getSdkSessionBaseline(sessionId) : undefined;
           // No baseline on an existing SDK session = legacy session from before
           // baseline tracking: we cannot know how much history the native
           // session actually holds (it may be a post-restart fragment), so
           // treat ALL history as potentially missing and inject it. Bounded
           // duplicate context for one healthy turn beats permanent amnesia.
-          const preBaselineMessages = !includeCurrentClaudeHarness
+          const preBaselineMessages = !includeCurrentClaudeHarness && nativeDeltaMessages === undefined
             ? this.filterMessagesForBuildContinuityContext(
               sdkBaseline ? merged.filter((m) => messageTime(m) < sdkBaseline) : merged,
             )
             : [];
           const postBaselineMessages = includeCurrentClaudeHarness
             ? continuityMessages
-            : sdkBaseline
-              ? merged.filter((m) => messageTime(m) >= sdkBaseline)
-              : [];
+            : nativeDeltaMessages !== undefined || !sdkBaseline
+              ? []
+              : merged.filter((m) => messageTime(m) >= sdkBaseline);
 
           // Pre-restart history: all harnesses (the native session has none of it).
           const preBaselineContext = preBaselineMessages.length > 0
@@ -5727,6 +5793,9 @@ ${leadContent.slice(0, leadContextLimit)}
 
       // GStack mode is injected via system prompt append only (buildSystemPromptAppend)
       let fullTextMessage = resolvedMessage;
+      if (conversationSyncBlock) {
+        fullTextMessage = `${conversationSyncBlock}\n\n${fullTextMessage}`;
+      }
       if (fileAttachmentPrompt) {
         fullTextMessage = `${fileAttachmentPrompt}\n\n${fullTextMessage || ATTACHMENT_ONLY_PROMPT}`;
       }

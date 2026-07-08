@@ -535,6 +535,7 @@ export function buildCrossHarnessContext(
   supplemental: ChatMessage[] = [],
   currentHarness?: Harness,
   maxChars = CROSS_HARNESS_MAX_CHARS,
+  options: { withMeta?: boolean } = {},
 ): string {
   const merged = mergeConversationMessages(messages, supplemental);
   if (merged.length === 0) return '';
@@ -551,7 +552,15 @@ export function buildCrossHarnessContext(
 
   for (let i = crossHarnessMessages.length - 1; i >= 0; i--) {
     const msg = crossHarnessMessages[i];
-    const role = msg.role.toUpperCase();
+    let role = msg.role.toUpperCase();
+    if (options.withMeta) {
+      const t = msg.timestamp instanceof Date ? msg.timestamp : new Date(msg.timestamp || 0);
+      const stamp = Number.isFinite(t.getTime()) && t.getTime() > 0
+        ? ` [${t.toISOString().slice(0, 16).replace('T', ' ')}]`
+        : '';
+      const via = msg.harness ? ` (via ${msg.harness})` : '';
+      role = `${role}${stamp}${via}`;
+    }
 
     let content = messageContentForContext(msg);
     if ((msg.role === 'assistant' || msg.role === 'system') && content.length > CROSS_HARNESS_ASSISTANT_CHARS) {
