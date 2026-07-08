@@ -12,11 +12,12 @@ import GitExplorer from '../git/GitExplorer';
 import EditorPanel from '../editor/EditorPanel';
 import ExtensionsExplorer from '../extensions/ExtensionsExplorer';
 import PlanPanel from '../plan/PlanPanel';
+import DesignPanel from '../design/DesignPanel';
 import SetupProgress from '../session/SetupProgress';
 import CommandCenterGrid from '../command-center/CommandCenterGrid';
 import AgentView from '../agent-view/AgentView';
 import EmptyState from './EmptyState';
-import { X, GripVertical, GripHorizontal, Smartphone, Monitor } from 'lucide-react';
+import { X, GripVertical, GripHorizontal, Smartphone, Monitor, ArrowLeft } from 'lucide-react';
 import { getSessionDisplayName } from '../../utils/session-display';
 
 const PRIMARY_MODIFIER_KEY: 'metaKey' | 'ctrlKey' = /mac/i.test(navigator.platform) ? 'metaKey' : 'ctrlKey';
@@ -37,6 +38,10 @@ export default function MainContent() {
   const isPlanPanelOpen = useUIStore((s) => s.isPlanPanelOpen);
   const isHtmlPanelOpen = useUIStore((s) => s.isHtmlPanelOpen);
   const isMarkdownPanelOpen = useUIStore((s) => s.isMarkdownPanelOpen);
+  const isDesignPanelOpen = useUIStore((s) => s.isDesignPanelOpen);
+  const sessionDesignTakeover = useUIStore((s) => s.sessionDesignTakeover);
+  const sessionDesignPanels = useUIStore((s) => s.sessionDesignPanels);
+  const setDesignTakeover = useUIStore((s) => s.setDesignTakeover);
   const terminalHeight = useUIStore((s) => s.terminalHeight);
   const toggleBrowserPanel = useUIStore((s) => s.toggleBrowserPanel);
   const toggleGitPanel = useUIStore((s) => s.toggleGitPanel);
@@ -288,13 +293,49 @@ export default function MainContent() {
     return <EmptyState />;
   }
 
+  // Design session takeover — the Open Design canvas owns the whole view
+  // (one chat: the design session's). The overlay below stays MOUNTED when
+  // the user returns to coding (hidden via opacity/size, never display:none
+  // or unmount) because the OD webview holds the design run's SSE stream —
+  // destroying the webview cancels an in-flight design run.
+  const designTakeoverActive = !!sessionDesignTakeover[activeSession.id];
+  const activeDesignPanel = sessionDesignPanels[activeSession.id];
+  const designOverlay = activeDesignPanel ? (
+    <div
+      className={`absolute z-30 flex flex-col bg-claude-bg ${
+        designTakeoverActive
+          ? 'inset-0'
+          : 'w-px h-px overflow-hidden opacity-0 pointer-events-none bottom-0 right-0'
+      }`}
+      aria-hidden={!designTakeoverActive}
+    >
+      <div className="h-9 flex items-center justify-between px-3 border-b border-claude-border bg-claude-surface flex-shrink-0">
+        <button
+          onClick={() => setDesignTakeover(activeSession.id, false)}
+          className="flex items-center gap-1.5 text-sm text-claude-text-secondary hover:text-claude-text"
+          title="Return to the coding session — design keeps running and context syncs back automatically"
+        >
+          <ArrowLeft size={14} />
+          Back to coding session
+        </button>
+        <span className="text-xs text-claude-text-secondary truncate">
+          Design session — {getSessionDisplayName(activeSession)}
+        </span>
+      </div>
+      <div className="flex-1 overflow-hidden">
+        <DesignPanel sessionId={activeSession.id} chromeless />
+      </div>
+    </div>
+  ) : null;
+
   // In Command Center mode, browser is a floating overlay — it doesn't consume side panel space
   const hasSidePanel = isCommandCenterActive
-    ? (isGitPanelOpen || isEditorOpen || isExtensionsPanelOpen || isPlanPanelOpen || isHtmlPanelOpen || isMarkdownPanelOpen)
-    : (isBrowserPanelOpen || isGitPanelOpen || isEditorOpen || isExtensionsPanelOpen || isPlanPanelOpen || isHtmlPanelOpen || isMarkdownPanelOpen);
+    ? (isGitPanelOpen || isEditorOpen || isExtensionsPanelOpen || isPlanPanelOpen || isHtmlPanelOpen || isMarkdownPanelOpen || isDesignPanelOpen)
+    : (isBrowserPanelOpen || isGitPanelOpen || isEditorOpen || isExtensionsPanelOpen || isPlanPanelOpen || isHtmlPanelOpen || isMarkdownPanelOpen || isDesignPanelOpen);
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden relative">
+      {designOverlay}
       {/* Main panel area */}
       <div className="flex-1 flex overflow-hidden">
         {/* Primary content - chat or setup progress */}
@@ -531,6 +572,20 @@ export default function MainContent() {
                     )}
                     <div className={`flex flex-col overflow-hidden ${(isGitPanelOpen || isEditorOpen || isExtensionsPanelOpen || isPlanPanelOpen || isHtmlPanelOpen) ? 'flex-1' : 'h-full'}`}>
                       <MarkdownResponsePanel sessionId={artifactTargetSessionId} />
+                    </div>
+                  </>
+                )}
+
+                {/* Design panel (empty-state / manual start only — once a
+                    workspace exists, design renders via the persistent
+                    takeover overlay so its webview is never destroyed) */}
+                {isDesignPanelOpen && !isBrowserPanelOpen && !activeDesignPanel && (
+                  <>
+                    {(isGitPanelOpen || isEditorOpen || isExtensionsPanelOpen || isPlanPanelOpen || isHtmlPanelOpen || isMarkdownPanelOpen) && (
+                      <div className="h-px bg-claude-border" />
+                    )}
+                    <div className={`flex flex-col overflow-hidden ${(isGitPanelOpen || isEditorOpen || isExtensionsPanelOpen || isPlanPanelOpen || isHtmlPanelOpen || isMarkdownPanelOpen) ? 'flex-1' : 'h-full'}`}>
+                      <DesignPanel sessionId={activeSession.id} />
                     </div>
                   </>
                 )}

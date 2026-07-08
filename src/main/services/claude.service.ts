@@ -24,6 +24,7 @@ import { memoryService, MemoryCategory } from './memory.service';
 import { qmdService } from './qmd.service';
 import { mcpService } from './mcp.service';
 import { codexService } from './codex.service';
+import { designService } from './design.service';
 import { openclawService } from './openclaw.service';
 import { getCursorCliService } from './cursor-cli.service';
 import { getCursorService } from './cursor.service';
@@ -807,6 +808,10 @@ If the user agrees:
 - Be proactive about suggesting which URLs to test based on the files being modified
 
 You are intelligent enough to determine what URLs to test based on the project structure, development server configuration, and the specific files being modified.
+
+### Design Mode
+
+When the user asks you to DESIGN something visual — a landing page, UI mockup, slide deck, poster, dashboard concept, brand exploration, or similar — call the DesignMode tool (claudette-browser) with a complete design brief, then END YOUR TURN with a one-line handoff message. A dedicated design session (Open Design) takes over the view and its design-specialized agent does the designing — you do not write design files yourself, and you do not open the browser to preview designs. Design files land in a workspace folder inside this session and the design conversation syncs back to you automatically, so when the user returns you have full context to integrate the designs into code. Regular coding tasks do NOT need design mode.
 `;
 
   private buildSystemPromptAppend(
@@ -3831,6 +3836,68 @@ ${leadContent.slice(0, leadContextLimit)}
       }
     );
 
+    const designModeTool = tool(
+      'DesignMode',
+      'Hand off to a design session (powered by Open Design). Call this whenever the user asks to design something visual: a landing page, UI mockup, slide deck, poster, dashboard, brand exploration, or similar. The app switches to a dedicated design canvas with its own design-specialized agent that does the designing — you do NOT create the design yourself. Pass the full design brief; it seeds the design session. Design files land in a workspace folder inside this session, and the design conversation syncs back to you automatically.',
+      {
+        brief: z.string().describe('The complete design brief to hand to the design agent — what to design, style direction, content, constraints. Be specific; this becomes the design session\'s opening prompt.'),
+      },
+      async (args) => {
+        try {
+          const currentSession = this.sessionStore.get(`sessions.${sessionId}`) as Session | undefined;
+          const sshConfig = currentSession?.sshConfig;
+          const cwd = currentSession?.worktreePath || currentSession?.repoPath || sshConfig?.remoteWorkdir;
+          if (!cwd) {
+            return {
+              content: [{
+                type: 'text' as const,
+                text: 'Design mode requires a session working directory and none was found.',
+              }],
+              isError: true,
+            };
+          }
+          const workspace = await designService.ensureDesignWorkspace(
+            sessionId,
+            cwd,
+            currentSession?.name || args.brief.slice(0, 60),
+            sshConfig?.remoteWorkdir ? { config: sshConfig, remoteWorkdir: sshConfig.remoteWorkdir } : undefined
+          );
+          const run = await designService.startDesignRun(sessionId, args.brief);
+
+          // Switch the session view to the design session (full takeover)
+          if (this.mainWindow) {
+            this.mainWindow.webContents.send(IPC_CHANNELS.DESIGN_OPEN_PANEL, {
+              sessionId,
+              url: run.conversationUrl,
+              workspaceDir: workspace.workspaceDir,
+              takeover: true,
+            });
+          }
+
+          return {
+            content: [{
+              type: 'text' as const,
+              text: [
+                'Design session opened — the app has switched to the design canvas and the brief has been handed to the design agent, which will do the designing.',
+                '',
+                'Do NOT design or write design files yourself. End your turn now with a single short sentence telling the user the design session is ready and the brief has been handed over.',
+                `Design files will appear in ${workspace.workspaceDir} and the design conversation syncs back to you automatically, so you will have full context when the user returns.`,
+              ].join('\n'),
+            }],
+          };
+        } catch (error) {
+          console.error('[Claude Service] DesignMode error:', error);
+          return {
+            content: [{
+              type: 'text' as const,
+              text: `Failed to activate design mode: ${error instanceof Error ? error.message : String(error)}`,
+            }],
+            isError: true,
+          };
+        }
+      }
+    );
+
     const mcpServer = createSdkMcpServer({
       name: 'claudette-browser',
       version: '2.0.0', // Upgraded to Stagehand-powered automation
@@ -3865,6 +3932,9 @@ ${leadContent.slice(0, leadContextLimit)}
 
         // ============ CODEX SECOND OPINION ============
         codexSecondOpinionTool,
+
+        // ============ DESIGN MODE (Open Design) ============
+        designModeTool,
 
         // ============ SELECTOR-BASED BROWSER TOOLS ============
         browserSnapshotTool,
@@ -5570,6 +5640,21 @@ ${leadContent.slice(0, leadContextLimit)}
         console.warn('[Claude Service] Could not load transcript messages for Claude continuity context:', error);
       }
 
+      // Design session sync-back: if this session has an Open Design workspace,
+      // pull the design conversation so the coding agent knows what was
+      // designed (files are already on disk in the workspace).
+      try {
+        const designContext = await designService.fetchDesignSessionContext(sessionId);
+        if (designContext) {
+          supplementalConversationContext = [supplementalConversationContext, designContext]
+            .filter(Boolean)
+            .join('\n\n');
+          console.log(`[Claude Service] Design session context injected: ${designContext.length} chars`);
+        }
+      } catch (error) {
+        console.warn('[Claude Service] Design session context fetch failed:', error);
+      }
+
       const claudePolicy = leadHarnessPolicy.claude;
       if (thinkingMode || claudePolicy?.effort) {
         console.log(`[Claude Service] Effort level: ${thinkingMode || claudePolicy?.effort || 'default'} -> ${claudePolicy?.thinking?.type || (claudePolicy?.maxThinkingTokens ? `maxThinkingTokens:${claudePolicy.maxThinkingTokens}` : 'default')}`);
@@ -6075,6 +6160,13 @@ Begin by creating the task structure now.
       try {
         const sdkPlatformPkg = require.resolve(`@anthropic-ai/claude-agent-sdk-${process.platform}-${process.arch}/package.json`);
         resolvedCliBinaryPath = path.join(path.dirname(sdkPlatformPkg), 'claude');
+        // In the dev webpack build require.resolve can return a repo-relative
+        // path; the SDK spawns from the session cwd, so a relative path only
+        // works when the session happens to live in this repo. Anchor it to
+        // the process cwd (which is what existsSync validated against).
+        if (!path.isAbsolute(resolvedCliBinaryPath)) {
+          resolvedCliBinaryPath = path.resolve(process.cwd(), resolvedCliBinaryPath);
+        }
         if (!fs.existsSync(resolvedCliBinaryPath)) {
           console.warn('[Claude Service] Resolved CLI binary path does not exist:', resolvedCliBinaryPath);
           resolvedCliBinaryPath = undefined;

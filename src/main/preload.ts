@@ -454,6 +454,21 @@ const electronAPI = {
     },
   },
 
+  // Design mode (Open Design integration)
+  design: {
+    getStatus: (sessionId: string): Promise<{ installed: boolean; daemonUrl: string | null; workspace: { projectId: string; workspaceDir: string; panelUrl: string; daemonUrl: string } | null }> =>
+      ipcRenderer.invoke(IPC_CHANNELS.DESIGN_GET_STATUS, sessionId),
+    ensureWorkspace: (sessionId: string): Promise<{ projectId: string; workspaceDir: string; panelUrl: string; daemonUrl: string }> =>
+      ipcRenderer.invoke(IPC_CHANNELS.DESIGN_ENSURE_WORKSPACE, sessionId),
+    pushWorkspace: (sessionId: string): Promise<{ pushed: number }> =>
+      ipcRenderer.invoke(IPC_CHANNELS.DESIGN_PUSH_WORKSPACE, sessionId),
+    onDesignOpenPanel: (callback: (data: { sessionId: string; url: string; workspaceDir: string; takeover?: boolean }) => void) => {
+      const handler = (_: IpcRendererEvent, data: { sessionId: string; url: string; workspaceDir: string; takeover?: boolean }) => callback(data);
+      ipcRenderer.on(IPC_CHANNELS.DESIGN_OPEN_PANEL, handler);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.DESIGN_OPEN_PANEL, handler);
+    },
+  },
+
   // Settings
   settings: {
     get: (): Promise<AppSettings> =>

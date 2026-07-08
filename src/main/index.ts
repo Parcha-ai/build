@@ -93,6 +93,7 @@ import { registerQmdHandlers } from './ipc/qmd.ipc';
 import { registerMcpHandlers } from './ipc/mcp.ipc';
 import { registerPluginHandlers } from './ipc/plugin.ipc';
 import { registerCodexHandlers } from './ipc/codex.ipc';
+import { registerDesignHandlers } from './ipc/design.ipc';
 import { registerOpenClawHandlers } from './ipc/openclaw.ipc';
 import { registerAnalyticsHandlers } from './ipc/analytics.ipc';
 import { registerQueueHandlers } from './ipc/queue.ipc';
@@ -854,6 +855,7 @@ function registerIPCHandlers(): void {
   registerMcpHandlers(ipcMain);
   registerPluginHandlers(ipcMain);
   registerCodexHandlers(ipcMain);
+  registerDesignHandlers(ipcMain);
   registerOpenClawHandlers(ipcMain);
   registerAnalyticsHandlers(ipcMain);
   registerQueueHandlers(ipcMain);
@@ -985,6 +987,11 @@ app.on('will-quit', () => {
   // laptop sleep, and transient network drops. Explicit session deletion/cancel
   // still performs targeted remote cleanup.
   powerService.dispose();
+
+  // Stop the Open Design daemon if we spawned it (adopted daemons are left alone)
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { designService } = require('./services/design.service');
+  designService.shutdown();
 
   // Clean up wakeup timers
   try {

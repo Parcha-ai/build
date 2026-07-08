@@ -19,6 +19,7 @@ import BedtimeLockModal from './components/layout/BedtimeLockModal';
 import DailyReviewModal from './components/tasks/DailyReviewModal';
 import BedtimeTaskReviewModal from './components/tasks/BedtimeTaskReviewModal';
 import { Terminal, Globe, PanelRight, Settings, PanelLeftClose, Monitor, AlertTriangle, Package, FileText, FileCode, ClipboardList, GitBranch } from 'lucide-react';
+import OpenDesignIcon from './components/design/OpenDesignIcon';
 import { getSessionDisplayName } from './utils/session-display';
 
 // Check if we're running in Electron (has electronAPI) or browser preview mode
@@ -278,6 +279,10 @@ function ElectronApp() {
   const isBrowserPanelOpen = useUIStore((s) => s.isBrowserPanelOpen);
   const isExtensionsPanelOpen = useUIStore((s) => s.isExtensionsPanelOpen);
   const isPlanPanelOpen = useUIStore((s) => s.isPlanPanelOpen);
+  const isDesignPanelOpen = useUIStore((s) => s.isDesignPanelOpen);
+  const isDesignTakeoverActive = useUIStore(
+    (s) => !!(activeSessionId && s.sessionDesignTakeover[activeSessionId])
+  );
   const isHtmlPanelOpen = useUIStore((s) => s.isHtmlPanelOpen);
   const isGitPanelOpen = useUIStore((s) => s.isGitPanelOpen);
   const toggleSidebar = useUIStore((s) => s.toggleSidebar);
@@ -698,6 +703,18 @@ function ElectronApp() {
     };
   }, []);
 
+  // Switch RHS to the design panel when the agent activates design mode
+  useEffect(() => {
+    const unsubscribe = window.electronAPI.design.onDesignOpenPanel((data: { sessionId: string; url: string; workspaceDir: string; takeover?: boolean }) => {
+      console.log('[App] Design panel open requested for session:', data.sessionId, data.url, 'takeover:', data.takeover);
+      useUIStore.getState().showDesignPanel(data.sessionId, { url: data.url, workspaceDir: data.workspaceDir }, data.takeover);
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  }, []);
+
   useEffect(() => {
     // Load sessions when authenticated OR in dev mode
     if (user || isDevMode) {
@@ -842,6 +859,36 @@ function ElectronApp() {
             title="Toggle Git"
           >
             <GitBranch size={14} />
+          </button>
+          <button
+            onClick={async () => {
+              const sid = useSessionStore.getState().activeSessionId;
+              if (!sid) return;
+              const ui = useUIStore.getState();
+              if (ui.sessionDesignTakeover[sid]) {
+                ui.setDesignTakeover(sid, false);
+                return;
+              }
+              // Design always takes over the full space (chat included)
+              const existing = ui.sessionDesignPanels[sid];
+              if (existing) {
+                ui.showDesignPanel(sid, existing, true);
+                return;
+              }
+              try {
+                const ws = await window.electronAPI.design.ensureWorkspace(sid);
+                useUIStore.getState().showDesignPanel(sid, { url: ws.panelUrl, workspaceDir: ws.workspaceDir }, true);
+              } catch (error) {
+                console.error('[App] Could not start design workspace:', error);
+                useUIStore.getState().toggleDesignPanel(); // fall back to panel empty-state (shows the error path)
+              }
+            }}
+            className={`p-1 transition-colors hover:text-pink-400 ${
+              isDesignTakeoverActive || isDesignPanelOpen ? 'text-pink-400' : 'text-claude-text-secondary'
+            }`}
+            title="Toggle Design Mode"
+          >
+            <OpenDesignIcon size={15} />
           </button>
           <button
             onClick={cycleSplitRatio}

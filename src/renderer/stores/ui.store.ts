@@ -47,6 +47,7 @@ interface UIState {
   isBrowserPanelOpen: boolean;
   isGitPanelOpen: boolean;
   isExtensionsPanelOpen: boolean;
+  isDesignPanelOpen: boolean;
   isPlanPanelOpen: boolean;
   isHtmlPanelOpen: boolean;
   isMarkdownPanelOpen: boolean;
@@ -94,6 +95,10 @@ interface UIState {
   sessionMarkdownPanels: Record<string, MarkdownPanel>;
   // Per-session text editing state (used for loading animation during text replacement)
   sessionEditingText: Record<string, boolean>;
+  // Per-session design panel state (Open Design canvas URL + workspace dir)
+  sessionDesignPanels: Record<string, { url: string; workspaceDir: string }>;
+  // Sessions where the design session has fully taken over the view (no dual chat)
+  sessionDesignTakeover: Record<string, boolean>;
 
   toggleSidebar: () => void;
   setSidebarWidth: (width: number) => void;
@@ -112,6 +117,9 @@ interface UIState {
   clearMarkdownPanel: (sessionId: string) => void;
   toggleHistoryPanel: () => void;
   toggleAnalyticsPanel: () => void;
+  toggleDesignPanel: () => void;
+  showDesignPanel: (sessionId: string, panel: { url: string; workspaceDir: string }, takeover?: boolean) => void;
+  setDesignTakeover: (sessionId: string, active: boolean) => void;
   setInspectorActive: (active: boolean) => void;
   setSelectedElement: (element: unknown | null) => void;
   cycleSplitRatio: () => void;
@@ -150,7 +158,7 @@ export const useUIStore = create<UIState>((set, get) => ({
   isTerminalPanelOpen: false,
   isBrowserPanelOpen: false,
   isGitPanelOpen: false,
-  isExtensionsPanelOpen: false,
+  isExtensionsPanelOpen: false, isDesignPanelOpen: false,
   isPlanPanelOpen: false,
   isHtmlPanelOpen: false,
   isMarkdownPanelOpen: false,
@@ -207,6 +215,8 @@ export const useUIStore = create<UIState>((set, get) => ({
   sessionInspectorActive: {},
   sessionSelectedElement: {},
   sessionEditingText: {},
+  sessionDesignPanels: {},
+  sessionDesignTakeover: {},
   sessionHtmlArtifacts: {},
   sessionMarkdownPanels: {},
   sessionPlanContent: (() => {
@@ -227,7 +237,7 @@ export const useUIStore = create<UIState>((set, get) => ({
     set({
       isBrowserPanelOpen: !state.isBrowserPanelOpen,
       // Close competing panels when opening browser
-      ...((!state.isBrowserPanelOpen) ? { isExtensionsPanelOpen: false, isPlanPanelOpen: false, isHtmlPanelOpen: false, isHistoryPanelOpen: false } : {})
+      ...((!state.isBrowserPanelOpen) ? { isExtensionsPanelOpen: false, isDesignPanelOpen: false, isPlanPanelOpen: false, isHtmlPanelOpen: false, isHistoryPanelOpen: false } : {})
     });
     // Also close editor when opening browser (dynamic import to avoid circular dependency)
     if (!state.isBrowserPanelOpen) {
@@ -242,7 +252,7 @@ export const useUIStore = create<UIState>((set, get) => ({
     set({
       isExtensionsPanelOpen: !state.isExtensionsPanelOpen,
       // Close competing panels when opening extensions
-      ...((!state.isExtensionsPanelOpen) ? { isBrowserPanelOpen: false, isPlanPanelOpen: false, isHtmlPanelOpen: false, isHistoryPanelOpen: false } : {})
+      ...((!state.isExtensionsPanelOpen) ? { isBrowserPanelOpen: false, isPlanPanelOpen: false, isHtmlPanelOpen: false, isHistoryPanelOpen: false, isDesignPanelOpen: false } : {})
     });
     // Also close editor when opening extensions (dynamic import to avoid circular dependency)
     if (!state.isExtensionsPanelOpen) {
@@ -256,7 +266,7 @@ export const useUIStore = create<UIState>((set, get) => ({
     set({
       isPlanPanelOpen: !state.isPlanPanelOpen,
       // Close competing panels when opening plan
-      ...((!state.isPlanPanelOpen) ? { isBrowserPanelOpen: false, isExtensionsPanelOpen: false, isHtmlPanelOpen: false, isHistoryPanelOpen: false, isMarkdownPanelOpen: false } : {})
+      ...((!state.isPlanPanelOpen) ? { isBrowserPanelOpen: false, isExtensionsPanelOpen: false, isDesignPanelOpen: false, isHtmlPanelOpen: false, isHistoryPanelOpen: false, isMarkdownPanelOpen: false } : {})
     });
     // Also close editor when opening plan (dynamic import to avoid circular dependency)
     if (!state.isPlanPanelOpen) {
@@ -266,7 +276,7 @@ export const useUIStore = create<UIState>((set, get) => ({
     }
   },
   showPlanPanel: () => {
-    set({ isPlanPanelOpen: true, isBrowserPanelOpen: false, isExtensionsPanelOpen: false, isHtmlPanelOpen: false, isHistoryPanelOpen: false, isMarkdownPanelOpen: false });
+    set({ isPlanPanelOpen: true, isBrowserPanelOpen: false, isExtensionsPanelOpen: false, isDesignPanelOpen: false, isHtmlPanelOpen: false, isHistoryPanelOpen: false, isMarkdownPanelOpen: false });
     // Also close editor when showing plan (dynamic import to avoid circular dependency)
     import('./editor.store').then(({ useEditorStore }) => {
       useEditorStore.getState().closeEditor();
@@ -276,7 +286,7 @@ export const useUIStore = create<UIState>((set, get) => ({
     const state = useUIStore.getState();
     set({
       isHtmlPanelOpen: !state.isHtmlPanelOpen,
-      ...((!state.isHtmlPanelOpen) ? { isBrowserPanelOpen: false, isExtensionsPanelOpen: false, isPlanPanelOpen: false, isHistoryPanelOpen: false, isMarkdownPanelOpen: false } : {})
+      ...((!state.isHtmlPanelOpen) ? { isBrowserPanelOpen: false, isExtensionsPanelOpen: false, isDesignPanelOpen: false, isPlanPanelOpen: false, isHistoryPanelOpen: false, isMarkdownPanelOpen: false } : {})
     });
     if (!state.isHtmlPanelOpen) {
       import('./editor.store').then(({ useEditorStore }) => {
@@ -285,7 +295,7 @@ export const useUIStore = create<UIState>((set, get) => ({
     }
   },
   showHtmlPanel: () => {
-    set({ isHtmlPanelOpen: true, isBrowserPanelOpen: false, isExtensionsPanelOpen: false, isPlanPanelOpen: false, isHistoryPanelOpen: false, isMarkdownPanelOpen: false });
+    set({ isHtmlPanelOpen: true, isBrowserPanelOpen: false, isExtensionsPanelOpen: false, isDesignPanelOpen: false, isPlanPanelOpen: false, isHistoryPanelOpen: false, isMarkdownPanelOpen: false });
     import('./editor.store').then(({ useEditorStore }) => {
       useEditorStore.getState().closeEditor();
     });
@@ -294,7 +304,7 @@ export const useUIStore = create<UIState>((set, get) => ({
     const state = useUIStore.getState();
     set({
       isMarkdownPanelOpen: !state.isMarkdownPanelOpen,
-      ...(!state.isMarkdownPanelOpen ? { isBrowserPanelOpen: false, isExtensionsPanelOpen: false, isPlanPanelOpen: false, isHtmlPanelOpen: false, isHistoryPanelOpen: false } : {}),
+      ...(!state.isMarkdownPanelOpen ? { isBrowserPanelOpen: false, isExtensionsPanelOpen: false, isDesignPanelOpen: false, isPlanPanelOpen: false, isHtmlPanelOpen: false, isHistoryPanelOpen: false } : {}),
     });
     if (!state.isMarkdownPanelOpen) {
       import('./editor.store').then(({ useEditorStore }) => {
@@ -303,7 +313,7 @@ export const useUIStore = create<UIState>((set, get) => ({
     }
   },
   showMarkdownPanel: () => {
-    set({ isMarkdownPanelOpen: true, isBrowserPanelOpen: false, isExtensionsPanelOpen: false, isPlanPanelOpen: false, isHtmlPanelOpen: false, isHistoryPanelOpen: false });
+    set({ isMarkdownPanelOpen: true, isBrowserPanelOpen: false, isExtensionsPanelOpen: false, isDesignPanelOpen: false, isPlanPanelOpen: false, isHtmlPanelOpen: false, isHistoryPanelOpen: false });
     import('./editor.store').then(({ useEditorStore }) => {
       useEditorStore.getState().closeEditor();
     });
@@ -316,7 +326,7 @@ export const useUIStore = create<UIState>((set, get) => ({
       },
       isMarkdownPanelOpen: true,
       isBrowserPanelOpen: false,
-      isExtensionsPanelOpen: false,
+      isExtensionsPanelOpen: false, isDesignPanelOpen: false,
       isPlanPanelOpen: false,
       isHtmlPanelOpen: false,
       isHistoryPanelOpen: false,
@@ -335,7 +345,7 @@ export const useUIStore = create<UIState>((set, get) => ({
     set({
       isHistoryPanelOpen: !state.isHistoryPanelOpen,
       // Close competing panels when opening history
-      ...(!state.isHistoryPanelOpen ? { isBrowserPanelOpen: false, isExtensionsPanelOpen: false, isPlanPanelOpen: false, isHtmlPanelOpen: false, isMarkdownPanelOpen: false, isAnalyticsPanelOpen: false } : {}),
+      ...(!state.isHistoryPanelOpen ? { isBrowserPanelOpen: false, isExtensionsPanelOpen: false, isDesignPanelOpen: false, isPlanPanelOpen: false, isHtmlPanelOpen: false, isMarkdownPanelOpen: false, isAnalyticsPanelOpen: false } : {}),
     });
     // Also close editor when opening history
     if (!state.isHistoryPanelOpen) {
@@ -348,7 +358,7 @@ export const useUIStore = create<UIState>((set, get) => ({
     const state = useUIStore.getState();
     set({
       isAnalyticsPanelOpen: !state.isAnalyticsPanelOpen,
-      ...((!state.isAnalyticsPanelOpen) ? { isBrowserPanelOpen: false, isExtensionsPanelOpen: false, isPlanPanelOpen: false, isHtmlPanelOpen: false, isMarkdownPanelOpen: false, isHistoryPanelOpen: false } : {}),
+      ...((!state.isAnalyticsPanelOpen) ? { isBrowserPanelOpen: false, isExtensionsPanelOpen: false, isDesignPanelOpen: false, isPlanPanelOpen: false, isHtmlPanelOpen: false, isMarkdownPanelOpen: false, isHistoryPanelOpen: false } : {}),
     });
     if (!state.isAnalyticsPanelOpen) {
       import('./editor.store').then(({ useEditorStore }) => {
@@ -356,6 +366,42 @@ export const useUIStore = create<UIState>((set, get) => ({
       });
     }
   },
+  toggleDesignPanel: () => {
+    const state = useUIStore.getState();
+    set({
+      isDesignPanelOpen: !state.isDesignPanelOpen,
+      // Close competing panels when opening design
+      ...(!state.isDesignPanelOpen ? { isBrowserPanelOpen: false, isExtensionsPanelOpen: false, isPlanPanelOpen: false, isHtmlPanelOpen: false, isMarkdownPanelOpen: false, isHistoryPanelOpen: false, isAnalyticsPanelOpen: false } : {}),
+    });
+    if (!state.isDesignPanelOpen) {
+      import('./editor.store').then(({ useEditorStore }) => {
+        useEditorStore.getState().closeEditor();
+      });
+    }
+  },
+  showDesignPanel: (sessionId, panel, takeover) => {
+    set((state) => ({
+      sessionDesignPanels: { ...state.sessionDesignPanels, [sessionId]: panel },
+      ...(takeover !== undefined
+        ? { sessionDesignTakeover: { ...state.sessionDesignTakeover, [sessionId]: takeover } }
+        : {}),
+      isDesignPanelOpen: true,
+      isBrowserPanelOpen: false,
+      isExtensionsPanelOpen: false,
+      isPlanPanelOpen: false,
+      isHtmlPanelOpen: false,
+      isMarkdownPanelOpen: false,
+      isHistoryPanelOpen: false,
+      isAnalyticsPanelOpen: false,
+    }));
+    import('./editor.store').then(({ useEditorStore }) => {
+      useEditorStore.getState().closeEditor();
+    });
+  },
+  setDesignTakeover: (sessionId, active) => set((state) => ({
+    sessionDesignTakeover: { ...state.sessionDesignTakeover, [sessionId]: active },
+    ...(active ? {} : { isDesignPanelOpen: false }),
+  })),
   setInspectorActive: (active) => set({ isInspectorActive: active }),
   setSelectedElement: (element) => set({ selectedElement: element }),
   cycleSplitRatio: () => set((state) => {
@@ -430,7 +476,7 @@ export const useUIStore = create<UIState>((set, get) => ({
       },
       isHtmlPanelOpen: true,
       isBrowserPanelOpen: false,
-      isExtensionsPanelOpen: false,
+      isExtensionsPanelOpen: false, isDesignPanelOpen: false,
       isPlanPanelOpen: false,
       isHistoryPanelOpen: false,
       isMarkdownPanelOpen: false,

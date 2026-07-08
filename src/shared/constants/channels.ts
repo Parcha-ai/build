@@ -105,6 +105,12 @@ export const IPC_CHANNELS = {
   BROWSER_OPEN_PANEL: 'browser:open-panel', // Request to open browser panel
   BROWSER_REGISTER: 'browser:register', // Webview registration from renderer
 
+  // Design mode (Open Design integration) channels
+  DESIGN_OPEN_PANEL: 'design:open-panel', // Main -> renderer: open design panel for a session
+  DESIGN_GET_STATUS: 'design:get-status', // Renderer -> main: daemon status + session workspace
+  DESIGN_ENSURE_WORKSPACE: 'design:ensure-workspace', // Renderer -> main: start daemon + create/attach project
+  DESIGN_PUSH_WORKSPACE: 'design:push-workspace', // Renderer -> main: sync SSH mirror to remote now
+
   // Settings channels
   SETTINGS_GET: 'settings:get',
   SETTINGS_SET: 'settings:set',

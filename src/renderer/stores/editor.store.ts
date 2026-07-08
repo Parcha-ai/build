@@ -212,6 +212,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
           isExtensionsPanelOpen: false,
           isPlanPanelOpen: false,
           isHtmlPanelOpen: false,
+          isDesignPanelOpen: false,
         });
         console.log('[EditorStore] Competing panels closed');
       });
@@ -343,6 +344,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         isExtensionsPanelOpen: false,
         isPlanPanelOpen: false,
         isHtmlPanelOpen: false,
+        isDesignPanelOpen: false,
       });
     });
   },
@@ -361,6 +363,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         isExtensionsPanelOpen: false,
         isPlanPanelOpen: false,
         isHtmlPanelOpen: false,
+        isDesignPanelOpen: false,
       });
     });
   },
