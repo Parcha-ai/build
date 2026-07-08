@@ -1462,6 +1462,23 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
           const injectElapsedMs = Date.now() - injectStartMs;
           console.log(`[Queue] Injection ${injected ? 'succeeded' : 'FAILED'} for ${sessionId} in ${injectElapsedMs}ms | sourceIds=${JSON.stringify(next.sourceIds)} queueLen=${messageQueueService.length(sessionId)}`);
           if (injected) {
+            // streamInput can resolve exactly as the query completes (observed
+            // resolving after a 7-minute wait in the same millisecond as
+            // "Terminal reason: completed") — the exiting query never processes
+            // the message and acking it here silently loses it. Give the
+            // stream a moment to settle, then only ack if the query is still
+            // alive to actually consume the injected message.
+            await new Promise((resolve) => setTimeout(resolve, 400));
+            const postInjectState = claudeService.getActiveQueryState(sessionId);
+            if (!postInjectState.active) {
+              console.warn(
+                `[Queue] Injection for ${sessionId} raced query completion (${injectElapsedMs}ms) — ` +
+                'keeping message queued to send as a fresh turn instead of losing it'
+              );
+              messageQueueService.finishDrainAttempt(sessionId);
+              messageQueueService.deferDrain(sessionId, 500);
+              return;
+            }
             drainInjectionFailures.delete(sessionId);
             const hasRemaining = messageQueueService.length(sessionId) > (next.sourceIds?.length || 1);
             messageQueueService.ackDrain(sessionId, next.sourceIds, { keepProcessing: hasRemaining, scheduleIfRemaining: true });

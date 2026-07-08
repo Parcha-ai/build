@@ -5430,6 +5430,26 @@ ${leadContent.slice(0, leadContextLimit)}
       let effectiveSdkSessionId = sdkSessionId;
       if (sdkSessionId && session.sshConfig) {
         console.log('[Claude Service] SSH foreground Claude turn: resuming stored Claude SDK session without repair scan');
+        // A live remote Claude process can still own this SDK session —
+        // background tasks/monitors keep the process alive after its turn
+        // completes. Spawning a second process with --resume on that same
+        // session returns an empty zero-token result every time (observed
+        // systematically in prod). Skip resume for this turn and rely on the
+        // full Build transcript context injection below; the baseline
+        // mechanism keeps this lossless.
+        try {
+          const jobs = await sshService.listDetachedBridgeJobs(sessionId, session.sshConfig);
+          const liveClaudeJob = jobs.find((job) => job.active && job.command === 'claude');
+          if (liveClaudeJob) {
+            console.warn(
+              `[Claude Service] Live remote Claude process (pid ${liveClaudeJob.pid || '?'}) still owns SDK session ` +
+              `${sdkSessionId.substring(0, 8)} — starting fresh turn with full Build transcript context instead of a doomed resume`
+            );
+            effectiveSdkSessionId = undefined;
+          }
+        } catch (probeError) {
+          console.warn('[Claude Service] Could not probe live remote Claude processes before resume:', probeError);
+        }
       }
       if (effectiveSdkSessionId) {
         const contextPercentage = await this.resolveSessionContextPercentage(
