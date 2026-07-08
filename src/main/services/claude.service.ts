@@ -7153,6 +7153,11 @@ Begin by creating the task structure now.
                 return;
               }
 
+              // Turn produced real output — clear the empty-result strike so a
+              // later hiccup gets its resume-intact retry instead of escalating
+              // straight to a fresh restart.
+              this.resumeEmptyRetryAt.delete(sessionId);
+
               // Context occupancy comes from the last single API call, NOT the
               // cumulative result usage (which re-counts cache reads per call
               // and can exceed the window several times over).
