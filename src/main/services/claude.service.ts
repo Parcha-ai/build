@@ -480,6 +480,11 @@ export class ClaudeService {
   async acquireSessionTurnLock(sessionId: string, holder: string): Promise<() => void> {
     const existing = this.sessionTurnLocks.get(sessionId);
     if (existing) {
+      if (existing.holder === holder) {
+        // Reentrant: recursive retry (e.g. streamMessage → yield* this.streamMessage)
+        // inherits the outer caller's lock — return a no-op release.
+        return () => {};
+      }
       console.log(`[Claude Service] Turn lock for ${sessionId.substring(0, 8)} held by "${existing.holder}"; "${holder}" waiting`);
       await existing.promise;
     }
@@ -5564,7 +5569,7 @@ ${leadContent.slice(0, leadContextLimit)}
             sshService.listDetachedBridgeJobs(sessionId, session.sshConfig).catch(() => []),
             sshService.hasActiveRemoteProcess(sessionId, session.sshConfig).catch(() => false),
           ]);
-          const liveClaudeJob = jobs.find((job) => job.active && job.command === 'claude');
+          const liveClaudeJob = jobs.find((job) => job.active && !job.recovered && job.command === 'claude');
           if (liveClaudeJob || remoteProcessActive) {
             console.warn(
               `[Claude Service] Live remote Claude process (${liveClaudeJob ? `pid ${liveClaudeJob.pid || '?'}` : 'remote-process probe'}) still owns SDK session ` +
