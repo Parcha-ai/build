@@ -1453,14 +1453,19 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
           }
 
           messageQueueService.beginDrainAttempt(sessionId);
+          const injectStartMs = Date.now();
           const injected = await claudeService.injectMessage(
             sessionId,
             next.text,
             next.attachments as Attachment[] | undefined
           );
+          const injectElapsedMs = Date.now() - injectStartMs;
+          console.log(`[Queue] Injection ${injected ? 'succeeded' : 'FAILED'} for ${sessionId} in ${injectElapsedMs}ms | sourceIds=${JSON.stringify(next.sourceIds)} queueLen=${messageQueueService.length(sessionId)}`);
           if (injected) {
             drainInjectionFailures.delete(sessionId);
-            messageQueueService.ackDrain(sessionId, next.sourceIds, { scheduleIfRemaining: true });
+            const hasRemaining = messageQueueService.length(sessionId) > (next.sourceIds?.length || 1);
+            messageQueueService.ackDrain(sessionId, next.sourceIds, { keepProcessing: hasRemaining, scheduleIfRemaining: true });
+            console.log(`[Queue] Post-ackDrain queueLen=${messageQueueService.length(sessionId)} processing=${messageQueueService.getState(sessionId).isProcessing}`);
             return;
           }
 

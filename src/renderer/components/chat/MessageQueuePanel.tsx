@@ -10,6 +10,8 @@ interface MessageQueuePanelProps {
 
 export const MessageQueuePanel: React.FC<MessageQueuePanelProps> = ({ sessionId }) => {
   const queue = useSessionStore(useCallback((s) => s.messageQueue[sessionId] || EMPTY_QUEUE, [sessionId]));
+  const isProcessingQueue = useSessionStore(useCallback((s) => s.isProcessingQueue[sessionId] || false, [sessionId]));
+  const isStreaming = useSessionStore(useCallback((s) => s.isStreaming[sessionId] || false, [sessionId]));
   const removeFromQueue = useSessionStore((s) => s.removeFromQueue);
   const editQueuedMessage = useSessionStore((s) => s.editQueuedMessage);
   const moveToFront = useSessionStore((s) => s.moveToFront);
@@ -18,7 +20,10 @@ export const MessageQueuePanel: React.FC<MessageQueuePanelProps> = ({ sessionId 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editText, setEditText] = useState('');
 
-  if (queue.length === 0) {
+  // Hide the panel when the queue is being actively drained (injected) into a
+  // live stream. The message has already been sent to Claude via streamInput;
+  // keeping it visible misleads the user into thinking it's still waiting.
+  if (queue.length === 0 || (isProcessingQueue && isStreaming)) {
     return null;
   }
 

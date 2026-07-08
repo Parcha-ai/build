@@ -526,7 +526,10 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
   const effortConfig = EFFORT_LEVEL_CONFIG[migratedThinkingMode] || EFFORT_LEVEL_CONFIG['high'];
 
   const isSending = isStreamingState || isProcessingQueueState || (isStreamingProp ?? false);
-  const hasQueuedMessages = queuedMessages.length > 0;
+  // Don't count messages as "queued" when they're being actively injected
+  // into a live stream — they've already been sent to Claude via streamInput.
+  const effectiveQueuedCount = (isProcessingQueueState && isStreamingState) ? 0 : queuedMessages.length;
+  const hasQueuedMessages = effectiveQueuedCount > 0;
   const activeWorkSummary = useMemo(() => formatActiveWorkSummary(monitorInstances), [monitorInstances]);
   const hasActiveBackgroundWork = activeWorkSummary.total > 0;
   const modeChangeDisabled = disabled || isSending || hasQueuedMessages;
@@ -2080,7 +2083,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
               onChange={handleInputChange}
               onKeyDown={handleKeyDown}
               onPaste={handlePaste}
-              placeholder={disabled ? 'session inactive...' : isVoiceModeActive ? 'add context or type message...' : isSending ? `type to queue message${hasQueuedMessages ? ` (${queuedMessages.length} queued)` : ''}...` : 'type here... (@ to mention, drop or paste files)'}
+              placeholder={disabled ? 'session inactive...' : isVoiceModeActive ? 'add context or type message...' : isSending ? `type to queue message${hasQueuedMessages ? ` (${effectiveQueuedCount} queued)` : ''}...` : 'type here... (@ to mention, drop or paste files)'}
               disabled={disabled}
               className={`w-full py-0 resize-none focus:outline-none disabled:opacity-40 disabled:cursor-not-allowed min-h-[24px] max-h-[200px] font-mono bg-transparent text-base text-claude-text placeholder:text-claude-text-secondary leading-6 caret-claude-accent ${
                 useAudioStore.getState().recordingStates[sessionId]?.isRecording ? 'border-l-2 border-red-500 pl-2' : ''

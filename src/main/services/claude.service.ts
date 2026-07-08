@@ -211,6 +211,10 @@ export class ClaudeService {
   private sshSdkResumeRepairChecks: Map<string, { sdkSessionId?: string; checkedAt: number }> = new Map();
   private ignoredSdkSessionIdLogState: Map<string, { count: number; lastLoggedAt: number }> = new Map();
   private sdkStatusNoticeAt: Map<string, number> = new Map();
+  // Tracks the last time an empty zero-token resume result triggered a
+  // resume-intact retry, so a second strike within the window escalates to a
+  // fresh restart instead of retrying forever.
+  private resumeEmptyRetryAt: Map<string, number> = new Map();
   private taskProgressEmitState: Map<string, { lastText: string; lastEmittedAt: number; suppressed: number }> = new Map();
   private readonly SSH_SDK_RESUME_REPAIR_TTL_MS = 30 * 60 * 1000;
 
@@ -905,10 +909,12 @@ ${memoriesPrompt}
 
 ## ${supplementalConversationContextLabel}
 
-CRITICAL: The following recent turns happened in this same session using a different AI coding agent (Codex, Cursor, etc.).
-This is YOUR prior work and context — you were the one doing this work, just through a different interface.
-Do NOT ask the user to repeat what was discussed. Do NOT say "I don't have context" or "you have me at a disadvantage."
-Continue seamlessly from where the conversation left off.
+CRITICAL: The following turns happened earlier in this SAME session. They may be missing from your
+current transcript because the session was restarted, resumed on another machine, or handled by a
+different AI coding agent (Codex, Cursor, etc.). Either way this is YOUR prior work and context.
+Do NOT ask the user to repeat what was discussed. Do NOT say "I don't have context", "this is the
+start of our conversation", or "you have me at a disadvantage". Resolve short follow-ups like
+"the evals" or "that job" against this history, and continue seamlessly from where it left off.
 
 ${supplementalConversationContext}
 `;
@@ -1616,8 +1622,30 @@ Read or source that file if you need the actual values. Do not print secret valu
       return undefined;
     }
 
+    // When the native SDK session ID CHANGES (fresh session started
+    // mid-conversation, e.g. after a stale-session restart), record a baseline
+    // timestamp. Build transcript messages older than this baseline are NOT in
+    // the native session's history — any context injected at the fresh start
+    // lived in a per-spawn system prompt that does not persist across resumes.
+    // Resume turns must re-inject pre-baseline history every turn.
+    const previousSdkSessionId = this.sessionStore.get(`sdkSessionMappings.${sessionId}`) as string | undefined;
+    const hasBaseline = typeof this.sessionStore.get(`sdkSessionBaseline.${sessionId}`) === 'number';
+    if (previousSdkSessionId !== systemMsg.session_id || !hasBaseline) {
+      // Same-ID-but-no-baseline covers sessions from before baseline tracking
+      // existed: we cannot know how much history their native session holds,
+      // so mark "now" and re-inject everything older on subsequent turns.
+      // Worst case for a healthy legacy session is bounded duplicate context;
+      // worst case without this is permanent amnesia after an old restart.
+      this.sessionStore.set(`sdkSessionBaseline.${sessionId}`, Date.now());
+      console.log(`[Claude SDK] Native session ${systemMsg.session_id.substring(0, 8)} for ${sessionId.substring(0, 8)} — baseline ${previousSdkSessionId !== systemMsg.session_id ? 'set (new session)' : 'backfilled (legacy)'} for pre-restart context re-injection`);
+    }
     this.sessionStore.set(`sdkSessionMappings.${sessionId}`, systemMsg.session_id);
     return systemMsg.session_id;
+  }
+
+  private getSdkSessionBaseline(sessionId: string): number | undefined {
+    const baseline = this.sessionStore.get(`sdkSessionBaseline.${sessionId}`) as number | undefined;
+    return typeof baseline === 'number' && Number.isFinite(baseline) ? baseline : undefined;
   }
 
   private clearSdkSessionId(sessionId: string): void {
@@ -5449,25 +5477,68 @@ ${leadContent.slice(0, leadContextLimit)}
           const continuityMessages = includeCurrentClaudeHarness
             ? this.filterMessagesForBuildContinuityContext(merged)
             : merged;
-          const pinnedBuildContinuityContext = includeCurrentClaudeHarness
-            ? this.buildBuildSessionContinuityContext(sessionId, session, continuityMessages)
+
+          // The native SDK session only contains messages exchanged since it
+          // was created. If it was created mid-conversation (fresh restart
+          // after a stale session), everything before that baseline lived in a
+          // per-spawn system prompt that does NOT persist across resumes.
+          // Re-inject pre-baseline history on every resume turn, or Claude is
+          // amnesiac about the entire pre-restart conversation.
+          const messageTime = (m: ChatMessage): number => {
+            const t = m.timestamp instanceof Date ? m.timestamp.getTime() : Date.parse(String(m.timestamp || ''));
+            return Number.isFinite(t) ? t : 0;
+          };
+          const sdkBaseline = !includeCurrentClaudeHarness ? this.getSdkSessionBaseline(sessionId) : undefined;
+          // No baseline on an existing SDK session = legacy session from before
+          // baseline tracking: we cannot know how much history the native
+          // session actually holds (it may be a post-restart fragment), so
+          // treat ALL history as potentially missing and inject it. Bounded
+          // duplicate context for one healthy turn beats permanent amnesia.
+          const preBaselineMessages = !includeCurrentClaudeHarness
+            ? this.filterMessagesForBuildContinuityContext(
+              sdkBaseline ? merged.filter((m) => messageTime(m) < sdkBaseline) : merged,
+            )
+            : [];
+          const postBaselineMessages = includeCurrentClaudeHarness
+            ? continuityMessages
+            : sdkBaseline
+              ? merged.filter((m) => messageTime(m) >= sdkBaseline)
+              : [];
+
+          // Pre-restart history: all harnesses (the native session has none of it).
+          const preBaselineContext = preBaselineMessages.length > 0
+            ? buildCrossHarnessContext(preBaselineMessages, [], undefined, 150000)
             : '';
+          // Post-baseline / no-baseline: native resume covers Claude's own turns,
+          // so filter to other harnesses only. When there is no SDK session at
+          // all, include everything (original behaviour).
           const transcriptConversationContext = buildCrossHarnessContext(
-            continuityMessages,
+            postBaselineMessages,
             [],
             includeCurrentClaudeHarness ? undefined : 'claude',
           );
+          // Pinned continuity block on EVERY turn (compact, ~5-18KB): recent
+          // user asks, artifacts, working notes. Cheap insurance against any
+          // resume path that silently loses history.
+          const pinnedBuildContinuityContext = this.buildBuildSessionContinuityContext(
+            sessionId,
+            session,
+            includeCurrentClaudeHarness ? continuityMessages : this.filterMessagesForBuildContinuityContext(merged),
+          );
           supplementalConversationContext = [
             pinnedBuildContinuityContext,
+            preBaselineContext,
             transcriptConversationContext,
           ].filter(Boolean).join('\n\n');
           supplementalConversationContextLabel = includeCurrentClaudeHarness
             ? 'Recent Build Session Context'
-            : 'Recent Session Context From Other Models';
+            : 'Session Context (history not in your current transcript)';
           console.log(
             `[Claude Service] Claude ${includeCurrentClaudeHarness ? 'Build transcript' : 'cross-harness'} context: ` +
-            `${supplementalConversationContext.length} chars from ${continuityMessages.length}/${merged.length} messages` +
-            ` | includeClaudeHarness=${includeCurrentClaudeHarness} pinned=${pinnedBuildContinuityContext.length}ch crossHarness=${transcriptConversationContext.length}ch`
+            `${supplementalConversationContext.length} chars from ${merged.length} messages` +
+            ` | includeClaudeHarness=${includeCurrentClaudeHarness} pinned=${pinnedBuildContinuityContext.length}ch` +
+            ` preBaseline=${preBaselineContext.length}ch(${preBaselineMessages.length}msgs) crossHarness=${transcriptConversationContext.length}ch` +
+            ` baseline=${sdkBaseline ? new Date(sdkBaseline).toISOString() : 'none'}`
           );
           if (!supplementalConversationContext && merged.length > 0) {
             console.warn(`[Claude Service] WARNING: ${merged.length} messages in transcript but cross-harness context is EMPTY — all filtered out?`);
@@ -7048,7 +7119,29 @@ Begin by creating the task structure now.
                 && !fullContent.trim()
                 && toolCalls.length === 0
               ) {
-                console.warn(`[Claude SDK] Resume ${effectiveSdkSessionId} completed with empty zero-token result — clearing stale SDK session and retrying fresh`);
+                // An aborted/superseded turn (queue drain, rapid re-send) also
+                // surfaces as an empty zero-token result. That is NOT a stale
+                // session — clearing it would orphan a healthy conversation.
+                if (abortController.signal.aborted) {
+                  console.warn(`[Claude SDK] Resume ${effectiveSdkSessionId} returned empty result but turn was aborted/superseded — keeping SDK session`);
+                  return;
+                }
+                // First strike: retry the resume as-is. Transient failures
+                // (bridge races, pool-slot recycling mid-turn) recover here
+                // without losing the native conversation chain.
+                const lastEmptyRetryAt = this.resumeEmptyRetryAt.get(sessionId) || 0;
+                if (Date.now() - lastEmptyRetryAt > 120000) {
+                  this.resumeEmptyRetryAt.set(sessionId, Date.now());
+                  console.warn(`[Claude SDK] Resume ${effectiveSdkSessionId} completed with empty zero-token result — retrying resume once before declaring stale`);
+                  yield { type: 'text_delta', content: '⚠️ Remote session hiccup — retrying...\n\n' };
+                  yield* this.streamMessage(sessionId, userMessage, attachments, permissionMode, thinkingMode, selectedModel, gstackMode, supplementalMessages);
+                  return;
+                }
+                // Second strike within 2 minutes: genuinely stale. Clear and
+                // restart fresh — the baseline mechanism re-injects the full
+                // Build transcript so no context is lost.
+                this.resumeEmptyRetryAt.delete(sessionId);
+                console.warn(`[Claude SDK] Resume ${effectiveSdkSessionId} empty twice — clearing stale SDK session and retrying fresh`);
                 this.clearSdkSessionId(sessionId);
                 yield { type: 'text_delta', content: '⚠️ Remote session handle was stale — reconnecting automatically...\n\n' };
                 // Pass selectedModel (the auto-router's resolved model) instead of
