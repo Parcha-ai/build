@@ -1216,6 +1216,26 @@ function mergeLoadedMessagesWithExisting(
     return !hasLoadedDuplicate;
   });
 
+  // Diagnostic: detect assistant messages that exist in memory but are being dropped
+  const existingAssistants = existing.filter(m => m.role === 'assistant');
+  const preservedAssistants = preserved.filter(m => m.role === 'assistant');
+  if (existingAssistants.length > 0 && preservedAssistants.length < existingAssistants.length) {
+    const droppedAssistants = existingAssistants.filter(ea =>
+      !preserved.some(p => p.id === ea.id)
+    );
+    for (const dropped of droppedAssistants) {
+      const loadedMatch = loadedMessages.find(lm => isCloseReloadDuplicate(lm, dropped));
+      console.warn(
+        `[SessionStore] ⚠️ DIAGNOSTIC: assistant message ${dropped.id?.substring(0, 16)} being dropped from existing`
+        + ` | contentLen=${(dropped.content || '').length}`
+        + ` | loadedMatch=${loadedMatch ? `id=${loadedMatch.id?.substring(0, 16)} contentLen=${(loadedMatch.content || '').length}` : 'NONE'}`
+        + ` | authoritativeBuildTranscript=${options.authoritativeBuildTranscript}`
+        + ` | partialTranscript=${options.partialTranscript}`
+        + ` | loadedCount=${loadedMessages.length} existingCount=${existing.length} preservedCount=${preserved.length}`
+      );
+    }
+  }
+
   if (preserved.length === 0) return loadedMessages;
 
   const existingLatest = latestMessageTime(existing);
@@ -2178,6 +2198,16 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         },
       };
     });
+
+    // Diagnostic: log addMessage result
+    const afterMessages = get().messages[sessionId] || [];
+    const afterAssistantCount = afterMessages.filter(m => m.role === 'assistant').length;
+    if (normalizedMessage.role === 'assistant') {
+      console.log(
+        `[SessionStore] addMessage result for ${sessionId.substring(0, 8)}: ${afterAssistantCount} assistant messages total`
+        + ` | added id=${normalizedMessage.id?.substring(0, 16)} contentLen=${(normalizedMessage.content || '').length}`
+      );
+    }
   },
 
   updateStreamContent: (sessionId, content, agentId?) => {
@@ -3121,8 +3151,34 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             );
           }
 
+          // Monotonicity guard: transcript hydration must never DROP assistant
+          // messages that are already visible in the UI. If the merge lost
+          // assistants, recover them by appending the missing messages back and
+          // re-sorting. This is a defensive safety net — the diagnostic logging
+          // below helps us find the merge-logic root cause.
+          const existingAssistantCount = existingMessages.filter(m => m.role === 'assistant').length;
+          const finalAssistantCount = finalMessages.filter(m => m.role === 'assistant').length;
+          let safeFinalMessages = finalMessages;
+          if (existingAssistantCount > 0 && finalAssistantCount < existingAssistantCount) {
+            const finalIds = new Set(finalMessages.map(m => m.id));
+            const lostAssistants = existingMessages.filter(
+              m => m.role === 'assistant' && !finalIds.has(m.id)
+            );
+            if (lostAssistants.length > 0) {
+              safeFinalMessages = mergeTimelineMessages(finalMessages, lostAssistants);
+              console.error(
+                `[SessionStore] 🚨 RECOVERED ${lostAssistants.length} lost assistant message(s) during hydration for ${sessionId.substring(0, 8)}`
+                + ` | before=${existingAssistantCount} merged=${finalAssistantCount} recovered=${safeFinalMessages.filter(m => m.role === 'assistant').length}`
+                + ` | lostIds=${lostAssistants.map(m => m.id?.substring(0, 16)).join(',')}`
+                + ` | loaded=${mergedMessages.length} existing=${existingMessages.length}`
+                + ` | isStreaming=${state.isStreaming[sessionId]} authoritativeBuildTranscript=${hasAuthoritativeBuildTranscript}`
+                + ` | partialTranscript=${Boolean(applyOptions.requestedLimit && mergedMessages.length >= applyOptions.requestedLimit)}`
+              );
+            }
+          }
+
           return {
-            messages: { ...state.messages, [sessionId]: finalMessages },
+            messages: { ...state.messages, [sessionId]: safeFinalMessages },
             isLoadingMessages: { ...state.isLoadingMessages, [sessionId]: false },
           };
         });
@@ -3631,6 +3687,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             // Build transcript (transcriptSnapshot), which loadMessages
             // restores. Scoped to remoteActive: a still-active LOCAL query may
             // legitimately keep appending to this buffer.
+            console.warn(
+              `[SessionStore] DIAGNOSTIC: Deferred STREAM_END cleared stream buffer for ${sessionId.substring(0, 8)}`
+              + ` | clearedContentLen=${(get().currentStreamContent[sessionId] || '').length}`
+              + ` | existingMessages=${(get().messages[sessionId] || []).length}`
+              + ` | existingAssistants=${(get().messages[sessionId] || []).filter(m => m.role === 'assistant').length}`
+            );
             set((state) => ({
               currentStreamContent: { ...state.currentStreamContent, [sessionId]: '' },
               currentThinkingContent: { ...state.currentThinkingContent, [sessionId]: '' },
@@ -3650,6 +3712,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           // Clear buffered stream content before deferring (see comment on the
           // tool-call defer path above) — prevents later resume STREAM_ENDs
           // from resurrecting it as a duplicate message.
+          console.warn(
+            `[SessionStore] DIAGNOSTIC: Deferred STREAM_END cleared stream buffer for ${sessionId.substring(0, 8)}`
+            + ` | clearedContentLen=${(get().currentStreamContent[sessionId] || '').length}`
+            + ` | existingMessages=${(get().messages[sessionId] || []).length}`
+            + ` | existingAssistants=${(get().messages[sessionId] || []).filter(m => m.role === 'assistant').length}`
+          );
           set((state) => ({
             currentStreamContent: { ...state.currentStreamContent, [sessionId]: '' },
             currentThinkingContent: { ...state.currentThinkingContent, [sessionId]: '' },

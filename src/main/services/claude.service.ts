@@ -9392,9 +9392,13 @@ Begin by creating the task structure now.
     const usableBuildMessages = buildMessages
       .filter((message) => message.role !== 'assistant' || hasRecoverableOutput(message));
     if (buildTranscript.exists) {
+      // Self-merge deduplicates near-duplicate assistant entries that accumulate
+      // from parallel stream + recovery writes (e.g. a "Remote session hiccup"
+      // version paired with the clean recovered version of the same turn).
+      const deduped = mergeRecoveredStreamMessages([], usableBuildMessages, undefined);
       return filterInternalPromptEchoes(limit && limit > 0
-        ? usableBuildMessages.slice(-limit)
-        : usableBuildMessages);
+        ? deduped.slice(-limit)
+        : deduped);
     }
 
     if (options.allowSdkFallback === false) {
