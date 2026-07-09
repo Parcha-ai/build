@@ -24,6 +24,9 @@ const MCP_REGISTRY_API = 'https://registry.modelcontextprotocol.io/v0/servers';
 const MCP_REMOTE_PACKAGE = 'mcp-remote@0.1.38';
 const LINEAR_LEGACY_SSE_URL = 'https://mcp.linear.app/sse';
 const LINEAR_CURRENT_MCP_URL = 'https://mcp.linear.app/mcp';
+const OPEN_DESIGN_MCP_SERVER_ID = 'open-design';
+const OPEN_DESIGN_DEFAULT_DAEMON_URL = 'http://127.0.0.1:7456';
+const OPEN_DESIGN_INSTALL_INFO_TIMEOUT_MS = 2_000;
 
 // Cache for marketplace servers (refresh every 5 minutes)
 let marketplaceCache: MarketplaceMCPServer[] | null = null;
@@ -70,6 +73,12 @@ interface LocalhostMcpPort {
   serverId: string;
   port: number;
   url: string;
+}
+
+interface OpenDesignMcpInstallInfo {
+  command?: unknown;
+  args?: unknown;
+  env?: unknown;
 }
 
 export interface MCPRemoteAuthPrewarmEvent {
@@ -319,6 +328,59 @@ function normalizeStoredMcpServerConfig(config: MCPServerConfig): MCPServerConfi
     normalized.args = normalizeMcpRemoteArgs(normalized.args);
   }
   return normalized;
+}
+
+function buildOpenDesignMcpConfig(raw: OpenDesignMcpInstallInfo): MCPServerConfig | null {
+  if (typeof raw.command !== 'string' || !raw.command.trim()) return null;
+  if (!Array.isArray(raw.args) || !raw.args.every((arg): arg is string => typeof arg === 'string')) return null;
+
+  const config: MCPServerConfig = {
+    type: 'stdio',
+    command: raw.command,
+    args: raw.args,
+  };
+  const env = sanitizeStringMap(raw.env);
+  if (env) config.env = env;
+  return config;
+}
+
+async function fetchOpenDesignMcpInstallInfo(daemonUrl: string): Promise<MCPServerConfig | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), OPEN_DESIGN_INSTALL_INFO_TIMEOUT_MS);
+  try {
+    const base = daemonUrl.replace(/\/$/, '');
+    const response = await fetch(`${base}/api/mcp/install-info`, {
+      signal: controller.signal,
+      headers: { Accept: 'application/json' },
+    });
+    if (!response.ok) return null;
+    return buildOpenDesignMcpConfig(await response.json() as OpenDesignMcpInstallInfo);
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function shouldReplaceOpenDesignMcpConfig(existing: MCPServerConfig, candidate: MCPServerConfig): boolean {
+  if (configsEqual(existing, candidate)) return false;
+
+  const existingArgs = existing.args || [];
+  const existingEnv = sanitizeStringMap(existing.env);
+  const existingValues = [
+    existing.url,
+    existing.command,
+    existingEnv?.OD_DATA_DIR,
+    existingEnv?.OD_SIDECAR_IPC_PATH,
+    ...existingArgs,
+  ].filter((value): value is string => typeof value === 'string');
+  const existingLooksLikeOpenDesign = existingValues.some((value) =>
+    value.includes('open-design') ||
+    value.includes('Open Design.app') ||
+    value.includes(OPEN_DESIGN_DEFAULT_DAEMON_URL)
+  );
+
+  return existingLooksLikeOpenDesign;
 }
 
 function configsEqual(left: unknown, right: unknown): boolean {
@@ -989,7 +1051,9 @@ class MCPService {
     );
   }
 
-  async syncLocalHarnessConfigs(): Promise<HarnessMcpSyncResult> {
+  async syncLocalHarnessConfigs(openDesignDaemonUrl = OPEN_DESIGN_DEFAULT_DAEMON_URL): Promise<HarnessMcpSyncResult> {
+    await this.ensureOpenDesignMcpServer(openDesignDaemonUrl);
+
     const { servers, serverIds, removeServerIds } = this.getHarnessMcpSyncData();
     const removeServerIdSet = new Set(removeServerIds);
     const homeDir = os.homedir();
@@ -1038,6 +1102,47 @@ class MCPService {
   }
 
   /**
+   * OpenDesign is a built-in Build surface, but the agent-facing MCP bridge is
+   * stored as a normal custom MCP server so all harnesses can consume it. If
+   * that store entry gets lost or points at an old daemon, repair it from the
+   * same Open Design daemon URL that Build's design service is using.
+   */
+  async ensureOpenDesignMcpServer(daemonUrl = OPEN_DESIGN_DEFAULT_DAEMON_URL): Promise<boolean> {
+    const existing = this.getUserMcpServersConfig()[OPEN_DESIGN_MCP_SERVER_ID];
+    const config = await fetchOpenDesignMcpInstallInfo(daemonUrl);
+
+    if (existing?.command || existing?.url) {
+      if (!config || !shouldReplaceOpenDesignMcpConfig(existing, config)) {
+        this.markHarnessServerInstalled(OPEN_DESIGN_MCP_SERVER_ID);
+        return false;
+      }
+
+      const result = await this.installServerRaw(OPEN_DESIGN_MCP_SERVER_ID, config);
+      if (result.success) {
+        console.log('[MCP Service] Updated OpenDesign MCP server from Build design daemon install-info');
+        return true;
+      }
+
+      console.warn('[MCP Service] Failed to update stale OpenDesign MCP server:', result.error);
+      this.markHarnessServerInstalled(OPEN_DESIGN_MCP_SERVER_ID);
+      return false;
+    }
+
+    if (!config) {
+      return false;
+    }
+
+    const result = await this.installServerRaw(OPEN_DESIGN_MCP_SERVER_ID, config);
+    if (result.success) {
+      console.log('[MCP Service] Restored OpenDesign MCP server from Build design daemon install-info');
+      return true;
+    }
+
+    console.warn('[MCP Service] Failed to restore OpenDesign MCP server:', result.error);
+    return false;
+  }
+
+  /**
    * Get list of active MCP servers (for UI display)
    */
   async getActiveServers(projectPath?: string): Promise<MCPServerInfo[]> {
@@ -1056,6 +1161,17 @@ class MCPService {
           { name: 'browser_snapshot', description: 'Capture page accessibility tree and screenshot' },
           { name: 'browser_navigate', description: 'Navigate to a URL' },
           { name: 'browser_act', description: 'Perform actions on page elements' },
+        ],
+      },
+      {
+        id: 'claudette-design',
+        name: 'Claudette Design',
+        description: 'Built-in Open Design handoff tool for visual design sessions',
+        version: '1.0.0',
+        status: 'active',
+        type: 'sdk',
+        tools: [
+          { name: 'DesignMode', description: 'Hand off a visual design brief to the embedded Open Design workspace' },
         ],
       },
     ];

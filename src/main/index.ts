@@ -955,9 +955,15 @@ app.on('ready', async () => {
       win.webContents.send(IPC_CHANNELS.SSH_SYSTEM_RESUMED);
     }
   });
-  mcpService.syncLocalHarnessConfigs().catch((error) => {
-    console.warn('[Main] Failed to sync local MCP harness configs on startup:', error);
-  });
+  mcpService.ensureOpenDesignMcpServer()
+    .catch((error) => {
+      console.warn('[Main] Failed to restore OpenDesign MCP server on startup:', error);
+    })
+    .finally(() => {
+      mcpService.syncLocalHarnessConfigs().catch((error) => {
+        console.warn('[Main] Failed to sync local MCP harness configs on startup:', error);
+      });
+    });
   createWindow();
   scheduleBrowserPartitionCleanup();
 

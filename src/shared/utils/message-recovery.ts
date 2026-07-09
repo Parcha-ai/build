@@ -2,10 +2,19 @@ import type { ChatMessage, Harness, ToolCall } from '../types';
 
 export type PersistedChatMessage = Omit<ChatMessage, 'timestamp'> & { timestamp: string };
 
+const STATUS_PREFIX_RE = /^(?:⚠️ Remote session hiccup — retrying\.\.\.|⏳ Rate limited — retrying in \d+s\.\.\.)\n*/gm;
+
+export function stripTransientStatusLines(content?: string): string {
+  return (content || '')
+    .replace(/\r\n/g, '\n')
+    .replace(STATUS_PREFIX_RE, '')
+    .trim();
+}
+
 export function hasRecoverableOutput(message: ChatMessage): boolean {
   return Boolean(
-    message.content?.trim()
-    || message.contentBlocks?.length
+    stripTransientStatusLines(message.content)
+    || message.contentBlocks?.some((block) => block.type !== 'text' || stripTransientStatusLines(block.text))
     || message.toolCalls?.length
   );
 }
@@ -59,13 +68,8 @@ export function messageTimestamp(message: ChatMessage): number {
   return Number.isFinite(time) ? time : 0;
 }
 
-const STATUS_PREFIX_RE = /^(?:⚠️ Remote session hiccup — retrying\.\.\.|⏳ Rate limited — retrying in \d+s\.\.\.)\n*/gm;
-
 export function normalizeContentForCompare(content?: string): string {
-  return (content || '')
-    .replace(/\r\n/g, '\n')
-    .replace(STATUS_PREFIX_RE, '')
-    .trim();
+  return stripTransientStatusLines(content);
 }
 
 export function toolSignature(message: ChatMessage): string {

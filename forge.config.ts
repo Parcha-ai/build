@@ -178,7 +178,7 @@ const config: ForgeConfig = {
             const { execSync } = require('child_process');
             console.log('[Packaging] No Apple credentials — falling back to adhoc signature');
             try {
-              execSync(`codesign --force --sign - "${appPath}"`, { stdio: 'inherit' });
+              execSync(`codesign --force --deep --sign - "${appPath}"`, { stdio: 'inherit' });
             } catch (err) {
               console.error('[Packaging] Warning: Failed to sign app:', err);
             }

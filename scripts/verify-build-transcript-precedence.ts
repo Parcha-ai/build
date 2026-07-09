@@ -117,7 +117,7 @@ assert.match(
 );
 assert.match(
   claudeService,
-  /const pinnedBuildContinuityContext = includeCurrentClaudeHarness[\s\S]*?this\.buildBuildSessionContinuityContext\(sessionId, session, continuityMessages\)/,
+  /const pinnedBuildContinuityContext = this\.buildBuildSessionContinuityContext\(\s*sessionId,\s*session,\s*includeCurrentClaudeHarness \? continuityMessages/,
   'Claude fallback context must prepend a pinned Build session continuity block',
 );
 assert.match(

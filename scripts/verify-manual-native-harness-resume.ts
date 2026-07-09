@@ -108,7 +108,7 @@ assert.match(
 );
 assert.match(
   codexService,
-  /this\.rememberThreadId\(sessionId, event\.thread_id\)/,
+  /this\.rememberThreadId\(options\.sessionId, event\.thread_id\)/,
   'Codex service must persist the emitted native thread id',
 );
 

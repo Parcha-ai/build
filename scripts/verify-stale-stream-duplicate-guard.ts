@@ -8,6 +8,7 @@ const preload = fs.readFileSync(path.join(root, 'src/main/preload.ts'), 'utf8');
 const claudeIpc = fs.readFileSync(path.join(root, 'src/main/ipc/claude.ipc.ts'), 'utf8');
 const transcriptService = fs.readFileSync(path.join(root, 'src/main/services/transcript.service.ts'), 'utf8');
 const messageRecovery = fs.readFileSync(path.join(root, 'src/shared/utils/message-recovery.ts'), 'utf8');
+const streamFinalization = fs.readFileSync(path.join(root, 'src/shared/utils/stream-finalization.ts'), 'utf8');
 const installedVerifier = fs.readFileSync(path.join(root, 'scripts/verify-installed-build-fixes.js'), 'utf8');
 
 assert.match(
@@ -46,6 +47,36 @@ assert.match(
   'queue branch must include backendActiveQuery',
 );
 assert.match(
+  sessionStore,
+  /let remoteActiveProcess = false;/,
+  'renderer must track live SSH processes before starting a new stream',
+);
+assert.ok(
+  sessionStore.indexOf('remoteActiveProcess = currentSession?.sshConfig') > 0
+    && sessionStore.indexOf('remoteActiveProcess = currentSession?.sshConfig') < sessionStore.indexOf('// Start streaming immediately'),
+  'renderer must check remote process liveness before clearing stream state for a new send',
+);
+assert.match(
+  sessionStore,
+  /state\.isStreaming\[sessionId\] \|\| state\.isProcessingQueue\[sessionId\] \|\| backendActiveQuery \|\| remoteActiveProcess/,
+  'queue branch must include stale-renderer live SSH processes',
+);
+assert.match(
+  sessionStore,
+  /deferDrain: remoteActiveProcess \|\| undefined/,
+  'messages queued behind a live SSH process must defer drain until reattach/completion',
+);
+assert.match(
+  sessionStore,
+  /queued message and requesting reattach[\s\S]*?startRemoteProcessMonitor\(sessionId, get, set, loadMessages,[\s\S]*?attachStream: true/,
+  'remote-active prequeue must immediately request stream reattach without resetting stream state',
+);
+assert.match(
+  sessionStore,
+  /previousStreamSnapshot[\s\S]*?hasPreviousStreamSnapshot[\s\S]*?streamEvents: hasPreviousStreamSnapshot/,
+  'late remote-active fallback must restore existing stream events after optimistic stream reset',
+);
+assert.match(
   preload,
   /hasActiveQuery: \(sessionId: string\): Promise<boolean> =>[\s\S]*?IPC_CHANNELS\.CLAUDE_HAS_ACTIVE_QUERY/,
   'preload must expose hasActiveQuery to renderer',
@@ -74,6 +105,26 @@ assert.match(
   messageRecovery,
   /export function isExactLongAssistantDuplicate\(a: ChatMessage, b: ChatMessage\): boolean/,
   'shared recovery must identify exact long assistant duplicates across stale snapshots',
+);
+assert.match(
+  messageRecovery,
+  /export function stripTransientStatusLines\(content\?: string\): string/,
+  'shared recovery must expose transient retry/status stripping',
+);
+assert.match(
+  messageRecovery,
+  /stripTransientStatusLines\(message\.content\)[\s\S]*?message\.contentBlocks\?\.some\(\(block\) => block\.type !== 'text' \|\| stripTransientStatusLines\(block\.text\)\)/,
+  'status-only retry messages must not count as recoverable assistant transcript output',
+);
+assert.match(
+  streamFinalization,
+  /return stripTransientStatusLines\(selected\);/,
+  'final assistant content must drop transient retry/status lines',
+);
+assert.match(
+  streamFinalization,
+  /function stripTransientStatusBlocks\(contentBlocks\?: ContentBlock\[\]\): ContentBlock\[\] \| undefined/,
+  'final assistant content blocks must drop transient retry/status lines too',
 );
 assert.doesNotMatch(
   messageRecovery.match(/export function isExactLongAssistantDuplicate[\s\S]*?\n\}/)?.[0] || '',
