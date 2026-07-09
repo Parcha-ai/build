@@ -6302,10 +6302,15 @@ Begin by creating the task structure now.
       // default, ALL tool decisions route through our canUseTool callback, where we
       // auto-allow everything (simulating bypass) except AskUserQuestion (which
       // gets the interactive dialog) and ExitPlanMode (which gets plan approval).
+      // When bypass is active, downgrade to 'default' as the CLI permission mode
+      // so that ALL tool decisions route through our canUseTool callback. Our
+      // callback auto-allows everything (simulating bypass) except AskUserQuestion
+      // and ExitPlanMode which get interactive dialogs. We must NOT set
+      // allowDangerouslySkipPermissions because it tells the CLI to skip the
+      // permission-prompt-tool entirely, preventing canUseTool from ever firing.
       const cliPermissionMode = autoBuildLeadPermissionMode === 'bypassPermissions'
         ? 'default'
         : autoBuildLeadPermissionMode;
-      const requiresDangerFlag = autoBuildLeadPermissionMode === 'bypassPermissions';
 
       // Resolve the native CLI binary path explicitly.
       // The SDK's own resolution uses import.meta.url which breaks when webpack
@@ -6339,7 +6344,6 @@ Begin by creating the task structure now.
           ...(resolvedCliBinaryPath ? { pathToClaudeCodeExecutable: resolvedCliBinaryPath } : {}),
           abortController,
           permissionMode: cliPermissionMode,
-          ...(requiresDangerFlag ? { allowDangerouslySkipPermissions: true } : {}),
           includePartialMessages: true,
           // Use computed model — resolve custom:* IDs to actual API model names
           model: this.resolveCustomModelId(selectedModel),
