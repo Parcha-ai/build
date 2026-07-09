@@ -1,5 +1,5 @@
 import type { ChatMessage, ContentBlock, ToolCall } from '../types';
-import { withFallbackHarness } from './message-recovery';
+import { stripTransientStatusLines, withFallbackHarness } from './message-recovery';
 
 interface BuildCompletedStreamMessageOptions {
   message?: ChatMessage;
@@ -70,16 +70,31 @@ function mergeContentBlocks(accumulated: ContentBlock[] = [], fromMessage: Conte
 }
 
 function selectCompletedContent(messageContent = '', streamedContent = ''): string {
-  if (!messageContent) return streamedContent;
-  if (!streamedContent) return messageContent;
-  if (messageContent === streamedContent) return messageContent;
-  if (messageContent.includes(streamedContent)) return messageContent;
-  if (streamedContent.includes(messageContent)) return streamedContent;
-  return streamedContent.length > messageContent.length ? streamedContent : messageContent;
+  const selected = (() => {
+    if (!messageContent) return streamedContent;
+    if (!streamedContent) return messageContent;
+    if (messageContent === streamedContent) return messageContent;
+    if (messageContent.includes(streamedContent)) return messageContent;
+    if (streamedContent.includes(messageContent)) return streamedContent;
+    return streamedContent.length > messageContent.length ? streamedContent : messageContent;
+  })();
+
+  return stripTransientStatusLines(selected);
 }
 
 function hasToolActivity(toolCalls?: ToolCall[], contentBlocks?: ContentBlock[]): boolean {
   return !!toolCalls?.length || !!contentBlocks?.some((block) => block.type === 'tool_use');
+}
+
+function stripTransientStatusBlocks(contentBlocks?: ContentBlock[]): ContentBlock[] | undefined {
+  const stripped = (contentBlocks || [])
+    .map((block) => block.type === 'text'
+      ? { ...block, text: stripTransientStatusLines(block.text) }
+      : block
+    )
+    .filter((block) => block.type !== 'text' || Boolean(block.text?.trim()));
+
+  return stripped.length > 0 ? stripped : undefined;
 }
 
 export function buildCompletedStreamMessage({
@@ -93,7 +108,7 @@ export function buildCompletedStreamMessage({
   timestamp,
 }: BuildCompletedStreamMessageOptions): ChatMessage {
   const finalToolCalls = mergeToolCalls(toolCalls, message?.toolCalls);
-  const finalContentBlocks = mergeContentBlocks(contentBlocks, message?.contentBlocks);
+  const finalContentBlocks = stripTransientStatusBlocks(mergeContentBlocks(contentBlocks, message?.contentBlocks));
   const selectedContent = selectCompletedContent(message?.content, content);
   const finalContent = selectedContent.trim() || !hasToolActivity(finalToolCalls, finalContentBlocks)
     ? selectedContent

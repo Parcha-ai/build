@@ -610,9 +610,9 @@ const PREFERRED_CLAUDE_FALLBACK_MODELS = [
 ];
 
 const PREFERRED_CODEX_FALLBACK_MODELS = [
-  'codex:gpt-5.6',
-  'codex:gpt-5.6-codex',
-  'codex:gpt-5.6-mini',
+  'codex:gpt-5.6-sol',
+  'codex:gpt-5.6-terra',
+  'codex:gpt-5.6-luna',
   'codex:gpt-5.5',
   'codex:gpt-5.4',
   'codex:gpt-5.3-codex',
@@ -2659,6 +2659,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           fixedSelections[sessionId] = 'codex:o3';
           needsUpdate = true;
           console.log(`[SessionStore] Migrating session ${sessionId} from 'codex' to 'codex:o3'`);
+        } else if (modelId === 'codex:gpt-5.6') {
+          fixedSelections[sessionId] = 'codex:gpt-5.6-sol';
+          needsUpdate = true;
+        } else if (modelId === 'codex:gpt-5.6-codex') {
+          fixedSelections[sessionId] = 'codex:gpt-5.6-sol';
+          needsUpdate = true;
+        } else if (modelId === 'codex:gpt-5.6-mini') {
+          fixedSelections[sessionId] = 'codex:gpt-5.6-luna';
+          needsUpdate = true;
         } else {
           fixedSelections[sessionId] = modelId;
         }
@@ -2795,17 +2804,28 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
 
     let backendActiveQuery = false;
+    let remoteActiveProcess = false;
     if (!fromQueueDrain && !state.isStreaming[sessionId] && !state.isProcessingQueue[sessionId]) {
       backendActiveQuery = await window.electronAPI.claude.hasActiveQuery(sessionId).catch(() => false);
-      if (backendActiveQuery) {
-        console.warn(`[SessionStore] Backend still has active query for ${sessionId}; queueing instead of starting duplicate turn`);
+      if (!backendActiveQuery) {
+        const currentSession = state.sessions.find((session) => session.id === sessionId);
+        remoteActiveProcess = currentSession?.sshConfig
+          ? await window.electronAPI.ssh.hasActiveRemoteProcess(sessionId).catch(() => false)
+          : false;
+      }
+      if (backendActiveQuery || remoteActiveProcess) {
+        console.warn(
+          backendActiveQuery
+            ? `[SessionStore] Backend still has active query for ${sessionId}; queueing instead of starting duplicate turn`
+            : `[SessionStore] Remote Claude process still active for ${sessionId}; queueing before stream state reset`
+        );
         state = get();
       }
     }
 
     // If already streaming, queue handoff is in progress, or the backend still
     // owns an active query after renderer state went stale, queue the message.
-    if (!fromQueueDrain && (state.isStreaming[sessionId] || state.isProcessingQueue[sessionId] || backendActiveQuery)) {
+    if (!fromQueueDrain && (state.isStreaming[sessionId] || state.isProcessingQueue[sessionId] || backendActiveQuery || remoteActiveProcess)) {
       const normalizedMessage = message.trim();
       const existingQueue = state.messageQueue[sessionId] || [];
       const recentlyQueuedSame = normalizedMessage.length > 0 && existingQueue.some((queuedMessage) =>
@@ -2835,6 +2855,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         harness: harnessFromModel(state.selectedModel[sessionId]),
         attachments: (attachments as ChatMessage['attachments'])?.length ? attachments as ChatMessage['attachments'] : undefined,
       };
+      const model = state.selectedModel[sessionId] || 'auto';
       set((state) => ({
         messages: userMessage ? {
           ...state.messages,
@@ -2847,17 +2868,32 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             queuedMsg,
           ],
         },
+        isProcessingQueue: remoteActiveProcess
+          ? { ...state.isProcessingQueue, [sessionId]: true }
+          : state.isProcessingQueue,
+        sessionActivity: remoteActiveProcess
+          ? { ...state.sessionActivity, [sessionId]: 'waiting' }
+          : state.sessionActivity,
       }));
       console.log(`[SessionStore] Message queued${suppressUserMessage ? '' : ' + shown in chat'}. Queue length:`, (state.messageQueue[sessionId] || []).length + 1);
       console.log('[SessionStore] Queued message preview:', message.slice(0, 50));
 
       // Also enqueue in main process (source of truth for drain timing)
-      const model = state.selectedModel[sessionId] || 'auto';
       window.electronAPI.queue?.enqueue(sessionId, message, attachments, {
         id: queuedMsg.id,
         model,
         suppressUserMessage,
+        deferDrain: remoteActiveProcess || undefined,
       });
+
+      if (remoteActiveProcess) {
+        console.log(`[SessionStore] Remote Claude process still active for ${sessionId}; queued message and requesting reattach`);
+        const { loadMessages } = get();
+        startRemoteProcessMonitor(sessionId, get, set, loadMessages, {
+          recoverableKnown: true,
+          attachStream: true,
+        });
+      }
 
       return;
     }
@@ -2912,6 +2948,19 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     if (!suppressUserMessage && !alreadyInChat) {
       addMessage(sessionId, userMessage);
     }
+
+    const previousStreamSnapshot = {
+      events: get().streamEvents[sessionId] || [],
+      content: get().currentStreamContent[sessionId] || '',
+      thinking: get().currentThinkingContent[sessionId] || '',
+      toolCalls: get().currentToolCalls[sessionId] || [],
+    };
+    const hasPreviousStreamSnapshot = Boolean(
+      previousStreamSnapshot.events.length
+      || previousStreamSnapshot.content.trim()
+      || previousStreamSnapshot.thinking.trim()
+      || previousStreamSnapshot.toolCalls.length
+    );
 
     // Start streaming immediately so the input area moves into queued/send state
     // before remote probes, key scanning, or transcript checks complete.
@@ -2970,6 +3019,18 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           sessionActivity: { ...state.sessionActivity, [sessionId]: 'waiting' },
           activeStreamModel: { ...state.activeStreamModel, [sessionId]: undefined },
           activeUserPrompt: { ...state.activeUserPrompt, [sessionId]: null },
+          streamEvents: hasPreviousStreamSnapshot
+            ? { ...state.streamEvents, [sessionId]: previousStreamSnapshot.events }
+            : state.streamEvents,
+          currentStreamContent: hasPreviousStreamSnapshot
+            ? { ...state.currentStreamContent, [sessionId]: previousStreamSnapshot.content }
+            : state.currentStreamContent,
+          currentThinkingContent: hasPreviousStreamSnapshot
+            ? { ...state.currentThinkingContent, [sessionId]: previousStreamSnapshot.thinking }
+            : state.currentThinkingContent,
+          currentToolCalls: hasPreviousStreamSnapshot
+            ? { ...state.currentToolCalls, [sessionId]: previousStreamSnapshot.toolCalls }
+            : state.currentToolCalls,
         }));
 
         window.electronAPI.queue?.enqueue(sessionId, message, attachments, {

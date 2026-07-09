@@ -15,6 +15,7 @@ import {
   mergeRecoveredStreamMessages,
   normalizeCompletedStreamMessage,
   serializeCompletedStreamMessage,
+  stripTransientStatusLines,
   withFallbackHarness,
 } from '../src/shared/utils/message-recovery';
 
@@ -166,6 +167,13 @@ const contentBlockOnlyRecovered = message('block-only', 'assistant', '', '2026-0
 });
 assert.equal(hasRecoverableOutput(contentBlockOnlyRecovered), true);
 
+const transientRetryStatus = '⚠️ Remote session hiccup — retrying...\n\n';
+assert.equal(stripTransientStatusLines(transientRetryStatus), '');
+assert.equal(hasRecoverableOutput(message('status-only-retry', 'assistant', transientRetryStatus, '2026-05-24T01:01:06.000Z', {
+  harness: 'claude',
+  contentBlocks: [{ type: 'text', text: transientRetryStatus }],
+})), false);
+
 const duplicateToolOnly = mergeRecoveredStreamMessages([toolOnlyRecovered], [
   message('tool-only-copy', 'assistant', '', '2026-05-24T01:01:10.000Z', {
     harness: 'cursor',
@@ -292,6 +300,17 @@ assert.equal(completedFromStream.content, 'streamed text');
 assert.equal(completedFromStream.harness, 'cursor');
 assert.equal(completedFromStream.toolCalls?.length, 1);
 assert.deepEqual(completedFromStream.contentBlocks?.map((block) => block.type), ['tool_use', 'text']);
+
+const completedAfterRetryStatus = buildCompletedStreamMessage({
+  content: `${transientRetryStatus}Recovered answer`,
+  contentBlocks: [
+    { type: 'text', text: transientRetryStatus },
+    { type: 'text', text: 'Recovered answer' },
+  ],
+  model: 'claude-sonnet-5',
+});
+assert.equal(completedAfterRetryStatus.content, 'Recovered answer');
+assert.deepEqual(completedAfterRetryStatus.contentBlocks, [{ type: 'text', text: 'Recovered answer' }]);
 
 const completedFromBackendMessage = buildCompletedStreamMessage({
   message: message('backend-final', 'assistant', '', '2026-05-24T01:03:00.000Z', {

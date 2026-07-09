@@ -5,6 +5,8 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { X, Save, FileText, Circle, Loader2, Eye, Edit3 } from 'lucide-react';
 import { useEditorStore } from '../../stores/editor.store';
+import { useUIStore } from '../../stores/ui.store';
+import { useSessionStore } from '../../stores/session.store';
 
 // Track created model URIs for proper cleanup
 const createdModelUris = new Set<string>();
@@ -28,20 +30,24 @@ export default function EditorPanel({ onClose }: EditorPanelProps) {
     togglePreviewMode,
   } = useEditorStore();
 
+  const setHtmlArtifact = useUIStore((s) => s.setHtmlArtifact);
+  const showHtmlPanel = useUIStore((s) => s.showHtmlPanel);
+  const activeSessionId = useSessionStore((s) => s.activeSessionId);
+
   const editorRef = useRef<unknown>(null);
   const activeTab = tabs.find(tab => tab.id === activeTabId);
 
-  // Debug logging for markdown preview
+  // Auto-open HTML preview panel when an HTML file is opened
   React.useEffect(() => {
-    if (activeTab) {
-      console.log('[EditorPanel] Active tab:', {
-        fileName: activeTab.fileName,
-        language: activeTab.language,
-        isPreviewMode: activeTab.isPreviewMode,
-        isPlanTab: activeTab.isPlanTab,
+    if (activeTab?.language === 'html' && activeSessionId) {
+      setHtmlArtifact(activeSessionId, {
+        html: activeTab.content,
+        messageId: `editor-${activeTab.id}`,
+        title: activeTab.fileName,
       });
+      showHtmlPanel();
     }
-  }, [activeTab]);
+  }, [activeTab?.id, activeTab?.language]);
 
   const handleClose = () => {
     closeEditor();
@@ -249,6 +255,25 @@ export default function EditorPanel({ onClose }: EditorPanelProps) {
                   PREVIEW
                 </>
               )}
+            </button>
+          )}
+          {/* HTML preview opens in the HTML preview panel */}
+          {activeTab?.language === 'html' && (
+            <button
+              onClick={() => {
+                if (!activeTab || !activeSessionId) return;
+                setHtmlArtifact(activeSessionId, {
+                  html: activeTab.content,
+                  messageId: `editor-${activeTab.id}`,
+                  title: activeTab.fileName,
+                });
+                showHtmlPanel();
+              }}
+              className="flex items-center gap-1 px-2 py-1 text-xs font-mono bg-claude-surface hover:bg-claude-bg text-claude-text transition-colors"
+              title="Open HTML Preview"
+            >
+              <Eye size={12} />
+              PREVIEW
             </button>
           )}
           {activeTab?.isDirty && (

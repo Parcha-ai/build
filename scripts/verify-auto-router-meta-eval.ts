@@ -577,9 +577,9 @@ moduleWithLoad._load = function patchedLoad(this: unknown, request: string, pare
 const PRICING: Record<string, { input: number; output: number; cacheRead: number; cacheWrite: number }> = {
   'claude-opus-4-7': { input: 5, output: 25, cacheRead: 0.50, cacheWrite: 6.25 },
   'claude-sonnet-4-6': { input: 3, output: 15, cacheRead: 0.30, cacheWrite: 3.75 },
-  'codex:gpt-5.6-mini': { input: 0.75, output: 4.50, cacheRead: 0.075, cacheWrite: 0.75 },
-  'codex:gpt-5.6-codex': { input: 5, output: 30, cacheRead: 0.50, cacheWrite: 5 },
-  'codex:gpt-5.6': { input: 5, output: 30, cacheRead: 0.50, cacheWrite: 5 },
+  'codex:gpt-5.6-sol': { input: 5, output: 30, cacheRead: 0.50, cacheWrite: 5 },
+  'codex:gpt-5.6-terra': { input: 2.50, output: 15, cacheRead: 0.25, cacheWrite: 2.50 },
+  'codex:gpt-5.6-luna': { input: 1, output: 6, cacheRead: 0.10, cacheWrite: 1 },
   'codex:gpt-5.5': { input: 5, output: 30, cacheRead: 0.50, cacheWrite: 5 },
   'codex:gpt-5.3-codex': { input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 1.25 },
   'gemini:gemini-3.5-flash': { input: 1.50, output: 9, cacheRead: 0.15, cacheWrite: 1.50 },

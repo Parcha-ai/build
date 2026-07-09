@@ -25,8 +25,8 @@ let settingsObjectCache: { expiresAt: number; value: Record<string, unknown> } |
 const DEFAULT_CONFIG: AutoRouterConfig = {
   enabled: true,
   planModel: 'claude-sonnet-4-6',
-  buildModel: 'codex:gpt-5.6',
-  verifyModel: 'codex:gpt-5.6',
+  buildModel: 'codex:gpt-5.6-sol',
+  verifyModel: 'codex:gpt-5.6-sol',
   refineModel: 'cursor:composer-2.5',
   fallbackModel: 'claude-sonnet-4-6',
   costAware: true,
@@ -1409,13 +1409,13 @@ function researchPriorModelCandidates(
       }
       break;
     case 'build':
-      candidates.push(config.buildModel, 'codex:gpt-5.6');
+      candidates.push(config.buildModel, 'codex:gpt-5.6-sol');
       if (signals.large || signals.asksForArchitecture || signals.asksForMultiHarness) {
         candidates.push(...frontierClaudeCandidatesForTier(tier, config));
       }
       break;
     case 'verify':
-      candidates.push(config.verifyModel, 'codex:gpt-5.6');
+      candidates.push(config.verifyModel, 'codex:gpt-5.6-sol');
       if (signals.asksForCapabilityEscalation || (signals.hasErrorLog && (signals.large || signals.likelyNeedsProjectContext))) {
         addFrontierClaude();
       }
@@ -1505,7 +1505,7 @@ function domainModelCandidates(
   } else if (signals.domain === 'frontend') {
     candidates.push(config.refineModel, 'cursor:composer-2.5', config.buildModel);
   } else if (signals.domain === 'backend' || signals.domain === 'fullstack') {
-    candidates.push(config.buildModel, config.verifyModel, 'codex:gpt-5.6');
+    candidates.push(config.buildModel, config.verifyModel, 'codex:gpt-5.6-sol');
   } else if (signals.domain === 'ops' || signals.domain === 'debug') {
     candidates.push(config.verifyModel, config.buildModel);
   }

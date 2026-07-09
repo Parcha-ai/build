@@ -250,7 +250,7 @@ const activeRemoteDeferralIndex = drainHandler.indexOf('if (remoteActive) {', in
 const injectableBranch = drainHandler.slice(injectableIndex, activeRemoteDeferralIndex);
 const injectablePeekIndex = drainHandler.indexOf('const next = messageQueueService.peekForDrain(sessionId)', injectableIndex);
 const beginDrainAttemptIndex = drainHandler.indexOf('messageQueueService.beginDrainAttempt(sessionId)', injectableIndex);
-const activeAckDrainIndex = drainHandler.indexOf('messageQueueService.ackDrain(sessionId, next.sourceIds, { scheduleIfRemaining: true })', injectMessageIndex);
+const activeAckDrainIndex = drainHandler.indexOf('messageQueueService.ackDrain(sessionId, next.sourceIds,', injectMessageIndex);
 const activeFinishAttemptIndex = drainHandler.indexOf('messageQueueService.finishDrainAttempt(sessionId)', activeAckDrainIndex);
 const activeRetryDeferIndex = drainHandler.indexOf('messageQueueService.deferDrain(sessionId, 1000)', activeFinishAttemptIndex);
 const staleIndex = drainHandler.indexOf('const canTreatAsStale = (!activeState.injectable || !supportsActiveInjection)');

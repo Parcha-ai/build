@@ -1059,7 +1059,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
       if (itemType === 'codex') {
         // Switch to Codex model — messages route through Codex SDK in the same chat
         const { availableModels, setSelectedModel } = useSessionStore.getState();
-        const defaultCodexModel = availableModels.find((model) => model.id.startsWith('codex:'))?.id || 'codex:gpt-5.6';
+        const defaultCodexModel = availableModels.find((model) => model.id.startsWith('codex:'))?.id || 'codex:gpt-5.6-sol';
         setSelectedModel(sessionId, defaultCodexModel);
         if (isInlineMode) {
           const beforeCommand = message.slice(0, commandStartIndex);

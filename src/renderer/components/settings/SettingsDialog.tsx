@@ -124,8 +124,8 @@ const VERIFICATION_OPTIONS: Array<{ value: string; label: string }> = [
 
 const AUTO_BUILD_MODEL_DEFAULTS: AutoBuildModelSettings = {
   plan: 'claude-sonnet-4-6',
-  build: 'codex:gpt-5.6',
-  verify: 'codex:gpt-5.6',
+  build: 'codex:gpt-5.6-sol',
+  verify: 'codex:gpt-5.6-sol',
   refine: 'cursor:composer-2.5',
   fallback: 'claude-sonnet-4-6',
 };

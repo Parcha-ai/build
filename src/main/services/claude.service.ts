@@ -698,9 +698,9 @@ export class ClaudeService {
       { id: 'claude-sonnet-4-20250514', name: 'Sonnet 4', description: 'Fast and capable' },
       { id: 'claude-haiku-4-5-20251001', name: 'Haiku 4.5', description: 'Fastest model - best for simple tasks' },
       { id: ZAI_GLM_CLAUDE_MODEL_PICKER_ID, name: 'GLM 5.2 [1M] (Claude Code)', description: 'Z.AI GLM-5.2 via Claude Code Anthropic-compatible endpoint' },
-      { id: 'codex:gpt-5.6', name: 'GPT-5.6 (Codex)', description: 'OpenAI latest — most capable coding model' },
-      { id: 'codex:gpt-5.6-codex', name: 'GPT-5.6 Codex (Codex)', description: 'OpenAI coding-optimised — purpose-built for agents' },
-      { id: 'codex:gpt-5.6-mini', name: 'GPT-5.6 Mini (Codex)', description: 'OpenAI fast — good balance of speed and capability' },
+      { id: 'codex:gpt-5.6-sol', name: 'GPT-5.6 Sol (Codex)', description: 'OpenAI flagship — hardest problems, complex coding, deep reasoning' },
+      { id: 'codex:gpt-5.6-terra', name: 'GPT-5.6 Terra (Codex)', description: 'OpenAI balanced — competitive capability at lower cost' },
+      { id: 'codex:gpt-5.6-luna', name: 'GPT-5.6 Luna (Codex)', description: 'OpenAI fast — speed-optimised, most cost-efficient' },
       { id: 'codex:gpt-5.5', name: 'GPT-5.5 (Codex)', description: 'OpenAI previous flagship — best for complex coding tasks' },
       { id: 'codex:gpt-5.4', name: 'GPT-5.4 (Codex)', description: 'OpenAI previous generation — best for complex coding tasks' },
       { id: 'codex:gpt-5.4-mini', name: 'GPT-5.4 Mini (Codex)', description: 'OpenAI fast — good balance of speed and capability' },
@@ -6295,6 +6295,16 @@ Begin by creating the task structure now.
         console.warn('[Claude Service] Could not sync showClearContextOnPlanAccept:', e);
       }
 
+      // When canUseTool is provided, downgrade bypassPermissions to default as the
+      // CLI permission mode. In bypassPermissions, the CLI auto-allows ALL tools
+      // internally without sending can_use_tool events to the SDK — which means
+      // AskUserQuestion never reaches our callback and fails headlessly. With
+      // default, ALL tool decisions route through our canUseTool callback, where we
+      // auto-allow everything (simulating bypass) except AskUserQuestion (which
+      // gets the interactive dialog) and ExitPlanMode (which gets plan approval).
+      const cliPermissionMode = autoBuildLeadPermissionMode === 'bypassPermissions'
+        ? 'default'
+        : autoBuildLeadPermissionMode;
       const requiresDangerFlag = autoBuildLeadPermissionMode === 'bypassPermissions';
 
       // Resolve the native CLI binary path explicitly.
@@ -6328,7 +6338,7 @@ Begin by creating the task structure now.
           cwd: projectPath,
           ...(resolvedCliBinaryPath ? { pathToClaudeCodeExecutable: resolvedCliBinaryPath } : {}),
           abortController,
-          permissionMode: autoBuildLeadPermissionMode,
+          permissionMode: cliPermissionMode,
           ...(requiresDangerFlag ? { allowDangerouslySkipPermissions: true } : {}),
           includePartialMessages: true,
           // Use computed model — resolve custom:* IDs to actual API model names

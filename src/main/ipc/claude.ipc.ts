@@ -23,6 +23,9 @@ import { DEFAULT_AUDIO_SETTINGS } from '../../shared/types/audio';
 import { messageQueueService } from '../services/message-queue.service';
 import { sshService } from '../services/ssh.service';
 import { updateDynamicSessionTitle } from '../services/session-title.service';
+import { sessionTurnService, type TurnTransition } from '../services/session-turn.service';
+import { recoveryService } from '../services/recovery.service';
+import { queueController } from '../services/queue-controller.service';
 
 // Settings store for Ralph Loop check
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -603,6 +606,9 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
           messageQueueService.onStreamStart(sessionId, harnessFromModel(model));
           drainInjectionFailures.delete(sessionId);
 
+          // Parallel state machine tracking (Phase 6 - diagnostic only)
+          sessionTurnService.transition(sessionId, 'STREAMING', 'send-message');
+
           // Stream the response (Stop hook handles Ralph Loop iteration)
           let eventCount = 0;
           let lastEventType = '';
@@ -916,6 +922,15 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
           }
 
           const completedSession = await sessionService.getSession(sessionId).catch(() => null);
+
+          // Parallel state machine tracking (Phase 6 - diagnostic only)
+          if (hadError && completedSession?.sshConfig) {
+            void recoveryService.handleStreamError(sessionId, new Error('stream error'), completedSession.sshConfig)
+              .catch(err => console.warn('[Turn] Recovery error:', err));
+          } else {
+            sessionTurnService.transition(sessionId, 'IDLE', hadError ? 'stream error (non-SSH)' : 'stream completed');
+          }
+
           if (completedSession?.sshConfig) {
             // A local stream error does NOT mean the remote turn died — lid
             // close and transport drops error the local stream while the
@@ -1081,6 +1096,10 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
         drainInjectionFailures.delete(sessionId);
 
         console.log('[Claude IPC] resumeRemoteTurn received for:', sessionId, 'model:', model);
+
+        // Parallel state machine tracking (Phase 6 - diagnostic only)
+        sessionTurnService.transition(sessionId, 'REATTACHING', 'resume-remote-turn');
+
         for await (const streamEvent of claudeService.resumeRemoteTurn(sessionId, model)) {
           claudeService.noteActiveQueryEvent(sessionId);
           latestResolvedModel = streamEvent.resolvedModel || latestResolvedModel;
@@ -1247,6 +1266,9 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
         // Notify queue service that streaming has ended (resume).
         const shouldDrainAfterResume = !hadError && resumeProducedVisibleOutput;
         notifyQueueStreamEnd(shouldDrainAfterResume, shouldDrainAfterResume && resumeCompletedWithResult);
+
+        // Parallel state machine tracking (Phase 6 - diagnostic only)
+        sessionTurnService.transition(sessionId, 'IDLE', 'reattach completed');
       }
     }
   );
@@ -1645,6 +1667,16 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
 
     // Tell the renderer to send this prompt through the normal flow
     mainWindow.webContents.send('queue:send-next', sessionId, next);
+  });
+
+  // Diagnostic: log state machine transitions (Phase 6 - parallel run)
+  sessionTurnService.on('transition', ({ sessionId, from, to, reason }: TurnTransition) => {
+    console.log(`[Turn] ${sessionId.slice(0, 8)}: ${from} → ${to} (${reason || 'unknown'})`);
+  });
+
+  // Diagnostic: log queue controller drain-ready events (parallel run)
+  queueController.on('drain-ready', (sessionId: string) => {
+    console.log(`[Queue Controller] drain-ready for ${sessionId.substring(0, 8)} (parallel run — not yet active)`);
   });
 }
 

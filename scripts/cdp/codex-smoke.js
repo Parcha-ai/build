@@ -53,7 +53,7 @@ module.exports = async function runCodexSmoke(args) {
   await sessionStore.getState().loadAvailableModels();
 
   const codexModels = sessionStore.getState().availableModels.filter((model) => model.id.startsWith('codex:'));
-  const selectedModel = args.model || codexModels[0]?.id || 'codex:gpt-5.6';
+  const selectedModel = args.model || codexModels[0]?.id || 'codex:gpt-5.6-sol';
   sessionStore.getState().setSelectedModel(session.id, selectedModel);
 
   await waitFor('model selector button', () => getModelButton(), 10000);
