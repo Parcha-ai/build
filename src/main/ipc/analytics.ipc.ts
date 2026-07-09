@@ -388,8 +388,8 @@ async function runRouterEval(options?: RouterEvalOptions) {
 
   const recommendedConfig = {
     planModel: topModel(selectedByTier.plan, 'claude-opus-4-7'),
-    buildModel: topModel(selectedByTier.build, 'codex:gpt-5.5'),
-    verifyModel: topModel(selectedByTier.verify, 'codex:gpt-5.5'),
+    buildModel: topModel(selectedByTier.build, 'codex:gpt-5.6'),
+    verifyModel: topModel(selectedByTier.verify, 'codex:gpt-5.6'),
     refineModel: topModel(selectedByTier.refine, 'cursor:composer-2.5'),
   };
 

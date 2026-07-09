@@ -274,6 +274,9 @@ const MODEL_PRICING: Record<string, { input: number; output: number; cacheRead: 
   'claude-sonnet-4-0': { input: 3, output: 15, cacheRead: 0.30, cacheWrite: 3.75 },
   'claude-haiku-4-5': { input: 1, output: 5, cacheRead: 0.10, cacheWrite: 1.25 },
   'claude-haiku-3-5': { input: 0.80, output: 4, cacheRead: 0.08, cacheWrite: 1 },
+  'gpt-5.6-mini': { input: 0.75, output: 4.50, cacheRead: 0.075, cacheWrite: 0.75 },
+  'gpt-5.6-codex': { input: 5, output: 30, cacheRead: 0.50, cacheWrite: 5 },
+  'gpt-5.6': { input: 5, output: 30, cacheRead: 0.50, cacheWrite: 5 },
   'gpt-5.5': { input: 5, output: 30, cacheRead: 0.50, cacheWrite: 5 },
   'gpt-5.4-mini': { input: 0.75, output: 4.50, cacheRead: 0.075, cacheWrite: 0.75 },
   'gpt-5.4': { input: 2.50, output: 15, cacheRead: 0.25, cacheWrite: 2.50 },
@@ -296,7 +299,7 @@ const MODEL_PRICING: Record<string, { input: number; output: number; cacheRead: 
 };
 
 const DEFAULT_PRICING = { input: 3, output: 15, cacheRead: 0.30, cacheWrite: 3.75 };
-const BASELINE_MODEL = 'codex:gpt-5.5';
+const BASELINE_MODEL = 'codex:gpt-5.6';
 const POSTHOG_DEFAULT_HOST = 'https://us.i.posthog.com';
 const SANITIZATION_VERSION = 'routing-intent-v1';
 const SANITIZED_PROMPT_CHAR_LIMIT = 4_000;
@@ -415,7 +418,7 @@ function inferOverrideModelFromUserMessage(message: string): string | undefined 
     return /\b(codex|openai)\b/.test(lower) ? 'codex:glm-5.2' : 'custom:zai-glm-5.2';
   }
   if (/\b(cursor|cursor agent|composer)\b/.test(lower)) return 'cursor:composer-2.5';
-  if (/\b(codex|openai)\b/.test(lower)) return 'codex:gpt-5.5';
+  if (/\b(codex|openai)\b/.test(lower)) return 'codex:gpt-5.6';
   if (/\b(gemini)\b/.test(lower)) return 'gemini:gemini-3.5-flash';
   if (/\b(opencode|deepseek)\b/.test(lower)) return 'opencode:deepseek-v4-pro';
   if (/\b(fable)\b/.test(lower)) return 'claude-fable-5';

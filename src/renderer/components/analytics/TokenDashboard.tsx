@@ -240,7 +240,7 @@ export default function TokenDashboard({ onClose }: { onClose: () => void }) {
             <div className="text-lg font-bold text-green-400">
               {formatCost(summary.byHarness.reduce((sum, h) => sum + h.savings, 0))}
             </div>
-            <div className="text-[10px] text-claude-text-secondary">vs all turns on GPT-5.5</div>
+            <div className="text-[10px] text-claude-text-secondary">vs all turns on GPT-5.6</div>
           </div>
         </div>
 

@@ -610,6 +610,10 @@ const PREFERRED_CLAUDE_FALLBACK_MODELS = [
 ];
 
 const PREFERRED_CODEX_FALLBACK_MODELS = [
+  'codex:gpt-5.6',
+  'codex:gpt-5.6-codex',
+  'codex:gpt-5.6-mini',
+  'codex:gpt-5.5',
   'codex:gpt-5.4',
   'codex:gpt-5.3-codex',
   'codex:o3',
