@@ -3745,13 +3745,28 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             `(backendActive=${backendActive ? 'yes' : 'no'}, remoteActive=${remoteActive ? 'yes' : 'no'})`
           );
           if (remoteActive) {
-            // Clear buffered stream content before deferring — this handler
-            // will never re-fire, and any later resume STREAM_END that reads
-            // the leftover buffer would finalize it AGAIN as a duplicate
-            // assistant message. The authoritative copy is already in the
-            // Build transcript (transcriptSnapshot), which loadMessages
-            // restores. Scoped to remoteActive: a still-active LOCAL query may
-            // legitimately keep appending to this buffer.
+            // The turn produced visible output but we're deferring because the
+            // remote process is still running with unfinished tools. Add the
+            // message NOW so it doesn't vanish from the UI — later STREAM_ENDs
+            // from the reattach will be deduped by alreadyRenderedFinal.
+            const deferredStreamContent = get().currentStreamContent[sessionId] || '';
+            if (deferredStreamContent.trim() || message.content?.trim()) {
+              const autoBuildDecision1 = currentState.autoRouteDecision[sessionId];
+              const resolvedStreamModel1 = streamModel === 'auto' ? autoBuildDecision1?.resolvedModel : streamModel;
+              const deferredFinal = buildCompletedStreamMessage({
+                message,
+                content: deferredStreamContent,
+                toolCalls: settleUnfinishedToolCalls(rawCurrentToolCalls),
+                contentBlocks: buildContentBlocksFromStreamEvents(get().streamEvents[sessionId] || []),
+                model: streamModel,
+                resolvedModel: resolvedStreamModel1,
+              });
+              addMessage(sessionId, deferredFinal);
+              console.warn(
+                `[SessionStore] Deferred STREAM_END: added partial message for ${sessionId.substring(0, 8)}`
+                + ` | contentLen=${(deferredFinal.content || '').length}`
+              );
+            }
             console.warn(
               `[SessionStore] DIAGNOSTIC: Deferred STREAM_END cleared stream buffer for ${sessionId.substring(0, 8)}`
               + ` | clearedContentLen=${(get().currentStreamContent[sessionId] || '').length}`
@@ -3774,9 +3789,27 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         const remoteActive = await hasLiveRemoteProcess(sessionId, currentState);
         if (remoteActive) {
           console.warn(`[SessionStore] Deferring STREAM_END for ${sessionId}; remote Claude process is still active`);
-          // Clear buffered stream content before deferring (see comment on the
-          // tool-call defer path above) — prevents later resume STREAM_ENDs
-          // from resurrecting it as a duplicate message.
+          // Add the message NOW before clearing the buffer — otherwise the
+          // assistant response disappears from the UI until loadMessages
+          // eventually picks it up from the transcript.
+          const deferredStreamContent = get().currentStreamContent[sessionId] || '';
+          if (deferredStreamContent.trim() || message.content?.trim()) {
+            const autoBuildDecision2 = currentState.autoRouteDecision[sessionId];
+            const resolvedStreamModel2 = streamModel === 'auto' ? autoBuildDecision2?.resolvedModel : streamModel;
+            const deferredFinal = buildCompletedStreamMessage({
+              message,
+              content: deferredStreamContent,
+              toolCalls: rawCurrentToolCalls,
+              contentBlocks: buildContentBlocksFromStreamEvents(currentState.streamEvents[sessionId] || []),
+              model: streamModel,
+              resolvedModel: resolvedStreamModel2,
+            });
+            addMessage(sessionId, deferredFinal);
+            console.warn(
+              `[SessionStore] Deferred STREAM_END: added message for ${sessionId.substring(0, 8)}`
+              + ` | contentLen=${(deferredFinal.content || '').length}`
+            );
+          }
           console.warn(
             `[SessionStore] DIAGNOSTIC: Deferred STREAM_END cleared stream buffer for ${sessionId.substring(0, 8)}`
             + ` | clearedContentLen=${(get().currentStreamContent[sessionId] || '').length}`
