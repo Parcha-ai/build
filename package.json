@@ -1,7 +1,7 @@
 {
   "name": "build",
   "productName": "Build",
-  "version": "0.5.55",
+  "version": "0.5.56",
   "description": "AI-powered development environment with intelligent code search, multi-session support, and live browser preview",
   "main": ".webpack/main",
   "scripts": {
@@ -23,6 +23,7 @@
     "verify:auto-router:meta-harness": "npx ts-node scripts/verify-auto-router-meta-harness.ts",
     "verify:auto-router:meta-eval": "npx ts-node scripts/verify-auto-router-meta-eval.ts",
     "verify:auto-router:meta-eval:live": "npx ts-node scripts/verify-auto-router-meta-eval.ts --live --require-live",
+    "verify:parable-mode": "npx ts-node scripts/verify-parable-mode.ts",
     "verify:auto-router:no-legacy-llm-after-controller": "npx ts-node scripts/verify-auto-router-no-legacy-llm-after-controller.ts",
     "verify:auto-router:plan-mode": "npx ts-node scripts/verify-auto-router-plan-mode.ts",
     "verify:auto-router:workflow-metadata": "npx ts-node scripts/verify-auto-router-workflow-metadata.ts",

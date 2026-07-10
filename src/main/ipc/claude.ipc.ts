@@ -1669,10 +1669,8 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
     mainWindow.webContents.send('queue:send-next', sessionId, next);
   });
 
-  // Diagnostic: log state machine transitions (Phase 6 - parallel run)
-  sessionTurnService.on('transition', ({ sessionId, from, to, reason }: TurnTransition) => {
-    console.log(`[Turn] ${sessionId.slice(0, 8)}: ${from} → ${to} (${reason || 'unknown'})`);
-  });
+  // Transition logging handled by sessionTurnService.logAndEmitTransition —
+  // no duplicate listener needed here.
 
   // Diagnostic: log queue controller drain-ready events (parallel run)
   queueController.on('drain-ready', (sessionId: string) => {

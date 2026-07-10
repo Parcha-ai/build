@@ -31,6 +31,7 @@ import { getCursorService } from './cursor.service';
 import { getGeminiService } from './gemini.service';
 import { getOpenCodeService } from './opencode.service';
 import { autoRouterService } from './auto-router.service';
+import { parableService, type PreparedParableRuntime } from './parable.service';
 import { formatConversationContext, mergeConversationMessages, buildCrossHarnessContext, buildUnifiedHarnessContext, formatProjectInstructionContextFiles } from './codex-context';
 import { secureKeysService } from './secure-keys.service';
 import { analyticsService, estimateBaselineCost, estimateCost } from './analytics.service';
@@ -50,6 +51,7 @@ import {
 } from '../../shared/config/zai-glm';
 import { hasExistingSessionTitle, rememberAutoSessionTitle, sanitizeSessionTitle } from './session-title.service';
 import { hasFileAttachments, prepareFileAttachmentsForHarness } from './attachment-file-assets';
+import { PARABLE_MODE_ID } from '../../shared/config/parable';
 
 const STREAM_DEBUG = process.env.GREP_DEBUG_STREAMING === '1';
 const ATTACHMENT_ONLY_PROMPT = 'Use the attached file(s) as input for the current task. Continue from the existing session context and the latest user request instead of asking me to restate the task.';
@@ -679,7 +681,11 @@ export class ClaudeService {
 
       if (foundryModels.length > 0) {
         console.log('[Claude Service] Using Foundry models:', foundryModels.map(m => m.id).join(', '));
-        return foundryModels;
+        return [
+          { id: 'auto', name: 'Auto Build', description: 'Application-owned harness orchestration and helper stages' },
+          { id: PARABLE_MODE_ID, name: 'Parable', description: 'Claude Code meta-harness — plans, casts executors, verifies, and reviews' },
+          ...foundryModels,
+        ];
       }
     }
 
@@ -687,6 +693,7 @@ export class ClaudeService {
     console.log('[Claude Service] Using default Anthropic model list');
     const models: Array<{ id: string; name: string; description: string }> = [
       { id: 'auto', name: 'Auto Build', description: 'Harness orchestration — picks the lead model, helper handoffs, and shared context per task' },
+      { id: PARABLE_MODE_ID, name: 'Parable', description: 'Claude Code meta-harness — plans, casts executors, verifies, and reviews' },
       { id: 'claude-sonnet-5', name: 'Sonnet 5', description: 'Latest Claude Sonnet - strong coding and agentic work with Sonnet-tier speed' },
       { id: 'claude-fable-5', name: 'Fable 5', description: 'Most capable Claude model - best for demanding coding and long-horizon agentic work' },
       { id: 'claude-opus-4-8', name: 'Opus 4.8', description: 'Latest and most capable model - best for complex tasks' },
@@ -4947,6 +4954,7 @@ ${leadContent.slice(0, leadContextLimit)}
     let autoRoutedTier: TaskTier | undefined;
     let autoRoutedDomain: TaskDomain | undefined;
     let routingDecisionForAnalytics: RoutingDecision | undefined;
+    let parableRuntime: PreparedParableRuntime | undefined;
     const normalizedSupplementalMessages = this.normalizeConversationMessages(supplementalMessages);
     const explicitGoalCommand = this.parseGoalCommand(userMessage);
     const goalOrchestration: { objective: string; source: 'slash-command' } | undefined = explicitGoalCommand;
@@ -5034,6 +5042,40 @@ ${leadContent.slice(0, leadContextLimit)}
         selectionMode = 'default';
         selectionSource = 'default';
         console.log('[Claude Service] Using top available model:', selectedModel);
+      }
+
+      // Parable mode — Claude Code itself is the meta-harness. Resolve the
+      // pseudo-model to the configured Claude brain, install/load the upstream
+      // skill, and expose the Settings cast through a real parable.toml. Unlike
+      // Auto Build, no application router or helper-stage plan is created.
+      if (selectedModel === PARABLE_MODE_ID) {
+        parableRuntime = parableService.prepareRuntime(sessionId);
+        if (session.sshConfig) {
+          const syncResult = await sshService.syncSettings(sessionId, session.sshConfig);
+          if (!syncResult.success) {
+            console.warn('[Claude Service] Parable skill sync to SSH host was incomplete:', syncResult.error);
+          }
+          const remoteConfigPath = `/tmp/build-parable-${sessionId.replace(/[^a-zA-Z0-9_-]/g, '-')}.toml`;
+          await sshService.writeRemoteFile(sessionId, session.sshConfig, remoteConfigPath, parableRuntime.configToml);
+          const remoteSkillDir = '~/.claude/skills/parable-build';
+          parableRuntime = {
+            ...parableRuntime,
+            configPath: remoteConfigPath,
+            skillDir: remoteSkillDir,
+            skillFile: `${remoteSkillDir}/SKILL.md`,
+            systemContext: parableService.buildSystemContext(parableRuntime.config, remoteSkillDir, remoteConfigPath, parableRuntime.skillContent),
+            env: {
+              ...parableRuntime.env,
+              PARABLE_CONFIG: remoteConfigPath,
+              PARABLE_SKILL_DIR: remoteSkillDir,
+            },
+          };
+        }
+        selectedModel = parableRuntime.brainModel;
+        autoOrchestrationContext = parableRuntime.systemContext;
+        selectionMode = 'manual';
+        selectionSource = 'request';
+        console.log(`[Claude Service] Parable mode active — Claude Code meta-harness brain=${selectedModel} config=${parableRuntime.configPath}`);
       }
 
       // Auto Build mode — resolve 'auto' to a concrete model via the router
@@ -6295,22 +6337,14 @@ Begin by creating the task structure now.
         console.warn('[Claude Service] Could not sync showClearContextOnPlanAccept:', e);
       }
 
-      // When canUseTool is provided, downgrade bypassPermissions to default as the
-      // CLI permission mode. In bypassPermissions, the CLI auto-allows ALL tools
-      // internally without sending can_use_tool events to the SDK — which means
-      // AskUserQuestion never reaches our callback and fails headlessly. With
-      // default, ALL tool decisions route through our canUseTool callback, where we
-      // auto-allow everything (simulating bypass) except AskUserQuestion (which
-      // gets the interactive dialog) and ExitPlanMode (which gets plan approval).
-      // When bypass is active, downgrade to 'default' as the CLI permission mode
-      // so that ALL tool decisions route through our canUseTool callback. Our
-      // callback auto-allows everything (simulating bypass) except AskUserQuestion
-      // and ExitPlanMode which get interactive dialogs. We must NOT set
-      // allowDangerouslySkipPermissions because it tells the CLI to skip the
-      // permission-prompt-tool entirely, preventing canUseTool from ever firing.
-      const cliPermissionMode = autoBuildLeadPermissionMode === 'bypassPermissions'
-        ? 'default'
-        : autoBuildLeadPermissionMode;
+      // Pass the user's permission mode through to the CLI. When bypass is
+      // active, also set allowDangerouslySkipPermissions so the CLI auto-allows
+      // ALL tools without pausing. This prevents partial-message spam from
+      // permission-prompt round-trips that cause triple-output rendering bugs.
+      // Trade-off: AskUserQuestion won't fire in bypass mode (the CLI never
+      // sends can_use_tool events), but that's acceptable — bypass means bypass.
+      const cliPermissionMode = autoBuildLeadPermissionMode;
+      const requiresDangerFlag = autoBuildLeadPermissionMode === 'bypassPermissions';
 
       // Resolve the native CLI binary path explicitly.
       // The SDK's own resolution uses import.meta.url which breaks when webpack
@@ -6344,6 +6378,7 @@ Begin by creating the task structure now.
           ...(resolvedCliBinaryPath ? { pathToClaudeCodeExecutable: resolvedCliBinaryPath } : {}),
           abortController,
           permissionMode: cliPermissionMode,
+          ...(requiresDangerFlag ? { allowDangerouslySkipPermissions: true } : {}),
           includePartialMessages: true,
           // Use computed model — resolve custom:* IDs to actual API model names
           model: this.resolveCustomModelId(selectedModel),
@@ -6387,6 +6422,8 @@ Begin by creating the task structure now.
             const finalEnv = {
               ...cleanEnv,
               ...(apiKey ? { ANTHROPIC_API_KEY: apiKey } : {}),
+              ...(parableRuntime?.env || {}),
+              ...(parableRuntime && settings.cursorApiKey ? { CURSOR_API_KEY: String(settings.cursorApiKey) } : {}),
               CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
               ENABLE_TOOL_SEARCH: process.env.ENABLE_TOOL_SEARCH || 'true',
               ...foundryVars,
