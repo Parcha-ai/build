@@ -1267,6 +1267,15 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
         const shouldDrainAfterResume = !hadError && resumeProducedVisibleOutput;
         notifyQueueStreamEnd(shouldDrainAfterResume, shouldDrainAfterResume && resumeCompletedWithResult);
 
+        // Safety net: if the resume suppressed drain but the queue still has
+        // messages (e.g. a race-rescheduled injection), force a deferred drain
+        // so the message doesn't strand. The race handler's deferDrain(500)
+        // gets killed by onStreamEnd(drain:false) above — this rescues it.
+        if (!shouldDrainAfterResume && messageQueueService.length(sessionId) > 0) {
+          console.log(`[Claude IPC] Resume suppressed drain but queue has ${messageQueueService.length(sessionId)} pending message(s) for ${sessionId}; scheduling rescue drain`);
+          messageQueueService.deferDrain(sessionId, 500);
+        }
+
         // Parallel state machine tracking (Phase 6 - diagnostic only)
         sessionTurnService.transition(sessionId, 'IDLE', 'reattach completed');
       }
