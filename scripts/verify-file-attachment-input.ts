@@ -30,6 +30,15 @@ assert.match(
   'file-only sends must produce a non-empty actionable user message',
 );
 
+const processFilesBlock = inputArea.match(
+  /const processFiles = useCallback[\s\S]*?(?=\n\n {2}const handleDragOver)/,
+)?.[0] || '';
+assert.match(
+  processFilesBlock,
+  /\}, \[setAttachments\]\);$/,
+  'file selection must use the attachment setter for the currently selected session',
+);
+
 assert.match(
   attachmentAssets,
   /prepareFileAttachmentsForHarness/,

@@ -18,9 +18,12 @@ import LunchLockModal from './components/layout/LunchLockModal';
 import BedtimeLockModal from './components/layout/BedtimeLockModal';
 import DailyReviewModal from './components/tasks/DailyReviewModal';
 import BedtimeTaskReviewModal from './components/tasks/BedtimeTaskReviewModal';
-import { Terminal, Globe, PanelRight, Settings, PanelLeftClose, Monitor, AlertTriangle, Package, FileText, FileCode, ClipboardList, GitBranch } from 'lucide-react';
+import { Terminal, Globe, PanelRight, Settings, PanelLeftClose, Monitor, AlertTriangle, Package, FileText, FileCode, ClipboardList, GitBranch, Plus } from 'lucide-react';
 import OpenDesignIcon from './components/design/OpenDesignIcon';
-import { getSessionDisplayName } from './utils/session-display';
+import { getBrowserPartitionId } from '../shared/utils/browser-partition';
+import BrowserSessionTab from './components/preview/BrowserSessionTab';
+import BrowserPreviewBoundary from './components/preview/BrowserPreviewBoundary';
+import type { BrowserChatInsertPayload } from '../shared/types';
 
 // Check if we're running in Electron (has electronAPI) or browser preview mode
 const isElectron = typeof window !== 'undefined' && !!window.electronAPI;
@@ -614,20 +617,20 @@ function ElectronApp() {
           if (!uiState.isBrowserPanelOpen) {
             return;
           }
-
           const sessionState = useSessionStore.getState();
-          const activeId = sessionState.activeSessionId;
-          const targetId = uiState.isCommandCenterActive
-            ? uiState.commandCenterFocusedSessionId
-            : uiState.isAgentViewActive
-              ? uiState.agentViewSelectedSessionId
-              : activeId;
-          if (!targetId) {
+          const selectedSession = sessionState.sessions.find((session) => session.id === sessionState.activeSessionId);
+          const partitionId = selectedSession
+            ? getBrowserPartitionId(selectedSession.id, sessionState.sessions)
+            : null;
+          const activeBrowserTab = partitionId
+            ? uiState.browserTabs.find((tab) => tab.id === uiState.activeBrowserTabIdsByPartition[partitionId])
+            : null;
+          if (!activeBrowserTab) {
             return;
           }
 
           window.dispatchEvent(new CustomEvent('grep-browser-refresh', {
-            detail: { sessionId: targetId },
+            detail: { sessionId: activeBrowserTab.ownerSessionId, browserTabId: activeBrowserTab.id },
           }));
           return;
         }
@@ -681,8 +684,22 @@ function ElectronApp() {
   // Auto-open browser panel when Stagehand browser tools are used
   useEffect(() => {
     const unsubscribe = window.electronAPI.browser.onBrowserUpdate((data: { sessionId: string; screenshot: string; url?: string; timestamp: string }) => {
-      // Enable browser for this session - this also opens the browser panel
-      useUIStore.getState().enableSessionBrowser(data.sessionId);
+      const uiState = useUIStore.getState();
+      const sessionState = useSessionStore.getState();
+      const owner = sessionState.sessions.find((session) => session.id === data.sessionId);
+      if (!owner) return;
+      const existing = uiState.browserTabs.find((tab) => tab.ownerSessionId === data.sessionId);
+      if (existing) {
+        uiState.setActiveBrowserTab(existing.id);
+        if (data.url) uiState.updateBrowserTabUrl(existing.id, data.url);
+      } else {
+        uiState.createBrowserTab(
+          owner.id,
+          getBrowserPartitionId(owner.id, sessionState.sessions),
+          data.url || owner.lastBrowserUrl || `http://localhost:${owner.ports?.web || 3000}`,
+        );
+      }
+      uiState.enableSessionBrowser(data.sessionId);
     });
 
     return () => {
@@ -690,12 +707,48 @@ function ElectronApp() {
     };
   }, []);
 
+  // Browser screenshots and inspector captures may originate in the detached
+  // browser window. Retarget the browser tab owner's event to the visible chat
+  // in the same fork family, then deliver one ordinary local composer event.
+  useEffect(() => {
+    const unsubscribe = window.electronAPI.browser.onChatInsert((payload: BrowserChatInsertPayload) => {
+      const sessionState = useSessionStore.getState();
+      const uiState = useUIStore.getState();
+      const visibleChatSessionId = uiState.isCommandCenterActive
+        ? uiState.commandCenterFocusedSessionId
+        : uiState.isAgentViewActive
+          ? uiState.agentViewSelectedSessionId
+          : sessionState.activeSessionId;
+      const sourceSession = sessionState.sessions.find((session) => session.id === payload.sessionId);
+      const visibleSession = sessionState.sessions.find((session) => session.id === visibleChatSessionId);
+      const targetSessionId = sourceSession && visibleSession
+        && getBrowserPartitionId(sourceSession.id, sessionState.sessions) === getBrowserPartitionId(visibleSession.id, sessionState.sessions)
+        ? visibleSession.id
+        : payload.sessionId;
+
+      window.dispatchEvent(new CustomEvent('grep-insert-chat', {
+        detail: { ...payload, sessionId: targetSessionId },
+      }));
+    });
+
+    return unsubscribe;
+  }, []);
+
   // Open browser panel when requested by main process (for Stagehand initialization)
   useEffect(() => {
     const unsubscribe = window.electronAPI.browser.onBrowserOpenPanel((data: { sessionId: string }) => {
       console.log('[App] Browser panel open requested for session:', data.sessionId);
-      // Enable browser for this session - this also opens the browser panel
-      useUIStore.getState().enableSessionBrowser(data.sessionId);
+      const uiState = useUIStore.getState();
+      const sessionState = useSessionStore.getState();
+      const owner = sessionState.sessions.find((session) => session.id === data.sessionId);
+      if (owner && !uiState.browserTabs.some((tab) => tab.ownerSessionId === owner.id)) {
+        uiState.createBrowserTab(
+          owner.id,
+          getBrowserPartitionId(owner.id, sessionState.sessions),
+          owner.lastBrowserUrl || `http://localhost:${owner.ports?.web || 3000}`,
+        );
+      }
+      uiState.enableSessionBrowser(data.sessionId);
     });
 
     return () => {
@@ -958,9 +1011,11 @@ function ElectronApp() {
 function BrowserOnlyApp() {
   const sessions = useSessionStore((s) => s.sessions);
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
-  const commandCenterSessionIds = useSessionStore((s) => s.commandCenterSessionIds);
-  const commandCenterFocusedSessionId = useUIStore((s) => s.commandCenterFocusedSessionId);
-  const setCommandCenterFocusedSession = useUIStore((s) => s.setCommandCenterFocusedSession);
+  const browserTabs = useUIStore((s) => s.browserTabs);
+  const activeBrowserTabIdsByPartition = useUIStore((s) => s.activeBrowserTabIdsByPartition);
+  const createBrowserTab = useUIStore((s) => s.createBrowserTab);
+  const setActiveBrowserTab = useUIStore((s) => s.setActiveBrowserTab);
+  const updateBrowserTabUrl = useUIStore((s) => s.updateBrowserTabUrl);
 
   const [ready, setReady] = useState(false);
   useEffect(() => {
@@ -972,19 +1027,40 @@ function BrowserOnlyApp() {
     init();
   }, []);
 
-  // Get command center sessions for tabs
-  const ccSessions = useMemo(() => {
-    return commandCenterSessionIds
-      .map(id => sessions.find(s => s.id === id))
-      .filter((s): s is NonNullable<typeof s> => !!s);
-  }, [commandCenterSessionIds, sessions]);
+  const mountedBrowserTabs = useMemo(() => browserTabs.filter((tab) => (
+    sessions.some((session) => session.id === tab.ownerSessionId)
+  )), [browserTabs, sessions]);
+  const fallbackOwner = sessions.find((session) => session.id === activeSessionId) || sessions[0];
+  const activeBrowserPartitionId = fallbackOwner
+    ? getBrowserPartitionId(fallbackOwner.id, sessions)
+    : null;
+  const browserTabsForPartition = useMemo(() => mountedBrowserTabs.filter((tab) => (
+    tab.partitionId === activeBrowserPartitionId
+  )), [activeBrowserPartitionId, mountedBrowserTabs]);
+  const activeBrowserTabId = activeBrowserPartitionId
+    ? activeBrowserTabIdsByPartition[activeBrowserPartitionId] || null
+    : null;
+  const activeBrowserTab = browserTabsForPartition.find((tab) => tab.id === activeBrowserTabId)
+    || browserTabsForPartition[0]
+    || null;
+  const activeBrowserOwnerSession = activeBrowserTab
+    ? sessions.find((session) => session.id === activeBrowserTab.ownerSessionId) || null
+    : null;
 
-  // Active tab follows focused session
-  const activeSessionForBrowser = commandCenterFocusedSessionId
-    ? sessions.find(s => s.id === commandCenterFocusedSessionId)
-    : ccSessions[0] || sessions.find(s => s.id === activeSessionId) || sessions[0];
+  useEffect(() => {
+    if (!ready || !fallbackOwner) return;
+    if (browserTabsForPartition.length === 0) {
+      createBrowserTab(
+        fallbackOwner.id,
+        getBrowserPartitionId(fallbackOwner.id, sessions),
+        fallbackOwner.lastBrowserUrl || `http://localhost:${fallbackOwner.ports?.web || 3000}`,
+      );
+    } else if (!activeBrowserTabId || !browserTabsForPartition.some((tab) => tab.id === activeBrowserTabId)) {
+      setActiveBrowserTab(browserTabsForPartition[0].id);
+    }
+  }, [activeBrowserTabId, browserTabsForPartition, createBrowserTab, fallbackOwner, ready, sessions, setActiveBrowserTab]);
 
-  if (!ready || !activeSessionForBrowser) {
+  if (!ready || !activeBrowserTab || !activeBrowserOwnerSession) {
     return (
       <div className="h-screen w-screen flex items-center justify-center bg-claude-bg">
         <p className="text-claude-text-secondary font-mono text-sm">Loading browser...</p>
@@ -996,45 +1072,61 @@ function BrowserOnlyApp() {
 
   return (
     <div className="h-screen w-screen flex flex-col bg-claude-bg">
-      {/* Title bar with session tabs */}
+      {/* Independent browser workspace tabs */}
       <div
         className="h-8 bg-claude-surface border-b border-claude-border flex items-center"
         style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
       >
-        {ccSessions.length > 1 ? (
-          <div className="flex-1 flex items-center overflow-x-auto" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
-            {ccSessions.map(s => {
-              const isActive = s.id === activeSessionForBrowser.id;
-              return (
-                <button
-                  key={s.id}
-                  onClick={() => setCommandCenterFocusedSession(s.id)}
-                  className={`flex items-center gap-1.5 px-3 h-8 text-[10px] font-mono font-bold uppercase border-r border-claude-border transition-colors whitespace-nowrap ${
-                    isActive
-                      ? 'bg-claude-bg text-claude-text'
-                      : 'bg-claude-surface text-claude-text-secondary hover:bg-claude-bg/50'
-                  }`}
-                  style={{ letterSpacing: '0.05em' }}
-                >
-                  <div
-                    className={`w-1.5 h-1.5 flex-shrink-0 ${s.status === 'running' ? 'bg-green-500' : 'bg-gray-500'}`}
-                    style={{ borderRadius: 0 }}
-                  />
-                  <span className="truncate max-w-[140px]">{getSessionDisplayName(s)}</span>
-                </button>
+        <div className="flex-1 flex items-center overflow-x-auto" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+          {browserTabsForPartition.map((tab) => (
+            <BrowserSessionTab
+              key={tab.id}
+              tab={tab}
+              ownerSession={sessions.find((session) => session.id === tab.ownerSessionId)}
+              isActive={tab.id === activeBrowserTab.id}
+              onActivate={() => setActiveBrowserTab(tab.id)}
+              compact
+            />
+          ))}
+          <button
+            type="button"
+            onClick={() => {
+              if (!fallbackOwner) return;
+              createBrowserTab(
+                fallbackOwner.id,
+                getBrowserPartitionId(fallbackOwner.id, sessions),
+                fallbackOwner.lastBrowserUrl || `http://localhost:${fallbackOwner.ports?.web || 3000}`,
               );
-            })}
-          </div>
-        ) : (
-          <span className="text-[10px] font-mono font-bold text-claude-text-secondary uppercase px-4" style={{ letterSpacing: '0.1em' }}>
-            Browser — {getSessionDisplayName(activeSessionForBrowser)}
-          </span>
-        )}
+            }}
+            className="h-8 px-2 text-claude-text-secondary hover:text-claude-text hover:bg-claude-bg/50"
+            title="New browser tab"
+          >
+            <Plus size={13} />
+          </button>
+        </div>
       </div>
-      {/* Browser view — keep only the focused session mounted. */}
+      {/* Saved tabs retain their URL, but only the visible tab owns a Chromium
+          guest. Hidden webviews remain full renderer processes and previously
+          caused every persisted Build session to come alive on app startup. */}
       <div className="flex-1 overflow-hidden relative">
         <React.Suspense fallback={<div className="flex-1 flex items-center justify-center"><p className="text-claude-text-secondary">Loading...</p></div>}>
-          <BrowserPreview key={activeSessionForBrowser.id} session={activeSessionForBrowser} isVisible={true} />
+          <div
+            key={activeBrowserTab.id}
+            data-browser-tab-id={activeBrowserTab.id}
+            data-browser-owner-session-id={activeBrowserTab.ownerSessionId}
+            className="absolute inset-0"
+          >
+            <BrowserPreviewBoundary tabId={activeBrowserTab.id}>
+              <BrowserPreview
+                session={activeBrowserOwnerSession}
+                isVisible={true}
+                partitionId={activeBrowserTab.partitionId}
+                browserTabId={activeBrowserTab.id}
+                initialBrowserUrl={activeBrowserTab.url}
+                onBrowserUrlChange={(url) => updateBrowserTabUrl(activeBrowserTab.id, url)}
+              />
+            </BrowserPreviewBoundary>
+          </div>
         </React.Suspense>
       </div>
     </div>

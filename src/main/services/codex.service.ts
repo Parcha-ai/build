@@ -6,6 +6,7 @@ import * as os from 'os';
 import * as readline from 'readline';
 import type { Client, SFTPWrapper } from 'ssh2';
 import { sshService } from './ssh.service';
+import type { SpawnedProcess } from './ssh.service';
 import type { Attachment, ChatMessage, SSHConfig } from '../../shared/types';
 import { terminateProcessTree } from '../utils/process-tree';
 import { truncateMiddlePreservingTail } from '../../shared/utils/prompt-truncation';
@@ -21,8 +22,19 @@ import {
   ZAI_OPENAI_COMPAT_BASE_URL,
   isZaiGlmCodexModel,
 } from '../../shared/config/zai-glm';
+import { CodexAgentMessageBuffer } from './codex-agent-message-buffer';
+import {
+  CodexAppServerConnection,
+  type CodexAppServerMessage,
+} from './codex-app-server-connection';
+import { filterRemoteCodexEnvironment } from '../utils/remote-codex-env';
 
 const STREAM_DEBUG = process.env.GREP_DEBUG_STREAMING === '1';
+// Codex prompts are streamed over stdin locally and through the detached SSH
+// bridge, so this is a model-context safety budget rather than a process argv
+// limit. Roughly 60-80K code-heavy tokens leaves headroom in a 128K context for
+// Codex's own instructions, tool definitions, reasoning, and response.
+const MAX_CODEX_INITIAL_PROMPT_CHARS = 240_000;
 const ATTACHMENT_ONLY_PROMPT = 'Use the attached file(s) as input for the current task. Continue from the existing session context and the latest user request instead of asking me to restate the task.';
 
 // Stream event types for Codex (parallel to Claude's StreamEvent but separate)
@@ -42,6 +54,9 @@ export interface CodexStreamEvent {
     cacheReadTokens: number;
   };
   error?: string;
+  // A provider-reported turn failure is authoritative: the remote process is
+  // finished and must not be mistaken for a recoverable SSH transport drop.
+  terminalFailure?: boolean;
 }
 
 // Result returned when Claude invokes Codex as an MCP tool
@@ -153,8 +168,20 @@ interface CodexNativeThreadOptions {
   persistThread?: boolean;
 }
 
+interface ActiveCodexAppServer {
+  connection: CodexAppServerConnection;
+  process: ChildProcess | SpawnedProcess;
+  abortController: AbortController;
+  threadId: string;
+  turnId: string;
+  workingDir: string;
+  sshConfig?: SSHConfig;
+  assetCleanups: Array<() => Promise<void>>;
+}
+
 class CodexServiceImpl {
   private activeProcesses: Map<string, { process: ChildProcess; abortController: AbortController }> = new Map();
+  private activeAppServers: Map<string, ActiveCodexAppServer> = new Map();
   private codexBinaryPath: string | null = null;
   private codexThreadIds: Map<string, string> = new Map();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -429,13 +456,172 @@ class CodexServiceImpl {
         };
 
       case 'turn.failed':
-        return { type: 'error', error: event.error?.message || 'Turn failed' };
+        return {
+          type: 'error',
+          error: event.error?.message || 'Turn failed',
+          terminalFailure: true,
+        };
 
       case 'error':
         return { type: 'error', error: event.message || 'Unknown error' };
 
       default:
         return null;
+    }
+  }
+
+  private toAppServerUserInput(text: string, imagePaths: string[] = []): Array<Record<string, unknown>> {
+    const input: Array<Record<string, unknown>> = [];
+    if (text.trim()) {
+      input.push({ type: 'text', text, text_elements: [] });
+    }
+    for (const imagePath of imagePaths) {
+      input.push({ type: 'localImage', path: imagePath });
+    }
+    return input;
+  }
+
+  private toAppServerSandboxPolicy(executionMode?: CodexExecutionMode): Record<string, unknown> {
+    if (executionMode?.useDangerouslyBypass || executionMode?.sandboxMode === 'danger-full-access') {
+      return { type: 'dangerFullAccess' };
+    }
+    if (executionMode?.sandboxMode === 'read-only') {
+      return { type: 'readOnly', networkAccess: false };
+    }
+    return {
+      type: 'workspaceWrite',
+      writableRoots: [],
+      networkAccess: true,
+      excludeTmpdirEnvVar: false,
+      excludeSlashTmp: false,
+    };
+  }
+
+  private mapAppServerItem(rawItem: unknown): CodexJsonEvent['item'] | undefined {
+    if (!rawItem || typeof rawItem !== 'object') return undefined;
+    const item = rawItem as Record<string, unknown>;
+    const id = typeof item.id === 'string' ? item.id : `codex-item-${Date.now()}`;
+    const type = typeof item.type === 'string' ? item.type : '';
+
+    switch (type) {
+      case 'agentMessage':
+        return { id, type: 'agent_message', text: typeof item.text === 'string' ? item.text : '' };
+      case 'reasoning': {
+        const summary = Array.isArray(item.summary) ? item.summary.filter((part): part is string => typeof part === 'string') : [];
+        const content = Array.isArray(item.content) ? item.content.filter((part): part is string => typeof part === 'string') : [];
+        return { id, type: 'reasoning', text: [...summary, ...content].join('\n') };
+      }
+      case 'commandExecution':
+        return {
+          id,
+          type: 'command_execution',
+          command: typeof item.command === 'string' ? item.command : '',
+          aggregated_output: typeof item.aggregatedOutput === 'string' ? item.aggregatedOutput : undefined,
+          status: item.status === 'completed' ? 'completed' : item.status === 'failed' || item.status === 'declined' ? 'failed' : 'in_progress',
+        };
+      case 'fileChange':
+        return {
+          id,
+          type: 'file_change',
+          changes: Array.isArray(item.changes)
+            ? item.changes.flatMap((change) => {
+                if (!change || typeof change !== 'object') return [];
+                const record = change as Record<string, unknown>;
+                return [{
+                  kind: typeof record.kind === 'string' ? record.kind : 'update',
+                  path: typeof record.path === 'string' ? record.path : '',
+                }];
+              })
+            : [],
+          status: item.status === 'completed' ? 'completed' : item.status === 'failed' || item.status === 'declined' ? 'failed' : 'in_progress',
+        };
+      case 'mcpToolCall':
+        return {
+          id,
+          type: 'mcp_tool_call',
+          server: typeof item.server === 'string' ? item.server : 'unknown',
+          tool: typeof item.tool === 'string' ? item.tool : 'unknown',
+          arguments: item.arguments && typeof item.arguments === 'object'
+            ? item.arguments as Record<string, unknown>
+            : {},
+          status: item.status === 'completed' ? 'completed' : item.status === 'failed' ? 'failed' : 'in_progress',
+          result: item.result,
+          error: item.error && typeof item.error === 'object'
+            ? { message: String((item.error as Record<string, unknown>).message || 'MCP tool failed') }
+            : undefined,
+        };
+      default:
+        return undefined;
+    }
+  }
+
+  private mapAppServerNotification(
+    message: CodexAppServerMessage,
+    usage?: CodexJsonEvent['usage'],
+  ): CodexJsonEvent | null {
+    const params = message.params || {};
+    switch (message.method) {
+      case 'thread/started': {
+        const thread = params.thread as Record<string, unknown> | undefined;
+        return thread && typeof thread.id === 'string'
+          ? { type: 'thread.started', thread_id: thread.id }
+          : null;
+      }
+      case 'item/started':
+      case 'item/completed': {
+        const item = this.mapAppServerItem(params.item);
+        if (!item) return null;
+        return {
+          type: message.method === 'item/started' ? 'item.started' : 'item.completed',
+          item,
+        };
+      }
+      case 'turn/completed': {
+        const turn = params.turn as Record<string, unknown> | undefined;
+        if (turn?.status === 'failed') {
+          const error = turn.error as Record<string, unknown> | undefined;
+          return { type: 'turn.failed', error: { message: String(error?.message || 'Codex turn failed') } };
+        }
+        return { type: 'turn.completed', usage };
+      }
+      case 'error': {
+        if (params.willRetry === true) return null;
+        const error = params.error as Record<string, unknown> | undefined;
+        return { type: 'error', message: String(error?.message || 'Codex app-server error') };
+      }
+      default:
+        return null;
+    }
+  }
+
+  private handleAppServerRequest(connection: CodexAppServerConnection, message: CodexAppServerMessage): void {
+    if (message.id === undefined || !message.method) return;
+
+    switch (message.method) {
+      case 'currentTime/read':
+        connection.respond(message.id, { currentTimeAt: Math.floor(Date.now() / 1000) });
+        return;
+      case 'item/commandExecution/requestApproval':
+      case 'item/fileChange/requestApproval':
+        // App-server should not ask in Build's non-interactive Codex modes,
+        // but declining is safer than hanging forever if a provider does.
+        connection.respond(message.id, { decision: 'decline' });
+        return;
+      case 'item/tool/requestUserInput': {
+        const questions = Array.isArray(message.params?.questions) ? message.params?.questions : [];
+        const answers = Object.fromEntries(questions.flatMap((question) => {
+          if (!question || typeof question !== 'object') return [];
+          const id = (question as Record<string, unknown>).id;
+          return typeof id === 'string' ? [[id, { answers: [] }]] : [];
+        }));
+        connection.respond(message.id, { answers });
+        return;
+      }
+      case 'mcpServer/elicitation/request':
+        connection.respond(message.id, { action: 'cancel', content: null, _meta: null });
+        return;
+      default:
+        connection.respondError(message.id, `Build does not handle Codex app-server request ${message.method}`);
     }
   }
 
@@ -449,9 +635,8 @@ class CodexServiceImpl {
     }
     const promptWithInstructions = await this.prependCodexInstructionContext(sessionId, prompt, workingDir, sshConfig);
 
-    const MAX_PROMPT_CHARS = 50000;
-    const safePrompt = promptWithInstructions.length > MAX_PROMPT_CHARS
-      ? truncateMiddlePreservingTail(promptWithInstructions, MAX_PROMPT_CHARS)
+    const safePrompt = promptWithInstructions.length > MAX_CODEX_INITIAL_PROMPT_CHARS
+      ? truncateMiddlePreservingTail(promptWithInstructions, MAX_CODEX_INITIAL_PROMPT_CHARS)
       : promptWithInstructions;
 
     let summary = '';
@@ -511,6 +696,284 @@ class CodexServiceImpl {
       toolCalls,
       reasoning: reasoning.trim() || undefined,
     };
+  }
+
+  /**
+   * Spawn a persistent Codex chat turn over the app-server protocol. Unlike
+   * `codex exec`, this keeps stdin open and exposes `turn/steer` while the turn
+   * is active.
+   */
+  private async *spawnCodexAppServer(
+    sessionId: string,
+    prompt: string,
+    workingDir: string,
+    apiKey: string | undefined,
+    sshConfig?: SSHConfig,
+    codexModel?: string,
+    imagePaths: string[] = [],
+    executionMode?: CodexExecutionMode,
+    nativeThread?: CodexNativeThreadOptions,
+  ): AsyncGenerator<CodexJsonEvent> {
+    let binary = 'codex';
+    if (!sshConfig) {
+      try {
+        binary = this.getCodexBinary();
+      } catch (error) {
+        throw new Error(`Failed to initialize Codex app-server: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+
+    // stdio:// is the app-server default across Codex CLI versions. --stdio
+    // was added later and makes older-but-supported remote CLIs (for example
+    // 0.124.0) exit immediately with "unexpected argument '--stdio'".
+    const args = ['app-server'];
+    this.appendProviderConfigArgs(args, codexModel);
+    const env: Record<string, string> = { ...process.env as Record<string, string> };
+    this.applyProviderEnv(env, apiKey, codexModel);
+    Object.assign(env, executionMode?.policy?.env || {});
+    env.CODEX_SDK_ORIGINATOR = 'grep-build';
+    const processEnv = sshConfig ? filterRemoteCodexEnvironment(env) : env;
+
+    this.cancel(sessionId);
+    const abortController = new AbortController();
+    const child: ChildProcess | SpawnedProcess = sshConfig
+      ? sshService.createDetachedCommandProcess(sessionId, sshConfig, {
+          command: 'codex',
+          args,
+          cwd: workingDir,
+          env: processEnv,
+          signal: abortController.signal,
+          closeStdinOnEnd: true,
+        })
+      : spawn(binary, args, {
+          cwd: workingDir,
+          env: processEnv,
+          signal: abortController.signal,
+          detached: process.platform !== 'win32',
+        });
+
+    child.once('error', (error: Error) => {
+      if ((error as NodeJS.ErrnoException).code !== 'ABORT_ERR') {
+        console.warn('[Codex App Server] Process error:', error.message);
+      }
+    });
+
+    const stdout = child.stdout;
+    const stdin = child.stdin;
+    if (!stdout || !stdin) {
+      throw new Error('Codex app-server process is missing stdio');
+    }
+    let stderrDiagnostic = '';
+    if (!sshConfig && 'stderr' in child && child.stderr) {
+      child.stderr.on('data', (data: Buffer) => {
+        const diagnostic = data.toString().trim();
+        if (diagnostic) {
+          stderrDiagnostic = `${stderrDiagnostic}\n${diagnostic}`.slice(-1_000);
+          console.log('[Codex App Server] stderr:', diagnostic.substring(0, 300));
+        }
+      });
+    }
+
+    const connection = new CodexAppServerConnection(stdin, stdout);
+    child.once('exit', (code, signal) => {
+      const diagnostic = connection.getDiagnostics() || stderrDiagnostic.trim();
+      const status = code !== null ? ` with code ${code}` : signal ? ` from ${signal}` : '';
+      const detail = diagnostic ? `: ${diagnostic}` : '';
+      connection.dispose(new Error(`Codex app-server process exited${status}${detail}`));
+    });
+
+    let activeState: ActiveCodexAppServer | undefined;
+    let terminalEventSeen = false;
+    let pendingAppServerError: string | undefined;
+    try {
+      await connection.initialize();
+
+      const approvalPolicy = executionMode?.useDangerouslyBypass
+        ? 'never'
+        : executionMode?.approvalPolicy || 'never';
+      const sandboxMode = executionMode?.useDangerouslyBypass
+        ? 'danger-full-access'
+        : executionMode?.sandboxMode || 'workspace-write';
+      const threadParams: Record<string, unknown> = {
+        model: codexModel || null,
+        cwd: workingDir,
+        approvalPolicy,
+        sandbox: sandboxMode,
+        ephemeral: nativeThread?.persistThread !== true,
+        historyMode: 'legacy',
+        threadSource: 'grep-build',
+      };
+
+      let threadResponse: Record<string, unknown>;
+      if (nativeThread?.resumeThreadId) {
+        try {
+          threadResponse = await connection.request('thread/resume', {
+            threadId: nativeThread.resumeThreadId,
+            model: codexModel || null,
+            cwd: workingDir,
+            approvalPolicy,
+          });
+          console.log(`[Codex App Server] Resumed thread ${nativeThread.resumeThreadId}`);
+        } catch (error) {
+          console.warn('[Codex App Server] Native thread resume failed; starting a fresh thread:', error);
+          this.clearThreadId(sessionId);
+          threadResponse = await connection.request('thread/start', threadParams);
+        }
+      } else {
+        threadResponse = await connection.request('thread/start', threadParams);
+      }
+
+      const thread = threadResponse.thread as Record<string, unknown> | undefined;
+      const threadId = typeof thread?.id === 'string' ? thread.id : nativeThread?.resumeThreadId;
+      if (!threadId) {
+        throw new Error('Codex app-server did not return a thread id');
+      }
+      if (nativeThread?.persistThread) {
+        this.rememberThreadId(sessionId, threadId);
+      }
+
+      const turnResponse = await connection.request('turn/start', {
+        threadId,
+        input: this.toAppServerUserInput(prompt, imagePaths),
+        cwd: workingDir,
+        approvalPolicy,
+        sandboxPolicy: this.toAppServerSandboxPolicy(executionMode),
+        model: codexModel || null,
+        effort: executionMode?.modelReasoningEffort || null,
+      });
+      const turn = turnResponse.turn as Record<string, unknown> | undefined;
+      const turnId = typeof turn?.id === 'string' ? turn.id : undefined;
+      if (!turnId) {
+        throw new Error('Codex app-server did not return a turn id');
+      }
+
+      activeState = {
+        connection,
+        process: child,
+        abortController,
+        threadId,
+        turnId,
+        workingDir,
+        sshConfig,
+        assetCleanups: [],
+      };
+      this.activeAppServers.set(sessionId, activeState);
+      console.log(`[Codex App Server] Turn ${turnId} is steerable for ${sessionId.substring(0, 8)}`);
+
+      let usage: CodexJsonEvent['usage'];
+      while (true) {
+        const message = await connection.nextNotification();
+        if (!message) break;
+
+        if (message.id !== undefined && message.method) {
+          this.handleAppServerRequest(connection, message);
+          continue;
+        }
+
+        if (message.method === 'turn/started') {
+          const startedTurn = message.params?.turn as Record<string, unknown> | undefined;
+          if (typeof startedTurn?.id === 'string') {
+            activeState.turnId = startedTurn.id;
+          }
+        } else if (message.method === 'thread/tokenUsage/updated') {
+          const tokenUsage = message.params?.tokenUsage as Record<string, unknown> | undefined;
+          const last = tokenUsage?.last as Record<string, unknown> | undefined;
+          if (last) {
+            usage = {
+              input_tokens: Number(last.inputTokens || 0),
+              cached_input_tokens: Number(last.cachedInputTokens || 0),
+              output_tokens: Number(last.outputTokens || 0),
+            };
+          }
+        }
+
+        const event = this.mapAppServerNotification(message, usage);
+        if (!event) continue;
+        // App-server emits an `error` notification immediately before the
+        // authoritative failed `turn/completed`. Do not end the consumer on
+        // the preliminary notification: doing so closes the bridge before its
+        // exit marker lands, and SSH recovery can misclassify the completed
+        // provider failure as a disconnected live turn.
+        if (event.type === 'error') {
+          pendingAppServerError = event.message || 'Codex app-server error';
+          console.warn('[Codex App Server] Received preliminary error notification; waiting for terminal turn status');
+          continue;
+        }
+        yield event;
+        if (event.type === 'turn.completed' || event.type === 'turn.failed') {
+          terminalEventSeen = true;
+          break;
+        }
+      }
+
+      if (!terminalEventSeen) {
+        throw new Error(pendingAppServerError || 'Codex app-server ended before the active turn completed');
+      }
+    } finally {
+      if (activeState && this.activeAppServers.get(sessionId) === activeState) {
+        this.activeAppServers.delete(sessionId);
+      }
+      for (const cleanup of activeState?.assetCleanups || []) {
+        await cleanup().catch((error) => console.warn('[Codex App Server] Failed to clean up steered assets:', error));
+      }
+      connection.endInput();
+      connection.dispose();
+    }
+  }
+
+  canSteer(sessionId: string): boolean {
+    const active = this.activeAppServers.get(sessionId);
+    return Boolean(active?.threadId && active?.turnId);
+  }
+
+  async steer(sessionId: string, message: string, attachments?: Attachment[]): Promise<boolean> {
+    const active = this.activeAppServers.get(sessionId);
+    if (!active) {
+      console.log(`[Codex App Server] Cannot steer ${sessionId}: no active app-server turn`);
+      return false;
+    }
+
+    let preparedAssets: PreparedCodexAssets = {
+      imagePaths: [],
+      filePromptBlock: '',
+      cleanup: async () => undefined,
+    };
+    try {
+      preparedAssets = await this.prepareCodexAssets(
+        sessionId,
+        attachments || [],
+        active.workingDir,
+        active.sshConfig,
+      );
+      const promptWithAttachmentContext = this.buildPromptWithAttachmentContext(message, attachments);
+      const steerText = preparedAssets.filePromptBlock
+        ? `${preparedAssets.filePromptBlock}\n\n${promptWithAttachmentContext || ATTACHMENT_ONLY_PROMPT}`
+        : promptWithAttachmentContext || (preparedAssets.imagePaths.length > 0 ? ATTACHMENT_ONLY_PROMPT : '');
+      if (!steerText.trim() && preparedAssets.imagePaths.length === 0) {
+        await preparedAssets.cleanup();
+        return false;
+      }
+
+      const expectedTurnId = active.turnId;
+      const response = await active.connection.request('turn/steer', {
+        threadId: active.threadId,
+        expectedTurnId,
+        input: this.toAppServerUserInput(steerText, preparedAssets.imagePaths),
+      }, 10_000);
+      if (response.turnId !== expectedTurnId || this.activeAppServers.get(sessionId) !== active) {
+        await preparedAssets.cleanup();
+        console.warn(`[Codex App Server] Steer acknowledgement did not match active turn for ${sessionId}`);
+        return false;
+      }
+
+      active.assetCleanups.push(preparedAssets.cleanup);
+      console.log(`[Codex App Server] Steering acknowledged by turn ${expectedTurnId} for ${sessionId.substring(0, 8)}`);
+      return true;
+    } catch (error) {
+      await preparedAssets.cleanup().catch(() => undefined);
+      console.warn(`[Codex App Server] Steering failed for ${sessionId}:`, error);
+      return false;
+    }
   }
 
   /**
@@ -795,19 +1258,32 @@ class CodexServiceImpl {
       : prompt;
     const promptWithInstructions = await this.prependCodexInstructionContext(sessionId, promptWithFiles, workingDir, sshConfig);
     const promptWithModeContext = this.buildPromptWithExecutionMode(promptWithInstructions, executionMode);
-    const MAX_PROMPT_CHARS = 50000;
     let safePrompt = prompt;
-    if (promptWithModeContext.length > MAX_PROMPT_CHARS) {
-      console.warn(`[Codex Service] Prompt too long (${promptWithModeContext.length} chars), middle-truncating to ${MAX_PROMPT_CHARS} while preserving latest input`);
-      safePrompt = truncateMiddlePreservingTail(promptWithModeContext, MAX_PROMPT_CHARS);
+    if (promptWithModeContext.length > MAX_CODEX_INITIAL_PROMPT_CHARS) {
+      console.warn(`[Codex Service] Prompt too long (${promptWithModeContext.length} chars), middle-truncating to ${MAX_CODEX_INITIAL_PROMPT_CHARS} while preserving latest input`);
+      safePrompt = truncateMiddlePreservingTail(promptWithModeContext, MAX_CODEX_INITIAL_PROMPT_CHARS);
     } else {
       safePrompt = promptWithModeContext;
     }
 
-    // Choose local or SSH spawn
-    const eventSource = sshConfig
-      ? this.spawnCodexSSH(sessionId, safePrompt, workingDir, apiKey, sshConfig, codexModel, preparedAssets.imagePaths, executionMode, nativeThread)
-      : this.spawnCodex(sessionId, safePrompt, workingDir, apiKey, codexModel, preparedAssets.imagePaths, executionMode, nativeThread);
+    // Persistent manual/Auto Build Codex threads use app-server so normal
+    // queued messages can steer the active turn. One-off Codex tool calls keep
+    // the simpler exec transport.
+    const eventSource = nativeThread?.persistThread
+      ? this.spawnCodexAppServer(
+          sessionId,
+          safePrompt,
+          workingDir,
+          apiKey,
+          sshConfig,
+          codexModel,
+          preparedAssets.imagePaths,
+          executionMode,
+          nativeThread,
+        )
+      : sshConfig
+        ? this.spawnCodexSSH(sessionId, safePrompt, workingDir, apiKey, sshConfig, codexModel, preparedAssets.imagePaths, executionMode, nativeThread)
+        : this.spawnCodex(sessionId, safePrompt, workingDir, apiKey, codexModel, preparedAssets.imagePaths, executionMode, nativeThread);
 
     try {
       yield* this.translateCodexEventStream(eventSource, {
@@ -831,27 +1307,29 @@ class CodexServiceImpl {
    * Translate raw Codex JSON events into CodexStreamEvents. Shared between the
    * live stream path (streamDirect) and detached-bridge replay
    * (replayDetachedAsChat) so both interpret Codex output identically.
-   * Codex --experimental-json emits multiple item.completed agent_message per
-   * turn (no item.updated streaming); text is emitted as text_deltas with
-   * separators. Ends after turn.completed, or with a fallback complete when
-   * the source stream finishes without one.
+   * Codex --json may emit multiple completed agent messages in one turn:
+   * interim commentary followed by the final answer. Keep one message buffered
+   * so earlier messages can be surfaced as progress while only the last message
+   * becomes permanent assistant content.
    */
   private async *translateCodexEventStream(
     eventSource: AsyncIterable<CodexJsonEvent>,
     options: { sessionId?: string; persistThread?: boolean } = {},
   ): AsyncGenerator<CodexStreamEvent> {
-    let emittedMessageCount = 0;
+    const agentMessages = new CodexAgentMessageBuffer();
 
     for await (const event of eventSource) {
       if (options.persistThread && options.sessionId && event.type === 'thread.started' && event.thread_id) {
         this.rememberThreadId(options.sessionId, event.thread_id);
       }
 
-      // For agent_message items, emit as text_delta with newline separator between items
+      // A later agent message proves the previous one was commentary/progress.
+      // Hold the current message until turn.completed establishes it as final.
       if (event.type === 'item.completed' && event.item?.type === 'agent_message' && event.item.text) {
-        const prefix = emittedMessageCount > 0 ? '\n\n' : '';
-        emittedMessageCount++;
-        yield { type: 'text_delta', content: prefix + event.item.text };
+        const progressMessage = agentMessages.accept(event.item.text);
+        if (progressMessage) {
+          yield { type: 'thinking_delta', content: progressMessage };
+        }
         continue;
       }
 
@@ -870,14 +1348,31 @@ class CodexServiceImpl {
 
       // If translateEvent returns 'complete' (from turn.completed), yield it and stop
       if (translated.type === 'complete') {
+        const finalMessage = agentMessages.finalize();
+        if (finalMessage) {
+          yield { type: 'text_delta', content: finalMessage };
+        }
         yield translated;
         return; // Don't yield a second complete after the loop
+      }
+
+      if (translated.type === 'error') {
+        const progressMessage = agentMessages.finalize();
+        if (progressMessage) {
+          yield { type: 'thinking_delta', content: progressMessage };
+        }
+        yield translated;
+        return;
       }
 
       yield translated;
     }
 
     // Fallback complete if no turn.completed was received
+    const finalMessage = agentMessages.finalize();
+    if (finalMessage) {
+      yield { type: 'text_delta', content: finalMessage };
+    }
     yield { type: 'complete' };
   }
 
@@ -906,14 +1401,37 @@ class CodexServiceImpl {
     };
 
     const rl = readline.createInterface({ input: detachedProcess.stdout });
+    const mapAppServerNotification = this.mapAppServerNotification.bind(this);
     async function* jsonEvents(): AsyncGenerator<CodexJsonEvent> {
+      let appServerUsage: CodexJsonEvent['usage'];
       for await (const line of rl) {
         const trimmed = line.trim();
         if (!trimmed) continue;
         const jsonStart = trimmed.indexOf('{');
         if (jsonStart < 0) continue;
         try {
-          yield JSON.parse(trimmed.slice(jsonStart)) as CodexJsonEvent;
+          const parsed = JSON.parse(trimmed.slice(jsonStart)) as CodexJsonEvent & CodexAppServerMessage;
+          if (!parsed.method) {
+            if (parsed.type) yield parsed;
+            continue;
+          }
+
+          // Persistent Codex chat turns use app-server JSON-RPC. Detached SSH
+          // recovery replays the same stdout log, so adapt notifications back
+          // into the established exec event shape before rendering them.
+          if (parsed.method === 'thread/tokenUsage/updated') {
+            const tokenUsage = parsed.params?.tokenUsage as Record<string, unknown> | undefined;
+            const last = tokenUsage?.last as Record<string, unknown> | undefined;
+            if (last) {
+              appServerUsage = {
+                input_tokens: Number(last.inputTokens || 0),
+                cached_input_tokens: Number(last.cachedInputTokens || 0),
+                output_tokens: Number(last.outputTokens || 0),
+              };
+            }
+          }
+          const event = mapAppServerNotification(parsed, appServerUsage);
+          if (event) yield event;
         } catch {
           // Non-JSON bridge/diagnostic output — skip
         }
@@ -978,6 +1496,7 @@ class CodexServiceImpl {
     content?: string;
     toolCall?: { id: string; name: string; input: Record<string, unknown>; status: string; result?: string };
     error?: string;
+    terminalFailure?: boolean;
     systemInfo?: { tools: string[]; model: string };
     message?: ChatMessage;
     usage?: { inputTokens: number; outputTokens: number; cacheReadTokens?: number };
@@ -1032,7 +1551,11 @@ class CodexServiceImpl {
           };
           break;
         case 'error':
-          yield { type: 'error', error: event.error };
+          yield {
+            type: 'error',
+            error: event.error,
+            terminalFailure: event.terminalFailure,
+          };
           break;
       }
     }
@@ -1042,6 +1565,16 @@ class CodexServiceImpl {
    * Cancel an active Codex run for a session.
    */
   cancel(sessionId: string): void {
+    const activeAppServer = this.activeAppServers.get(sessionId);
+    if (activeAppServer) {
+      console.log(`[Codex App Server] Cancelling active turn for ${sessionId}`);
+      this.activeAppServers.delete(sessionId);
+      activeAppServer.connection.endInput();
+      activeAppServer.connection.dispose(new Error('Codex turn cancelled'));
+      activeAppServer.process.kill('SIGTERM');
+      activeAppServer.abortController.abort();
+    }
+
     for (const key of [sessionId, `tool:${sessionId}`]) {
       const active = this.activeProcesses.get(key);
       if (active) {

@@ -7,6 +7,7 @@ import { BrowserWindow } from 'electron';
 import type { SSHConfig } from '../../shared/types';
 import { IPC_CHANNELS } from '../../shared/constants/channels';
 import { REMOTE_DETACHED_BRIDGE_SCRIPT } from './remote-bridge-script';
+import { filterRemoteClaudeEnvironment } from '../utils/remote-claude-env';
 
 const ANSI_ESCAPE = String.fromCharCode(27);
 const ANSI_COLOR_CODE_RE = new RegExp(`${ANSI_ESCAPE}\\[[0-9;]*m`, 'g');
@@ -118,6 +119,7 @@ export interface RecoverableRemoteProcessOptions {
 
 interface RemoteBridgeLookupOptions {
   connectionSessionId?: string;
+  throwOnError?: boolean;
 }
 
 export interface RemoteCliCapabilities {
@@ -197,6 +199,15 @@ export class SSHService {
   }>();
   private remoteCliCapabilitiesDetections = new Map<string, Promise<RemoteCliCapabilities>>();
   private readonly REMOTE_CLI_CAPABILITIES_TTL = 5 * 60 * 1000; // 5 minutes
+  private remoteCodexSandboxCache = new Map<string, {
+    supported: boolean;
+    reason?: string;
+    fetchedAt: number;
+  }>();
+  private remoteCodexSandboxDetections = new Map<string, Promise<{ supported: boolean; reason?: string }>>();
+  private readonly REMOTE_CODEX_SANDBOX_TTL = 10 * 60 * 1000; // 10 minutes
+  private remoteGitHubCliAuthCache = new Map<string, { available: boolean; fetchedAt: number }>();
+  private readonly REMOTE_GITHUB_AUTH_TTL = 10 * 60 * 1000;
   private remoteBridgeReady = new Map<string, Promise<RemoteBridgeInstall>>();
   private activeTunnels: Set<string> = new Set();
 
@@ -457,6 +468,34 @@ export class SSHService {
       console.log('[SSH Service] Wrote remote file:', normalizedFilePath);
     } catch (error) {
       throw new Error(`Failed to write remote file ${normalizedFilePath}: ${(error as Error).message}`);
+    }
+  }
+
+  /**
+   * Upload one managed directory without syncing the user's full Claude
+   * configuration. Mode-specific runtimes (such as Parable) use this path so
+   * an SSH turn does not block while recursively copying ~/.claude/skills.
+   */
+  async syncLocalDirectoryToRemote(
+    sessionId: string,
+    config: SSHConfig,
+    localDir: string,
+    remoteDir: string,
+  ): Promise<string> {
+    try {
+      const client = await this.getConnection(sessionId, config);
+      const remoteHome = (await this.execCommand(client, 'printf %s "$HOME"')).trim();
+      const expandedRemoteDir = remoteDir === '~'
+        ? remoteHome
+        : remoteDir.startsWith('~/')
+          ? `${remoteHome}/${remoteDir.slice(2)}`
+          : remoteDir;
+
+      console.log(`[SSH Service] Syncing managed directory ${localDir} -> ${expandedRemoteDir}`);
+      await this.uploadDirectoryViaSftp(client, localDir, expandedRemoteDir);
+      return expandedRemoteDir;
+    } catch (error) {
+      throw new Error(`Failed to sync managed directory ${localDir}: ${(error as Error).message}`);
     }
   }
 
@@ -948,6 +987,9 @@ export class SSHService {
       return this.parseDetachedBridgeJobs(output).sort((a, b) => b.updatedAt - a.updatedAt);
     } catch (error) {
       console.warn(`[SSH Service] Failed to list detached bridge jobs for ${sessionId}:`, error);
+      if (options.throwOnError) {
+        throw error;
+      }
       return [];
     }
   }
@@ -1057,6 +1099,73 @@ git -C "$workdir" rev-parse --abbrev-ref HEAD 2>/dev/null || true
       return branch || null;
     } catch (error) {
       console.warn(`[SSH Service] Failed to get remote branch for ${sessionId}:`, error);
+      return null;
+    }
+  }
+
+  async getRemotePullRequestJson(
+    sessionId: string,
+    config: SSHConfig,
+    branch: string,
+    remoteWorkdir?: string,
+  ): Promise<string> {
+    const cacheKey = this.getRemoteCliCapabilitiesCacheKey(config);
+    const cachedAuth = this.remoteGitHubCliAuthCache.get(cacheKey);
+    if (
+      cachedAuth
+      && !cachedAuth.available
+      && Date.now() - cachedAuth.fetchedAt < this.REMOTE_GITHUB_AUTH_TTL
+    ) {
+      throw new Error('Remote GitHub CLI authentication is unavailable');
+    }
+    const fields = [
+      'number',
+      'url',
+      'title',
+      'isDraft',
+      'reviewDecision',
+      'mergeStateStatus',
+      'mergeable',
+      'statusCheckRollup',
+      'updatedAt',
+    ].join(',');
+    const command = [
+      this.getRemoteCommandPathPrefix(config),
+      this.getRemoteWorkdirCdCommand(remoteWorkdir || config.remoteWorkdir || '~'),
+      [
+        'gh', 'pr', 'list',
+        '--head', branch,
+        '--state', 'open',
+        '--limit', '1',
+        '--json', fields,
+      ].map((part) => this.quoteForShell(part)).join(' '),
+    ].join('; ');
+
+    const client = await this.getConnection(sessionId, config);
+    try {
+      const output = await this.execCommand(client, command);
+      this.remoteGitHubCliAuthCache.set(cacheKey, { available: true, fetchedAt: Date.now() });
+      return output;
+    } catch (error) {
+      this.remoteGitHubCliAuthCache.set(cacheKey, { available: false, fetchedAt: Date.now() });
+      throw error;
+    }
+  }
+
+  async getRemoteOriginUrl(
+    sessionId: string,
+    config: SSHConfig,
+    remoteWorkdir?: string,
+  ): Promise<string | null> {
+    try {
+      const client = await this.getConnection(sessionId, config);
+      const command = [
+        this.getRemoteWorkdirCdCommand(remoteWorkdir || config.remoteWorkdir || '~'),
+        'git remote get-url origin',
+      ].join('; ');
+      const output = await this.execCommand(client, command);
+      return output.trim() || null;
+    } catch {
       return null;
     }
   }
@@ -1433,6 +1542,75 @@ detect_cli gemini gemini
         return await detection;
       } finally {
         this.remoteCliCapabilitiesDetections.delete(cacheKey);
+      }
+    }
+
+    return detection;
+  }
+
+  async detectRemoteCodexSandbox(
+    sessionId: string,
+    config: SSHConfig,
+    options?: { force?: boolean },
+  ): Promise<{ supported: boolean; reason?: string }> {
+    const cacheKey = this.getRemoteCliCapabilitiesCacheKey(config);
+    const cached = this.remoteCodexSandboxCache.get(cacheKey);
+    if (
+      !options?.force
+      && cached
+      && Date.now() - cached.fetchedAt < this.REMOTE_CODEX_SANDBOX_TTL
+    ) {
+      return { supported: cached.supported, reason: cached.reason };
+    }
+
+    if (!options?.force) {
+      const pending = this.remoteCodexSandboxDetections.get(cacheKey);
+      if (pending) return pending;
+    }
+
+    const detection = (async (): Promise<{ supported: boolean; reason?: string }> => {
+      try {
+        const client = await this.getConnection(sessionId, config);
+        const output = await this.execCommand(client, `
+${this.getRemoteCommandPathPrefix(config)}
+if ! command -v codex >/dev/null 2>&1; then
+  printf 'supported=0\\nreason=Codex CLI is unavailable\\n'
+  exit 0
+fi
+probe_output="$(codex sandbox -- /bin/true 2>&1)"
+probe_status=$?
+if [ "$probe_status" -eq 0 ]; then
+  printf 'supported=1\\n'
+else
+  printf 'supported=0\\n'
+  printf 'reason=%s\\n' "$(printf '%s\\n' "$probe_output" | tail -n 1 | tr '\\n' ' ')"
+fi
+`);
+        const supported = /^supported=1$/m.test(output);
+        const reason = output.match(/^reason=(.+)$/m)?.[1]?.trim();
+        const result = { supported, ...(reason ? { reason } : {}) };
+        this.remoteCodexSandboxCache.set(cacheKey, {
+          ...result,
+          fetchedAt: Date.now(),
+        });
+        console.log(
+          `[SSH Service] Remote Codex sandbox: ${supported ? 'supported' : 'unavailable'}`
+          + `${reason ? ` (${reason})` : ''}`
+        );
+        return result;
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        console.warn('[SSH Service] Failed to probe remote Codex sandbox:', reason);
+        return { supported: false, reason };
+      }
+    })();
+
+    if (!options?.force) {
+      this.remoteCodexSandboxDetections.set(cacheKey, detection);
+      try {
+        return await detection;
+      } finally {
+        this.remoteCodexSandboxDetections.delete(cacheKey);
       }
     }
 
@@ -2132,7 +2310,10 @@ detect_cli gemini gemini
     config: SSHConfig,
     signal?: AbortSignal
   ): Promise<AttachedDetachedRemoteProcess | null> {
-    const job = await this.getLatestRecoverableRemoteProcess(sessionId, config);
+    // Reattach callers need to distinguish "there is no job" from "the SSH
+    // transport is currently unavailable". The latter must remain retryable
+    // across laptop sleep and network changes.
+    const job = await this.getLatestRecoverableRemoteProcess(sessionId, config, { throwOnError: true });
     if (!job) {
       return null;
     }
@@ -2156,16 +2337,16 @@ detect_cli gemini gemini
     const emitter = new EventEmitter();
     let killed = false;
     let exitCode: number | null = null;
+    const pendingData: Buffer[] = [];
+    let stdinBridgeChannel: ClientChannel | null = null;
+    let stdinBridgeOpening: Promise<void> | null = null;
+    let stdinBridgeReady = false;
+    let stdinReconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let readerChannel: ClientChannel | null = null;
     let stdoutOffset = 0;
     let finalized = false;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let exitPoller: ReturnType<typeof setInterval> | null = null;
-
-    passThrough.stdin.on('data', () => {
-      // Attach-only recovery never sends a new user prompt. Input is ignored
-      // unless the user explicitly cancels, which goes through kill().
-    });
 
     const clearTimers = () => {
       if (reconnectTimer) {
@@ -2176,7 +2357,106 @@ detect_cli gemini gemini
         clearInterval(exitPoller);
         exitPoller = null;
       }
+      if (stdinReconnectTimer) {
+        clearTimeout(stdinReconnectTimer);
+        stdinReconnectTimer = null;
+      }
     };
+
+    const scheduleStdinReconnect = () => {
+      if (finalized || killed || stdinReconnectTimer || pendingData.length === 0) return;
+      stdinReconnectTimer = setTimeout(() => {
+        stdinReconnectTimer = null;
+        void openStdinBridge().catch((error) => {
+          console.warn('[SSH Service] Failed to reattach recovered remote stdin bridge:', error);
+          scheduleStdinReconnect();
+        });
+      }, 1000);
+    };
+
+    const openStdinBridge = (): Promise<void> => {
+      if (finalized || killed || stdinBridgeReady || stdinBridgeChannel) {
+        return Promise.resolve();
+      }
+      if (stdinBridgeOpening) return stdinBridgeOpening;
+
+      stdinBridgeOpening = (async () => {
+        const install = await this.ensureDetachedRemoteBridge(sessionId, config);
+        const client = await this.getConnection(sessionId, config);
+        const command = `${this.getRemoteCommandPathPrefix(config)} && ${install.nodeCommand} ${this.quoteForShell(install.bridgePath)} stdin ${this.quoteForShell(bridge.socketPath)}`;
+
+        await new Promise<void>((resolve, reject) => {
+          let settled = false;
+          let readyBuffer = '';
+
+          const fail = (error: Error) => {
+            if (settled) return;
+            settled = true;
+            stdinBridgeReady = false;
+            stdinBridgeChannel = null;
+            reject(error);
+          };
+
+          client.exec(command, (err, channel) => {
+            if (err) {
+              fail(err);
+              return;
+            }
+
+            stdinBridgeChannel = channel;
+            channel.on('data', (data: Buffer) => {
+              if (settled) return;
+              readyBuffer += data.toString('utf8');
+              if (!readyBuffer.includes('[stdin-ready]')) return;
+
+              settled = true;
+              stdinBridgeReady = true;
+              const queuedBytes = pendingData.reduce((total, chunk) => total + chunk.length, 0);
+              console.log(`[SSH Service] Recovered remote stdin bridge ready for ${sessionId}; flushing ${queuedBytes} queued bytes`);
+              for (const chunk of pendingData) channel.write(chunk);
+              pendingData.length = 0;
+              resolve();
+            });
+            channel.on('close', () => {
+              const wasReady = stdinBridgeReady;
+              stdinBridgeReady = false;
+              stdinBridgeChannel = null;
+              if (!settled && !wasReady) {
+                fail(new Error('Recovered remote stdin bridge closed before it was ready'));
+              } else if (!finalized && !killed && pendingData.length > 0) {
+                scheduleStdinReconnect();
+              }
+            });
+            channel.on('error', (error: Error) => {
+              stdinBridgeReady = false;
+              stdinBridgeChannel = null;
+              if (!settled) fail(error);
+              else scheduleStdinReconnect();
+            });
+            channel.stderr.on('data', (data: Buffer) => {
+              const message = data.toString('utf8').trim();
+              if (message && !settled) fail(new Error(message));
+            });
+          });
+        });
+      })().finally(() => {
+        stdinBridgeOpening = null;
+      });
+
+      return stdinBridgeOpening;
+    };
+
+    passThrough.stdin.on('data', (data: Buffer) => {
+      if (stdinBridgeReady && stdinBridgeChannel) {
+        stdinBridgeChannel.write(data);
+        return;
+      }
+      pendingData.push(data);
+      void openStdinBridge().catch((error) => {
+        console.warn('[SSH Service] Recovered remote stdin bridge unavailable; retrying:', error);
+        scheduleStdinReconnect();
+      });
+    });
 
     const scheduleReaderReconnect = () => {
       if (finalized || killed || reconnectTimer) return;
@@ -2213,6 +2493,15 @@ detect_cli gemini gemini
           // Best-effort bridge teardown.
         }
         readerChannel = null;
+      }
+      if (stdinBridgeChannel) {
+        try {
+          stdinBridgeChannel.close();
+        } catch {
+          // Best-effort bridge teardown.
+        }
+        stdinBridgeChannel = null;
+        stdinBridgeReady = false;
       }
 
       if (flushRemaining) {
@@ -2323,9 +2612,16 @@ detect_cli gemini gemini
           // Best-effort bridge teardown.
         }
       }
-      void this.killDetachedProcess(sessionId, config, bridge).finally(() => {
-        void finalize(exitCode, 'SIGTERM', false);
-      });
+      if (stdinBridgeChannel) {
+        try {
+          stdinBridgeChannel.close();
+        } catch {
+          // Best-effort local detach.
+        }
+      }
+      // Aborting a recovered reader is a local detach, not user intent to kill
+      // the surviving remote turn. Explicit cancel calls kill()/bridge cleanup.
+      void finalize(exitCode, 'SIGTERM', false);
     };
 
     signal?.addEventListener('abort', abortHandler);
@@ -2338,6 +2634,7 @@ detect_cli gemini gemini
         }
 
         await attachReader();
+        await openStdinBridge();
         exitPoller = setInterval(() => {
           void pollForExit();
         }, 1000);
@@ -2501,22 +2798,7 @@ detect_cli gemini gemini
     // We explicitly whitelist rather than blacklist to avoid sending unrelated local machine paths/configs.
     // If the app has an Anthropic API key configured, pass it through so the next remote turn uses it
     // immediately instead of relying on whatever OAuth/auth state exists on the remote host.
-    const includeVars = [
-      'ANTHROPIC_API_KEY',
-      'CLAUDE_CODE_USE_FOUNDRY',
-      'ANTHROPIC_FOUNDRY_BASE_URL',
-      'ANTHROPIC_FOUNDRY_API_KEY',
-      'ANTHROPIC_DEFAULT_SONNET_MODEL',
-      'ANTHROPIC_DEFAULT_HAIKU_MODEL',
-      'ANTHROPIC_DEFAULT_OPUS_MODEL',
-      'CLAUDE_CODE_ENTRYPOINT',
-      'ENABLE_TOOL_SEARCH',
-      'TERM',
-      'LANG',
-    ];
-    const filteredEnv = Object.fromEntries(Object.entries(sdkOptions.env)
-      .filter(([key, value]) => value !== undefined && includeVars.includes(key))
-    ) as Record<string, string | undefined>;
+    const filteredEnv: Record<string, string | undefined> = filterRemoteClaudeEnvironment(sdkOptions.env);
     filteredEnv.CLAUDETTE_SESSION_ID = this.getSafeSessionId(sessionId);
 
     // Build the command using the SDK's args
@@ -2758,7 +3040,8 @@ detect_cli gemini gemini
   /**
    * Sync local Claude settings to remote machine via SFTP
    * Syncs: ~/.claude/agents/, ~/.claude/commands/, ~/.claude/CLAUDE.md, ~/.claude/settings.json
-   * Also syncs GitHub credentials for git/gh operations
+   * GitHub identity/auth is a separate explicit opt-in. By default the remote
+   * machine keeps its own user or bot credentials.
    */
   async syncSettings(sessionId: string, config: SSHConfig): Promise<{ success: boolean; error?: string }> {
     const os = await import('os');
@@ -2767,6 +3050,7 @@ detect_cli gemini gemini
 
     const homeDir = os.homedir();
     const claudeDir = path.join(homeDir, '.claude');
+    const forwardGitHubCredentials = config.forwardGitHubCredentials === true;
 
     // Check if local .claude directory exists. MCP config/auth sync still runs
     // even if the user has not created local Claude settings yet.
@@ -2793,12 +3077,20 @@ detect_cli gemini gemini
 
       // Ensure remote directories exist
       console.log('[SSH Service] Creating remote directories...');
-      await this.execCommand(client, 'mkdir -p ~/.claude/agents ~/.claude/commands ~/.config/gh');
+      await this.execCommand(
+        client,
+        `mkdir -p ~/.claude/agents ~/.claude/commands ~/.claude/skills${forwardGitHubCredentials ? ' ~/.config/gh' : ''}`
+      );
 
-      // Get GitHub token and create hosts.yml for remote
-      const ghToken = await this.getGitHubToken();
-      const ghUser = await this.getGitHubUser();
+      // Never even read the laptop's GitHub identity/token unless the user has
+      // explicitly opted into forwarding it for this SSH host.
+      const ghToken = forwardGitHubCredentials ? await this.getGitHubToken() : null;
+      const ghUser = forwardGitHubCredentials ? await this.getGitHubUser() : null;
       let tempGhHostsPath: string | null = null;
+
+      if (!forwardGitHubCredentials) {
+        console.log('[SSH Service] GitHub credential forwarding disabled; preserving remote user/bot auth');
+      }
 
       if (ghToken && ghUser) {
         console.log('[SSH Service] Creating GitHub hosts.yml for remote...');
@@ -2818,20 +3110,25 @@ detect_cli gemini gemini
       const itemsToSync: Array<{ local: string; remote: string; isDir: boolean }> = [
         { local: path.join(claudeDir, 'agents'), remote: '.claude/agents', isDir: true },
         { local: path.join(claudeDir, 'commands'), remote: '.claude/commands', isDir: true },
+        { local: path.join(claudeDir, 'skills'), remote: '.claude/skills', isDir: true },
         { local: path.join(claudeDir, 'CLAUDE.md'), remote: '.claude/CLAUDE.md', isDir: false },
         { local: path.join(claudeDir, 'settings.json'), remote: '.claude/settings.json', isDir: false },
-        // Git config for identity
-        { local: path.join(homeDir, '.gitconfig'), remote: '.gitconfig', isDir: false },
       ];
 
-      // Add GitHub hosts.yml - use temp file with embedded token if available, otherwise original
-      if (tempGhHostsPath) {
-        itemsToSync.push({ local: tempGhHostsPath, remote: '.config/gh/hosts.yml', isDir: false });
-      } else {
-        itemsToSync.push({ local: path.join(homeDir, '.config', 'gh', 'hosts.yml'), remote: '.config/gh/hosts.yml', isDir: false });
+      if (forwardGitHubCredentials) {
+        // Git config carries the laptop user's commit identity. Keep it with
+        // the same opt-in as GitHub authentication so bot remotes stay bots.
+        itemsToSync.push({ local: path.join(homeDir, '.gitconfig'), remote: '.gitconfig', isDir: false });
+
+        // Use the temporary hosts file with the extracted keychain token when
+        // possible, otherwise forward the user's existing gh files.
+        if (tempGhHostsPath) {
+          itemsToSync.push({ local: tempGhHostsPath, remote: '.config/gh/hosts.yml', isDir: false });
+        } else {
+          itemsToSync.push({ local: path.join(homeDir, '.config', 'gh', 'hosts.yml'), remote: '.config/gh/hosts.yml', isDir: false });
+        }
+        itemsToSync.push({ local: path.join(homeDir, '.config', 'gh', 'config.yml'), remote: '.config/gh/config.yml', isDir: false });
       }
-      // Always sync gh config.yml
-      itemsToSync.push({ local: path.join(homeDir, '.config', 'gh', 'config.yml'), remote: '.config/gh/config.yml', isDir: false });
 
       // Helper to upload a file via SFTP
       const uploadFile = (localPath: string, remotePath: string): Promise<void> => {
@@ -2906,7 +3203,7 @@ detect_cli gemini gemini
       }
 
       // Configure git to use gh as credential helper on remote
-      if (ghToken) {
+      if (forwardGitHubCredentials && ghToken) {
         console.log('[SSH Service] Configuring git credential helper on remote...');
         try {
           await this.execCommand(client, 'git config --global credential.helper "!gh auth git-credential"');
@@ -3358,9 +3655,15 @@ detect_cli gemini gemini
       const filePath = lines[0].trim();
       const fileContent = lines.slice(1).join('\n');
 
-      // Extract command name from path (e.g., /path/to/commands/foo.md -> foo)
-      const fileName = filePath.split('/').pop() || '';
-      const name = fileName.replace('.md', '');
+      // Preserve nested Claude command namespaces: commands/review/pr.md is
+      // invoked as /review:pr, matching the local extension scanner.
+      const pathParts = filePath.split('/');
+      const commandsIndex = pathParts.lastIndexOf('commands');
+      const relativeParts = commandsIndex >= 0
+        ? pathParts.slice(commandsIndex + 1)
+        : pathParts.slice(-1);
+      const lastPart = relativeParts.pop() || '';
+      const name = [...relativeParts, lastPart.replace(/\.md$/, '')].filter(Boolean).join(':');
 
       // Extract description from first line if it's an HTML comment
       const firstLine = fileContent.split('\n')[0]?.trim() || '';
@@ -4081,10 +4384,17 @@ CONFIG_EOF`);
           continue;
         }
 
+        const localStat = await fsPromises.stat(localPath);
         await new Promise<void>((resolve, reject) => {
           sftp.fastPut(localPath, remotePath, (err) => {
-            if (err) reject(err);
-            else resolve();
+            if (err) {
+              reject(err);
+              return;
+            }
+            sftp.chmod(remotePath, localStat.mode & 0o777, (chmodError) => {
+              if (chmodError) reject(chmodError);
+              else resolve();
+            });
           });
         });
       }

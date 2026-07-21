@@ -7,6 +7,7 @@ const claudeService = fs.readFileSync(path.join(root, 'src/main/services/claude.
 const autoRouterService = fs.readFileSync(path.join(root, 'src/main/services/auto-router.service.ts'), 'utf8');
 const sessionStore = fs.readFileSync(path.join(root, 'src/renderer/stores/session.store.ts'), 'utf8');
 const analyticsService = fs.readFileSync(path.join(root, 'src/main/services/analytics.service.ts'), 'utf8');
+const modelPricing = fs.readFileSync(path.join(root, 'src/shared/config/model-pricing.ts'), 'utf8');
 const tokenDashboard = fs.readFileSync(path.join(root, 'src/renderer/components/analytics/TokenDashboard.tsx'), 'utf8');
 const harnessPolicy = fs.readFileSync(path.join(root, 'src/main/services/harness-policy.service.ts'), 'utf8');
 
@@ -58,12 +59,12 @@ assert.match(
 );
 
 assert.match(
-  analyticsService,
+  modelPricing,
   /'claude-sonnet-5': \{ input: 3, output: 15, cacheRead: 0\.30, cacheWrite: 3\.75 \}/,
   'Analytics pricing must include Sonnet 5 pricing',
 );
 assert.match(
-  analyticsService,
+  modelPricing,
   /if \(normalized\.includes\('sonnet'\)\) return MODEL_PRICING\['claude-sonnet-5'\]/,
   'Analytics pricing fallback must prefer Sonnet 5 for Sonnet aliases',
 );

@@ -21,7 +21,9 @@ import type {
   PluginMarketplace,
   InstalledPlugin,
   MarketplacePlugin,
-  OpenClawConfig
+  OpenClawConfig,
+  PullRequestStatusResult,
+  BrowserChatInsertPayload
 } from '../shared/types';
 
 // Dev instance name from environment variable (set by scripts/dev.sh)
@@ -105,6 +107,8 @@ const electronAPI = {
       ipcRenderer.invoke(IPC_CHANNELS.SESSION_REWIND_FORK, sessionId, rewindToMessageId),
     createFork: (parentSessionId: string, forkPoint: string, initialMessage?: string): Promise<Session> =>
       ipcRenderer.invoke(IPC_CHANNELS.SESSION_CREATE_FORK, parentSessionId, forkPoint, initialMessage),
+    fastStackFork: (sessionId: string): Promise<{ forked: boolean; mode: 'native' | 'remote' | 'fresh-context'; parentSdkSessionId?: string; sdkSessionId?: string; error?: string }> =>
+      ipcRenderer.invoke(IPC_CHANNELS.SESSION_FAST_STACK_FORK, sessionId),
     getForkGroup: (sessionId: string): Promise<Session[]> =>
       ipcRenderer.invoke(IPC_CHANNELS.SESSION_GET_FORK_GROUP, sessionId),
     scanRemoteTranscripts: (sessionId: string): Promise<Session[]> =>
@@ -172,12 +176,16 @@ const electronAPI = {
       ipcRenderer.on(IPC_CHANNELS.GIT_BRANCH_CHANGED, handler);
       return () => { ipcRenderer.removeListener(IPC_CHANNELS.GIT_BRANCH_CHANGED, handler); };
     },
+    getPullRequestStatus: (sessionId: string): Promise<PullRequestStatusResult> =>
+      ipcRenderer.invoke(IPC_CHANNELS.GIT_PULL_REQUEST_STATUS, sessionId),
   },
 
   // Claude
   claude: {
-    sendMessage: (sessionId: string, message: string, attachments?: unknown[], permissionMode?: string, thinkingMode?: string, model?: string, gstackMode?: string, supplementalMessages?: ChatMessage[], fastMode?: boolean, suppressUserMessage?: boolean, userMessageId?: string): Promise<void> =>
-      ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_SEND_MESSAGE, sessionId, message, attachments, permissionMode, thinkingMode, model, gstackMode, supplementalMessages, fastMode, suppressUserMessage, userMessageId),
+    sendMessage: (sessionId: string, message: string, attachments?: unknown[], permissionMode?: string, thinkingMode?: string, model?: string, gstackMode?: string, supplementalMessages?: ChatMessage[], fastMode?: boolean, suppressUserMessage?: boolean, userMessageId?: string, cascadeMode?: boolean): Promise<void> =>
+      ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_SEND_MESSAGE, sessionId, message, attachments, permissionMode, thinkingMode, model, gstackMode, supplementalMessages, fastMode, suppressUserMessage, userMessageId, cascadeMode),
+    noteHarnessSwitch: (sessionId: string, fromModel: string, toModel: string): void =>
+      ipcRenderer.send(IPC_CHANNELS.CLAUDE_NOTE_HARNESS_SWITCH, { sessionId, fromModel, toModel }),
     resumeRemoteTurn: (sessionId: string, model?: string): Promise<void> =>
       ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_RESUME_REMOTE_TURN, sessionId, model),
     getMessages: (sessionId: string, limit?: number): Promise<ChatMessage[]> =>
@@ -305,7 +313,7 @@ const electronAPI = {
     respondToPlanApproval: (response: { requestId: string; approved: boolean; sessionId?: string; planContent?: string; planFilePath?: string; feedback?: string }): Promise<void> =>
       ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_PLAN_APPROVAL_RESPONSE, response),
     // Auto Build routing decision listener
-    onAutoRouteDecision: (callback: (data: { sessionId: string; decision: { tier: string; domain?: string; resolvedModel: string; resolvedHarness?: string; resolvedEffort?: string; resolvedSpeed?: string; workflow?: string; budgetUsd?: number; verification?: string; confidence: number; reason: string; method: string; enableGoals?: boolean; goal?: { objective: string; source: 'slash-command' | 'ralph-loop' }; orchestration?: { mode: string; leadHarness: string; leadModel: string; stages: Array<{ tier: string; harness: string; model: string; purpose: string; effort?: string; speed?: string; workflow?: string; budgetUsd?: number; verification?: string; fallbackModels?: string[]; required?: boolean; trigger?: string }> } } }) => void) => {
+    onAutoRouteDecision: (callback: (data: { sessionId: string; decision: { tier: string; domain?: string; resolvedModel: string; resolvedHarness?: string; resolvedEffort?: string; resolvedSpeed?: string; workflow?: string; budgetUsd?: number; verification?: string; confidence: number; reason: string; method: string; enableGoals?: boolean; planningGate?: { action: 'none' | 'suggest' | 'start'; confidence: number; reason: string; changeKind: 'feature' | 'bug' | 'update' | 'migration' | 'general' }; goal?: { objective: string; source: 'slash-command' | 'ralph-loop' }; orchestration?: { mode: string; leadHarness: string; leadModel: string; stages: Array<{ tier: string; harness: string; model: string; purpose: string; effort?: string; speed?: string; workflow?: string; budgetUsd?: number; verification?: string; fallbackModels?: string[]; required?: boolean; trigger?: string }> } } }) => void) => {
       const handler = (_: IpcRendererEvent, data: any) => callback(data);
       ipcRenderer.on(IPC_CHANNELS.CLAUDE_AUTO_ROUTE_DECISION, handler);
       return () => ipcRenderer.removeListener(IPC_CHANNELS.CLAUDE_AUTO_ROUTE_DECISION, handler);
@@ -387,10 +395,26 @@ const electronAPI = {
       ipcRenderer.invoke('queue:clear', sessionId),
     getState: (sessionId: string) =>
       ipcRenderer.invoke('queue:getState', sessionId),
+    beginFastStack: (sessionId: string) =>
+      ipcRenderer.invoke('queue:fast-stack-begin', sessionId),
+    markFastStackRunning: (sessionId: string) =>
+      ipcRenderer.invoke('queue:fast-stack-running', sessionId),
+    abortFastStack: (sessionId: string) =>
+      ipcRenderer.invoke('queue:fast-stack-abort', sessionId),
   },
 
   // Browser Preview
   browser: {
+    sendChatInsert: (payload: BrowserChatInsertPayload): void => {
+      ipcRenderer.send(IPC_CHANNELS.BROWSER_CHAT_INSERT, payload);
+    },
+    onChatInsert: (callback: (payload: BrowserChatInsertPayload) => void) => {
+      const handler = (_: IpcRendererEvent, payload: BrowserChatInsertPayload) => callback(payload);
+      ipcRenderer.on(IPC_CHANNELS.BROWSER_CHAT_INSERT, handler);
+      return () => {
+        ipcRenderer.removeListener(IPC_CHANNELS.BROWSER_CHAT_INSERT, handler);
+      };
+    },
     injectInspector: (webviewId: string): Promise<void> =>
       ipcRenderer.invoke(IPC_CHANNELS.BROWSER_INJECT_INSPECTOR, webviewId),
     onElementSelected: (callback: (element: DOMElementContext) => void) => {
@@ -429,8 +453,8 @@ const electronAPI = {
     },
     clearStorage: (sessionId?: string): Promise<{ success: boolean }> =>
       ipcRenderer.invoke(IPC_CHANNELS.BROWSER_CLEAR_STORAGE, sessionId),
-    registerWebview: (sessionId: string, webContentsId: number) => {
-      ipcRenderer.send('browser:register-webview', { sessionId, webContentsId });
+    registerWebview: (sessionId: string, webContentsId: number, partitionName?: string) => {
+      ipcRenderer.send('browser:register-webview', { sessionId, webContentsId, partitionName });
     },
     unregisterWebview: (sessionId: string, webContentsId?: number) => {
       ipcRenderer.send('browser:unregister-webview', { sessionId, webContentsId });
@@ -866,6 +890,7 @@ const electronAPI = {
       sessionName: string;
       worktreeScript: string;
       syncSettings: boolean;
+      forwardGitHubCredentials?: boolean;
     } | null> => ipcRenderer.invoke(IPC_CHANNELS.SSH_GET_SAVED_CONFIG),
     getHostConfig: (host: string): Promise<{
       host: string;
@@ -876,6 +901,7 @@ const electronAPI = {
       sessionName: string;
       worktreeScript: string;
       syncSettings: boolean;
+      forwardGitHubCredentials?: boolean;
     } | null> => ipcRenderer.invoke(IPC_CHANNELS.SSH_GET_HOST_CONFIG, host),
     saveConfig: (config: {
       host: string;
@@ -886,6 +912,7 @@ const electronAPI = {
       sessionName: string;
       worktreeScript: string;
       syncSettings: boolean;
+      forwardGitHubCredentials: boolean;
     }): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.SSH_SAVE_CONFIG, config),
     onSetupProgress: (callback: (data: { sessionId: string; status: 'running' | 'completed' | 'error'; message?: string; output?: string; error?: string }) => void) => {
       const handler = (_: IpcRendererEvent, data: { sessionId: string; status: 'running' | 'completed' | 'error'; message?: string; output?: string; error?: string }) => callback(data);

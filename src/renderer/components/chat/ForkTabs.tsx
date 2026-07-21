@@ -3,10 +3,13 @@ import ReactDOM from 'react-dom';
 import { Plus, MoreHorizontal, GitFork, MessageSquare } from 'lucide-react';
 import { useSessionStore } from '../../stores/session.store';
 import { getSessionDisplayName } from '../../utils/session-display';
+import PullRequestStatusIcon from '../git/PullRequestStatusIcon';
 
 interface ForkTabsProps {
   sessionId: string;
 }
+
+export const SESSION_TAB_DRAG_TYPE = 'application/x-build-session-tab';
 
 function formatRelativeDate(date: Date | string | undefined): string {
   if (!date) return '';
@@ -176,6 +179,9 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
 
   // Persist tab order to localStorage + electron-store (via claudette-settings)
   const orderKey = `grep-tab-order-${rootId}`;
+  const notifySessionTabsChanged = useCallback(() => {
+    window.dispatchEvent(new CustomEvent('grep-session-tabs-changed'));
+  }, []);
   useEffect(() => {
     try {
       const stored = localStorage.getItem(orderKey);
@@ -186,7 +192,8 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
   const saveTabOrder = useCallback((order: string[]) => {
     setTabOrder(order);
     try { localStorage.setItem(orderKey, JSON.stringify(order)); } catch { /* quota */ }
-  }, [orderKey]);
+    notifySessionTabsChanged();
+  }, [notifySessionTabsChanged, orderKey]);
 
   // When a session becomes active, permanently remove it from overflow
   useEffect(() => {
@@ -199,8 +206,9 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
       window.electronAPI.sessions.update(activeSessionId, { tabHidden: false } as any).catch((error) => {
         console.warn('[ForkTabs] Failed to unhide active tab:', error);
       });
+      notifySessionTabsChanged();
     }
-  }, [activeSessionId, overflowIds]);
+  }, [activeSessionId, notifySessionTabsChanged, overflowIds]);
 
   // Build visible forks with custom ordering
   const visibleForks = useMemo(() => {
@@ -228,6 +236,7 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
     window.electronAPI.sessions.update(forkId, { tabHidden: true } as any).catch((error) => {
       console.warn('[ForkTabs] Failed to hide tab:', error);
     });
+    notifySessionTabsChanged();
 
     if (forkId === activeSessionId) {
       const remaining = forkSiblings.filter(f => f.id !== forkId && !overflowIds.has(f.id));
@@ -235,7 +244,7 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
         setActiveSession(remaining[0].id);
       }
     }
-  }, [activeSessionId, forkSiblings, overflowIds, setActiveSession]);
+  }, [activeSessionId, forkSiblings, notifySessionTabsChanged, overflowIds, setActiveSession]);
 
   const handleRestore = useCallback((forkId: string) => {
     setOverflowIds(prev => {
@@ -247,14 +256,16 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
     window.electronAPI.sessions.update(forkId, { tabHidden: false } as any).catch((error) => {
       console.warn('[ForkTabs] Failed to restore tab:', error);
     });
+    notifySessionTabsChanged();
     setActiveSession(forkId);
     setShowOverflow(false);
-  }, [setActiveSession]);
+  }, [notifySessionTabsChanged, setActiveSession]);
 
   // Drag-and-drop handlers
   const handleDragStart = useCallback((e: React.DragEvent, id: string) => {
     setDragId(id);
     e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData(SESSION_TAB_DRAG_TYPE, id);
     e.dataTransfer.setData('text/plain', id);
     // Make the drag image slightly transparent
     if (e.currentTarget instanceof HTMLElement) {
@@ -355,6 +366,9 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
                   {isActive && '> '}
                   {displayName}
                 </button>
+              )}
+              {!isRenaming && (
+                <PullRequestStatusIcon sessionId={fork.id} branch={fork.branch} />
               )}
               {visibleForks.length > 1 && !isRenaming && (
                 <button
@@ -476,6 +490,12 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
                   >
                     <GitFork size={10} className="text-claude-accent flex-shrink-0" />
                     <span className="text-xs truncate flex-1">{getSessionDisplayName(fork)}</span>
+                    <PullRequestStatusIcon
+                      sessionId={fork.id}
+                      branch={fork.branch}
+                      size={10}
+                      interactive={false}
+                    />
                     <span className="text-[9px] text-claude-text-secondary flex-shrink-0">
                       {formatRelativeDate(fork.updatedAt)}
                     </span>
@@ -543,6 +563,12 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
                         : <MessageSquare size={10} className="text-claude-text-secondary flex-shrink-0" />
                       }
                       <span className="text-xs truncate flex-1">{getSessionDisplayName(session)}</span>
+                      <PullRequestStatusIcon
+                        sessionId={session.id}
+                        branch={session.branch}
+                        size={10}
+                        interactive={false}
+                      />
                       <span className="text-[9px] text-claude-text-secondary flex-shrink-0">
                         {formatRelativeDate(session.updatedAt)}
                       </span>

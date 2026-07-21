@@ -307,10 +307,11 @@ class TranscriptService {
    * Used for in-progress assistant turns so a reload can recover the latest
    * streamed text/tool state without appending duplicate partial rows.
    */
-  upsertMessage(sessionId: string, entry: TranscriptEntry): { changed: boolean; written: number } {
+  upsertMessage(sessionId: string, entry: TranscriptEntry): { changed: boolean; written: number; canonicalId: string } {
     const existingEntries = this.loadMessages(sessionId);
     const nextEntries = [...existingEntries];
     const existingIndex = nextEntries.findIndex(existing => existing.id === entry.id);
+    let canonicalId = entry.id;
     if (existingIndex >= 0) {
       nextEntries[existingIndex] = {
         ...nextEntries[existingIndex],
@@ -321,6 +322,7 @@ class TranscriptService {
 
       if (duplicateIndex >= 0) {
         console.log('[TranscriptService] Collapsed duplicate assistant transcript row by content');
+        canonicalId = nextEntries[duplicateIndex].id;
         nextEntries[duplicateIndex] = this.mergeDuplicateAssistantEntry(nextEntries[duplicateIndex], entry);
       } else {
         nextEntries.push(entry);
@@ -330,11 +332,11 @@ class TranscriptService {
     const previousPayload = existingEntries.map(existing => JSON.stringify(existing)).join('\n');
     const nextPayload = nextEntries.map(existing => JSON.stringify(existing)).join('\n');
     if (previousPayload === nextPayload) {
-      return { changed: false, written: nextEntries.length };
+      return { changed: false, written: nextEntries.length, canonicalId };
     }
 
     const result = this.replaceMessages(sessionId, nextEntries);
-    return { changed: true, written: result.written };
+    return { changed: true, written: result.written, canonicalId };
   }
 
   /**

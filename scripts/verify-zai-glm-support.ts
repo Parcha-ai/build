@@ -15,6 +15,7 @@ const codexService = read('src/main/services/codex.service.ts');
 const autoRouterService = read('src/main/services/auto-router.service.ts');
 const settingsDialog = read('src/renderer/components/settings/SettingsDialog.tsx');
 const analyticsService = read('src/main/services/analytics.service.ts');
+const modelPricing = read('src/shared/config/model-pricing.ts');
 const tokenDashboard = read('src/renderer/components/analytics/TokenDashboard.tsx');
 
 assert.match(
@@ -143,7 +144,7 @@ assert.match(
 );
 
 assert.match(
-  analyticsService,
+  modelPricing,
   /'glm-5\.2': \{ input: 1\.40, output: 4\.40, cacheRead: 0\.26, cacheWrite: 0 \}/,
   'Analytics must include current GLM-5.2 pricing',
 );

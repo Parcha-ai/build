@@ -16,6 +16,9 @@ export interface SSHConfig {
   passphrase?: string;    // Encrypted passphrase for private key
   worktreeScript?: string; // Optional script to run on remote to set up worktree
   syncSettings?: boolean;  // If true, sync ~/.claude settings to remote before starting
+  // Explicit opt-in. When false/omitted, preserve the remote machine's own
+  // GitHub identity and authentication (for example, a bot account).
+  forwardGitHubCredentials?: boolean;
 }
 
 // Saved SSH config (persisted to electron-store, no passphrase)
@@ -28,6 +31,7 @@ export interface SavedSSHConfig {
   sessionName: string;
   worktreeScript: string;
   syncSettings: boolean;
+  forwardGitHubCredentials?: boolean;
 }
 
 export interface SSHResumeCandidate {
@@ -36,6 +40,26 @@ export interface SSHResumeCandidate {
   mtime: number;
   localSessionId?: string;
   localSessionName?: string;
+}
+
+export type PullRequestLifecycle = 'draft' | 'iterating' | 'ready';
+export type PullRequestCheckState = 'none' | 'pending' | 'failing' | 'passing';
+
+export interface PullRequestStatus {
+  number: number;
+  url: string;
+  title: string;
+  lifecycle: PullRequestLifecycle;
+  checks: PullRequestCheckState;
+  reviewDecision?: 'APPROVED' | 'CHANGES_REQUESTED' | 'REVIEW_REQUIRED' | string;
+  mergeStateStatus?: string;
+  mergeable?: string;
+  updatedAt?: string;
+}
+
+export interface PullRequestStatusResult {
+  available: boolean;
+  status: PullRequestStatus | null;
 }
 
 export interface Session {
@@ -70,6 +94,9 @@ export interface Session {
   teleportedFrom?: string; // Original local session ID if teleported to SSH
   downloadedFrom?: string; // Session ID of source SSH session (reverse teleport)
   sdkSessionId?: string; // Claude Agent SDK session ID for transcript resumption
+  forkFromSdkSessionId?: string; // One-shot remote fork source; cleared after the first forked query starts
+  fastStackCount?: number; // Number of one-shot in-place Fast Stack forks applied to this Build session
+  lastFastStackAt?: Date | string;
   relatedSessionIds?: string[]; // Alternate local/SDK IDs that resolve to the same conversation
   continuedFromSessionId?: string; // Existing local Build session that this session resumed from
   // Starring/favorites
@@ -88,6 +115,7 @@ export interface Session {
   isRoot?: boolean; // True for original conversation (no parent)
   forkCreatedAt?: Date; // When this conversation fork was created
   gstackMode?: string; // Active GStack skill name (dynamic, from disk)
+  cascadeMode?: boolean; // Evidence-gated Cascade workflow overlay (independent of model)
   tabHidden?: boolean; // True if user closed this tab (persists across restarts)
   htmlRenderMode?: 'md' | 'html'; // Per-session HTML rendering mode
 }
@@ -124,6 +152,29 @@ export type TaskDomain = 'copy' | 'frontend' | 'backend' | 'fullstack' | 'debug'
 export type MetaHarnessSpeed = 'auto' | 'standard' | 'fast';
 export type MetaWorkflowMode = 'auto' | 'single' | 'lead-with-delegates' | 'sequential' | 'dynamic';
 export type MetaVerificationMode = 'auto' | 'none' | 'optional' | 'required';
+export type PlanningGateAction = 'none' | 'suggest' | 'start';
+export type PlanningGateChangeKind = 'feature' | 'bug' | 'update' | 'migration' | 'general';
+
+export interface PlanningGateDecision {
+  action: PlanningGateAction;
+  confidence: number;
+  reason: string;
+  changeKind: PlanningGateChangeKind;
+}
+
+export interface AutoPlanningState {
+  status: 'interview' | 'awaiting-approval';
+  originalRequest: string;
+  model: string;
+  confidence: number;
+  reason: string;
+  changeKind: PlanningGateChangeKind;
+  startedAt: number;
+  updatedAt: number;
+  questionCount?: number;
+  scopeChoiceConfirmed?: boolean;
+  planFilePath?: string;
+}
 
 export interface MetaHarnessPolicy {
   effort?: string;
@@ -192,6 +243,7 @@ export interface RoutingDecision {
   method: 'heuristic' | 'controller';
   enableGoals?: boolean;
   goal?: GoalOrchestration;
+  planningGate?: PlanningGateDecision;
   missionControl?: MetaMissionControlPolicy;
   orchestration?: OrchestrationPlan;
 }
@@ -208,6 +260,8 @@ export interface AutoRouterCategoryConfig extends MetaHarnessPolicy {
 
 export interface AutoRouterConfig {
   enabled: boolean;
+  prePlanEnabled: boolean;
+  prePlanModel: string;
   planModel: string;
   buildModel: string;
   verifyModel: string;
@@ -241,6 +295,51 @@ export interface AutoRouterConfig {
   categories?: AutoRouterCategoryConfig[];
   costAware: boolean;
   costThresholdPercent: number;
+}
+
+// Parable mode — Claude Code is the meta-harness and delegates implementation
+// to a configurable cast of executor models. This is intentionally separate
+// from Auto Build's application-owned router and helper-stage orchestration.
+export type ParableTaskClass =
+  | 'mechanical'
+  | 'feature'
+  | 'refactor_wide'
+  | 'gnarly'
+  | 'review'
+  | 'smoke_test';
+
+export interface ParableExecutorConfig {
+  id: string;
+  model: string;
+  enabled: boolean;
+  effort?: string;
+  taskClasses: ParableTaskClass[];
+  useFor?: string;
+  avoidFor?: string;
+  costIn?: number;
+  costOut?: number;
+  cacheIn?: number;
+  contextKtok?: number;
+  maxMinutes?: number;
+}
+
+export interface ParableCheckConfig {
+  id: string;
+  run: string;
+  cwd?: string;
+  when: Array<'post-implement' | 'pre-commit'>;
+  timeoutMinutes?: number;
+  grep?: string;
+}
+
+export interface ParableConfig {
+  brainModel: string;
+  defaultExecutor: string;
+  defaultReviewer: string;
+  maxParallel: number;
+  repoNotes?: string;
+  executors: ParableExecutorConfig[];
+  checks: ParableCheckConfig[];
 }
 
 export interface SessionPhase {
@@ -390,6 +489,21 @@ export interface DOMElementContext {
   boundingRect: DOMRect;
 }
 
+// Browser previews can live in the main window or a detached browser window.
+// Route captured visual context through main so it reaches the intended chat
+// composer regardless of which renderer owns the webview.
+export interface BrowserChatInsertPayload {
+  sessionId: string;
+  content: string;
+  screenshot?: string;
+  elementContext?: {
+    selector: string;
+    outerHTML: string;
+    tagName: string;
+    reactComponent?: string;
+  };
+}
+
 export interface ContainerStats {
   cpuPercent: number;
   memoryUsage: number;
@@ -461,6 +575,7 @@ export interface AppSettings {
   bedtimeTaskReviewEnabled?: boolean;
   showClearContextOnPlanAccept?: boolean;
   autoRouterConfig?: AutoRouterConfig;
+  parableConfig?: ParableConfig;
   // Product analytics / routing fine-tuning
   posthogApiKey?: string;
   posthogHost?: string;

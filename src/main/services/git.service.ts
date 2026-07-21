@@ -1,10 +1,24 @@
 import simpleGit, { SimpleGit, LogResult } from 'simple-git';
 import * as path from 'path';
 import * as fs from 'fs';
+import { execFile } from 'child_process';
 import Store from 'electron-store';
 import { CachedStore } from '../cached-store';
 import { getSessionStoreName } from '../store-names';
-import type { Commit, Branch, FileChange, Session } from '../../shared/types';
+import type { Commit, Branch, FileChange, PullRequestStatus, Session } from '../../shared/types';
+import { parsePullRequestStatus } from '../../shared/utils/pull-request-status';
+
+const PULL_REQUEST_JSON_FIELDS = [
+  'number',
+  'url',
+  'title',
+  'isDraft',
+  'reviewDecision',
+  'mergeStateStatus',
+  'mergeable',
+  'statusCheckRollup',
+  'updatedAt',
+].join(',');
 
 interface BranchWatcher {
   watcher: fs.FSWatcher;
@@ -131,6 +145,50 @@ export class GitService {
       remote: name.startsWith('remotes/') ? name.split('/')[1] : undefined,
       commit: branches.branches[name]?.commit || '',
     }));
+  }
+
+  async getPullRequestStatus(sessionId: string): Promise<PullRequestStatus | null> {
+    const session = (this.store.get(`sessions.${sessionId}`)
+      || this.store.get(`discoveredSessions.${sessionId}`)) as Pick<Session, 'worktreePath' | 'repoPath' | 'branch'> | undefined;
+    const worktreePath = session?.worktreePath || session?.repoPath;
+    if (!worktreePath || !fs.existsSync(worktreePath)) return null;
+
+    const git = simpleGit(worktreePath);
+    if (!await git.checkIsRepo()) return null;
+    const status = await git.status();
+    const branch = status.current || session?.branch;
+    if (!branch) return null;
+
+    return this.getPullRequestStatusForRepository(branch, { worktreePath });
+  }
+
+  async getPullRequestStatusForRepository(
+    branch: string,
+    options: { worktreePath?: string; repository?: string } = {},
+  ): Promise<PullRequestStatus | null> {
+    const { worktreePath, repository } = options;
+    const repositoryArgs = repository ? ['--repo', repository] : [];
+
+    const output = await new Promise<string>((resolve, reject) => {
+      execFile(
+        'gh',
+        [
+          'pr', 'list',
+          '--head', branch,
+          '--state', 'open',
+          '--limit', '1',
+          '--json', PULL_REQUEST_JSON_FIELDS,
+          ...repositoryArgs,
+        ],
+        { cwd: worktreePath, encoding: 'utf8', timeout: 15_000, maxBuffer: 2 * 1024 * 1024 },
+        (error, stdout) => {
+          if (error) reject(error);
+          else resolve(stdout);
+        },
+      );
+    });
+
+    return parsePullRequestStatus(output);
   }
 
   async checkout(sessionId: string, branch: string): Promise<void> {

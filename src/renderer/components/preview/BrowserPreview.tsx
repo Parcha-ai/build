@@ -91,6 +91,10 @@ function DocumentIcon({ docType, className }: { docType: string; className?: str
 interface BrowserPreviewProps {
   session: Session;
   isVisible?: boolean; // Controls visibility without unmounting
+  partitionId?: string; // Root conversation session whose cookies/storage are shared
+  browserTabId?: string; // Independent browser-workspace tab identity
+  initialBrowserUrl?: string;
+  onBrowserUrlChange?: (url: string) => void;
 }
 
 const DEBUG_BROWSER_PREVIEW = false;
@@ -100,14 +104,30 @@ const logBrowserPreview = (...args: unknown[]) => {
   }
 };
 
-export default function BrowserPreview({ session, isVisible = true }: BrowserPreviewProps) {
+export default function BrowserPreview({
+  session,
+  isVisible = true,
+  partitionId,
+  browserTabId,
+  initialBrowserUrl,
+  onBrowserUrlChange,
+}: BrowserPreviewProps) {
   const webviewRef = useRef<Electron.WebviewTag>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const registeredWebContentsIdRef = useRef<number | null>(null);
+  const isVisibleRef = useRef(isVisible);
+  const partitionName = `persist:browser-${partitionId || session.id}`;
   const updateSession = useSessionStore((s) => s.updateSession);
+
+  useEffect(() => {
+    isVisibleRef.current = isVisible;
+  }, [isVisible]);
 
   // Smart URL detection: use last browser URL, or find last localhost URL in transcript
   const getSessionUrl = useCallback(() => {
+    if (initialBrowserUrl) {
+      return initialBrowserUrl;
+    }
     if (session.lastBrowserUrl) {
       return session.lastBrowserUrl;
     }
@@ -130,7 +150,7 @@ export default function BrowserPreview({ session, isVisible = true }: BrowserPre
     // Fallback to session's web port, or default to 3000 if not set
     const port = session.ports?.web || 3000;
     return `http://localhost:${port}`;
-  }, [session.id, session.lastBrowserUrl, session.ports?.web]);
+  }, [initialBrowserUrl, session.id, session.lastBrowserUrl, session.ports?.web]);
 
   const [url, setUrl] = useState(() => {
     try {
@@ -160,7 +180,8 @@ export default function BrowserPreview({ session, isVisible = true }: BrowserPre
   const lastLoadedUrl = useRef<string>(url);
   // Initial URL for webview src - only used once, then loadURL is used for navigation
   const initialUrl = useRef<string>(url);
-  const initializedSessionId = useRef<string>(session.id);
+  const browserInstanceId = browserTabId || session.id;
+  const initializedBrowserId = useRef<string>(browserInstanceId);
 
   // Retry state for failed loads
   const retryCount = useRef(0);
@@ -213,10 +234,10 @@ export default function BrowserPreview({ session, isVisible = true }: BrowserPre
 
   // Initialize URL for this tab/session.
   useEffect(() => {
-    if (initializedSessionId.current === session.id) {
+    if (initializedBrowserId.current === browserInstanceId) {
       return;
     }
-    initializedSessionId.current = session.id;
+    initializedBrowserId.current = browserInstanceId;
     const newUrl = getSessionUrl();
     logBrowserPreview('[BrowserPreview] Initializing browser for session:', session.id, '->', newUrl);
     initialUrl.current = newUrl;
@@ -224,7 +245,7 @@ export default function BrowserPreview({ session, isVisible = true }: BrowserPre
     retryCount.current = 0;
     setUrl(newUrl);
     setInputUrl(newUrl);
-  }, [getSessionUrl, session.id]);
+  }, [browserInstanceId, getSessionUrl, session.id]);
 
   // Navigate webview whenever url state changes and differs from what's currently loaded
   useEffect(() => {
@@ -258,11 +279,12 @@ export default function BrowserPreview({ session, isVisible = true }: BrowserPre
       if (webContentsId) {
         logBrowserPreview('[BrowserPreview] Registering webview for CDP:', session.id, '->', webContentsId);
         registeredWebContentsIdRef.current = webContentsId;
-        window.electronAPI.browser.registerWebview(session.id, webContentsId);
+        window.electronAPI.browser.registerWebview(session.id, webContentsId, partitionName);
       }
 
-      // Ensure webview can receive keyboard input
-      webview.focus();
+      // Do not focus here. A webview may emit dom-ready while the user is
+      // typing in chat, and programmatic focus both steals the composer and can
+      // throw while Electron is still attaching the guest view.
     };
 
     webview.addEventListener('dom-ready', handleDomReady);
@@ -274,7 +296,17 @@ export default function BrowserPreview({ session, isVisible = true }: BrowserPre
       registeredWebContentsIdRef.current = null;
       window.electronAPI.browser.unregisterWebview(session.id, registeredWebContentsId ?? undefined);
     };
-  }, [session.id]);
+  }, [partitionName, session.id]);
+
+  // Selecting an already-mounted browser tab makes its webview the active CDP
+  // target for the owner chat session without coupling browser selection to chat tabs.
+  useEffect(() => {
+    if (!isVisible || !webviewReady) return;
+    const webContentsId = registeredWebContentsIdRef.current;
+    if (webContentsId) {
+      window.electronAPI.browser.registerWebview(session.id, webContentsId, partitionName);
+    }
+  }, [isVisible, partitionName, session.id, webviewReady]);
 
   // Handle webview events
   useEffect(() => {
@@ -305,8 +337,10 @@ export default function BrowserPreview({ session, isVisible = true }: BrowserPre
       currentUrlRef.current = e.url;
       setUrl(e.url);
       setInputUrl(e.url);
-      // Save the URL to session so it persists across reloads
-      updateSession(session.id, { lastBrowserUrl: e.url });
+      // Independent browser tabs persist their own URL. Legacy single-session
+      // previews continue to use the session field.
+      if (onBrowserUrlChange) onBrowserUrlChange(e.url);
+      else updateSession(session.id, { lastBrowserUrl: e.url });
     };
     const handleDidFailLoad = (e: any) => {
       console.error('[BrowserPreview] Navigation failed:', e.errorCode, e.errorDescription);
@@ -346,13 +380,13 @@ export default function BrowserPreview({ session, isVisible = true }: BrowserPre
       webview.removeEventListener('did-fail-load', handleDidFailLoad as any);
       if (retryTimer.current) clearTimeout(retryTimer.current);
     };
-  }, []);
+  }, [onBrowserUrlChange, session.id, updateSession]);
 
   // Handle navigation requests from main process (e.g., from BrowserSnapshot tool)
   useEffect(() => {
     const unsubscribe = window.electronAPI.browser.onNavigate((data: { sessionId: string; url: string }) => {
       const { sessionId: reqSessionId, url: targetUrl } = data;
-      if (reqSessionId !== session.id) return;
+      if (reqSessionId !== session.id || (browserTabId && !isVisibleRef.current)) return;
 
       logBrowserPreview('[BrowserPreview] Navigation request from main process:', targetUrl);
       navigate(targetUrl);
@@ -363,7 +397,7 @@ export default function BrowserPreview({ session, isVisible = true }: BrowserPre
         unsubscribe();
       }
     };
-  }, [session.id]);
+  }, [browserTabId, session.id]);
 
   // Handle CMD+R browser refresh (custom event from App.tsx)
   useEffect(() => {
@@ -388,6 +422,7 @@ export default function BrowserPreview({ session, isVisible = true }: BrowserPre
         logBrowserPreview('[BrowserPreview] Ignoring event - session mismatch');
         return;
       }
+      if (browserTabId && !isVisibleRef.current) return;
 
       logBrowserPreview('[BrowserPreview] Processing automation event:', data);
 
@@ -423,7 +458,7 @@ export default function BrowserPreview({ session, isVisible = true }: BrowserPre
         unsubscribe();
       }
     };
-  }, [session.id]);
+  }, [browserTabId, session.id]);
 
   // Handle Stagehand browser updates — navigate webview to match Stagehand's URL
   useEffect(() => {
@@ -432,6 +467,7 @@ export default function BrowserPreview({ session, isVisible = true }: BrowserPre
       if (data.sessionId !== session.id) {
         return;
       }
+      if (browserTabId && !isVisibleRef.current) return;
 
       logBrowserPreview('[BrowserPreview] Stagehand update received:', data.url || 'unknown URL');
 
@@ -452,7 +488,7 @@ export default function BrowserPreview({ session, isVisible = true }: BrowserPre
         unsubscribe();
       }
     };
-  }, [session.id]);
+  }, [browserTabId, session.id]);
 
   // Helper to show click ripple effect
   const showClickRipple = async (selector: string) => {
@@ -487,7 +523,7 @@ export default function BrowserPreview({ session, isVisible = true }: BrowserPre
   useEffect(() => {
     const unsubscribe = window.electronAPI.browser.onAction(async (data: { sessionId: string; requestId: string; action: string; params: Record<string, unknown> }) => {
       const { sessionId: reqSessionId, requestId, action, params } = data;
-      if (reqSessionId !== session.id) return;
+      if (reqSessionId !== session.id || (browserTabId && !isVisibleRef.current)) return;
 
       const webview = webviewRef.current;
       if (!webview) {
@@ -629,13 +665,13 @@ export default function BrowserPreview({ session, isVisible = true }: BrowserPre
         unsubscribe();
       }
     };
-  }, [session.id]);
+  }, [browserTabId, session.id]);
 
   // Handle snapshot capture requests from main process
   useEffect(() => {
     const unsubscribe = window.electronAPI.browser.onCaptureRequest(async (data: { sessionId: string; requestId?: string }) => {
       const { sessionId: reqSessionId, requestId } = data;
-      if (reqSessionId !== session.id) return;
+      if (reqSessionId !== session.id || (browserTabId && !isVisibleRef.current)) return;
 
       const webview = webviewRef.current;
       if (!webview) {
@@ -698,12 +734,12 @@ export default function BrowserPreview({ session, isVisible = true }: BrowserPre
         unsubscribe();
       }
     };
-  }, [session.id]);
+  }, [browserTabId, session.id]);
 
   // Handle Cmd+R browser refresh from MainContent
   useEffect(() => {
-    const handleRefresh = (e: CustomEvent<{ sessionId: string }>) => {
-      if (e.detail.sessionId === session.id) {
+    const handleRefresh = (e: CustomEvent<{ sessionId: string; browserTabId?: string }>) => {
+      if (e.detail.sessionId === session.id && (!e.detail.browserTabId || e.detail.browserTabId === browserInstanceId)) {
         logBrowserPreview('[BrowserPreview] Hard refreshing browser via Cmd+R');
         webviewRef.current?.reloadIgnoringCache();
       }
@@ -711,12 +747,12 @@ export default function BrowserPreview({ session, isVisible = true }: BrowserPre
 
     window.addEventListener('grep-browser-refresh', handleRefresh as EventListener);
     return () => window.removeEventListener('grep-browser-refresh', handleRefresh as EventListener);
-  }, [session.id]);
+  }, [browserInstanceId, session.id]);
 
   // Handle auto-reload after text replacement Edit tool completion
   useEffect(() => {
     const handleTextEditReload = (e: CustomEvent<{ sessionId: string }>) => {
-      if (e.detail.sessionId === session.id) {
+      if (e.detail.sessionId === session.id && (!browserTabId || isVisibleRef.current)) {
         logBrowserPreview('[BrowserPreview] Hard reloading browser after text replacement edit');
         webviewRef.current?.reloadIgnoringCache();
       }
@@ -724,7 +760,7 @@ export default function BrowserPreview({ session, isVisible = true }: BrowserPre
 
     window.addEventListener('grep-browser-reload', handleTextEditReload as EventListener);
     return () => window.removeEventListener('grep-browser-reload', handleTextEditReload as EventListener);
-  }, [session.id]);
+  }, [browserTabId, session.id]);
 
   const injectInspector = useCallback(async () => {
     const webview = webviewRef.current;
@@ -838,20 +874,17 @@ ${data.textContent ? `**Text Content:** "${data.textContent.slice(0, 100)}${data
           logBrowserPreview('[BrowserPreview] Element selected - populating chat input');
 
           // Dispatch event to populate chat input with element context (as attachments only, no text)
-          const insertEvent = new CustomEvent('grep-insert-chat', {
-            detail: {
-              sessionId: session.id,
-              content: '',
-              screenshot: screenshotBase64,
-              elementContext: {
-                selector: data.selector,
-                outerHTML: `[Page: ${url}]\n\n${data.outerHTML || ''}`,
-                tagName: data.tagName,
-                reactComponent: data.reactComponent,
-              },
+          window.electronAPI.browser.sendChatInsert({
+            sessionId: session.id,
+            content: '',
+            screenshot: screenshotBase64,
+            elementContext: {
+              selector: data.selector,
+              outerHTML: `[Page: ${url}]\n\n${data.outerHTML || ''}`,
+              tagName: data.tagName,
+              reactComponent: data.reactComponent,
             },
           });
-          window.dispatchEvent(insertEvent);
 
           // Set selected element for inspector panel
           setSelectedElement(elementWithScreenshot);
@@ -1358,10 +1391,10 @@ ${data.textContent ? `**Text Content:** "${data.textContent.slice(0, 100)}${data
     const webview = webviewRef.current;
     logBrowserPreview('[BrowserPreview] Inspector effect running, isInspectorActive:', isInspectorActive, 'webview:', !!webview);
 
-    if (isInspectorActive && webview) {
+    if (isInspectorActive && webview && webviewReady) {
       logBrowserPreview('[BrowserPreview] Calling injectInspector...');
       injectInspector();
-    } else if (!isInspectorActive && webview) {
+    } else if (!isInspectorActive && webview && webviewReady) {
       // Cleanup when inspector is disabled
       if ((webview as any)._inspectorCleanup) {
         (webview as any)._inspectorCleanup();
@@ -1388,7 +1421,7 @@ ${data.textContent ? `**Text Content:** "${data.textContent.slice(0, 100)}${data
         delete (webview as any)._inspectorCleanup;
       }
     };
-  }, [isInspectorActive, injectInspector]);
+  }, [isInspectorActive, injectInspector, webviewReady]);
 
   const cancelInspector = async () => {
     setInspectorActive(false);
@@ -1427,11 +1460,20 @@ ${data.textContent ? `**Text Content:** "${data.textContent.slice(0, 100)}${data
   // The session store is the source of truth when a URL is clicked before the
   // browser webview is ready. Keep an already-mounted preview in sync with it.
   useEffect(() => {
+    // Independent browser tabs own their URL. Do not let later chat-session
+    // updates drive them, and never query Electron's guest view before ready.
+    if (browserTabId || !webviewReady) return;
     if (!session.lastBrowserUrl) return;
     const nextUrl = normalizeBrowserUrl(session.lastBrowserUrl);
     if (!nextUrl || nextUrl === currentUrlRef.current) return;
 
-    const currentWebviewUrl = webviewRef.current?.getURL?.();
+    let currentWebviewUrl: string | undefined;
+    try {
+      currentWebviewUrl = webviewRef.current?.getURL?.();
+    } catch (error) {
+      console.warn('[BrowserPreview] Webview URL unavailable before ready:', error);
+      return;
+    }
     if (currentWebviewUrl === nextUrl) {
       lastLoadedUrl.current = nextUrl;
       currentUrlRef.current = nextUrl;
@@ -1442,7 +1484,7 @@ ${data.textContent ? `**Text Content:** "${data.textContent.slice(0, 100)}${data
 
     logBrowserPreview('[BrowserPreview] Syncing mounted preview to session URL:', nextUrl);
     navigate(nextUrl);
-  }, [session.id, session.lastBrowserUrl]);
+  }, [browserTabId, session.id, session.lastBrowserUrl, webviewReady]);
 
   const handleUrlSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -1580,13 +1622,11 @@ ${data.textContent ? `**Text Content:** "${data.textContent.slice(0, 100)}${data
               const dataUrl = image.toDataURL();
               const base64 = dataUrl.split(',')[1] || '';
               // Dispatch to InputArea as an image attachment
-              window.dispatchEvent(new CustomEvent('grep-insert-chat', {
-                detail: {
-                  sessionId: session.id,
-                  screenshot: base64,
-                  content: '',
-                },
-              }));
+              window.electronAPI.browser.sendChatInsert({
+                sessionId: session.id,
+                screenshot: base64,
+                content: '',
+              });
               logBrowserPreview('[BrowserPreview] Screenshot captured and attached to input');
             } catch (err) {
               console.error('[BrowserPreview] Screenshot capture failed:', err);
@@ -1652,14 +1692,23 @@ ${data.textContent ? `**Text Content:** "${data.textContent.slice(0, 100)}${data
         {/* eslint-disable-next-line */}
         <div
           className="absolute inset-0 w-full h-full"
-          onClick={() => webviewRef.current?.focus()}
+          onClick={() => {
+            try {
+              if (webviewReady) webviewRef.current?.focus();
+            } catch (error) {
+              console.warn('[BrowserPreview] Webview was not ready to receive focus:', error);
+            }
+          }}
         >
           <webview
-            key={session.id}
+            key={browserInstanceId}
             ref={webviewRef}
             src={initialUrl.current}
+            data-session-id={session.id}
+            data-browser-tab-id={browserInstanceId}
+            data-partition={partitionName}
             className="w-full h-full"
-            partition={`persist:browser-${session.id}`}
+            partition={partitionName}
             webpreferences="contextIsolation=no"
           />
         </div>
@@ -1804,7 +1853,7 @@ ${data.textContent ? `**Text Content:** "${data.textContent.slice(0, 100)}${data
 
                 // 3. Build structured context
                 const reactComponents = elements.filter((e: { reactComponent?: string }) => e.reactComponent).map((e: { reactComponent: string }) => e.reactComponent);
-                const uniqueComponents = [...new Set(reactComponents)];
+                const uniqueComponents = [...new Set<string>(reactComponents as string[])];
 
                 // Build markdown summary
                 const mdLines = [
@@ -1828,19 +1877,17 @@ ${data.textContent ? `**Text Content:** "${data.textContent.slice(0, 100)}${data
                 const markdown = mdLines.join('\n');
 
                 // 4. Dispatch to chat input as attachment chip (like regular inspector)
-                window.dispatchEvent(new CustomEvent('grep-insert-chat', {
-                  detail: {
-                    sessionId: session.id,
-                    content: '', // No visible text — context is in attachments
-                    screenshot: screenshotBase64,
-                    elementContext: {
-                      selector: 'region(' + Math.round(x1) + ',' + Math.round(y1) + ',' + Math.round(width) + 'x' + Math.round(height) + ')',
-                      outerHTML: markdown,
-                      tagName: 'region',
-                      reactComponent: uniqueComponents.length > 0 ? uniqueComponents[0] : undefined,
-                    },
+                window.electronAPI.browser.sendChatInsert({
+                  sessionId: session.id,
+                  content: '', // No visible text — context is in attachments
+                  screenshot: screenshotBase64,
+                  elementContext: {
+                    selector: 'region(' + Math.round(x1) + ',' + Math.round(y1) + ',' + Math.round(width) + 'x' + Math.round(height) + ')',
+                    outerHTML: markdown,
+                    tagName: 'region',
+                    reactComponent: uniqueComponents.length > 0 ? uniqueComponents[0] : undefined,
                   },
-                }));
+                });
 
                 logBrowserPreview('[BrowserPreview] Region captured:', { width: Math.round(width), height: Math.round(height), elements: elements.length, reactComponents: uniqueComponents });
               } catch (err) {

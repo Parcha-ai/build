@@ -13,7 +13,7 @@ const sendMessageMethod = sendMessageStart >= 0 && loadMessagesStart > sendMessa
 
 assert.ok(sendMessageMethod, 'must find renderer sendMessage implementation');
 
-const normalSendStart = sendMessageMethod.indexOf('const { addMessage, setStreaming, permissionMode, thinkingMode, selectedModel, gstackMode } = state;');
+const normalSendStart = sendMessageMethod.indexOf('const { addMessage, setStreaming, permissionMode, thinkingMode, selectedModel, gstackMode, cascadeMode } = state;');
 const optimisticComment = sendMessageMethod.indexOf('pressing\n    // Enter always produces immediate visible feedback');
 const addUserMessageIndex = sendMessageMethod.indexOf('addMessage(sessionId, userMessage);');
 const preVisibleSendPath = sendMessageMethod.slice(normalSendStart, addUserMessageIndex);

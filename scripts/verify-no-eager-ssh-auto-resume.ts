@@ -27,14 +27,18 @@ assert.match(sessionStore, /Startup SSH reattach delayed for active session/);
 assert.match(sessionStore, /Auto-reattaching running SSH sessions on startup after delay/);
 assert.match(sessionStore, /Delaying SSH startup reattach probe while a stream is active/);
 assert.match(sessionStore, /MAX_CONCURRENT_SSH_REATTACH_CHECKS = 1/);
-assert.match(sessionStore, /SSH_STARTUP_REATTACH_WINDOW_MS = 24 \* 60 \* 60 \* 1000/);
+assert.match(sessionStore, /MAX_STARTUP_SSH_REATTACH_SESSIONS = 8/);
+assert.match(sessionStore, /SSH_STARTUP_REATTACH_WINDOW_MS = 2 \* 60 \* 60 \* 1000/);
 assert.match(sessionStore, /SSH_STARTUP_REATTACH_DELAY_MS = 15_000/);
 assert.match(sessionStore, /SSH_STARTUP_REATTACH_STREAM_BACKOFF_MS = 2_000/);
 assert.match(sessionStore, /startRunningSshProcessMonitors/);
 assert.match(sessionStore, /isRecentRunningSshSession/);
+assert.match(sessionStore, /selectRunningSshSessionsForRecovery/);
+assert.match(sessionStore, /filter\(\(session\) => session\.id !== validActiveSessionId\)/);
 assert.match(sessionStore, /hasActiveStreamingSession/);
 assert.match(sessionStore, /function markRemoteProcessStreaming/);
-assert.match(sessionStore, /async function hasLiveRemoteProcess/);
+assert.match(sessionStore, /async function hasRecoverableRemoteProcess/);
+assert.doesNotMatch(sessionStore, /async function hasLiveRemoteProcess/);
 assert.match(sessionStore, /waitForNoActiveStream/);
 assert.match(sessionStore, /Date\.now\(\) - updatedAt <= SSH_STARTUP_REATTACH_WINDOW_MS/);
 assert.match(sessionStore, /workerCount = Math\.min\(MAX_CONCURRENT_SSH_REATTACH_CHECKS, sessions\.length\)/);
@@ -126,17 +130,16 @@ assert.match(sshAutoResumeBranchInMain, /return state;/);
 assert.doesNotMatch(sshAutoResumeBranchInMain, /settingsStore\.delete\('autoResumeState'\)/);
 assert.doesNotMatch(sshAutoResumeBranchInMain, /return null;/);
 
-const foregroundCleanupIndex = claudeService.indexOf('Foreground SSH cleanup scheduled in background');
-assert.ok(foregroundCleanupIndex >= 0, 'foreground SSH cleanup must be logged as background work');
+const foregroundCleanupIndex = claudeService.indexOf('Foreground SSH cleanup failed');
+assert.ok(foregroundCleanupIndex >= 0, 'foreground SSH cleanup must remain guarded');
 const foregroundCleanupBlock = claudeService.slice(
   claudeService.lastIndexOf('if (session.sshConfig) {', foregroundCleanupIndex),
   foregroundCleanupIndex + 500,
 );
-assert.match(foregroundCleanupBlock, /void sshService\.cleanupDetachedBridgeProcessesForNewTurn/);
-assert.doesNotMatch(
+assert.match(
   foregroundCleanupBlock,
   /await sshService\.cleanupDetachedBridgeProcessesForNewTurn/,
-  'foreground SSH cleanup must not block first-token startup',
+  'foreground SSH cleanup must settle inside the turn lock before a replacement process is spawned',
 );
 assert.match(
   foregroundCleanupBlock,

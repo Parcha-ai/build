@@ -19,7 +19,7 @@ export interface QueueState {
 }
 
 export interface HarnessCapabilities {
-  supportsAsyncInjection: boolean;  // Can accept messages mid-stream (Claude Code only)
+  supportsAsyncInjection: boolean;  // Can accept queued messages in the active turn
   supportsMultiTurn: boolean;       // Maintains conversation state across turns
   minTurnGapMs: number;             // Minimum delay between sequential messages
   maxCoalesceWindowMs: number;      // Time window for coalescing rapid messages

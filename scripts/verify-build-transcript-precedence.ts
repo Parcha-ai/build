@@ -2,6 +2,12 @@ import assert from 'assert';
 import fs from 'fs';
 import path from 'path';
 import { transcriptEntriesToChatMessages, type TranscriptEntry } from '../src/main/services/transcript.service';
+import { shouldResetNativeHarnessThread } from '../src/shared/utils/harness-switch';
+
+assert.equal(shouldResetNativeHarnessThread('codex', 'codex', { fromHarness: 'claude', toHarness: 'codex' }), true);
+assert.equal(shouldResetNativeHarnessThread('codex', 'codex', { fromHarness: 'codex', toHarness: 'codex' }), false);
+assert.equal(shouldResetNativeHarnessThread('codex', 'claude', undefined), true);
+assert.equal(shouldResetNativeHarnessThread('codex', 'codex', undefined), false);
 
 const root = path.resolve(__dirname, '..');
 const claudeIpc = fs.readFileSync(path.join(root, 'src/main/ipc/claude.ipc.ts'), 'utf8');
@@ -18,7 +24,16 @@ assert.doesNotMatch(getMessagesHandler, /claudeService\.getMessages\(sessionId, 
 assert.match(getMessagesHandler, /mergeCompletedStreamMessages\(canonicalMessages, sessionId, limit\)/);
 
 assert.match(channels, /CLAUDE_HAS_BUILD_TRANSCRIPT: 'claude:has-build-transcript'/);
+assert.match(channels, /CLAUDE_NOTE_HARNESS_SWITCH: 'claude:note-harness-switch'/);
 assert.match(preload, /hasBuildTranscript: \(sessionId: string\): Promise<boolean>/);
+assert.match(preload, /noteHarnessSwitch: \(sessionId: string, fromModel: string, toModel: string\): void/);
+assert.match(claudeIpc, /CLAUDE_NOTE_HARNESS_SWITCH[\s\S]*?claudeService\.noteHarnessSwitch/);
+assert.match(sessionStore, /window\.electronAPI\.claude\.noteHarnessSwitch\(sessionId, previousModel \|\| 'auto', model\)/);
+assert.match(claudeService, /pendingHarnessSwitch/);
+assert.match(claudeService, /consumePendingHarnessSwitch\(sessionId, selectedModel\)/);
+assert.match(claudeService, /shouldResetNativeHarnessThread\('codex', lastHarnessForCodex, pendingHarnessSwitch\)/);
+assert.match(claudeService, /codexService\.clearThreadId\(sessionId\)/);
+assert.match(claudeService, /includeCurrentHarnessMessages: includeCurrentCodexHistory/);
 assert.match(claudeIpc, /IPC_CHANNELS\.CLAUDE_HAS_BUILD_TRANSCRIPT/);
 assert.match(claudeIpc, /claudeService\.hasBuildTranscriptForSession\(sessionId\)/);
 assert.match(claudeIpc, /function recordCompletedStreamMessage\(sessionId: string, message: ChatMessage\): void \{\s*if \(claudeService\.hasBuildTranscriptForSession\(sessionId\)\) return;/);

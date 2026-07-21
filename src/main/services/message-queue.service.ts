@@ -20,6 +20,10 @@ class MessageQueueService extends EventEmitter {
   // Set after a completed stream result. SSH bridge processes can remain alive
   // briefly for background task events; one queued drain may pass that bridge.
   private remoteActiveDrainAllowed = new Set<string>();
+  // Fast Stack holds every non-selected queued prompt across the cancellation
+  // gap and through the one-shot forked turn. The first stream end belongs to
+  // the cancelled parent; the second belongs to the Fast Stack run.
+  private fastStackPhase = new Map<string, 'cancelling' | 'running'>();
 
   // Enqueue a message for a session
   enqueue(sessionId: string, text: string, attachments?: unknown[], opts?: { id?: string; model?: string; suppressUserMessage?: boolean; deferDrain?: boolean }): QueuedMessage {
@@ -46,7 +50,10 @@ class MessageQueueService extends EventEmitter {
     queue.push(msg);
     this.queues.set(sessionId, queue);
     if (opts?.deferDrain) {
-      this.processing.set(sessionId, true);
+      // "Remote may still be active" is a deferred probe, not a drain in
+      // progress. Marking it processing can permanently suppress the only
+      // timer that would discover the runtime is actually idle.
+      this.processing.set(sessionId, false);
       this.emitStateChange(sessionId);
       this.scheduleDrain(sessionId, 250);
       return msg;
@@ -56,11 +63,7 @@ class MessageQueueService extends EventEmitter {
     // If not streaming, drain immediately. Harnesses that explicitly support
     // active-turn injection can also drain mid-stream from main, keeping queue
     // state and injection updated atomically.
-    const isStreaming = this.streaming.get(sessionId) || false;
-    const canDrainActiveStream = isStreaming && this.supportsActiveInjection(sessionId);
-    if ((!isStreaming || canDrainActiveStream) && !this.processing.get(sessionId)) {
-      this.scheduleDrain(sessionId, 0);
-    }
+    this.scheduleDrain(sessionId, 0);
     return msg;
   }
 
@@ -98,6 +101,7 @@ class MessageQueueService extends EventEmitter {
     this.processing.set(sessionId, false);
     this.drainDeferredSince.delete(sessionId);
     this.remoteActiveDrainAllowed.delete(sessionId);
+    this.fastStackPhase.delete(sessionId);
     const timer = this.drainTimers.get(sessionId);
     if (timer) { clearTimeout(timer); this.drainTimers.delete(sessionId); }
     this.emitStateChange(sessionId);
@@ -132,6 +136,20 @@ class MessageQueueService extends EventEmitter {
   onStreamEnd(sessionId: string, opts?: { drain?: boolean; allowRemoteActiveDrain?: boolean }): void {
     this.streaming.set(sessionId, false);
     this.processing.set(sessionId, false);
+    const fastStackPhase = this.fastStackPhase.get(sessionId);
+    if (fastStackPhase === 'cancelling') {
+      // The parent was intentionally interrupted. Keep the queue frozen until
+      // the renderer marks the forked replacement turn as running.
+      this.emitStateChange(sessionId);
+      return;
+    }
+    if (fastStackPhase === 'running') {
+      // The replacement turn is complete, but its renderer STREAM_END may not
+      // have been reduced yet. Keep siblings held until the renderer finishes
+      // its send promise and explicitly releases the Fast Stack phase.
+      this.emitStateChange(sessionId);
+      return;
+    }
     if (opts?.allowRemoteActiveDrain) {
       this.remoteActiveDrainAllowed.add(sessionId);
     } else {
@@ -227,6 +245,16 @@ class MessageQueueService extends EventEmitter {
     this.emitStateChange(sessionId);
   }
 
+  /** Reconcile stale renderer/runtime flags after main has proved there is no
+   * local query and no remote process. The queue itself remains intact. */
+  markRuntimeIdle(sessionId: string, opts?: { scheduleDrain?: boolean }): void {
+    this.streaming.set(sessionId, false);
+    this.processing.set(sessionId, false);
+    this.remoteActiveDrainAllowed.delete(sessionId);
+    this.emitStateChange(sessionId);
+    if (opts?.scheduleDrain !== false && this.hasMessages(sessionId)) this.scheduleDrain(sessionId, 0);
+  }
+
   ackDrain(sessionId: string, sourceIds?: string[], opts?: { keepProcessing?: boolean; scheduleIfRemaining?: boolean }): void {
     const queue = this.queues.get(sessionId) || [];
     const ids = new Set(sourceIds && sourceIds.length > 0
@@ -264,6 +292,7 @@ class MessageQueueService extends EventEmitter {
     this.streaming.delete(sessionId);
     this.drainDeferredSince.delete(sessionId);
     this.remoteActiveDrainAllowed.delete(sessionId);
+    this.fastStackPhase.delete(sessionId);
     const timer = this.drainTimers.get(sessionId);
     if (timer) { clearTimeout(timer); this.drainTimers.delete(sessionId); }
   }
@@ -284,8 +313,36 @@ class MessageQueueService extends EventEmitter {
     return this.remoteActiveDrainAllowed.has(sessionId);
   }
 
+  allowRemoteActiveDrain(sessionId: string): void {
+    this.remoteActiveDrainAllowed.add(sessionId);
+  }
+
   clearRemoteActiveDrainAllowance(sessionId: string): void {
     this.remoteActiveDrainAllowed.delete(sessionId);
+  }
+
+  beginFastStack(sessionId: string): void {
+    this.fastStackPhase.set(sessionId, 'cancelling');
+    this.processing.set(sessionId, false);
+    const timer = this.drainTimers.get(sessionId);
+    if (timer) {
+      clearTimeout(timer);
+      this.drainTimers.delete(sessionId);
+    }
+    this.emitStateChange(sessionId);
+  }
+
+  markFastStackRunning(sessionId: string): void {
+    this.fastStackPhase.set(sessionId, 'running');
+    this.processing.set(sessionId, false);
+    this.emitStateChange(sessionId);
+  }
+
+  abortFastStack(sessionId: string): void {
+    this.fastStackPhase.delete(sessionId);
+    this.processing.set(sessionId, false);
+    if (this.hasMessages(sessionId)) this.scheduleDrain(sessionId, 100);
+    this.emitStateChange(sessionId);
   }
 
   supportsActiveInjection(sessionId: string): boolean {
@@ -299,15 +356,20 @@ class MessageQueueService extends EventEmitter {
     if (existing) clearTimeout(existing);
 
     if (!this.hasMessages(sessionId)) return;
+    if (this.fastStackPhase.has(sessionId)) return;
 
     const timer = setTimeout(() => {
       this.drainTimers.delete(sessionId);
-      const isStreaming = this.streaming.get(sessionId) || false;
-      const canDrainActiveStream = isStreaming && this.supportsActiveInjection(sessionId);
-      if ((!isStreaming || canDrainActiveStream) && this.hasMessages(sessionId)) {
-        // Emit drain-ready event -- the IPC handler will dequeue and send
-        this.emit('drain-ready', sessionId);
+      if (!this.hasMessages(sessionId) || this.fastStackPhase.has(sessionId)) return;
+      if (this.processing.get(sessionId)) {
+        this.scheduleDrain(sessionId, 250);
+        return;
       }
+      // Always ask main to reconcile. It owns the authoritative local-query
+      // and remote-process probes and will inject, defer, or start a new turn.
+      // Suppressing this event based on cached streaming/processing flags is
+      // what left queues stuck forever after reconnects.
+      this.emit('drain-ready', sessionId);
     }, delayMs);
     this.drainTimers.set(sessionId, timer);
   }

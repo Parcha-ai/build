@@ -20,8 +20,8 @@ const sessionList = fs.readFileSync(path.join(root, 'src/renderer/components/ses
 
 const inputSessionEffect = inputArea.match(/\/\/ Load message history for the active tab\/session\.[\s\S]*?\n {2}\}, \[sessionId\]\);/)?.[0] || '';
 assert.match(inputSessionEffect, /localStorage\.getItem\(`grep-history-\$\{sessionId\}`\)/);
-assert.match(inputSessionEffect, /setMessage\(''\)/);
-assert.match(inputSessionEffect, /setAttachments\(\[\]\)/);
+assert.doesNotMatch(inputSessionEffect, /setMessage\(''\)/, 'switching session tabs must preserve its composer draft');
+assert.doesNotMatch(inputSessionEffect, /setAttachments\(\[\]\)/, 'switching session tabs must preserve its attachment draft');
 assert.match(inputSessionEffect, /setShowMentions\(false\)/);
 assert.match(inputSessionEffect, /setMentionQuery\(''\)/);
 assert.match(inputSessionEffect, /setMentionStartIndex\(-1\)/);
@@ -38,13 +38,14 @@ assert.match(compactResetEffect, /setCommandQuery\(''\)/);
 assert.match(compactResetEffect, /setCommandStartIndex\(-1\)/);
 assert.match(compactResetEffect, /textareaRef\.current\.style\.height = 'auto'/);
 
-assert.match(browserPreview, /partition=\{`persist:browser-\$\{session\.id\}`\}/);
+assert.match(browserPreview, /const partitionName = `persist:browser-\$\{partitionId \|\| session\.id\}`/);
+assert.match(browserPreview, /partition=\{partitionName\}/);
 assert.match(browserPreview, /window\.electronAPI\.browser\.clearStorage\(session\.id\)/);
 assert.match(preload, /clearStorage: \(sessionId\?: string\): Promise<\{ success: boolean \}> =>\s*ipcRenderer\.invoke\(IPC_CHANNELS\.BROWSER_CLEAR_STORAGE, sessionId\)/);
 
 const clearStorageHandler = browserIpc.match(/ipcMain\.handle\(IPC_CHANNELS\.BROWSER_CLEAR_STORAGE[\s\S]*?\n {2}\}\);/)?.[0] || '';
 assert.match(clearStorageHandler, /sessionId\?: string/);
-assert.match(clearStorageHandler, /sessionId \? `persist:browser-\$\{sessionId\}` : 'persist:browser'/);
+assert.match(clearStorageHandler, /sessionId \? browserService\.getPartitionName\(sessionId\) : 'persist:browser'/);
 assert.match(clearStorageHandler, /electronSession\.fromPartition\(partitionName\)/);
 assert.match(clearStorageHandler, /storages: \['cookies', 'localstorage', 'indexdb', 'serviceworkers', 'cachestorage'\]/);
 assert.doesNotMatch(clearStorageHandler, /sessionstorage/);
@@ -84,6 +85,11 @@ assert.match(sessionTitleService, /CONTINUATION_ONLY_MESSAGE_RE/);
 assert.match(sessionTitleService, /Do not copy the user request or its first sentence verbatim/);
 assert.match(sessionTitleService, /new CachedStore\(\{ name: getSessionStoreName\(\) \}\)/);
 assert.match(sessionServiceMain, /pendingNameGenerationSessionIds = new Set<string>\(\)/);
+assert.match(sessionServiceMain, /MAX_PERSISTED_DISCOVERED_SESSIONS = 250/);
+assert.match(sessionServiceMain, /Compacted persisted discovery cache/);
+assert.match(sessionServiceMain, /const nextCache = new Map<string, Session>\(\)/);
+assert.match(sessionServiceMain, /this\.discoveredSessionsCache = nextCache/);
+assert.doesNotMatch(sessionServiceMain, /don't clear - merge to preserve user settings/);
 assert.match(sessionServiceMain, /hasExistingSessionTitle\(sessionId\)/);
 assert.match(sessionServiceMain, /rememberAutoSessionTitle\(sessionId, title, 'first-user-message'\)/);
 assert.match(claudeService, /Only call this when the session does not already have a useful name/);

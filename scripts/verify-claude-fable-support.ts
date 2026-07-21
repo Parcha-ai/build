@@ -7,6 +7,7 @@ const claudeService = fs.readFileSync(path.join(root, 'src/main/services/claude.
 const autoRouterService = fs.readFileSync(path.join(root, 'src/main/services/auto-router.service.ts'), 'utf8');
 const sessionStore = fs.readFileSync(path.join(root, 'src/renderer/stores/session.store.ts'), 'utf8');
 const analyticsService = fs.readFileSync(path.join(root, 'src/main/services/analytics.service.ts'), 'utf8');
+const modelPricing = fs.readFileSync(path.join(root, 'src/shared/config/model-pricing.ts'), 'utf8');
 const tokenDashboard = fs.readFileSync(path.join(root, 'src/renderer/components/analytics/TokenDashboard.tsx'), 'utf8');
 const harnessPolicy = fs.readFileSync(path.join(root, 'src/main/services/harness-policy.service.ts'), 'utf8');
 
@@ -38,13 +39,13 @@ assert.match(
 );
 assert.match(
   autoRouterService,
-  /function implicitFrontierClaudeModels\(\): string\[\] \{[\s\S]*?return \['claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6'\]/,
-  'Auto Build implicit frontier candidates must default to Opus, not silently Fable',
+  /function frontierClaudeCandidatesForTier\([\s\S]*?configured,[\s\S]*?config\.fallbackModel,[\s\S]*?customTierModels[\s\S]*?claude-fable\|claude-opus/,
+  'Auto Build frontier candidates must come from configured tier, fallback, or custom-category models',
 );
-assert.match(
+assert.doesNotMatch(
   autoRouterService,
-  /isFableModel\(configured\)[\s\S]*?\? \[configured, \.\.\.implicitFrontierClaudeModels\(\)\][\s\S]*?: implicitFrontierClaudeModels\(\)/,
-  'Auto Build must include Fable only when the tier is explicitly configured to Fable',
+  /function implicitFrontierClaudeModels|return \['claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6'\]/,
+  'Auto Build must not inject an implicit Opus pool after Opus is removed from settings',
 );
 assert.match(
   autoRouterService,
@@ -73,12 +74,12 @@ assert.match(
   'Renderer fallback model handling must know about Claude Fable 5',
 );
 assert.match(
-  analyticsService,
+  modelPricing,
   /'claude-fable-5': \{ input: 10, output: 50, cacheRead: 1, cacheWrite: 12\.50 \}/,
   'Analytics pricing must use Fable 5 pricing',
 );
 assert.match(
-  analyticsService,
+  modelPricing,
   /if \(normalized\.includes\('fable'\)\) return MODEL_PRICING\['claude-fable-5'\]/,
   'Analytics pricing fallback must recognize Fable aliases',
 );

@@ -1,5 +1,5 @@
-import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { X, Image, FileCode, Target, File, Folder, AtSign, Brain, Square, Code, Smartphone, RefreshCw, Slash, Eraser, Activity, Paperclip } from 'lucide-react';
+import React, { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo } from 'react';
+import { X, Image, FileCode, Target, File, Folder, Brain, Square, Code, Smartphone, RefreshCw, Paperclip, Workflow, MoreHorizontal } from 'lucide-react';
 import { useSessionStore, type PermissionMode, type ThinkingMode, type EffortLevel, migrateThinkingMode, normalizePermissionModeForModel } from '../../stores/session.store';
 import { useUIStore } from '../../stores/ui.store';
 import { useAudioStore } from '../../stores/audio.store';
@@ -12,6 +12,9 @@ import SecureInput from './SecureInput';
 import CompactionSwitchNotice from './CompactionSwitchNotice';
 import { AutoRouteBadge, formatHarnessModelLabel, inferHarnessFromModel } from './AutoRouteBadge';
 import { GSTACK_MODE_META } from '../../../shared/types';
+import { PARABLE_MODE_ID } from '../../../shared/config/parable';
+import { getBrowserPartitionId } from '../../../shared/utils/browser-partition';
+import { calculateVisibleToolbarActions } from '../../utils/toolbar-overflow';
 
 // Permission mode config for UI - using terminal-style prompts
 const PERMISSION_MODE_CONFIG: Record<PermissionMode, { prompt: string; label: string; color: string; description: string }> = {
@@ -112,6 +115,7 @@ type SlashCommandItem = {
   scope: string;
   itemType: string;
   gstackId?: string | null;
+  cascadeEnabled?: boolean;
 };
 
 type ExtensionScanResult = {
@@ -122,6 +126,9 @@ type ExtensionScanResult = {
 };
 
 const EXTENSION_SCAN_CACHE_TTL_MS = 5 * 60 * 1000;
+const TOOLBAR_ACTION_COUNT = 6;
+const TOOLBAR_ACTION_WIDTH = 24;
+const TOOLBAR_GAP = 8;
 const extensionScanCache = new Map<string, {
   expiresAt: number;
   promise: Promise<ExtensionScanResult>;
@@ -267,8 +274,10 @@ interface Attachment {
 
 // Stable empty arrays to avoid reference changes when session data is missing
 const EMPTY_QUEUE: never[] = [];
-const EMPTY_MONITORS: never[] = [];
 const EMPTY_MODELS: never[] = [];
+const EMPTY_ATTACHMENTS: Attachment[] = [];
+const composerTextDrafts = new Map<string, string>();
+const composerAttachmentDrafts = new Map<string, Attachment[]>();
 const PLAN_MODE_NUDGE_SUPPRESSED_KEY = 'grep-plan-mode-nudge-suppressed';
 const SUBMITTED_INPUT_ECHO_SUPPRESS_MS = 60_000;
 const MAX_PASTED_FILE_BYTES = 5 * 1024 * 1024;
@@ -278,44 +287,6 @@ const TEXT_FILE_EXTENSIONS = new Set([
   'kt', 'swift', 'c', 'cc', 'cpp', 'h', 'hpp', 'sql', 'sh', 'bash', 'zsh', 'env',
   'log', 'psv',
 ]);
-
-type ActiveWorkMonitor = {
-  description: string;
-  active: boolean;
-  kind?: 'monitor' | 'subagent';
-};
-
-function inferActiveWorkKind(monitor: ActiveWorkMonitor): 'monitor' | 'subagent' {
-  if (monitor.kind === 'subagent') return 'subagent';
-  if (monitor.kind === 'monitor') return 'monitor';
-  return /^[a-z0-9_-]+:\s/i.test(monitor.description) ? 'subagent' : 'monitor';
-}
-
-function formatActiveWorkSummary(monitors: ActiveWorkMonitor[]): {
-  total: number;
-  agentCount: number;
-  monitorCount: number;
-  label: string;
-  title: string;
-} {
-  const active = monitors.filter((monitor) => monitor.active);
-  const agentCount = active.filter((monitor) => inferActiveWorkKind(monitor) === 'subagent').length;
-  const monitorCount = active.length - agentCount;
-  const pieces = [
-    agentCount > 0 ? `${agentCount} AGENT${agentCount === 1 ? '' : 'S'}` : '',
-    monitorCount > 0 ? `${monitorCount} MONITOR${monitorCount === 1 ? '' : 'S'}` : '',
-  ].filter(Boolean);
-
-  return {
-    total: active.length,
-    agentCount,
-    monitorCount,
-    label: pieces.join(' · '),
-    title: active
-      .map((monitor) => `${inferActiveWorkKind(monitor) === 'subagent' ? 'Agent' : 'Monitor'}: ${monitor.description}`)
-      .join('\n'),
-  };
-}
 
 function isPlanModeNudgeSuppressed(): boolean {
   try {
@@ -369,8 +340,9 @@ function shouldSuggestPlanModeNudge(
   attachments: Attachment[],
   currentModel: string,
   currentMode: PermissionMode,
+  cascadeActive: boolean,
 ): boolean {
-  if (currentModel === 'auto' || currentMode === 'plan' || isPlanModeNudgeSuppressed()) return false;
+  if (currentModel === 'auto' || currentModel === PARABLE_MODE_ID || cascadeActive || currentMode === 'plan' || isPlanModeNudgeSuppressed()) return false;
 
   const trimmed = text.trim();
   if (!trimmed) return false;
@@ -387,8 +359,31 @@ function shouldSuggestPlanModeNudge(
 }
 
 export default function InputArea({ sessionId, disabled, systemInfo, isStreaming: isStreamingProp }: InputAreaProps) {
-  const [message, setMessage] = useState('');
-  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  // Composer text is deliberately local. Putting keystrokes in the global UI
+  // store invalidated every mounted panel/webview and could steal focus after
+  // each character. The module cache preserves drafts across session-tab
+  // mounts without broadcasting each keystroke through the whole app.
+  const [message, setLocalMessage] = useState(() => composerTextDrafts.get(sessionId) || '');
+  const setMessage = useCallback((next: React.SetStateAction<string>) => {
+    setLocalMessage((current) => {
+      const resolved = typeof next === 'function' ? next(current) : next;
+      if (resolved) composerTextDrafts.set(sessionId, resolved);
+      else composerTextDrafts.delete(sessionId);
+      return resolved;
+    });
+  }, [sessionId]);
+  useEffect(() => {
+    setLocalMessage(composerTextDrafts.get(sessionId) || '');
+  }, [sessionId]);
+  const [, refreshAttachments] = useState(0);
+  const attachments = composerAttachmentDrafts.get(sessionId) || EMPTY_ATTACHMENTS;
+  const setAttachments = useCallback((next: React.SetStateAction<Attachment[]>) => {
+    const current = composerAttachmentDrafts.get(sessionId) || EMPTY_ATTACHMENTS;
+    const resolved = typeof next === 'function' ? next(current) : next;
+    if (resolved.length > 0) composerAttachmentDrafts.set(sessionId, resolved);
+    else composerAttachmentDrafts.delete(sessionId);
+    refreshAttachments((revision) => revision + 1);
+  }, [sessionId]);
   const [showMentions, setShowMentions] = useState(false);
   const [mentionQuery, setMentionQuery] = useState('');
   const [mentionPosition, setMentionPosition] = useState({ top: 0, left: 0 });
@@ -401,6 +396,12 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
 
   // GStack skill launcher
   const [showGStack, setShowGStack] = useState(false);
+  const [visibleToolbarActionCount, setVisibleToolbarActionCount] = useState(TOOLBAR_ACTION_COUNT);
+  const [showToolbarOverflow, setShowToolbarOverflow] = useState(false);
+  const toolbarRef = useRef<HTMLDivElement>(null);
+  const toolbarPrimaryRef = useRef<HTMLDivElement>(null);
+  const toolbarPinnedRef = useRef<HTMLDivElement>(null);
+  const toolbarOverflowRef = useRef<HTMLDivElement>(null);
 
   // Message history state
   const [messageHistory, setMessageHistory] = useState<string[]>([]);
@@ -452,8 +453,8 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
   const currentThinkingMode = useSessionStore(useCallback((s) => s.thinkingMode[sessionId] || 'thinking', [sessionId]));
   const currentHtmlMode = useSessionStore(useCallback((s) => s.htmlRenderMode[sessionId] || 'md', [sessionId]));
   const activeGStackMode = useSessionStore(useCallback((s) => s.gstackMode[sessionId] || null, [sessionId]));
+  const cascadeActive = useSessionStore(useCallback((s) => Boolean(s.cascadeMode[sessionId]), [sessionId]));
   const queuedMessages = useSessionStore(useCallback((s) => s.messageQueue[sessionId] || EMPTY_QUEUE, [sessionId]));
-  const monitorInstances = useSessionStore(useCallback((s) => s.monitorInstances[sessionId] || EMPTY_MONITORS, [sessionId]));
   const currentModel = useSessionStore(useCallback((s) => s.selectedModel[sessionId] || 'auto', [sessionId]));
   const activeStreamModel = useSessionStore(useCallback((s) => s.activeStreamModel[sessionId], [sessionId]));
   const autoRouteDecision = useSessionStore(useCallback((s) => s.autoRouteDecision[sessionId] || null, [sessionId]));
@@ -464,12 +465,14 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
 
   // Action selectors — stable references, never cause re-renders
   const sendMessage = useSessionStore((s) => s.sendMessage);
+  const interruptAndSend = useSessionStore((s) => s.interruptAndSend);
   const askBtw = useSessionStore((s) => s.askBtw);
   const remoteControl = useSessionStore(useCallback((s) => s.remoteControl[sessionId] || null, [sessionId]));
   const pendingPlanApproval = useSessionStore(useCallback((s) => s.pendingPlanApproval[sessionId] || null, [sessionId]));
   const rejectPlan = useSessionStore((s) => s.rejectPlan);
   const cyclePermissionMode = useSessionStore((s) => s.cyclePermissionMode);
   const setGStackMode = useSessionStore((s) => s.setGStackMode);
+  const setCascadeMode = useSessionStore((s) => s.setCascadeMode);
   const setPermissionMode = useSessionStore((s) => s.setPermissionMode);
   const cycleThinkingMode = useSessionStore((s) => s.cycleThinkingMode);
   const setThinkingMode = useSessionStore((s) => s.setThinkingMode);
@@ -485,7 +488,6 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
   const setSelectedElement = useUIStore((s) => s.setSelectedElement);
   const sessionInspectorActive = useUIStore((s) => s.sessionInspectorActive);
   const setSessionInspectorActive = useUIStore((s) => s.setSessionInspectorActive);
-  const toggleBrowserPanel = useUIStore((s) => s.toggleBrowserPanel);
 
   // Audio store — fine-grained selectors
   const audioSettings = useAudioStore((s) => s.settings);
@@ -530,9 +532,52 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
   // into a live stream — they've already been sent to Claude via streamInput.
   const effectiveQueuedCount = (isProcessingQueueState && isStreamingState) ? 0 : queuedMessages.length;
   const hasQueuedMessages = effectiveQueuedCount > 0;
-  const activeWorkSummary = useMemo(() => formatActiveWorkSummary(monitorInstances), [monitorInstances]);
-  const hasActiveBackgroundWork = activeWorkSummary.total > 0;
   const modeChangeDisabled = disabled || isSending || hasQueuedMessages;
+
+  useLayoutEffect(() => {
+    const toolbar = toolbarRef.current;
+    const primary = toolbarPrimaryRef.current;
+    const pinned = toolbarPinnedRef.current;
+    if (!toolbar || !primary || !pinned) return;
+
+    let animationFrame = 0;
+    const updateVisibleActions = () => {
+      cancelAnimationFrame(animationFrame);
+      animationFrame = requestAnimationFrame(() => {
+        const nextCount = calculateVisibleToolbarActions({
+          toolbarWidth: toolbar.clientWidth,
+          primaryWidth: primary.scrollWidth,
+          pinnedWidth: pinned.offsetWidth,
+          actionCount: TOOLBAR_ACTION_COUNT,
+          actionWidth: TOOLBAR_ACTION_WIDTH,
+          gap: TOOLBAR_GAP,
+        });
+
+        setVisibleToolbarActionCount((current) => current === nextCount ? current : nextCount);
+      });
+    };
+
+    updateVisibleActions();
+    const resizeObserver = typeof ResizeObserver === 'undefined'
+      ? null
+      : new ResizeObserver(updateVisibleActions);
+    resizeObserver?.observe(toolbar);
+    resizeObserver?.observe(primary);
+    resizeObserver?.observe(pinned);
+    window.addEventListener('resize', updateVisibleActions);
+
+    return () => {
+      cancelAnimationFrame(animationFrame);
+      resizeObserver?.disconnect();
+      window.removeEventListener('resize', updateVisibleActions);
+    };
+  }, [isSending]);
+
+  useEffect(() => {
+    if (visibleToolbarActionCount === TOOLBAR_ACTION_COUNT) {
+      setShowToolbarOverflow(false);
+    }
+  }, [visibleToolbarActionCount]);
 
   useEffect(() => {
     if (isSending || hasQueuedMessages) {
@@ -581,14 +626,18 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
   const actualActiveHarness = isAutoRouteActive && autoRouteDecision?.resolvedModel === actualActiveModel && autoRouteDecision?.resolvedHarness
     ? autoRouteDecision.resolvedHarness
     : inferHarnessFromModel(actualActiveModel);
-  const actualActiveModelLabel = formatHarnessModelLabel(
-    actualActiveHarness,
-    actualActiveModel,
-    actualActiveModelInfo?.name,
-  );
+  const actualActiveModelLabel = currentModel === PARABLE_MODE_ID && actualActiveModel === PARABLE_MODE_ID
+    ? 'PARABLE'
+    : formatHarnessModelLabel(
+      actualActiveHarness,
+      actualActiveModel,
+      actualActiveModelInfo?.name,
+    );
   const selectedModelLabel = currentModel === 'auto'
     ? 'AUTO'
-    : formatHarnessModelLabel(inferHarnessFromModel(currentModel), currentModel, currentModelInfo.name) || currentModelInfo.name;
+    : currentModel === PARABLE_MODE_ID
+      ? 'PARABLE'
+      : formatHarnessModelLabel(inferHarnessFromModel(currentModel), currentModel, currentModelInfo.name) || currentModelInfo.name;
   const modelButtonTitle = isSending && actualActiveModelLabel
     ? `Using ${actualActiveModelLabel}${isAutoRouteActive && autoRouteDecision ? `. Auto Build scope: ${autoRouteDecision.domain && autoRouteDecision.domain !== 'general' ? `${autoRouteDecision.tier}:${autoRouteDecision.domain}` : autoRouteDecision.tier}` : ''}`
     : `${currentModelInfo.description || selectedModelLabel} (click to change)`;
@@ -614,8 +663,6 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
     } catch {
       // Ignore parse errors
     }
-    setMessage('');
-    setAttachments([]);
     setShowMentions(false);
     setMentionQuery('');
     setMentionStartIndex(-1);
@@ -667,6 +714,27 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
     }
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [showEffortDropdown]);
+
+  // Close the compact toolbar menu on outside click or Escape.
+  useEffect(() => {
+    if (!showToolbarOverflow) return;
+
+    const handleMouseDown = (event: MouseEvent) => {
+      if (toolbarOverflowRef.current && !toolbarOverflowRef.current.contains(event.target as Node)) {
+        setShowToolbarOverflow(false);
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setShowToolbarOverflow(false);
+    };
+
+    document.addEventListener('mousedown', handleMouseDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handleMouseDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [showToolbarOverflow]);
 
   // Listen for text edit events to blur/disable input while editing in browser
   useEffect(() => {
@@ -766,7 +834,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
 
     window.addEventListener('grep-insert-chat', handleInsertChat as EventListener);
     return () => window.removeEventListener('grep-insert-chat', handleInsertChat as EventListener);
-  }, [sessionId, suppressSubmittedInputEcho]);
+  }, [sessionId, setAttachments, setMessage, suppressSubmittedInputEcho]);
 
   // Listen for send-annotation events - sends IMMEDIATELY AND populates input for editing option
   useEffect(() => {
@@ -809,7 +877,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
 
     window.addEventListener('grep-send-annotation', handleSendAnnotation as EventListener);
     return () => window.removeEventListener('grep-send-annotation', handleSendAnnotation as EventListener);
-  }, [sessionId, sendMessage, suppressSubmittedInputEcho]);
+  }, [sessionId, sendMessage, setAttachments, setMessage, suppressSubmittedInputEcho]);
 
   // Handle selected element from browser inspector
   useEffect(() => {
@@ -853,7 +921,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
       });
       useUIStore.getState().setSelectedElement(null);
     }
-  }, [selectedElement]);
+  }, [selectedElement, setAttachments]);
 
   // Load commands, skills, and agents when session changes
   useEffect(() => {
@@ -862,6 +930,8 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
     // is set up). These are the always-available items.
     const builtinCommands: SlashCommandItem[] = [
       { name: 'codex', description: 'Get a second opinion from OpenAI Codex', scope: 'builtin', itemType: 'codex' },
+      { name: 'cascade', description: 'Enable Cascade evidence-gated workflow for the selected model', scope: 'builtin', itemType: 'cascade', cascadeEnabled: true },
+      { name: 'cascade-off', description: 'Disable Cascade workflow', scope: 'builtin', itemType: 'cascade', cascadeEnabled: false },
       { name: 'monitor', description: '[Claude Code] Watch a long-running process and stream events', scope: 'builtin', itemType: 'claude-code' },
       { name: 'loop', description: '[Claude Code] Run a prompt on a recurring interval', scope: 'builtin', itemType: 'claude-code' },
     ];
@@ -1009,7 +1079,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
     setShowCommands(false);
     setCommandQuery('');
     setCommandStartIndex(-1);
-  }, []);
+  }, [setMessage]);
 
   // Handle mention selection
   const handleMentionSelect = useCallback(
@@ -1040,14 +1110,12 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
       // Focus back on textarea
       textareaRef.current?.focus();
     },
-    [message, mentionStartIndex]
+    [message, mentionStartIndex, setAttachments, setMessage]
   );
 
   // Handle command/skill/agent selection
   const handleCommandSelect = useCallback(
-    async (item: any) => {
-      const currentSession = useSessionStore.getState().sessions.find(s => s.id === sessionId);
-      const projectPath = currentSession?.worktreePath;
+    (item: any) => {
       const itemType = item.itemType || commandType;
 
       // Detect whether the autocomplete was opened by typing "/" (inline mode)
@@ -1075,32 +1143,18 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
           setMessage(beforeCommand.trim());
         }
         // In popover mode: mode activation only, no text change
-      } else if (itemType === 'command') {
-        // Load command content and replace the /command with it
-        try {
-          const content = await window.electronAPI.extensions.getCommand(item.name, projectPath);
-          if (content) {
-            // Remove leading comment if present
-            const lines = content.split('\n');
-            const cleanContent = lines.filter((l: string) => !l.trim().startsWith('<!--')).join('\n').trim();
-
-            if (isInlineMode) {
-              // Replace /command with the command content, preserving text before and after
-              const beforeCommand = message.slice(0, commandStartIndex);
-              const afterCommand = message.slice(commandStartIndex + item.name.length + 1);
-              setMessage(beforeCommand + cleanContent + (afterCommand ? ' ' + afterCommand : ''));
-            } else {
-              // Popover mode: insert command content at cursor
-              const before = message.slice(0, commandStartIndex);
-              const after = message.slice(commandStartIndex);
-              setMessage(before + cleanContent + (after ? ' ' + after : ''));
-            }
-          }
-        } catch (err) {
-          console.error('[InputArea] Error loading command:', err);
+      } else if (itemType === 'cascade') {
+        // Cascade is an independent workflow overlay. Toggling it must never
+        // change the selected model or any GStack/parallel execution mode.
+        setCascadeMode(sessionId, item.cascadeEnabled !== false);
+        if (isInlineMode) {
+          const beforeCommand = message.slice(0, commandStartIndex);
+          setMessage(beforeCommand.trim());
         }
-      } else if (itemType === 'skill' || itemType === 'claude-code') {
-        // Skills and Claude Code builtins: insert /name at position
+      } else if (itemType === 'command' || itemType === 'skill' || itemType === 'claude-code') {
+        // Keep the invocation compact in the composer and transcript. The
+        // main-process send boundary resolves its exact project/user workflow
+        // definition for whichever harness ultimately handles the turn.
         if (isInlineMode) {
           const before = message.slice(0, commandStartIndex);
           const after = message.slice(getSelectionStart() || commandStartIndex);
@@ -1129,7 +1183,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
       setCommandStartIndex(-1);
       textareaRef.current?.focus();
     },
-    [message, commandStartIndex, commandType, sessionId, setGStackMode]
+    [message, commandStartIndex, commandType, sessionId, setCascadeMode, setGStackMode]
   );
 
   // Save message to history
@@ -1160,7 +1214,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
     setShowHistory(false);
     setHistoryIndex(-1);
     textareaRef.current?.focus();
-  }, []);
+  }, [setMessage]);
 
   const handleSubmit = async (planNudgeAction?: 'switch-to-plan' | 'keep-current' | 'suppress') => {
     if (!message.trim() && attachments.length === 0) return;
@@ -1168,6 +1222,15 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
 
     // Intercept /btw — ephemeral side question (not added to history)
     const trimmed = message.trim();
+    const cascadeCommand = trimmed.match(/^\/cascade(?:\s+(on|off))?$/i);
+    if (cascadeCommand || /^\/cascade-off$/i.test(trimmed)) {
+      const enabled = !/^\/cascade-off$/i.test(trimmed) && cascadeCommand?.[1]?.toLowerCase() !== 'off';
+      setCascadeMode(sessionId, enabled);
+      setMessage('');
+      textareaRef.current?.focus();
+      return;
+    }
+
     if (/^\/btw\s+/i.test(trimmed)) {
       const question = trimmed.replace(/^\/btw\s+/i, '').trim();
       if (question) {
@@ -1202,7 +1265,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
       !planNudgeAction &&
       !isSending &&
       !hasQueuedMessages &&
-      shouldSuggestPlanModeNudge(message, attachments, currentModel, currentMode)
+      shouldSuggestPlanModeNudge(message, attachments, currentModel, currentMode, cascadeActive)
     ) {
       setShowPlanModeNudge(true);
       textareaRef.current?.focus();
@@ -1421,6 +1484,20 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
 
     // Cmd+F: Let system handle (find in editor/page) — don't intercept
 
+    // Cmd/Ctrl+Shift+Enter: Fast Stack — stop the active turn, fork its
+    // conversation once, and run this prompt immediately in the same chat pane.
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && e.shiftKey && !e.altKey) {
+      e.preventDefault();
+      const trimmedMessage = message.trim();
+      if (!trimmedMessage && attachments.length === 0) return;
+      const { fastStack } = useSessionStore.getState();
+      rememberSubmittedInput(trimmedMessage);
+      setMessage('');
+      setAttachments([]);
+      void fastStack(sessionId, trimmedMessage, attachments);
+      return;
+    }
+
     // Cmd/Ctrl+Enter: Force send — interrupt current stream and send immediately
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey) {
       e.preventDefault();
@@ -1525,7 +1602,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
         console.error(`[InputArea] Failed to read file ${file.name}:`, err);
       }
     }
-  }, []);
+  }, [setAttachments]);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -1718,56 +1795,20 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
       setSessionInspectorActive(sessionId, false);
     } else {
       setSessionInspectorActive(sessionId, true);
-      toggleBrowserPanel(); // Open browser panel if not already open
+      const uiState = useUIStore.getState();
+      const sessionState = useSessionStore.getState();
+      const owner = sessionState.sessions.find((session) => session.id === sessionId);
+      if (owner) {
+        const existing = uiState.browserTabs.find((tab) => tab.ownerSessionId === sessionId);
+        if (existing) uiState.setActiveBrowserTab(existing.id);
+        else uiState.createBrowserTab(
+          owner.id,
+          getBrowserPartitionId(owner.id, sessionState.sessions),
+          owner.lastBrowserUrl || `http://localhost:${owner.ports?.web || 3000}`,
+        );
+      }
+      uiState.enableSessionBrowser(sessionId);
     }
-  };
-
-  const handleSlashButtonClick = (e: React.MouseEvent<HTMLButtonElement>) => {
-    // Open the command autocomplete anchored above the input container — same
-    // position the inline "/" trigger uses, so the popover gets full width and
-    // doesn't collide with the viewport edge.
-    e.preventDefault();
-    e.stopPropagation();
-
-    if (containerRef.current) {
-      const containerRect = containerRef.current.getBoundingClientRect();
-      setCommandPosition({
-        top: Math.max(10, containerRect.top - 270),
-        left: containerRect.left,
-      });
-    }
-
-    const elem = textareaRef.current;
-    const cursorPos = elem?.selectionStart ?? message.length;
-
-    setCommandType('command');
-    setCommandQuery('');
-    setCommandStartIndex(cursorPos);
-    setShowCommands(true);
-    setShowMentions(false);
-  };
-
-  const handleAtButtonClick = () => {
-    // Insert @ at cursor position
-    const elem = textareaRef.current;
-    if (!elem) return;
-
-    const start = elem.selectionStart ?? 0;
-    const end = elem.selectionEnd ?? 0;
-    const newValue = message.slice(0, start) + '@' + message.slice(end);
-    setMessage(newValue);
-
-    // Trigger the mention autocomplete
-    setTimeout(() => {
-      elem.selectionStart = start + 1;
-      elem.selectionEnd = start + 1;
-      elem.focus();
-
-      setShowMentions(true);
-      setMentionQuery('');
-      setMentionStartIndex(start);
-      setMentionPosition({ top: -310, left: 0 });
-    }, 0);
   };
 
   // Auto-resize textarea
@@ -1802,6 +1843,157 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
         return <FileCode size={12} className="text-purple-400" />;
     }
   };
+
+  const handleVoiceTranscriptionComplete = async (text: string) => {
+    console.log('[InputArea] onTranscriptionComplete called with:', text, 'voiceModeActive:', isVoiceModeActive);
+
+    // In voice mode (ElevenLabs), send directly without trigger word.
+    if (isVoiceModeActive && !disabled && !isSending && text.trim()) {
+      console.log('[InputArea] Voice mode active - sending directly to Build');
+      setAudioMode(sessionId, true);
+      rememberSubmittedInput(text.trim());
+      setMessage('');
+
+      let messageToSend = text.trim();
+      const fileMentions = attachments.filter((attachment) => attachment.type === 'mention');
+      if (fileMentions.length > 0) {
+        const fileContext = fileMentions.map((mention) => `@${mention.name}`).join(', ');
+        messageToSend = `[Files: ${fileContext}]\n\n${messageToSend}`;
+      }
+
+      const otherAttachments = attachments.filter((attachment) => attachment.type !== 'mention');
+      setAttachments([]);
+      await sendMessage(sessionId, messageToSend, otherAttachments.length > 0 ? otherAttachments : undefined);
+      return;
+    }
+
+    // Outside voice mode, only send automatically when the transcript ends in
+    // the configured trigger word. Otherwise leave it in the composer.
+    const escapedTrigger = triggerWord.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const triggerPattern = new RegExp(`\\b${escapedTrigger}\\s*[.!?]?\\s*$`, 'i');
+    const hasTrigger = triggerPattern.test(text);
+    console.log('[InputArea] Trigger detection:', {
+      triggerWord,
+      escapedTrigger,
+      text,
+      hasTrigger,
+      disabled,
+      isSending,
+    });
+
+    if (hasTrigger && !disabled && !isSending) {
+      const cleanedText = text.replace(triggerPattern, '').trim();
+      if (!cleanedText) {
+        setMessage('');
+        return;
+      }
+
+      setAudioMode(sessionId, true);
+      rememberSubmittedInput(cleanedText, text);
+      setMessage('');
+
+      let messageToSend = cleanedText;
+      const fileMentions = attachments.filter((attachment) => attachment.type === 'mention');
+      if (fileMentions.length > 0) {
+        const fileContext = fileMentions.map((mention) => `@${mention.name}`).join(', ');
+        messageToSend = `[Files: ${fileContext}]\n\n${messageToSend}`;
+      }
+
+      const otherAttachments = attachments.filter((attachment) => attachment.type !== 'mention');
+      setAttachments([]);
+      await sendMessage(sessionId, messageToSend, otherAttachments.length > 0 ? otherAttachments : undefined);
+      return;
+    }
+
+    setAudioMode(sessionId, true);
+    if (suppressSubmittedInputEcho(text, 'voice-final-transcript')) return;
+    setMessage(text);
+    textareaRef.current?.focus();
+  };
+
+  const toolbarActions: Array<{
+    id: string;
+    label: string;
+    title: string;
+    icon: React.ReactNode;
+    onSelect: () => void;
+    disabled?: boolean;
+    active?: boolean;
+    activeClassName?: string;
+  }> = [
+    {
+      id: 'cascade',
+      label: cascadeActive ? 'Disable Cascade' : 'Enable Cascade',
+      title: cascadeActive
+        ? `Cascade workflow is active for ${selectedModelLabel}. Click to disable.`
+        : `Enable Cascade workflow for ${selectedModelLabel}. The selected model will not change.`,
+      icon: <Workflow size={14} />,
+      onSelect: () => setCascadeMode(sessionId, !cascadeActive),
+      disabled: disabled || isSending,
+      active: cascadeActive,
+      activeClassName: 'text-cyan-400 bg-cyan-500/10',
+    },
+    {
+      id: 'gstack',
+      label: activeGStackMode ? `GStack: ${GSTACK_MODE_META[activeGStackMode]?.shortName || activeGStackMode}` : 'GStack Skills',
+      title: 'GStack Skills',
+      icon: (
+        <span className="relative text-xs font-bold font-mono leading-none" style={{ fontSize: '13px' }}>
+          G
+          {activeGStackMode && <span className="absolute -right-1 -top-1 h-1.5 w-1.5 rounded-full bg-green-400" />}
+        </span>
+      ),
+      onSelect: () => setShowGStack((current) => !current),
+      disabled,
+      active: Boolean(activeGStackMode || showGStack),
+      activeClassName: 'text-claude-text bg-white/5',
+    },
+    {
+      id: 'attach',
+      label: 'Attach files',
+      title: 'Attach files (or drag & drop)',
+      icon: <Paperclip size={14} />,
+      onSelect: () => fileInputRef.current?.click(),
+      disabled,
+    },
+    {
+      id: 'inspect',
+      label: inspectorActive ? 'Cancel inspector' : 'Inspect element',
+      title: inspectorActive ? 'Cancel inspector (click again)' : 'Inspect element',
+      icon: <Target size={14} />,
+      onSelect: handleInspectElement,
+      disabled,
+      active: inspectorActive,
+      activeClassName: 'text-claude-accent bg-white/5',
+    },
+    {
+      id: 'continue',
+      label: 'Continue',
+      title: 'Continue with next turn',
+      icon: <RefreshCw size={14} />,
+      onSelect: () => { void sendMessage(sessionId, 'continue'); },
+      disabled,
+    },
+    {
+      id: 'remote',
+      label: remoteControl ? 'Stop phone control' : 'Control from phone',
+      title: remoteControl ? 'Remote control active — click to stop' : 'Control from phone',
+      icon: <Smartphone size={14} />,
+      onSelect: () => {
+        if (remoteControl) {
+          useSessionStore.getState().stopRemoteControl(sessionId);
+        } else {
+          useSessionStore.getState().startRemoteControl(sessionId);
+        }
+      },
+      disabled,
+      active: Boolean(remoteControl),
+      activeClassName: 'text-green-400 bg-green-500/10',
+    },
+  ];
+
+  const visibleToolbarActions = toolbarActions.slice(0, visibleToolbarActionCount);
+  const overflowToolbarActions = toolbarActions.slice(visibleToolbarActionCount);
 
   return (
     <>
@@ -1843,6 +2035,47 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
             onHandoff={(model) => handoffCompactionModel(sessionId, model)}
             onSwitchBack={() => restoreCompactionModel(sessionId)}
           />
+        )}
+
+        {currentModel === 'auto' && autoRouteDecision?.planningGate?.action === 'start' && (
+          <div className="mb-2 flex items-center justify-between gap-3 border border-fuchsia-500/30 bg-fuchsia-500/10 px-3 py-2">
+            <div className="min-w-0">
+              <div className="text-[10px] font-mono font-bold uppercase tracking-wider text-fuchsia-400">
+                Pre-build 80/20 scope
+              </div>
+              <div className="truncate text-[10px] text-claude-text-secondary" title={autoRouteDecision.planningGate.reason}>
+                {autoRouteDecision.planningGate.reason}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => void (async () => {
+                if (pendingPlanApproval) {
+                  await rejectPlan(sessionId, 'User explicitly chose “Build now anyway”.');
+                }
+                await interruptAndSend(sessionId, '/build-now');
+              })()}
+              className="flex-none border border-claude-border px-2 py-1 text-[9px] font-mono uppercase text-claude-text-secondary hover:border-amber-500/50 hover:text-amber-400"
+              title="Interrupt the scope pass and execute the original request with Auto Build's configured Execution model"
+            >
+              Build now anyway
+            </button>
+          </div>
+        )}
+
+        {currentModel === 'auto' && autoRouteDecision?.planningGate?.action === 'suggest' && (
+          <div className="mb-2 flex items-center justify-between gap-3 border border-purple-500/20 bg-purple-500/5 px-3 py-2">
+            <div className="min-w-0 truncate text-[10px] text-claude-text-secondary" title={autoRouteDecision.planningGate.reason}>
+              This change may benefit from a quick 80/20 first-slice choice.
+            </div>
+            <button
+              type="button"
+              onClick={() => void interruptAndSend(sessionId, '/80-20-first')}
+              className="flex-none border border-purple-500/30 px-2 py-1 text-[9px] font-mono uppercase text-purple-400 hover:bg-purple-500/10"
+            >
+              Run 80/20
+            </button>
+          </div>
         )}
 
         {/* Mention Autocomplete */}
@@ -2094,236 +2327,24 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
         </div>
 
         {/* Unified toolbar: mode/effort/model left, icons right */}
-        <div className="flex items-center gap-2 text-[10px] text-claude-text-secondary font-mono" style={{ letterSpacing: '0.03em' }}>
+        <div
+          ref={toolbarRef}
+          className="flex min-w-0 items-center gap-2 text-[10px] text-claude-text-secondary font-mono"
+          style={{ letterSpacing: '0.03em' }}
+        >
+          <div ref={toolbarPrimaryRef} className="flex min-w-0 items-center gap-2">
           {/* Left: mode */}
           <button
             onClick={() => cyclePermissionMode(sessionId)}
             disabled={modeChangeDisabled}
-            className={`hover:opacity-80 transition-opacity disabled:opacity-40 text-[10px] -order-3 ${modeConfig.color}`}
+            className={`flex-none hover:opacity-80 transition-opacity disabled:opacity-40 text-[10px] ${modeConfig.color}`}
             title={permissionModeTitle}
           >
             {modeConfig.label}
           </button>
-          {/* GStack skill launcher */}
-          <div className="relative ml-auto">
-            <button
-              onClick={() => setShowGStack(!showGStack)}
-              disabled={disabled}
-              className={`p-1 transition-colors hover:bg-claude-bg disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-0.5 ${
-                activeGStackMode ? 'text-claude-text' : showGStack ? 'text-claude-text' : 'text-claude-text-secondary hover:text-claude-accent'
-              }`}
-              style={{ borderRadius: 0 }}
-              title="GStack Skills"
-            >
-              <span className="text-xs font-bold font-mono leading-none" style={{ fontSize: '13px' }}>G</span>
-              {activeGStackMode && GSTACK_MODE_META[activeGStackMode] && (
-                <span
-                  className="text-[8px] font-bold font-mono px-0.5 rounded-sm"
-                  style={{ backgroundColor: GSTACK_MODE_META[activeGStackMode].color, color: '#000' }}
-                >
-                  {GSTACK_MODE_META[activeGStackMode].shortName}
-                </span>
-              )}
-            </button>
-            {showGStack && (
-              <GStackLauncher
-                sessionId={sessionId}
-                onClose={() => setShowGStack(false)}
-              />
-            )}
-          </div>
-          <button
-            onClick={() => fileInputRef.current?.click()}
-            disabled={disabled}
-            className="p-1 transition-colors hover:bg-claude-bg disabled:opacity-40 disabled:cursor-not-allowed text-claude-text-secondary hover:text-claude-accent"
-            style={{ borderRadius: 0 }}
-            title="Attach files (or drag & drop)"
-          >
-            <Paperclip size={14} />
-          </button>
-          <button
-            onClick={handleAtButtonClick}
-            disabled={disabled}
-            className="p-1 transition-colors hover:bg-claude-bg disabled:opacity-40 disabled:cursor-not-allowed text-claude-text-secondary hover:text-claude-accent"
-            style={{ borderRadius: 0 }}
-            title="@ mention file"
-          >
-            <AtSign size={14} />
-          </button>
-          <button
-            onClick={handleSlashButtonClick}
-            disabled={disabled}
-            className="p-1 transition-colors hover:bg-claude-bg disabled:opacity-40 disabled:cursor-not-allowed text-claude-text-secondary hover:text-claude-accent"
-            style={{ borderRadius: 0 }}
-            title="/ slash commands (Monitor, Loop, etc.)"
-          >
-            <Slash size={14} />
-          </button>
-          <button
-            onClick={handleInspectElement}
-            disabled={disabled}
-            className={`p-1 transition-colors hover:bg-claude-bg disabled:opacity-40 disabled:cursor-not-allowed ${
-              inspectorActive ? 'text-claude-accent' : 'text-claude-text-secondary'
-            }`}
-            style={{ borderRadius: 0 }}
-            title={inspectorActive ? 'Cancel inspector (click again)' : 'Inspect element'}
-          >
-            <Target size={14} />
-          </button>
-          <button
-            onClick={() => {
-              const { sendMessage } = useSessionStore.getState();
-              sendMessage(sessionId, 'continue');
-            }}
-            disabled={disabled}
-            className="p-1 transition-colors hover:bg-claude-bg disabled:opacity-40 disabled:cursor-not-allowed text-claude-text-secondary hover:text-claude-accent"
-            style={{ borderRadius: 0 }}
-            title="Continue with next turn"
-          >
-            <RefreshCw size={14} />
-          </button>
-          <button
-            onClick={() => {
-              if (remoteControl) {
-                useSessionStore.getState().stopRemoteControl(sessionId);
-              } else {
-                useSessionStore.getState().startRemoteControl(sessionId);
-              }
-            }}
-            disabled={disabled}
-            className={`p-1 transition-colors hover:bg-claude-bg disabled:opacity-40 disabled:cursor-not-allowed ${
-              remoteControl ? 'text-green-400' : 'text-claude-text-secondary hover:text-claude-accent'
-            }`}
-            style={{ borderRadius: 0 }}
-            title={remoteControl ? 'Remote control active — click to stop' : 'Control from phone'}
-          >
-            <Smartphone size={14} />
-          </button>
-          <button
-            onClick={async () => {
-              try {
-                // Send /compact to summarise and compress the conversation context
-                await window.electronAPI.claude.injectMessage(sessionId, '/compact');
-              } catch (err) {
-                console.error('[InputArea] Compact failed:', err);
-              }
-            }}
-            disabled={disabled || isSending}
-            className="p-1 transition-colors hover:bg-claude-bg text-claude-text-secondary hover:text-amber-400 disabled:opacity-40 disabled:cursor-not-allowed"
-            style={{ borderRadius: 0 }}
-            title="Summarize & compact context"
-          >
-            <Eraser size={14} />
-          </button>
-          {isSending && (
-            <button
-              onClick={handleStopStreaming}
-              className="p-1 transition-colors hover:bg-claude-bg text-red-400 hover:text-red-300 animate-pulse"
-              style={{ borderRadius: 0 }}
-              title="Stop (ESC ESC)"
-            >
-              <Square size={14} fill="currentColor" />
-            </button>
-          )}
-          <VoiceModeErrorBoundary>
-            <MicrophoneButton
-              ref={voiceModeRef}
-              sessionId={sessionId}
-              onInterimTranscript={(text) => {
-                // Stream real-time transcript into the input box
-                if (suppressSubmittedInputEcho(text, 'voice-interim-transcript')) return;
-                setMessage(text);
-              }}
-              onTranscriptionComplete={async (text) => {
-                console.log('[InputArea] onTranscriptionComplete called with:', text, 'voiceModeActive:', isVoiceModeActive);
-
-                // In voice mode (ElevenLabs), send directly without trigger word
-                // This enables the hybrid flow where transcripts go straight to Build
-                if (isVoiceModeActive && !disabled && !isSending && text.trim()) {
-                  console.log('[InputArea] Voice mode active - sending directly to Build');
-
-                  // Activate audio mode for auto-play TTS on response
-                  setAudioMode(sessionId, true);
-
-                  // Clear input and send
-                  rememberSubmittedInput(text.trim());
-                  setMessage('');
-
-                  // Build message with file context if there are attachments
-                  let messageToSend = text.trim();
-                  const fileMentions = attachments.filter((a) => a.type === 'mention');
-                  if (fileMentions.length > 0) {
-                    const fileContext = fileMentions.map((m) => `@${m.name}`).join(', ');
-                  messageToSend = `[Files: ${fileContext}]\n\n${messageToSend}`;
-                }
-
-                const otherAttachments = attachments.filter((a) => a.type !== 'mention');
-                setAttachments([]);
-
-                await sendMessage(sessionId, messageToSend, otherAttachments.length > 0 ? otherAttachments : undefined);
-                return;
-              }
-
-              // Not in voice mode - use trigger word detection
-              // Check if the transcription ends with the trigger word (configurable in settings)
-              const escapedTrigger = triggerWord.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-              const triggerPattern = new RegExp(`\\b${escapedTrigger}\\s*[.!?]?\\s*$`, 'i');
-
-              const hasTrigger = triggerPattern.test(text);
-              console.log('[InputArea] Trigger detection:', {
-                triggerWord,
-                escapedTrigger,
-                text,
-                hasTrigger,
-                disabled,
-                isSending,
-              });
-
-              if (hasTrigger && !disabled && !isSending) {
-                // Remove the trigger word from the message
-                const cleanedText = text
-                  .replace(triggerPattern, '')
-                  .trim();
-
-                if (!cleanedText) {
-                  setMessage('');
-                  return;
-                }
-
-                // Activate audio mode for auto-play TTS on response
-                setAudioMode(sessionId, true);
-
-                // Clear input and send
-                rememberSubmittedInput(cleanedText, text);
-                setMessage('');
-
-                // Build message with file context if there are attachments
-                let messageToSend = cleanedText;
-                const fileMentions = attachments.filter((a) => a.type === 'mention');
-                if (fileMentions.length > 0) {
-                  const fileContext = fileMentions.map((m) => `@${m.name}`).join(', ');
-                  messageToSend = `[Files: ${fileContext}]\n\n${messageToSend}`;
-                }
-
-                const otherAttachments = attachments.filter((a) => a.type !== 'mention');
-                setAttachments([]);
-
-                await sendMessage(sessionId, messageToSend, otherAttachments.length > 0 ? otherAttachments : undefined);
-              } else {
-                // No trigger word - keep the text in input for editing/review
-                // But still enable audio mode since user is using voice
-                setAudioMode(sessionId, true);
-                if (suppressSubmittedInputEcho(text, 'voice-final-transcript')) return;
-                setMessage(text);
-                textareaRef.current?.focus();
-              }
-            }}
-            disabled={disabled}
-          />
-          </VoiceModeErrorBoundary>
 
         {/* HTML render mode toggle */}
-        <div className="relative -order-3">
+        <div className="relative flex-none">
           <button
             onClick={() => cycleHtmlRenderMode(sessionId)}
             disabled={disabled}
@@ -2338,7 +2359,7 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
         </div>
 
         {/* Effort level selector */}
-        <div className="relative -order-2" ref={effortDropdownRef}>
+        <div className="relative flex-none" ref={effortDropdownRef}>
           <button
             onClick={() => setShowEffortDropdown(!showEffortDropdown)}
             disabled={disabled}
@@ -2384,18 +2405,17 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
         {/* Speed toggle */}
         <span
           onClick={() => { if (!disabled) toggleFastMode(); }}
-          className={`cursor-pointer hover:opacity-80 text-[10px] ${
+          className={`flex-none cursor-pointer hover:opacity-80 text-[10px] ${
             fastMode ? 'text-amber-400' : 'text-claude-text-secondary'
           }`}
-          style={{ order: -1 }}
         >
           {fastMode ? 'FAST' : 'STD'}
         </span>
-        <div className="relative -order-1" ref={modelDropdownRef}>
+        <div className="relative min-w-0" ref={modelDropdownRef}>
           <button
             onClick={() => setShowModelDropdown(!showModelDropdown)}
             disabled={disabled}
-            className="text-[10px] text-claude-text-secondary hover:text-claude-text transition-colors disabled:opacity-40 flex items-center gap-1.5"
+            className="flex min-w-0 max-w-full items-center gap-1.5 overflow-hidden text-[10px] text-claude-text-secondary hover:text-claude-text transition-colors disabled:opacity-40"
             title={modelButtonTitle}
           >
             {currentModel === 'auto' ? (
@@ -2406,12 +2426,23 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
                   resolvedHarness={actualActiveHarness || autoRouteDecision.resolvedHarness}
                   modelLabel={actualActiveModelInfo?.name || autoRouteModelInfo?.name}
                   compact={!isSending}
+                  planningGateAction={autoRouteDecision.planningGate?.action}
                 />
               ) : (
                 <span className="text-[10px] font-mono">
                   <span className="text-purple-400 font-bold">AUTO</span>
                 </span>
               )
+            ) : currentModel === PARABLE_MODE_ID ? (
+              <span
+                className="inline-flex min-w-0 max-w-[220px] items-center gap-1.5 rounded border border-amber-500/30 bg-amber-500/15 px-2 py-0.5 text-[10px] font-mono text-amber-400"
+                title={modelButtonTitle}
+              >
+                <span className="font-bold tracking-wider">PARABLE</span>
+                {isSending && actualActiveModelLabel && actualActiveModelLabel !== 'PARABLE' && (
+                  <span className="min-w-0 truncate opacity-70">{actualActiveModelLabel}</span>
+                )}
+              </span>
             ) : (
               <span className="font-mono">{isSending && actualActiveModelLabel ? actualActiveModelLabel : selectedModelLabel}</span>
             )}
@@ -2431,9 +2462,10 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
             };
 
             const autoModel = availableModels.find(m => m.id === 'auto');
+            const parableModel = availableModels.find(m => m.id === PARABLE_MODE_ID);
 
             for (const model of availableModels) {
-              if (model.id === 'auto') continue;
+              if (model.id === 'auto' || model.id === PARABLE_MODE_ID) continue;
               let group = 'claude';
               if (model.id.startsWith('codex:')) group = 'codex';
               else if (model.id.startsWith('cursor:')) group = 'cursor';
@@ -2446,7 +2478,9 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
 
             // Recently used: last 3
             const recentIds: string[] = JSON.parse(localStorage.getItem('grep-recent-models') || '[]').slice(0, 3);
-            const recentModels = recentIds.map(id => availableModels.find(m => m.id === id)).filter(Boolean) as typeof availableModels;
+            const recentModels = recentIds
+              .map(id => availableModels.find(m => m.id === id))
+              .filter((model): model is (typeof availableModels)[number] => Boolean(model) && model?.id !== 'auto' && model?.id !== PARABLE_MODE_ID);
 
             const selectModel = (modelId: string) => {
               setSelectedModel(sessionId, modelId);
@@ -2456,8 +2490,8 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
               localStorage.setItem('grep-recent-models', JSON.stringify(updated));
             };
 
-            // Current harness for highlight (auto mode doesn't highlight a specific harness)
-            let currentHarness = currentModel === 'auto' ? '' : 'claude';
+            // Workflow modes do not highlight a concrete executor harness.
+            let currentHarness = currentModel === 'auto' || currentModel === PARABLE_MODE_ID ? '' : 'claude';
             if (currentModel.startsWith('codex:')) currentHarness = 'codex';
             else if (currentModel.startsWith('cursor:')) currentHarness = 'cursor';
             else if (currentModel.startsWith('gemini:')) currentHarness = 'gemini';
@@ -2485,9 +2519,23 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
                           Auto Build
                         </span>
                       </button>
-                      <div className="border-b border-claude-border/30 my-0.5" />
                     </>
                   )}
+                  {/* Parable mode — Claude Code is the meta-harness */}
+                  {parableModel && (
+                    <button
+                      onClick={() => selectModel(PARABLE_MODE_ID)}
+                      className={`w-full text-left px-3 py-1.5 flex items-center gap-2 transition-colors ${
+                        currentModel === PARABLE_MODE_ID ? 'bg-amber-500/10 text-amber-400' : 'text-claude-text-secondary hover:bg-amber-500/5 hover:text-amber-300'
+                      }`}
+                    >
+                      <span className="font-mono text-xs font-bold">
+                        {currentModel === PARABLE_MODE_ID && <span className="text-amber-400 mr-1">●</span>}
+                        Parable
+                      </span>
+                    </button>
+                  )}
+                  {(autoModel || parableModel) && <div className="border-b border-claude-border/30 my-0.5" />}
                   {/* Recently used quick-picks */}
                   {recentModels.length > 0 && (
                     <>
@@ -2560,22 +2608,9 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
             );
           })()}
         </div>
-        {hasActiveBackgroundWork && (
-          <div
-            className="flex items-center gap-1 text-[10px] text-amber-400 flex-shrink-0"
-            style={{ order: -1 }}
-            aria-label="Active background work"
-            title={`${activeWorkSummary.label} RUNNING\n${activeWorkSummary.title}`}
-          >
-            <Activity size={10} className="animate-pulse" />
-            <span className="font-bold uppercase whitespace-nowrap" style={{ letterSpacing: '0.05em' }}>
-              {activeWorkSummary.label} RUNNING
-            </span>
-          </div>
-        )}
         {/* Context usage indicator — pushed to far right */}
         {contextUsage && (
-          <div className="flex items-center gap-1.5" style={{ order: -1 }} title={`${contextUsage.inputTokens.toLocaleString()} / ${contextUsage.contextWindowSize.toLocaleString()} tokens (${contextUsage.percentage}%)`}>
+          <div className="flex flex-none items-center gap-1.5" title={`${contextUsage.inputTokens.toLocaleString()} / ${contextUsage.contextWindowSize.toLocaleString()} tokens (${contextUsage.percentage}%)`}>
             <div className="w-16 h-1.5 bg-claude-border overflow-hidden" style={{ borderRadius: 0 }}>
               <div
                 className={`h-full transition-all ${
@@ -2595,6 +2630,107 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
             </span>
           </div>
         )}
+
+          </div>
+
+          {/* Secondary actions collapse into an overflow menu as the pane narrows. */}
+          <div className="ml-auto flex flex-none items-center gap-2">
+            {visibleToolbarActions.map((action) => (
+              <button
+                key={action.id}
+                onClick={action.onSelect}
+                disabled={action.disabled}
+                data-testid={action.id === 'cascade' ? 'cascade-mode-toggle' : undefined}
+                aria-pressed={action.active || undefined}
+                className={`flex h-6 w-6 flex-none items-center justify-center transition-colors hover:bg-claude-bg hover:text-claude-accent disabled:cursor-not-allowed disabled:opacity-40 ${
+                  action.active
+                    ? action.activeClassName || 'text-claude-accent bg-white/5'
+                    : 'text-claude-text-secondary'
+                }`}
+                style={{ borderRadius: 0 }}
+                title={action.title}
+              >
+                {action.icon}
+              </button>
+            ))}
+
+            {overflowToolbarActions.length > 0 && (
+              <div ref={toolbarOverflowRef} className="relative flex h-6 w-6 flex-none items-center justify-center">
+                <button
+                  onClick={() => setShowToolbarOverflow((current) => !current)}
+                  data-testid="toolbar-overflow-toggle"
+                  aria-expanded={showToolbarOverflow}
+                  aria-haspopup="menu"
+                  className={`flex h-6 w-6 items-center justify-center transition-colors hover:bg-claude-bg hover:text-claude-accent ${
+                    showToolbarOverflow ? 'bg-white/5 text-claude-text' : 'text-claude-text-secondary'
+                  }`}
+                  style={{ borderRadius: 0 }}
+                  title="More toolbar actions"
+                >
+                  <MoreHorizontal size={15} />
+                </button>
+
+                {showToolbarOverflow && (
+                  <div
+                    role="menu"
+                    className="absolute bottom-full right-0 z-50 mb-1 min-w-48 border border-claude-border bg-claude-surface py-1 shadow-xl"
+                  >
+                    {overflowToolbarActions.map((action) => (
+                      <button
+                        key={action.id}
+                        role="menuitem"
+                        onClick={() => {
+                          setShowToolbarOverflow(false);
+                          action.onSelect();
+                        }}
+                        disabled={action.disabled}
+                        data-testid={action.id === 'cascade' ? 'cascade-mode-toggle' : undefined}
+                        className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] transition-colors hover:bg-claude-bg disabled:cursor-not-allowed disabled:opacity-40 ${
+                          action.active ? action.activeClassName || 'text-claude-accent' : 'text-claude-text'
+                        }`}
+                      >
+                        <span className="flex h-4 w-4 flex-none items-center justify-center">{action.icon}</span>
+                        <span>{action.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Stop and microphone never enter overflow. */}
+          <div ref={toolbarPinnedRef} data-testid="toolbar-pinned-controls" className="flex flex-none items-center gap-2">
+            {isSending && (
+              <button
+                onClick={handleStopStreaming}
+                className="flex h-6 w-6 flex-none items-center justify-center text-red-400 transition-colors hover:bg-claude-bg hover:text-red-300 animate-pulse"
+                style={{ borderRadius: 0 }}
+                title="Stop (ESC ESC)"
+              >
+                <Square size={14} fill="currentColor" />
+              </button>
+            )}
+            <VoiceModeErrorBoundary>
+              <MicrophoneButton
+                ref={voiceModeRef}
+                sessionId={sessionId}
+                onInterimTranscript={(text) => {
+                  if (suppressSubmittedInputEcho(text, 'voice-interim-transcript')) return;
+                  setMessage(text);
+                }}
+                onTranscriptionComplete={handleVoiceTranscriptionComplete}
+                disabled={disabled}
+              />
+            </VoiceModeErrorBoundary>
+          </div>
+
+          {showGStack && (
+            <GStackLauncher
+              sessionId={sessionId}
+              onClose={() => setShowGStack(false)}
+            />
+          )}
         </div>
       </div>
       </div>

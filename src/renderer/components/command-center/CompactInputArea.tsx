@@ -206,25 +206,10 @@ export default function CompactInputArea({ sessionId, disabled, isStreaming }: C
   }, []);
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const handleCommandSelect = useCallback(async (item: any) => {
-    const currentSession = useSessionStore.getState().sessions.find(s => s.id === sessionId);
-    const projectPath = currentSession?.worktreePath;
+  const handleCommandSelect = useCallback((item: any) => {
     const itemType = item.itemType || commandType;
 
-    if (itemType === 'command') {
-      try {
-        const content = await window.electronAPI.extensions.getCommand(item.name, projectPath);
-        if (content) {
-          const lines = content.split('\n');
-          const cleanContent = lines.filter((l: string) => !l.trim().startsWith('<!--')).join('\n').trim();
-          const beforeCommand = input.slice(0, commandStartIndex);
-          const afterCommand = input.slice(commandStartIndex + item.name.length + 1);
-          setInput(beforeCommand + cleanContent + (afterCommand ? ' ' + afterCommand : ''));
-        }
-      } catch (err) {
-        console.error('[CompactInputArea] Error loading command:', err);
-      }
-    } else if (itemType === 'skill') {
+    if (itemType === 'command' || itemType === 'skill') {
       const before = input.slice(0, commandStartIndex);
       setInput(before + `/${item.name}`);
     } else if (itemType === 'agent') {
@@ -236,7 +221,7 @@ export default function CompactInputArea({ sessionId, disabled, isStreaming }: C
     setCommandQuery('');
     setCommandStartIndex(-1);
     textareaRef.current?.focus();
-  }, [input, commandStartIndex, commandType, sessionId]);
+  }, [input, commandStartIndex, commandType]);
 
   return (
     <div ref={containerRef} className="border-t border-claude-border px-2 py-1.5 bg-claude-surface/50 relative">

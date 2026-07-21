@@ -1,6 +1,7 @@
 import assert from 'assert';
 import fs from 'fs';
 import path from 'path';
+import { messageQueueService } from '../src/main/services/message-queue.service';
 
 const root = path.resolve(__dirname, '..');
 const queueService = fs.readFileSync(path.join(root, 'src/main/services/message-queue.service.ts'), 'utf8');
@@ -18,7 +19,7 @@ assert.match(
 
 assert.match(queueService, /private drainDeferredSince = new Map<string, number>\(\);/);
 assert.match(queueService, /opts\?\.deferDrain/);
-assert.match(queueService, /this\.processing\.set\(sessionId, true\);[\s\S]*?this\.scheduleDrain\(sessionId, 250\);/);
+assert.match(queueService, /opts\?\.deferDrain[\s\S]*?this\.processing\.set\(sessionId, false\);[\s\S]*?this\.scheduleDrain\(sessionId, 250\);/);
 
 const clearMethod = queueService.match(/clear\(sessionId: string\): void \{[\s\S]*?\n {2}\}/)?.[0] || '';
 assert.match(clearMethod, /this\.drainDeferredSince\.delete\(sessionId\)/);
@@ -88,14 +89,16 @@ assert.match(clearRemoteActiveDrainAllowanceMethod, /this\.remoteActiveDrainAllo
 
 const scheduleDrainMethod = queueService.match(/private scheduleDrain\(sessionId: string, delayMs: number\): void \{[\s\S]*?\n {2}\}/)?.[0] || '';
 assert.match(scheduleDrainMethod, /if \(!this\.hasMessages\(sessionId\)\) return/);
-assert.match(scheduleDrainMethod, /const isStreaming = this\.streaming\.get\(sessionId\) \|\| false/);
-assert.match(scheduleDrainMethod, /const canDrainActiveStream = isStreaming && this\.supportsActiveInjection\(sessionId\)/);
-assert.match(scheduleDrainMethod, /if \(\(!isStreaming \|\| canDrainActiveStream\) && this\.hasMessages\(sessionId\)\) \{/);
+assert.match(scheduleDrainMethod, /if \(!this\.hasMessages\(sessionId\) \|\| this\.fastStackPhase\.has\(sessionId\)\) return/);
+assert.match(scheduleDrainMethod, /if \(this\.processing\.get\(sessionId\)\) \{[\s\S]*?this\.scheduleDrain\(sessionId, 250\)/);
 assert.match(scheduleDrainMethod, /this\.emit\('drain-ready', sessionId\)/);
 
 const enqueueMethod = queueService.match(/enqueue\(sessionId: string, text: string, attachments\?: unknown\[\], opts\?: \{[\s\S]*?\n {2}\}/)?.[0] || '';
-assert.match(enqueueMethod, /const canDrainActiveStream = isStreaming && this\.supportsActiveInjection\(sessionId\)/);
-assert.match(enqueueMethod, /if \(\(!isStreaming \|\| canDrainActiveStream\) && !this\.processing\.get\(sessionId\)\) \{/);
+assert.match(enqueueMethod, /this\.scheduleDrain\(sessionId, 0\)/);
+
+const markRuntimeIdleMethod = queueService.match(/markRuntimeIdle\(sessionId: string, opts\?: \{ scheduleDrain\?: boolean \}\): void \{[\s\S]*?\n {2}\}/)?.[0] || '';
+assert.match(markRuntimeIdleMethod, /this\.streaming\.set\(sessionId, false\)/);
+assert.match(markRuntimeIdleMethod, /this\.processing\.set\(sessionId, false\)/);
 
 assert.match(claudeService, /private activeQueryStartedAt: Map<string, number> = new Map\(\);/);
 assert.match(claudeService, /private activeQueryLastEventAt: Map<string, number> = new Map\(\);/);
@@ -106,12 +109,22 @@ assert.doesNotMatch(
 );
 assert.doesNotMatch(claudeService, /activeQueryInputStreams/);
 assert.match(claudeService, /const prompt = hasImages \? createPromptWithImages\(\) : fullTextMessage;/);
-assert.match(claudeService, /Injecting queued message via Query\.streamInput/);
+assert.match(claudeService, /recovered SSH stdin.*Query\.streamInput/);
 assert.match(
   claudeService,
   /queued user follow-ups should still be able to enter Claude Code via[\s\S]*?Query\.streamInput/,
   'Claude Code must keep the SDK Query object available for queued follow-ups while background task events keep the iterator alive',
 );
+assert.match(claudeService, /const inputWrittenPromise = new Promise<void>/);
+assert.match(claudeService, /markInputWritten\(\);/);
+assert.match(claudeService, /const streamInputPromise = queryObj!\.streamInput\(createMessageStream\(\)\)/);
+assert.match(claudeService, /Promise\.race\(\[[\s\S]*?inputWrittenPromise\.then\(\(\) => 'written'/);
+assert.doesNotMatch(
+  claudeService,
+  /await queryObj!\.streamInput\(createMessageStream\(\)\)/,
+  'queue acknowledgement must not await the SDK waitForFirstResult lifecycle after transport.write accepted the message',
+);
+assert.match(claudeService, /Message accepted by Query\.streamInput transport/);
 
 const setActiveQueryMethod = claudeService.match(/private setActiveQuery\(sessionId: string, abortController: AbortController\): void \{[\s\S]*?\n {2}\}/)?.[0] || '';
 assert.match(setActiveQueryMethod, /const now = Date\.now\(\)/);
@@ -136,7 +149,7 @@ assert.match(getActiveQueryStateMethod, /ageMs: number/);
 assert.match(getActiveQueryStateMethod, /idleMs: number/);
 assert.match(getActiveQueryStateMethod, /if \(controller\.signal\.aborted\) \{/);
 assert.match(getActiveQueryStateMethod, /this\.clearActiveQuery\(sessionId, controller\)/);
-assert.match(getActiveQueryStateMethod, /injectable: this\.activeQueryObjects\.has\(sessionId\)/);
+assert.match(getActiveQueryStateMethod, /this\.recoveredQueryInputs\.has\(sessionId\)/);
 
 const queryCompleteBranch = claudeService.slice(
   claudeService.indexOf('if (queryComplete) {'),
@@ -361,4 +374,36 @@ assert.match(sessionStore, /isStreaming: \{ \.\.\.state\.isStreaming, \[sessionI
 assert.match(sessionStore, /deferDrain: true/);
 assert.match(sessionStore, /queued message after optimistic send/);
 
-console.log('queue stale active-query verifier passed');
+async function verifyDeferredQueueLiveness(): Promise<void> {
+  const sessionId = `verify-deferred-queue-${Date.now()}`;
+  try {
+    messageQueueService.onStreamStart(sessionId, 'claude');
+    const drainReady = new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('deferred queue never requested authoritative reconciliation')), 1_500);
+      const onDrain = (candidateSessionId: string) => {
+        if (candidateSessionId !== sessionId) return;
+        clearTimeout(timeout);
+        messageQueueService.off('drain-ready', onDrain);
+        resolve();
+      };
+      messageQueueService.on('drain-ready', onDrain);
+    });
+
+    messageQueueService.enqueue(sessionId, 'queued during a stale remote probe', undefined, { deferDrain: true });
+    assert.strictEqual(
+      messageQueueService.getState(sessionId).isProcessing,
+      false,
+      'deferred remote probing must not masquerade as an in-flight drain',
+    );
+    await drainReady;
+  } finally {
+    messageQueueService.cleanup(sessionId);
+  }
+}
+
+void verifyDeferredQueueLiveness().then(() => {
+  console.log('queue stale active-query verifier passed');
+}).catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});

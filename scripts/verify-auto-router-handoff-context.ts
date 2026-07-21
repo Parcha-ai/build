@@ -33,7 +33,7 @@ assert.match(autoRouterService, /transcript file references let the next harness
 assert.match(autoRouterService, /plan-to-execution handoffs should point at the plan file path when available/);
 assert.match(autoRouterService, /approvedPlanContinuation\?: boolean/);
 assert.match(autoRouterService, /continuationHarness\?: Harness/);
-assert.match(autoRouterService, /Continuing approved plan in/);
+assert.match(autoRouterService, /approval is a hard/);
 assert.match(autoRouterService, /userRequestedDifferentHarness/);
 assert.match(autoRouterService, /shouldPreferContinuationHarness/);
 assert.match(autoRouterService, /isApprovedPlanExecutionFollowup/);
@@ -44,11 +44,13 @@ assert.match(autoRouterService, /avoidBulkContextOnHandoff: true/);
 assert.match(autoRouterService, /maxHandoffConversationChars: 24000/);
 
 assert.match(codexContext, /handoffReferences\?: string\[\]/);
+assert.match(codexContext, /continuityContext\?: string/);
 assert.match(codexContext, /<handoff_references>/);
 assert.match(codexContext, /Context transfer between coding agents is expensive/);
 assert.match(codexContext, /focused search\/read operations over asking for broad copied/);
 
-assert.match(claudeService, /sessionApprovedPlanFiles: Map<string, \{ content: string; filePath: string \}>/);
+assert.match(claudeService, /sessionApprovedPlanFiles: Map<string, ApprovedPlanArtifact>/);
+assert.match(claudeService, /pendingAutoPlanExecutionHandoffs: Map<string, PendingAutoPlanExecutionHandoff>/);
 assert.match(claudeService, /planApprovalRecords: Map<string, PlanApprovalRecord>/);
 assert.match(claudeService, /lastAssistantModel/);
 assert.match(claudeService, /resolveLastAssistantRoute/);
@@ -60,6 +62,12 @@ assert.match(claudeService, /interface PlanApprovalRecord/);
 assert.match(claudeService, /Late plan approval recorded for next harness handoff/);
 assert.match(claudeService, /rememberApprovedPlan/);
 assert.match(claudeService, /applyPlanApprovalExecutionMode/);
+assert.match(claudeService, /scheduleAutoPlanExecutionHandoff/);
+assert.match(claudeService, /query\.interrupt\(\)/);
+assert.match(claudeService, /Planning harness stopped .* re-entering Auto Build for execution/);
+assert.match(claudeService, /'Execute the approved plan now\.'/);
+assert.match(claudeService, /markApprovedPlanExecutionCompleted/);
+assert.match(claudeService, /interrupted recovered planning harness for Auto execution handoff/);
 assert.match(claudeService, /<approved_plan_handoff>/);
 assert.match(claudeService, /The user approved this plan for execution/);
 assert.match(claudeService, /Plan file path: \$\{planFile\.filePath\}/);
@@ -67,7 +75,8 @@ assert.match(claudeService, /planContent, planFilePath, pending \? 'live' : 'lat
 assert.match(claudeService, /Claude transcript file on remote: ~\/\.claude\/projects\/\$\{escapedPath\}\/\$\{sdkSessionId\}\.jsonl/);
 assert.match(claudeService, /Fallback transcript search on remote: ~\/\.claude\/projects\/\*\/\$\{sdkSessionId\}\.jsonl/);
 assert.match(claudeService, /Claude transcript file search: ~\/\.claude\/projects\/\*\/\$\{sdkSessionId\}\.jsonl/);
-assert.match(claudeService, /Math\.min\(contextLimits\?\.maxConversationChars \?\? 24000, 24000\)/);
+assert.match(claudeService, /const maxConversationChars = contextLimits\?\.maxConversationChars/);
+assert.match(claudeService, /continuityContext: pinnedBuildContinuityContext/);
 assert.match(claudeService, /Use any transcript file reference or plan file path in the handoff context/);
 assert.match(claudeService, /leadContextLimit = stage\.trigger === 'after-plan' \? 12000 : 24000/);
 assert.doesNotMatch(
@@ -201,8 +210,8 @@ async function runRoutingPolicyAssertion(): Promise<void> {
     assert.match(decision.orchestration?.handoffPrompt || '', /Context switches are expensive/);
     assert.match(decision.orchestration?.handoffPrompt || '', /transcript file references/);
 
-    const stickyDecision = await autoRouterService.classifyAndRoute(
-      'handoff-context-approved-plan-sticky',
+    const executionDecision = await autoRouterService.classifyAndRoute(
+      'handoff-context-approved-plan-switches',
       'OK go do it',
       {
         isSSH: true,
@@ -220,10 +229,10 @@ async function runRoutingPolicyAssertion(): Promise<void> {
       },
     );
 
-    assert.equal(stickyDecision.tier, 'build');
-    assert.equal(stickyDecision.resolvedHarness, 'claude');
-    assert.equal(stickyDecision.resolvedModel, 'claude-opus-4-8');
-    assert.match(stickyDecision.reason, /Continuing approved plan in claude/);
+    assert.equal(executionDecision.tier, 'build');
+    assert.equal(executionDecision.resolvedHarness, 'codex');
+    assert.equal(executionDecision.resolvedModel, 'codex:gpt-5.5');
+    assert.doesNotMatch(executionDecision.reason, /claude-opus-4-8/);
 
     const explicitSwitchDecision = await autoRouterService.classifyAndRoute(
       'handoff-context-approved-plan-explicit-switch',

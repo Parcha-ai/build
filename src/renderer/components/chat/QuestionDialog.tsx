@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { HelpCircle, Check, X } from 'lucide-react';
 import type { Question, QuestionRequest } from '../../../shared/types';
 
@@ -9,19 +9,25 @@ interface QuestionDialogProps {
 }
 
 export default function QuestionDialog({ request, onAnswer, onCancel }: QuestionDialogProps) {
-  // Track selected answers for each question
-  const [answers, setAnswers] = useState<Record<string, Set<string>>>(() => {
+  const createInitialAnswers = () => {
     const initial: Record<string, Set<string>> = {};
-    request.questions.forEach((q) => {
-      initial[q.question] = new Set();
+    request.questions.forEach((question) => {
+      initial[question.question] = new Set();
     });
     return initial;
-  });
+  };
+
+  // Track selected answers for each question
+  const [answers, setAnswers] = useState<Record<string, Set<string>>>(createInitialAnswers);
+
+  useEffect(() => {
+    setAnswers(createInitialAnswers());
+  }, [request.requestId]);
 
   const handleOptionClick = (question: Question, optionLabel: string) => {
     setAnswers((prev) => {
       const newAnswers = { ...prev };
-      const questionAnswers = new Set(prev[question.question]);
+      const questionAnswers = new Set(prev[question.question] || []);
 
       if (question.multiSelect) {
         // Toggle selection for multi-select
@@ -45,17 +51,17 @@ export default function QuestionDialog({ request, onAnswer, onCancel }: Question
     // Convert Set to comma-separated strings for multi-select
     const formattedAnswers: Record<string, string> = {};
     request.questions.forEach((q) => {
-      const selected = Array.from(answers[q.question]);
+      const selected = Array.from(answers[q.question] || []);
       formattedAnswers[q.question] = selected.join(', ');
     });
     onAnswer(formattedAnswers);
   };
 
   // Check if all questions have at least one answer
-  const allAnswered = request.questions.every((q) => answers[q.question].size > 0);
+  const allAnswered = request.questions.every((q) => (answers[q.question]?.size || 0) > 0);
 
   return (
-    <div className="border-2 border-blue-500 bg-blue-500/10 p-4 font-mono">
+    <div className="border-2 border-blue-500 bg-blue-500/10 p-4 font-mono max-h-[60vh] overflow-y-auto overscroll-contain">
       {/* Header */}
       <div className="flex items-center gap-2 mb-4">
         <HelpCircle size={20} className="text-blue-500" />
@@ -86,7 +92,7 @@ export default function QuestionDialog({ request, onAnswer, onCancel }: Question
             {/* Options */}
             <div className="space-y-2 ml-2">
               {question.options.map((option, oIndex) => {
-                const isSelected = answers[question.question].has(option.label);
+                const isSelected = answers[question.question]?.has(option.label) || false;
 
                 return (
                   <button

@@ -1,5 +1,5 @@
 import React, { useState, useCallback } from 'react';
-import { X, Zap, ArrowUp, Pencil, Check } from 'lucide-react';
+import { X, Layers, ArrowUp, Pencil, Check } from 'lucide-react';
 import { useSessionStore } from '../../stores/session.store';
 
 const EMPTY_QUEUE: never[] = [];
@@ -10,22 +10,25 @@ interface MessageQueuePanelProps {
 
 export const MessageQueuePanel: React.FC<MessageQueuePanelProps> = ({ sessionId }) => {
   const queue = useSessionStore(useCallback((s) => s.messageQueue[sessionId] || EMPTY_QUEUE, [sessionId]));
-  const isProcessingQueue = useSessionStore(useCallback((s) => s.isProcessingQueue[sessionId] || false, [sessionId]));
   const isStreaming = useSessionStore(useCallback((s) => s.isStreaming[sessionId] || false, [sessionId]));
+  const activeStreamModel = useSessionStore(useCallback((s) => s.activeStreamModel[sessionId], [sessionId]));
   const removeFromQueue = useSessionStore((s) => s.removeFromQueue);
   const editQueuedMessage = useSessionStore((s) => s.editQueuedMessage);
   const moveToFront = useSessionStore((s) => s.moveToFront);
   const clearQueue = useSessionStore((s) => s.clearQueue);
-  const interruptAndSend = useSessionStore((s) => s.interruptAndSend);
+  const fastStack = useSessionStore((s) => s.fastStack);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editText, setEditText] = useState('');
 
-  // Hide the panel when the queue is being actively drained (injected) into a
-  // live stream. The message has already been sent to Claude via streamInput;
-  // keeping it visible misleads the user into thinking it's still waiting.
-  if (queue.length === 0 || (isProcessingQueue && isStreaming)) {
+  // Keep an in-flight steer visible until the harness acknowledges it. Main
+  // removes the row atomically after Query.streamInput or turn/steer succeeds.
+  if (queue.length === 0) {
     return null;
   }
+
+  const queueWillSteer = isStreaming && Boolean(
+    activeStreamModel?.startsWith('codex:') || activeStreamModel?.startsWith('claude'),
+  );
 
   const handleSaveEdit = (id: string) => {
     if (editText.trim()) {
@@ -35,8 +38,8 @@ export const MessageQueuePanel: React.FC<MessageQueuePanelProps> = ({ sessionId 
     setEditText('');
   };
 
-  const handleInterrupt = (message: string, attachments?: unknown[]) => {
-    interruptAndSend(sessionId, message, attachments);
+  const handleFastStack = (id: string, message: string, attachments?: unknown[], suppressUserMessage?: boolean) => {
+    void fastStack(sessionId, message, attachments, id, suppressUserMessage);
   };
 
   return (
@@ -44,7 +47,7 @@ export const MessageQueuePanel: React.FC<MessageQueuePanelProps> = ({ sessionId 
       {/* Compact header */}
       <div className="flex items-center justify-between px-3 py-1 border-b border-claude-border/50">
         <span className="text-claude-text-secondary uppercase" style={{ letterSpacing: '0.05em' }}>
-          Queue ({queue.length})
+          {queueWillSteer ? 'Steering' : 'Queue'} ({queue.length})
         </span>
         {queue.length > 1 && (
           <button
@@ -126,11 +129,12 @@ export const MessageQueuePanel: React.FC<MessageQueuePanelProps> = ({ sessionId 
                     </button>
                   )}
                   <button
-                    onClick={() => handleInterrupt(item.message, item.attachments)}
-                    className="p-0.5 text-claude-text-secondary hover:text-amber-400"
-                    title="Send now"
+                    onClick={() => handleFastStack(item.id, item.message, item.attachments, item.suppressUserMessage)}
+                    className="inline-flex items-center gap-0.5 px-1 py-0.5 text-[9px] uppercase tracking-wide text-claude-text-secondary hover:text-amber-400"
+                    title="Fast Stack — fork now and run in this chat (⌘⇧↵)"
                   >
-                    <Zap size={11} />
+                    <Layers size={11} />
+                    <span>Stack</span>
                   </button>
                   <button
                     onClick={() => removeFromQueue(sessionId, item.id)}

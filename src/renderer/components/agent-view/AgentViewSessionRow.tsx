@@ -3,6 +3,7 @@ import type { Session } from '../../../shared/types';
 import type { SessionPriority } from '../../utils/sessionPriority';
 import { PRIORITY_CONFIG } from '../../utils/sessionPriority';
 import { getSessionDisplayName } from '../../utils/session-display';
+import PullRequestStatusIcon from '../git/PullRequestStatusIcon';
 
 interface AgentViewSessionRowProps {
   session: Session;
@@ -64,6 +65,12 @@ export default function AgentViewSessionRow({
             {session.branch}
           </span>
         )}
+        <PullRequestStatusIcon
+          sessionId={session.id}
+          branch={session.branch}
+          size={10}
+          interactive={false}
+        />
         <div className="flex-1" />
         {contextPercentage !== undefined && contextPercentage > 0 && (
           <div className="flex items-center gap-1">

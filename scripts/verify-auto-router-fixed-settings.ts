@@ -5,6 +5,9 @@ import path from 'path';
 
 const settings = {
   autoRouterConfig: {
+    // This verifier exercises fixed tier/model precedence independently from
+    // the default-on pre-build specification gate.
+    prePlanEnabled: false,
     categories: [
       { id: 'plan', label: 'Legacy Planning', model: 'claude-haiku-4-5-20251001' },
       {

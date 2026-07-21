@@ -71,6 +71,11 @@ export function registerSessionHandlers(ipcMain: IpcMain): void {
     return sessionService.createForkFromInput(parentSessionId, forkPoint, initialMessage);
   });
 
+  ipcMain.handle(IPC_CHANNELS.SESSION_FAST_STACK_FORK, async (_, sessionId: string) => {
+    claudeService.prepareFastStack(sessionId);
+    return sessionService.fastStackForkInPlace(sessionId);
+  });
+
   ipcMain.handle(IPC_CHANNELS.SESSION_GET_FORK_GROUP, async (_, sessionId: string) => {
     const allSessions = await sessionService.listSessions();
     const currentSession = allSessions.find(s => s.id === sessionId);
