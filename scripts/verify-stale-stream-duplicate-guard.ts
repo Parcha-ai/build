@@ -93,8 +93,13 @@ assert.match(
 );
 assert.match(
   claudeIpc,
-  /lost its injectable Query object while remote process is still active[\s\S]*?clearLocalActiveQueryForRemoteReattach\(sessionId\)[\s\S]*?CLAUDE_REMOTE_TURN_RECOVERABLE/,
-  'main queue must recover stale non-injectable SSH turns instead of deferring forever',
+  /lost its injectable Query object while remote process is still active[\s\S]*?preserving the remote turn, requesting reattach[\s\S]*?CLAUDE_REMOTE_TURN_RECOVERABLE/,
+  'main queue must request reattach without aborting a surviving non-injectable SSH turn',
+);
+assert.doesNotMatch(
+  claudeIpc,
+  /clearLocalActiveQueryForRemoteReattach/,
+  'queue recovery must not clear a live wrapper by aborting its remote process',
 );
 assert.match(
   installedVerifier,
@@ -201,6 +206,21 @@ assert.match(
   claudeIpc,
   /MAX_TRANSCRIPT_TOOL_PAYLOAD_CHARS = 50_000/,
   'live snapshot transcript writes must cap hidden tool payloads too',
+);
+assert.match(
+  transcriptService,
+  /canonicalId: string/,
+  'transcript upserts must return the canonical id selected during duplicate collapse',
+);
+assert.match(
+  claudeIpc,
+  /id = writeAssistantToTranscript\(sessionId, snapshotMessage/,
+  'snapshot writers must adopt the canonical transcript id after the first write',
+);
+assert.match(
+  claudeIpc,
+  /if \(signature === lastWrittenSignature\) return;/,
+  'forced recovery events must not rewrite an unchanged transcript snapshot',
 );
 
 console.log('stale stream duplicate guard verifier passed');

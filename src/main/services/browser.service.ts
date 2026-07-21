@@ -53,6 +53,9 @@ export class BrowserService {
   private sessionWebContents = new Map<string, number[]>();
   // Reverse map: webContentsId to sessionId (for routing debugger events)
   private webContentsToSession = new Map<number, string>();
+  // Renderer-authoritative persistent partition for each browser tab. Fork
+  // siblings register the same root-session partition so auth state is shared.
+  private sessionPartitions = new Map<string, string>();
   // Track attached debuggers
   private attachedDebuggers = new Set<number>();
   // Track which webContents have debugger event listeners attached
@@ -81,7 +84,7 @@ export class BrowserService {
     });
 
     // Listen for webview registration from renderer
-    ipcMain.on('browser:register-webview', (_event, data: { sessionId: string; webContentsId: number }) => {
+    ipcMain.on('browser:register-webview', (_event, data: { sessionId: string; webContentsId: number; partitionName?: string }) => {
       console.log('[Browser Service] === WEBVIEW REGISTRATION ===');
       console.log('[Browser Service] Session ID:', data.sessionId);
       console.log('[Browser Service] webContentsId:', data.webContentsId);
@@ -92,6 +95,7 @@ export class BrowserService {
         console.log('[Browser Service] webContents verified - URL:', wc.getURL?.() || 'unknown');
 
         const hadSessionBrowser = this.hasSessionWebContents(data.sessionId);
+        this.sessionPartitions.set(data.sessionId, data.partitionName || `persist:browser-${data.sessionId}`);
         this.rememberWebview(data.sessionId, data.webContentsId, wc);
         console.log('[Browser Service] Registration successful. Total registered sessions:', this.getRegisteredSessions().length);
         console.log('[Browser Service] Active sessions with browsers:', this.getRegisteredSessions());
@@ -122,6 +126,10 @@ export class BrowserService {
       this.forgetWebview(data.sessionId, data.webContentsId);
       console.log('[Browser Service] Remaining sessions with browsers:', this.getRegisteredSessions());
     });
+  }
+
+  getPartitionName(sessionId: string): string {
+    return this.sessionPartitions.get(sessionId) || `persist:browser-${sessionId}`;
   }
 
   private pruneSessionWebContents(sessionId: string): number[] {
@@ -1116,6 +1124,7 @@ export class BrowserService {
     this.consoleLogs.delete(sessionId);
     this.networkRequests.delete(sessionId);
     this.enabledDomains.delete(sessionId);
+    this.sessionPartitions.delete(sessionId);
 
     this.forgetWebview(sessionId);
   }

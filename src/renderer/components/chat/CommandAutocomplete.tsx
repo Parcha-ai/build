@@ -1,6 +1,7 @@
 import React, { useState, useImperativeHandle, forwardRef, useEffect } from 'react';
 import type { Command, Skill, AgentDefinition } from '../../../shared/types';
 import { Terminal, Sparkles, Bot } from 'lucide-react';
+import { rankAutocompleteItems } from '../../utils/autocomplete-ranking';
 
 export interface CommandAutocompleteHandle {
   /** Select the currently highlighted item */
@@ -39,22 +40,20 @@ const CommandAutocomplete = forwardRef<CommandAutocompleteHandle, CommandAutocom
 
     if (type === 'command') {
       const matchedCommands = commands
-        .filter(cmd => cmd.name.toLowerCase().includes(lowerQuery))
         .map(cmd => ({ ...cmd, itemType: 'command' as const }));
 
       const matchedSkills = skills
-        .filter(skill => skill.name.toLowerCase().includes(lowerQuery))
         .map(skill => ({ ...skill, itemType: 'skill' as const }));
 
-      return [...matchedCommands, ...matchedSkills].slice(0, 10);
+      // Rank the combined list so an exact `/pr` beats `/pr-comments`, even
+      // when the prefix command was discovered first.
+      return rankAutocompleteItems([...matchedCommands, ...matchedSkills], lowerQuery).slice(0, 10);
     } else if (type === 'skill') {
-      return skills
-        .filter(skill => skill.name.toLowerCase().includes(lowerQuery))
+      return rankAutocompleteItems(skills, lowerQuery)
         .map(skill => ({ ...skill, itemType: 'skill' as const }))
         .slice(0, 10);
     } else {
-      return agents
-        .filter(agent => agent.name.toLowerCase().includes(lowerQuery))
+      return rankAutocompleteItems(agents, lowerQuery)
         .map(agent => ({ ...agent, itemType: 'agent' as const }))
         .slice(0, 10);
     }

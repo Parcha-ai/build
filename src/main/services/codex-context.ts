@@ -29,6 +29,7 @@ interface UnifiedHarnessContextOptions {
   projectPath?: string;
   additionalProjectContext?: string;
   orchestrationContext?: string;
+  continuityContext?: string;
   handoffReferences?: string[];
   memoriesContext?: string;
   includeProjectContext?: boolean;
@@ -619,22 +620,10 @@ ${options.orchestrationContext.trim()}
     blocks.push(handoffReferenceContext);
   }
 
-  const conversationContext = buildCrossHarnessContext(
-    options.messages,
-    options.supplemental || [],
-    options.currentHarness,
-    options.maxConversationChars,
-  );
-  if (conversationContext) {
-    blocks.push(conversationContext);
-  }
-
-  if (options.memoriesContext?.trim()) {
-    blocks.push(`<memory_context>
-${options.memoriesContext.trim()}
-</memory_context>`);
-  }
-
+  // Put broad project/memory material before the turn transcript. Downstream
+  // CLI safety caps preserve the tail of oversized prompts, so this ordering
+  // protects the newest cross-harness decisions and progress notes instead of
+  // retaining late project boilerplate at their expense.
   if (options.additionalProjectContext?.trim()) {
     blocks.push(options.additionalProjectContext.trim());
   }
@@ -647,6 +636,29 @@ ${options.memoriesContext.trim()}
     if (projectContext) {
       blocks.push(projectContext);
     }
+  }
+
+  if (options.memoriesContext?.trim()) {
+    blocks.push(`<memory_context>
+${options.memoriesContext.trim()}
+</memory_context>`);
+  }
+
+  // Keep the compact, extractive checkpoint immediately before raw history.
+  // It is cheap to scan and contains no model-generated claims, while the raw
+  // transcript remains available to resolve nuance or contradictions.
+  if (options.continuityContext?.trim()) {
+    blocks.push(options.continuityContext.trim());
+  }
+
+  const conversationContext = buildCrossHarnessContext(
+    options.messages,
+    options.supplemental || [],
+    options.currentHarness,
+    options.maxConversationChars,
+  );
+  if (conversationContext) {
+    blocks.push(conversationContext);
   }
 
   return blocks.join('\n\n');

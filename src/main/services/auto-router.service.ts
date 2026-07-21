@@ -1,4 +1,20 @@
-import type { TaskTier, TaskDomain, RoutingDecision, AutoRouterConfig, SessionPhase, Harness, OrchestrationPlan, OrchestrationStage, ChatMessage, MetaHarnessPolicy, MetaHarnessSpeed, MetaWorkflowMode, MetaVerificationMode } from '../../shared/types';
+import type {
+  TaskTier,
+  TaskDomain,
+  RoutingDecision,
+  AutoRouterConfig,
+  SessionPhase,
+  Harness,
+  OrchestrationPlan,
+  OrchestrationStage,
+  ChatMessage,
+  MetaHarnessPolicy,
+  MetaHarnessSpeed,
+  MetaWorkflowMode,
+  MetaVerificationMode,
+  PlanningGateChangeKind,
+  PlanningGateDecision,
+} from '../../shared/types';
 import { EMBEDDED_KEYS } from '../../shared/config/embedded-keys';
 import { analyticsService } from './analytics.service';
 import { flueMetaRouterService } from './flue-meta-router.service';
@@ -24,6 +40,8 @@ let settingsObjectCache: { expiresAt: number; value: Record<string, unknown> } |
 
 const DEFAULT_CONFIG: AutoRouterConfig = {
   enabled: true,
+  prePlanEnabled: true,
+  prePlanModel: 'claude-fable-5',
   planModel: 'claude-sonnet-4-6',
   buildModel: 'codex:gpt-5.6-sol',
   verifyModel: 'codex:gpt-5.6-sol',
@@ -188,6 +206,9 @@ interface RouteOptions extends ModelAvailabilityOptions {
   skipMetaController?: boolean;
   goalObjective?: string;
   goalSource?: 'slash-command' | 'ralph-loop';
+  prePlanActive?: boolean;
+  prePlanBypassed?: boolean;
+  prePlanForced?: boolean;
 }
 
 function scoreSignals(message: string, signals: string[]): number {
@@ -247,6 +268,72 @@ function extractTaskSignals(message: string, attachmentCount = 0, attachmentType
     asksForFrontend,
     asksForBackend,
     likelyNeedsProjectContext: /\b(project|repo|codebase|session|transcript|claude\.md|agents?\.md|skills?|settings|mcp)\b/.test(lower),
+  };
+}
+
+function classifyPlanningGateHeuristic(
+  message: string,
+  signals: TaskSignals,
+  options: RouteOptions,
+): PlanningGateDecision {
+  const lower = message.toLowerCase();
+  const migration = /\b(migrat(?:e|ion)|replace|rewrite|move from|move to|deprecat|rollout|backfill)\b/.test(lower);
+  const feature = /\b(new feature|feature|introduce|launch|create a new|build a new|add a new|new system|new flow|new mode|new integration|new capability)\b/.test(lower);
+  const bug = /\b(bug|broken|regression|race condition|data loss|corrupt|intermittent|flaky|root cause|doesn'?t work|does not work)\b/.test(lower);
+  const broadUpdate = /\b(overhaul|redesign|rework|across|end[- ]to[- ]end|architecture|workflow|lifecycle|routing|harness|remote and local|local and remote)\b/.test(lower);
+  const explicitlySmall = /\b(tiny|small|minor|quick|one[- ]line|typo|copy only|rename only|just change|localized)\b/.test(lower);
+  const hasPlanningScope = signals.asksForImplementation
+    || (signals.asksForArchitecture && (feature || migration || broadUpdate));
+  if (
+    options.prePlanActive
+    || options.prePlanForced
+    || options.prePlanBypassed
+    || options.approvedPlanContinuation
+    || !hasPlanningScope
+    || /^(?:\/build-now|build now anyway)\b/i.test(message.trim())
+  ) {
+    return {
+      action: options.prePlanActive || options.prePlanForced ? 'start' : 'none',
+      confidence: options.prePlanActive || options.prePlanForced ? 1 : 0,
+      reason: options.prePlanActive
+        ? 'Continue the active pre-build 80/20 scope pass'
+        : options.prePlanForced
+          ? 'The user explicitly requested the pre-build 80/20 scope pass'
+        : options.prePlanBypassed
+          ? 'The user explicitly bypassed the pre-build 80/20 scope pass'
+        : 'No new substantial implementation scope detected',
+      changeKind: 'general',
+    };
+  }
+
+  let score = 0;
+  if (signals.large && (message.length > 250 || feature || migration || broadUpdate)) score += 0.3;
+  if (feature) score += 0.35;
+  if (migration) score += 0.4;
+  if (bug && broadUpdate) score += 0.4;
+  else if (bug) score += 0.15;
+  if (broadUpdate) score += 0.25;
+  if (signals.asksForArchitecture || signals.asksForMultiHarness) score += 0.15;
+  if (signals.asksForFrontend && signals.asksForBackend) score += 0.15;
+  if (explicitlySmall) score -= 0.5;
+  const confidence = Math.max(0, Math.min(0.95, 0.35 + score));
+  const changeKind: PlanningGateChangeKind = migration
+    ? 'migration'
+    : feature
+      ? 'feature'
+      : bug
+        ? 'bug'
+        : broadUpdate
+          ? 'update'
+          : 'general';
+
+  return {
+    action: confidence >= 0.75 ? 'start' : confidence >= 0.55 ? 'suggest' : 'none',
+    confidence,
+    reason: confidence >= 0.55
+      ? `Substantial ${changeKind} scope would benefit from a quick 80/20 first-slice choice`
+      : 'Scope appears focused enough to execute without an 80/20 scope pass',
+    changeKind,
   };
 }
 
@@ -998,6 +1085,8 @@ function getConfig(): AutoRouterConfig {
 
   const config = { ...DEFAULT_CONFIG };
   if (saved) {
+    if (saved.prePlanEnabled !== undefined) config.prePlanEnabled = saved.prePlanEnabled as boolean;
+    if (typeof saved.prePlanModel === 'string') config.prePlanModel = saved.prePlanModel;
     if (saved.costAware !== undefined) config.costAware = saved.costAware as boolean;
     if (saved.costThresholdPercent !== undefined) config.costThresholdPercent = saved.costThresholdPercent as number;
     const categories = saved.categories as Array<{ id: string; model: string }> | undefined;
@@ -1298,6 +1387,7 @@ const ORCHESTRATION_ASK_RE = /\b(?:multiplex|orchestrat\w*|multi[- ]?harness|mul
 function shouldPreferContinuationHarness(
   message: string,
   tier: TaskTier,
+  config: AutoRouterConfig,
   signals: TaskSignals,
   options?: ModelAvailabilityOptions,
 ): boolean {
@@ -1307,43 +1397,72 @@ function shouldPreferContinuationHarness(
   if (tier === 'plan') return false;
   if (signals.asksForCapabilityEscalation || ORCHESTRATION_ASK_RE.test(message)) return false;
   if (userRequestedDifferentHarness(message, options.continuationHarness)) return false;
-  if (options.approvedPlanContinuation) return true;
-  return isContinuationIntentMessage(message, signals);
+  // Plan approval is an intentional phase boundary. The approved plan is
+  // transferred as an artifact, while the configured Build model takes over.
+  if (options.approvedPlanContinuation && isApprovedPlanExecutionFollowup(message)) return false;
+  if (!isContinuationIntentMessage(message, signals)) return false;
+
+  // Native-session reuse is only an optimization after settings have chosen
+  // the model for this tier. Never keep the previous harness when doing so
+  // would override the user's fixed Planning/Execution/Verification/Refinement
+  // selection.
+  const configured = config.costAware
+    ? applyCostAwareDowngrade(tier, config)
+    : resolveModelForTier(tier, config);
+  return harnessFromModel(configured) === options.continuationHarness
+    && hasConfiguredCredentialForModel(configured, options);
 }
 
 function isApprovedPlanExecutionFollowup(message: string): boolean {
-  return /\b(?:go ahead|go do it|do it|execute(?: the)? plan|implement(?: the)? plan|proceed|ship it|pr this)\b/i.test(message);
+  return /\b(?:go ahead|go do it|do it|fire it up|execute(?: the)? (?:approved )?plan|implement(?: the)? (?:approved )?plan|proceed|ship it|pr this)\b/i.test(message);
 }
 
 function chooseContinuationModelForTier(
   tier: TaskTier,
   config: AutoRouterConfig,
-  signals: TaskSignals,
   options?: ModelAvailabilityOptions,
 ): ModelChoice | undefined {
   const continuationHarness = options?.continuationHarness;
   if (!continuationHarness) return undefined;
 
+  const configured = config.costAware
+    ? applyCostAwareDowngrade(tier, config)
+    : resolveModelForTier(tier, config);
+  if (
+    harnessFromModel(configured) !== continuationHarness
+    || !hasConfiguredCredentialForModel(configured, options)
+  ) return undefined;
+
+  return {
+    model: configured,
+    harness: continuationHarness,
+    reason: `Configured ${tier} model ${configured} matches the previous ${continuationHarness} harness; reusing native session context`,
+  };
+}
+
+function chooseModelForExplicitHarness(
+  tier: TaskTier,
+  requestedHarness: Harness,
+  config: AutoRouterConfig,
+  signals: TaskSignals,
+  options?: ModelAvailabilityOptions,
+): ModelChoice | undefined {
   const candidates = [
-    options.continuationModel,
     ...candidateModelsForTier(tier, config, signals, options),
     ...configuredModelsForTier(tier, config),
     config.fallbackModel,
     'claude-sonnet-5',
     'claude-sonnet-4-6',
-  ].filter((model): model is string => Boolean(model));
-
-  const chosen = candidates.find((model) =>
-    harnessFromModel(model) === continuationHarness && hasConfiguredCredentialForModel(model, options)
-  );
+  ];
+  const chosen = candidates.find((model) => (
+    harnessFromModel(model) === requestedHarness
+    && hasConfiguredCredentialForModel(model, options)
+  ));
   if (!chosen) return undefined;
-
   return {
     model: chosen,
-    harness: continuationHarness,
-    reason: options?.approvedPlanContinuation
-      ? `Continuing approved plan in ${continuationHarness}; selected ${chosen}`
-      : `Follow-up on previous ${continuationHarness} turn; staying on ${chosen} to reuse native session context`,
+    harness: requestedHarness,
+    reason: `User explicitly requested ${requestedHarness}; selected ${chosen}`,
   };
 }
 
@@ -1367,15 +1486,17 @@ function isFableModel(model?: string): boolean {
   return /^claude-fable-5$/i.test(model || '');
 }
 
-function implicitFrontierClaudeModels(): string[] {
-  return ['claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6'];
-}
-
 function frontierClaudeCandidatesForTier(tier: TaskTier, config: AutoRouterConfig): string[] {
   const configured = resolveModelForTier(tier, config);
-  return isFableModel(configured)
-    ? [configured, ...implicitFrontierClaudeModels()]
-    : implicitFrontierClaudeModels();
+  const customTierModels = getConfiguredAutoRouterCategories()
+    .filter((category) => inferCategoryTier(category) === tier)
+    .map((category) => category.model)
+    .filter((model): model is string => Boolean(model));
+  return Array.from(new Set([
+    configured,
+    config.fallbackModel,
+    ...customTierModels,
+  ].filter((model) => /^(?:claude-fable|claude-opus)/i.test(model))));
 }
 
 function isFableAllowedForAutoTier(
@@ -2369,6 +2490,15 @@ class AutoRouterService {
     const phase = mergeSessionPhase(storedPhase, inferredPhase);
     sessionPhases.set(sessionId, phase);
     const signals = extractTaskSignals(message, routeOptions.attachmentCount || 0, routeOptions.attachmentTypes || []);
+    let planningGate = classifyPlanningGateHeuristic(message, signals, routeOptions);
+    if (!config.prePlanEnabled) {
+      planningGate = {
+        action: 'none',
+        confidence: 0,
+        reason: 'Pre-build 80/20 scope passes are disabled in Auto Build settings',
+        changeKind: planningGate.changeKind,
+      };
+    }
 
     // Step 1: Heuristic classification
     let requestedResult = classifyHeuristic(message, routeOptions.gstackMode, routeOptions.permissionMode, phase);
@@ -2376,13 +2506,12 @@ class AutoRouterService {
     // Step 2: Apply workflow awareness
     let result = applyWorkflowAwareness(requestedResult, phase, signals, message);
     result = enforcePermissionMode(result, routeOptions.permissionMode);
-    if (
-      routeOptions.approvedPlanContinuation &&
-      result.tier !== 'build' &&
-      result.tier !== 'verify' &&
-      isApprovedPlanExecutionFollowup(message) &&
-      canRunMutatingStages(routeOptions.permissionMode)
-    ) {
+    const approvedPlanExecution = Boolean(
+      routeOptions.approvedPlanContinuation
+      && isApprovedPlanExecutionFollowup(message)
+      && canRunMutatingStages(routeOptions.permissionMode)
+    );
+    if (approvedPlanExecution && result.tier !== 'build') {
       requestedResult = {
         tier: 'build',
         confidence: Math.max(requestedResult.confidence, 0.9),
@@ -2407,7 +2536,12 @@ class AutoRouterService {
 
     // Step 3: Let the Cerebras-backed controller classify the route. Execution
     // is still delegated through existing harnesses.
-    if (!useDeterministicFastPath && !routeOptions.skipMetaController) {
+    if (
+      !useDeterministicFastPath
+      && !routeOptions.skipMetaController
+      && !routeOptions.prePlanActive
+      && !routeOptions.prePlanForced
+    ) {
       const cerebrasKey = getCerebrasKey();
       if (cerebrasKey) {
         const candidateModelsByTier = candidateModelsByTierForMeta(config, signals, routeOptions);
@@ -2428,12 +2562,36 @@ class AutoRouterService {
           recentMessages: routeOptions.recentMessages,
           continuationHarness: routeOptions.continuationHarness,
           continuationModel: routeOptions.continuationModel,
+          approvedPlanContinuation: routeOptions.approvedPlanContinuation,
           goalObjective: routeOptions.goalObjective,
           goalSource: routeOptions.goalSource,
           cerebrasKey,
         });
 
         if (meta && meta.confidence >= META_MIN_CONFIDENCE) {
+          if (
+            config.prePlanEnabled
+            && !routeOptions.prePlanActive
+            && !routeOptions.prePlanBypassed
+            && !routeOptions.approvedPlanContinuation
+          ) {
+            const metaGateConfidence = typeof meta.planningGateConfidence === 'number'
+              ? meta.planningGateConfidence
+              : 0;
+            const metaGateAction = meta.planningGateAction || 'none';
+            planningGate = {
+              action: metaGateConfidence >= 0.75 && metaGateAction === 'start'
+                ? 'start'
+                : metaGateConfidence >= 0.55 && metaGateAction !== 'none'
+                  ? 'suggest'
+                  : 'none',
+              confidence: metaGateConfidence,
+              reason: meta.planningGateReason
+                ? redactMetaControllerTerms(meta.planningGateReason)
+                : 'Controller did not request a pre-build 80/20 scope pass',
+              changeKind: meta.planningGateChangeKind || 'general',
+            };
+          }
           const proposedRequestedResult: HeuristicResult = {
             tier: meta.requestedTier,
             confidence: meta.confidence,
@@ -2481,6 +2639,35 @@ class AutoRouterService {
       }
     }
 
+    // The meta-controller may prefer continuity, but approval is a hard
+    // planning→execution boundary. Reassert Build after controller routing and
+    // let the configured Execution model resolve the new lead.
+    if (approvedPlanExecution && result.tier !== 'build') {
+      requestedResult = {
+        tier: 'build',
+        confidence: Math.max(requestedResult.confidence, 0.9),
+        reason: `${requestedResult.reason}; approved plan is ready for execution`,
+      };
+      result = {
+        tier: 'build',
+        confidence: Math.max(result.confidence, 0.9),
+        reason: `${result.reason}; approved plan is ready for execution`,
+      };
+      metaLead = undefined;
+      metaOrchestration = undefined;
+      customCategoryLead = undefined;
+      customCategoryForPolicy = undefined;
+      method = 'heuristic';
+    }
+    if (approvedPlanExecution) {
+      planningGate = {
+        action: 'none',
+        confidence: 1,
+        reason: 'Approved plan is already ready for execution',
+        changeKind: planningGate.changeKind,
+      };
+    }
+
     // If a build request was staged through planning but no executable helper can
     // take the build handoff, keep the turn productive by routing directly to the
     // best available build model instead of producing a plan-only response.
@@ -2503,17 +2690,9 @@ class AutoRouterService {
     const requestedHarness = explicitlyRequestedHarness(message);
     let explicitHarnessLead: ModelChoice | undefined;
     if (requestedHarness && requestedHarness !== 'custom') {
-      const choice = chooseContinuationModelForTier(result.tier, config, signals, {
-        ...routeOptions,
-        continuationHarness: requestedHarness,
-        continuationModel: undefined,
-        approvedPlanContinuation: false,
-      });
+      const choice = chooseModelForExplicitHarness(result.tier, requestedHarness, config, signals, routeOptions);
       if (choice) {
-        explicitHarnessLead = {
-          ...choice,
-          reason: `User explicitly requested ${requestedHarness}; selected ${choice.model}`,
-        };
+        explicitHarnessLead = choice;
       } else {
         console.log(`[AutoRouter] ${sessionId}: user requested ${requestedHarness} but no usable model found; routing normally`);
       }
@@ -2526,30 +2705,78 @@ class AutoRouterService {
       console.log(`[AutoRouter] ${sessionId}: honoring explicit harness request for ${explicitHarnessLead.harness}`);
     }
 
-    let continuationLead = !explicitHarnessLead && shouldPreferContinuationHarness(message, result.tier, signals, routeOptions)
-      ? chooseContinuationModelForTier(result.tier, config, signals, routeOptions)
+    const continuationLead = !explicitHarnessLead && !metaLead && !customCategoryLead
+      && shouldPreferContinuationHarness(message, result.tier, config, signals, routeOptions)
+      ? chooseContinuationModelForTier(result.tier, config, routeOptions)
       : undefined;
-    // No need to clobber the controller's plan when it already chose the
-    // continuation harness — its model pick and helper stages are richer.
-    if (continuationLead && metaLead && metaLead.harness === continuationLead.harness) {
-      continuationLead = undefined;
-    }
     if (continuationLead) {
-      metaLead = undefined;
-      metaOrchestration = undefined;
-      customCategoryLead = undefined;
-      customCategoryForPolicy = undefined;
       console.log(
-        `[AutoRouter] ${sessionId}: ${routeOptions.approvedPlanContinuation ? 'continuing approved plan' : 'follow-up turn staying'} ` +
-        `in ${continuationLead.harness} instead of switching harnesses`
+        `[AutoRouter] ${sessionId}: follow-up reusing ${continuationLead.harness} because it matches the configured ${result.tier} model`
       );
     }
 
     // Step 4: Resolve the lead harness/model and build an orchestration plan.
-    const lead = explicitHarnessLead || continuationLead || metaLead || customCategoryLead || chooseModelForTier(result.tier, config, signals, routeOptions);
+    // A high-confidence pre-build brake is authoritative over ordinary model
+    // continuity and explicit execution-harness requests. The user can still
+    // leave it deliberately through /build-now.
+    const prePlanLead: ModelChoice | undefined = planningGate.action === 'start'
+      ? {
+        model: config.prePlanModel,
+        harness: harnessFromModel(config.prePlanModel),
+        reason: 'Selected the configured pre-build 80/20 model',
+      }
+      : undefined;
+    if (prePlanLead) {
+      result = {
+        tier: 'plan',
+        confidence: Math.max(result.confidence, planningGate.confidence),
+        reason: `${result.reason}; pre-build 80/20 scope choice required`,
+      };
+      metaOrchestration = undefined;
+    }
+    const approvedExecutionLead: ModelChoice | undefined = approvedPlanExecution
+      && hasConfiguredCredentialForModel(config.buildModel, { ...routeOptions, sessionId: undefined })
+      ? {
+        model: config.buildModel,
+        harness: harnessFromModel(config.buildModel),
+        reason: `Approved plan handoff uses the configured Execution model ${config.buildModel}`,
+      }
+      : undefined;
+    const lead = prePlanLead || explicitHarnessLead || approvedExecutionLead || customCategoryLead || metaLead || continuationLead || chooseModelForTier(result.tier, config, signals, routeOptions);
     const resolvedModel = lead.model;
-    const routePolicy = resolveRoutePolicy(result.tier, config, customCategoryForPolicy);
-    const orchestration = metaOrchestration || buildOrchestrationPlan(result.tier, requestedResult.tier, lead, config, signals, phase, routeOptions);
+    const routePolicy = resolveRoutePolicy(result.tier, config, prePlanLead ? undefined : customCategoryForPolicy);
+    const orchestration: OrchestrationPlan = prePlanLead
+      ? {
+        mode: 'single',
+        leadHarness: prePlanLead.harness,
+        leadModel: prePlanLead.model,
+        stages: [{
+          tier: 'plan',
+          harness: prePlanLead.harness,
+          model: prePlanLead.model,
+          ...routePolicy,
+          purpose: 'Run the pre-build 80/20 first-slice choice',
+          required: true,
+          trigger: 'now',
+        }],
+        contextPolicy: {
+          includeTranscript: true,
+          includeTranscriptReferences: true,
+          includePlanFileReference: true,
+          avoidBulkContextOnHandoff: true,
+          maxHandoffConversationChars: 24000,
+          includeProjectInstructions: true,
+          includeSkills: true,
+          includeAgents: true,
+          includeMemories: true,
+        },
+        handoffPrompt: [
+          'A lightweight pre-build 80/20 scope pass is active.',
+          'Remain read-only except for design and plan artifacts.',
+          'Do not run implementation or helper build stages before explicit plan approval.',
+        ].join(' '),
+      }
+      : metaOrchestration || buildOrchestrationPlan(result.tier, requestedResult.tier, lead, config, signals, phase, routeOptions);
     if (orchestration.stages[0]) {
       orchestration.stages[0] = {
         ...orchestration.stages[0],
@@ -2573,6 +2800,7 @@ class AutoRouterService {
       reason: `${result.reason}${requestedResult.tier !== result.tier ? `; requested ${requestedResult.tier} continues through helper stages when available` : ''}; ${lead.reason}${cooldownSummary ? `; temporarily avoiding ${cooldownSummary}` : ''}`,
       method,
       enableGoals: result.tier === 'verify' || Boolean(goalObjective),
+      planningGate,
       ...(goalObjective ? {
         goal: {
           objective: goalObjective,

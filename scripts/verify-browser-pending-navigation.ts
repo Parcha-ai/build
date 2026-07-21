@@ -49,8 +49,8 @@ assert.match(
 );
 assert.match(
   browserPreview,
-  /}, \[session\.id, session\.lastBrowserUrl\]\);/,
-  'BrowserPreview external URL sync must not depend on local url changes',
+  /}, \[browserTabId, session\.id, session\.lastBrowserUrl, webviewReady\]\);/,
+  'BrowserPreview external URL sync must follow browser identity/readiness without depending on local url changes',
 );
 
 console.log('browser pending navigation verifier passed');

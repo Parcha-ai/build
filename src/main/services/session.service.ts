@@ -14,6 +14,7 @@ import type { Session, SessionStatus } from '../../shared/types';
 import Anthropic from '@anthropic-ai/sdk';
 import { transcriptService } from './transcript.service';
 import { hasExistingSessionTitle, rememberAutoSessionTitle, sanitizeSessionTitle } from './session-title.service';
+import { normalizeClaudeSdkSessionId } from '../../shared/utils/claude-session-id';
 
 interface SessionCreateConfig {
   name: string;
@@ -48,6 +49,8 @@ export NODE_ENV=development
 
 # Add your custom setup commands below:
 `;
+
+const MAX_PERSISTED_DISCOVERED_SESSIONS = 250;
 
 export class SessionService extends EventEmitter {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -85,7 +88,17 @@ export class SessionService extends EventEmitter {
   private loadPersistedDiscoveredSessions(): void {
     const persisted = this.store.get('discoveredSessions') as Record<string, Session> | undefined;
     if (persisted) {
-      Object.values(persisted).forEach(session => {
+      const persistedSessions = Object.values(persisted)
+        .filter((session): session is Session => Boolean(session?.id))
+        .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+      const starred = persistedSessions.filter((session) => session.isStarred);
+      const unstarred = persistedSessions.filter((session) => !session.isStarred);
+      const retained = [
+        ...starred,
+        ...unstarred.slice(0, Math.max(0, MAX_PERSISTED_DISCOVERED_SESSIONS - starred.length)),
+      ];
+
+      retained.forEach(session => {
         // Fix SSH session names that have full paths - convert to host:folder format
         if (session.sshConfig && session.name.includes(':/')) {
           const parts = session.name.split(':');
@@ -97,6 +110,13 @@ export class SessionService extends EventEmitter {
         }
         this.discoveredSessionsCache.set(session.id, session);
       });
+      if (retained.length < persistedSessions.length) {
+        const compacted = Object.fromEntries(retained.map((session) => [session.id, session]));
+        this.store.set('discoveredSessions', compacted);
+        console.log(
+          `[Session] Compacted persisted discovery cache from ${persistedSessions.length} to ${retained.length} sessions`,
+        );
+      }
       console.log('[Session] Loaded', this.discoveredSessionsCache.size, 'persisted sessions from cache');
     }
 
@@ -454,9 +474,13 @@ Only return the title, nothing else.`
     try {
       const claudeSessions = await this.discoverClaudeSessions();
 
-      // Update cache with discovered sessions (don't clear - merge to preserve user settings)
+      // Reconcile discovery atomically. Keeping every historical discovery made
+      // short-lived test/worktree sessions accumulate forever and eventually
+      // forced the renderer to hydrate hundreds of dead sessions at startup.
+      const previousCache = this.discoveredSessionsCache;
+      const nextCache = new Map<string, Session>();
       claudeSessions.forEach(s => {
-        const existing = this.discoveredSessionsCache.get(s.id);
+        const existing = previousCache.get(s.id);
         if (existing) {
           // Preserve user settings
           s.model = existing.model;
@@ -464,8 +488,9 @@ Only return the title, nothing else.`
           s.isStarred = existing.isStarred;
           s.starredAt = existing.starredAt;
         }
-        this.discoveredSessionsCache.set(s.id, s);
+        nextCache.set(s.id, s);
       });
+      this.discoveredSessionsCache = nextCache;
 
       this.lastDiscoveryTime = Date.now();
       this.persistDiscoveredSessions();
@@ -482,12 +507,14 @@ Only return the title, nothing else.`
    */
   private backgroundDiscoverSessions(): void {
     (async () => {
-      const beforeCount = this.discoveredSessionsCache.size;
+      const beforeIds = new Set(this.discoveredSessionsCache.keys());
       await this.discoverAndCacheSessions();
-      const afterCount = this.discoveredSessionsCache.size;
+      const afterIds = new Set(this.discoveredSessionsCache.keys());
+      const changed = beforeIds.size !== afterIds.size
+        || Array.from(beforeIds).some((id) => !afterIds.has(id));
 
-      if (afterCount !== beforeCount) {
-        console.log('[Session] Background discovery found', afterCount - beforeCount, 'new sessions');
+      if (changed) {
+        console.log('[Session] Background discovery reconciled', beforeIds.size, '→', afterIds.size, 'sessions');
         this.emit('sessionsUpdated', this.getMergedSessions());
       }
     })();
@@ -1012,13 +1039,15 @@ Only return the title, nothing else.`
 
     // Resolve the SDK session ID for the parent — this is what the SDK knows
     // the session as (may differ from our internal parentSessionId).
-    const parentSdkSessionId =
-      (this.store.get(`sdkSessionMappings.${parentSessionId}`) as string | undefined) ||
-      parentSession.sdkSessionId ||
-      parentSessionId;
+    const rawMappedParentSdkSessionId = this.store.get(`sdkSessionMappings.${parentSessionId}`) as string | undefined;
+    const parentSdkSessionId = normalizeClaudeSdkSessionId(
+      rawMappedParentSdkSessionId === 'new'
+        ? undefined
+        : rawMappedParentSdkSessionId || parentSession.sdkSessionId || parentSessionId
+    );
 
     let forkedSessionId: string;
-    let forkedSdkSessionId: string;
+    let forkedSdkSessionId: string | undefined;
 
     // For local sessions, use the SDK's native forkSession which handles
     // transcript copying with compaction summaries. For SSH sessions the
@@ -1026,6 +1055,9 @@ Only return the title, nothing else.`
     // so we create a lightweight fork record and let the first query use
     // `resume` + `forkSession: true` to fork server-side.
     if (!parentSession.sshConfig) {
+      if (!parentSdkSessionId) {
+        throw new Error('Cannot fork a local session before its native Claude conversation has started');
+      }
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       const { forkSession } = require('@anthropic-ai/claude-agent-sdk') as { forkSession: (sessionId: string, options?: { upToMessageId?: string; title?: string; dir?: string }) => Promise<{ sessionId: string }> };
       const forkOptions: { upToMessageId?: string; title?: string; dir?: string } = {};
@@ -1049,7 +1081,11 @@ Only return the title, nothing else.`
       // query options, which forks the remote transcript server-side.
       forkedSessionId = uuid();
       forkedSdkSessionId = parentSdkSessionId; // Resume from parent, SDK will fork on first query
-      console.log(`[Session] SSH fork: new session ${forkedSessionId}, will resume+fork from ${parentSdkSessionId}`);
+      if (parentSdkSessionId) {
+        console.log(`[Session] SSH fork: new session ${forkedSessionId}, will resume+fork from ${parentSdkSessionId}`);
+      } else {
+        console.log(`[Session] SSH fork: new session ${forkedSessionId}, parent has no native Claude session; using cloned Build context`);
+      }
     }
 
     const forkedSession: Session = {
@@ -1071,7 +1107,7 @@ Only return the title, nothing else.`
       isDevMode: parentSession.isDevMode,
       sshConfig: parentSession.sshConfig,
       // For SSH forks: tell streamMessage to use resume+forkSession on first query
-      ...(parentSession.sshConfig ? { forkFromSdkSessionId: parentSdkSessionId } : {}),
+      ...(parentSession.sshConfig && parentSdkSessionId ? { forkFromSdkSessionId: parentSdkSessionId } : {}),
     };
 
     // Store the forked session
@@ -1089,7 +1125,7 @@ Only return the title, nothing else.`
     // Map to the SDK session ID so getMessages() finds the transcript.
     // For SSH forks, map to the parent SDK ID so messages load from parent
     // until the first query forks the remote transcript.
-    this.store.set(`sdkSessionMappings.${forkedSessionId}`, forkedSdkSessionId);
+    this.store.set(`sdkSessionMappings.${forkedSessionId}`, forkedSdkSessionId || 'new');
 
     // Update parent session: add to childSessionIds, mark as root if not already
     const updatedParent = {
@@ -1116,6 +1152,122 @@ Only return the title, nothing else.`
     }
 
     return forkedSession;
+  }
+
+  /**
+   * Fork the native conversation in place for Fast Stack. Unlike a normal
+   * conversation fork, the Build session id and visible pane do not change.
+   * The next turn resumes the new native fork (or a fresh Build-context turn
+   * when no native transcript is available), and subsequent turns continue
+   * normally from that replacement branch.
+   */
+  async fastStackForkInPlace(sessionId: string): Promise<{
+    forked: boolean;
+    mode: 'native' | 'remote' | 'fresh-context';
+    parentSdkSessionId?: string;
+    sdkSessionId?: string;
+    error?: string;
+  }> {
+    const session = await this.getSession(sessionId);
+    if (!session) throw new Error(`Session ${sessionId} not found`);
+
+    const parentSdkSessionId = normalizeClaudeSdkSessionId(
+      (this.store.get(`sdkSessionMappings.${sessionId}`) as string | undefined)
+      || session.sdkSessionId
+    );
+    const fastStackAt = new Date();
+    const baseSession: Session = { ...session };
+    delete baseSession.forkFromSdkSessionId;
+
+    if (session.sshConfig && parentSdkSessionId) {
+      const updatedSession: Session = {
+        ...baseSession,
+        sdkSessionId: undefined,
+        forkFromSdkSessionId: parentSdkSessionId,
+        fastStackCount: (session.fastStackCount || 0) + 1,
+        lastFastStackAt: fastStackAt,
+        updatedAt: fastStackAt,
+      };
+      this.store.set(`sessions.${sessionId}`, updatedSession);
+      this.store.set(`sdkSessionMappings.${sessionId}`, parentSdkSessionId);
+      this.discoveredSessionsCache.set(sessionId, updatedSession);
+      this.persistDiscoveredSessions();
+      this.emit('sessionsUpdated', this.getMergedSessions());
+      console.log(`[Session] Fast Stack prepared remote in-place fork for ${sessionId.substring(0, 8)} from ${parentSdkSessionId.substring(0, 8)}`);
+      return { forked: true, mode: 'remote', parentSdkSessionId };
+    }
+
+    if (parentSdkSessionId) {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const { forkSession } = require('@anthropic-ai/claude-agent-sdk') as {
+          forkSession: (sdkSessionId: string, options?: { title?: string; dir?: string }) => Promise<{ sessionId: string }>;
+        };
+        const forkOptions: { title?: string; dir?: string } = {
+          title: `${session.name} (Fast Stack)`,
+        };
+        if (process.env.CLAUDE_PROJECTS_DIR) {
+          forkOptions.dir = process.env.CLAUDE_PROJECTS_DIR;
+        }
+        const result = await forkSession(parentSdkSessionId, forkOptions);
+        const updatedSession: Session = {
+          ...baseSession,
+          sdkSessionId: result.sessionId,
+          fastStackCount: (session.fastStackCount || 0) + 1,
+          lastFastStackAt: fastStackAt,
+          updatedAt: fastStackAt,
+        };
+        this.store.set(`sessions.${sessionId}`, updatedSession);
+        this.store.set(`sdkSessionMappings.${sessionId}`, result.sessionId);
+        this.store.set(`sdkSessionBaseline.${sessionId}`, fastStackAt.getTime());
+        this.discoveredSessionsCache.set(sessionId, updatedSession);
+        this.persistDiscoveredSessions();
+        this.emit('sessionsUpdated', this.getMergedSessions());
+        console.log(
+          `[Session] Fast Stack forked in place for ${sessionId.substring(0, 8)}: `
+          + `${parentSdkSessionId.substring(0, 8)} -> ${result.sessionId.substring(0, 8)}`
+        );
+        return {
+          forked: true,
+          mode: 'native',
+          parentSdkSessionId,
+          sdkSessionId: result.sessionId,
+        };
+      } catch (error) {
+        console.warn(`[Session] Native Fast Stack fork failed for ${sessionId.substring(0, 8)}; using fresh Build context:`, error);
+        const message = error instanceof Error ? error.message : String(error);
+        const updatedSession: Session = {
+          ...baseSession,
+          sdkSessionId: undefined,
+          fastStackCount: (session.fastStackCount || 0) + 1,
+          lastFastStackAt: fastStackAt,
+          updatedAt: fastStackAt,
+        };
+        this.store.set(`sessions.${sessionId}`, updatedSession);
+        this.store.set(`sdkSessionMappings.${sessionId}`, 'new');
+        this.store.delete(`sdkSessionBaseline.${sessionId}`);
+        this.discoveredSessionsCache.set(sessionId, updatedSession);
+        this.persistDiscoveredSessions();
+        this.emit('sessionsUpdated', this.getMergedSessions());
+        return { forked: false, mode: 'fresh-context', parentSdkSessionId, error: message };
+      }
+    }
+
+    const updatedSession: Session = {
+      ...baseSession,
+      sdkSessionId: undefined,
+      fastStackCount: (session.fastStackCount || 0) + 1,
+      lastFastStackAt: fastStackAt,
+      updatedAt: fastStackAt,
+    };
+    this.store.set(`sessions.${sessionId}`, updatedSession);
+    this.store.set(`sdkSessionMappings.${sessionId}`, 'new');
+    this.store.delete(`sdkSessionBaseline.${sessionId}`);
+    this.discoveredSessionsCache.set(sessionId, updatedSession);
+    this.persistDiscoveredSessions();
+    this.emit('sessionsUpdated', this.getMergedSessions());
+    console.log(`[Session] Fast Stack starting fresh with merged Build context for ${sessionId.substring(0, 8)}`);
+    return { forked: false, mode: 'fresh-context' };
   }
 
   /**

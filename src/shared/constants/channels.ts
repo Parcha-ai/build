@@ -19,6 +19,7 @@ export const IPC_CHANNELS = {
   SESSION_UPDATE: 'session:update',
   SESSION_REWIND_FORK: 'session:rewind-fork',
   SESSION_CREATE_FORK: 'session:create-fork', // Create conversation fork
+  SESSION_FAST_STACK_FORK: 'session:fast-stack-fork', // One-shot in-place fork for an immediate queued turn
   SESSION_GET_FORK_GROUP: 'session:get-fork-group', // Get all forks in a conversation group
   SESSION_SCAN_REMOTE: 'session:scan-remote',
   SESSION_STATUS_CHANGED: 'session:status-changed',
@@ -50,9 +51,11 @@ export const IPC_CHANNELS = {
   GIT_WATCH_BRANCH: 'git:watch-branch',
   GIT_UNWATCH_BRANCH: 'git:unwatch-branch',
   GIT_BRANCH_CHANGED: 'git:branch-changed',
+  GIT_PULL_REQUEST_STATUS: 'git:pull-request-status',
 
   // Claude channels
   CLAUDE_SEND_MESSAGE: 'claude:send-message',
+  CLAUDE_NOTE_HARNESS_SWITCH: 'claude:note-harness-switch',
   CLAUDE_RESUME_REMOTE_TURN: 'claude:resume-remote-turn',
   CLAUDE_GET_MESSAGES: 'claude:get-messages',
   CLAUDE_HAS_BUILD_TRANSCRIPT: 'claude:has-build-transcript',
@@ -104,6 +107,7 @@ export const IPC_CHANNELS = {
   BROWSER_UPDATE: 'browser:update', // Stagehand screenshot/URL updates
   BROWSER_OPEN_PANEL: 'browser:open-panel', // Request to open browser panel
   BROWSER_REGISTER: 'browser:register', // Webview registration from renderer
+  BROWSER_CHAT_INSERT: 'browser:chat-insert', // Browser renderer -> main app composer
 
   // Design mode (Open Design integration) channels
   DESIGN_OPEN_PANEL: 'design:open-panel', // Main -> renderer: open design panel for a session

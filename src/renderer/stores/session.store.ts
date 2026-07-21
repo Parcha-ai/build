@@ -5,6 +5,8 @@ import { normalizeToolCall } from '../../shared/utils/tool-call-transformer';
 import { contentBlockSignature, filterInternalPromptEchoes, hasRecoverableOutput, isCloseContentDuplicate, isCloseTimelineDuplicate, isExactLongAssistantDuplicate, isInterruptedSafetyNetDuplicate, isPrefixAssistantDuplicate, toolSignature } from '../../shared/utils/message-recovery';
 import { buildCompletedStreamMessage } from '../../shared/utils/stream-finalization';
 import { extractContentBlockText, stringifyToolResultForDisplay } from '../../shared/utils/content-block-text';
+import { PARABLE_MODE_ID } from '../../shared/config/parable';
+import { CASCADE_MODE_ID } from '../../shared/config/cascade';
 import { useAudioStore } from './audio.store';
 import { getSessionDisplayName } from '../utils/session-display';
 
@@ -145,6 +147,12 @@ type AutoRouteDecisionState = {
   confidence: number;
   reason: string;
   method: string;
+  planningGate?: {
+    action: 'none' | 'suggest' | 'start';
+    confidence: number;
+    reason: string;
+    changeKind: 'feature' | 'bug' | 'update' | 'migration' | 'general';
+  };
   goal?: {
     objective: string;
     source: 'slash-command' | 'ralph-loop';
@@ -173,6 +181,10 @@ const suppressQueueDrain = (sessionId: string, ms = 3000) => {
 
 const isQueueDrainSuppressed = (sessionId: string) => {
   return Date.now() < (queueDrainSuppressedUntil[sessionId] || 0);
+};
+
+const releaseQueueDrainSuppression = (sessionId: string) => {
+  delete queueDrainSuppressedUntil[sessionId];
 };
 
 function markQueueMessagesConsumed(sessionId: string, messageIds: string[]): void {
@@ -360,6 +372,8 @@ interface SessionState {
   agentColorMap: Record<string, Record<string, number>>; // sessionId -> { agentId -> colorIndex }
   // GStack workflow mode per session
   gstackMode: Record<string, GStackMode | null>;
+  // Cascade workflow overlay per session (independent of selected model)
+  cascadeMode: Record<string, boolean>;
   // Global fast mode — when on, harnesses that support fast output use it
   fastMode: boolean;
   // Auto Build routing decisions per session
@@ -444,6 +458,7 @@ interface SessionState {
   moveToFront: (sessionId: string, messageId: string) => void;
   clearQueue: (sessionId: string) => void;
   interruptAndSend: (sessionId: string, message: string, attachments?: unknown[]) => Promise<void>;
+  fastStack: (sessionId: string, message: string, attachments?: unknown[], queuedMessageId?: string, suppressUserMessage?: boolean) => Promise<void>;
   cancelStream: (sessionId: string) => void;
   // Setup progress
   setSetupProgress: (sessionId: string, progress: SetupProgressEvent | null) => void;
@@ -478,6 +493,7 @@ interface SessionState {
 
   // GStack workflow mode
   setGStackMode: (sessionId: string, mode: GStackMode | null) => void;
+  setCascadeMode: (sessionId: string, enabled: boolean) => void;
   // Codex (second opinion)
   startCodexRun: (sessionId: string, prompt: string) => Promise<void>;
   cancelCodexRun: (sessionId: string) => void;
@@ -632,7 +648,8 @@ interface LoadedMessagesApplyOptions {
 const remoteProcessPollers = new Set<string>();
 const remoteProcessAttachRequests = new Set<string>();
 const MAX_CONCURRENT_SSH_REATTACH_CHECKS = 1;
-const SSH_STARTUP_REATTACH_WINDOW_MS = 24 * 60 * 60 * 1000;
+const MAX_STARTUP_SSH_REATTACH_SESSIONS = 8;
+const SSH_STARTUP_REATTACH_WINDOW_MS = 2 * 60 * 60 * 1000;
 const SSH_STARTUP_REATTACH_DELAY_MS = 15_000;
 const SSH_STARTUP_REATTACH_STREAM_BACKOFF_MS = 2_000;
 
@@ -671,9 +688,11 @@ function markRemoteProcessStreaming(
   }));
 }
 
-async function hasLiveRemoteProcess(sessionId: string, state: SessionState): Promise<boolean> {
+async function hasRecoverableRemoteProcess(sessionId: string, state: SessionState): Promise<boolean> {
   if (!state.sessions.find((session) => session.id === sessionId)?.sshConfig) return false;
-  return window.electronAPI.ssh.hasActiveRemoteProcess(sessionId).catch(() => false);
+  return window.electronAPI.ssh.hasRecoverableRemoteProcess
+    ? window.electronAPI.ssh.hasRecoverableRemoteProcess(sessionId).catch(() => false)
+    : window.electronAPI.ssh.hasActiveRemoteProcess(sessionId).catch(() => false);
 }
 
 async function waitForNoActiveStream(getState: () => SessionState): Promise<void> {
@@ -762,8 +781,8 @@ function startRemoteProcessMonitor(
             console.log(`[SessionStore] Reattaching to detached SSH turn for ${sessionId}`);
             await window.electronAPI.claude.resumeRemoteTurn(sessionId, getSessionModel(getState(), sessionId));
             await new Promise(resolve => setTimeout(resolve, 1000));
-            const stillActive = await hasLiveRemoteProcess(sessionId, getState());
-            if (stillActive) {
+            const stillRecoverable = await hasRecoverableRemoteProcess(sessionId, getState());
+            if (stillRecoverable) {
               console.warn(`[SessionStore] Reattach returned while remote Claude process is still active for ${sessionId}; keeping UI active`);
               markRemoteProcessStreaming(sessionId, getState, setState);
               return 'attached';
@@ -783,8 +802,8 @@ function startRemoteProcessMonitor(
 
           while (remoteProcessPollers.has(sessionId)) {
             await new Promise(resolve => setTimeout(resolve, 5000));
-            const stillActive = await window.electronAPI.ssh.hasActiveRemoteProcess(sessionId);
-            if (stillActive) {
+            const stillRecoverable = await hasRecoverableRemoteProcess(sessionId, getState());
+            if (stillRecoverable) {
               markRemoteProcessStreaming(sessionId, getState, setState);
               const attachResult = await attachRemoteStreamIfRequested();
               if (attachResult === 'completed') {
@@ -800,16 +819,29 @@ function startRemoteProcessMonitor(
             // DON'T clear currentStreamContent here — onStreamEnd needs it
             // to add the final message. Only clear activity state.
             const latestState = getState();
-            const keepActiveForRunningTools = hasUnfinishedToolCalls(latestState.currentToolCalls[sessionId]);
+            const backendStillActive = await window.electronAPI.claude.hasActiveQuery(sessionId).catch(() => false);
+            const settledToolCalls = backendStillActive
+              ? latestState.currentToolCalls[sessionId]
+              : settleUnfinishedToolCalls(latestState.currentToolCalls[sessionId]);
             setState((state: SessionState) => ({
-              isStreaming: keepActiveForRunningTools
+              isStreaming: backendStillActive
                 ? state.isStreaming
                 : { ...state.isStreaming, [sessionId]: false },
               sessionActivity: {
                 ...state.sessionActivity,
-                [sessionId]: keepActiveForRunningTools ? 'active' : 'idle',
+                [sessionId]: backendStillActive ? 'active' : 'idle',
+              },
+              currentToolCalls: {
+                ...state.currentToolCalls,
+                [sessionId]: settledToolCalls || [],
               },
               activeUserPrompt: { ...state.activeUserPrompt, [sessionId]: null },
+              pendingPermission: backendStillActive
+                ? state.pendingPermission
+                : { ...state.pendingPermission, [sessionId]: null },
+              pendingQuestion: backendStillActive
+                ? state.pendingQuestion
+                : { ...state.pendingQuestion, [sessionId]: null },
             }));
             // Wait for onStreamEnd to fire and add the final message before
             // reloading from transcript. Without this delay, loadMessages
@@ -882,6 +914,20 @@ function isRecentRunningSshSession(session: Session): boolean {
   const updatedAt = new Date(session.updatedAt).getTime();
   if (!Number.isFinite(updatedAt)) return false;
   return Date.now() - updatedAt <= SSH_STARTUP_REATTACH_WINDOW_MS;
+}
+
+function selectRunningSshSessionsForRecovery(
+  sessions: Session[],
+  activeSessionId?: string | null,
+): Session[] {
+  return sessions
+    .filter(isRecentRunningSshSession)
+    .sort((a, b) => {
+      if (a.id === activeSessionId) return -1;
+      if (b.id === activeSessionId) return 1;
+      return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+    })
+    .slice(0, MAX_STARTUP_SSH_REATTACH_SESSIONS);
 }
 
 function getPreferredCompactionFallbackModel(availableModels: ModelInfo[], sourceModel?: string): string | undefined {
@@ -1328,6 +1374,24 @@ function mergeTimelineMessages(primary: ChatMessage[], supplemental: ChatMessage
   return deduped;
 }
 
+function pinQueuedMessagesAfterHydratedTimeline(
+  messages: ChatMessage[],
+  queuedIdsInOrder: string[],
+): ChatMessage[] {
+  if (queuedIdsInOrder.length === 0) return messages;
+  const queuedIds = new Set(queuedIdsInOrder);
+  const queuedById = new Map(
+    messages
+      .filter((message) => queuedIds.has(message.id))
+      .map((message) => [message.id, message] as const),
+  );
+  if (queuedById.size === 0) return messages;
+  return [
+    ...messages.filter((message) => !queuedIds.has(message.id)),
+    ...queuedIdsInOrder.map((id) => queuedById.get(id)).filter((message): message is ChatMessage => Boolean(message)),
+  ];
+}
+
 function extractAutoBuildHelperContent(content: string): string {
   const markerIndex = AUTO_BUILD_SECTION_MARKERS
     .map((marker) => content.indexOf(marker))
@@ -1723,6 +1787,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   securedKeys: {},
   agentColorMap: {},
   gstackMode: {},
+  cascadeMode: {},
   fastMode: JSON.parse(localStorage.getItem('grep-fast-mode') || 'false'),
   autoRouteDecision: {},
   activeMetaGoals: {},
@@ -1768,9 +1833,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // Restore the session's model + permission mode from persisted session data
       const session = sessionId ? state.sessions.find(s => s.id === sessionId) : null;
       const sessionModel = session?.model;
-      const restoredModel = (sessionModel && sessionId) ? { [sessionId]: sessionModel } : {};
+      const legacyCascadeSelection = sessionModel === CASCADE_MODE_ID;
+      const restoredSessionModel = legacyCascadeSelection ? 'auto' : sessionModel;
+      const restoredModel = (restoredSessionModel && sessionId) ? { [sessionId]: restoredSessionModel } : {};
       const normalizedPermissionMode = sessionId
-        ? normalizePermissionModeForModel(sessionModel, (session as any)?.permissionMode)
+        ? normalizePermissionModeForModel(restoredSessionModel, (session as any)?.permissionMode)
         : undefined;
       const restoredPermission = sessionId && normalizedPermissionMode
         ? { [sessionId]: normalizedPermissionMode }
@@ -1787,6 +1854,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           ...state.permissionMode,
           ...restoredPermission,
         },
+        cascadeMode: sessionId
+          ? { ...state.cascadeMode, [sessionId]: Boolean(session?.cascadeMode || legacyCascadeSelection) }
+          : state.cascadeMode,
       };
     });
 
@@ -1898,6 +1968,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
       // Load ALL sessions - filtering for display happens in SessionList component
       const sessions = allSessions
+        .map((session) => session.model === CASCADE_MODE_ID
+          ? { ...session, model: 'auto', cascadeMode: true }
+          : session)
         .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
 
       // Verify the active session still exists
@@ -1936,6 +2009,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           }
         : {};
       const restoredHtmlRenderMode = collectSessionHtmlRenderModes(sessions);
+      const restoredCascadeMode = Object.fromEntries(
+        sessions.filter((session) => session.cascadeMode).map((session) => [session.id, true]),
+      );
 
       set({
         sessions,
@@ -1944,7 +2020,17 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         selectedModel: restoredModel,
         permissionMode: restoredPermission,
         htmlRenderMode: restoredHtmlRenderMode,
+        cascadeMode: restoredCascadeMode,
       });
+
+      // v0.5.69 briefly represented Cascade as a pseudo-model. Migrate those
+      // sessions to the independent workflow toggle without leaving an invalid
+      // model selection behind.
+      for (const session of allSessions) {
+        if (session.model === CASCADE_MODE_ID) {
+          void window.electronAPI.sessions.update(session.id, { model: 'auto', cascadeMode: true });
+        }
+      }
 
       // Persist auto-selected session
       if (autoSelected && validActiveSessionId) {
@@ -1964,7 +2050,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         }
       }
 
-      const runningSshSessions = sessions.filter(isRecentRunningSshSession);
+      const runningSshSessions = selectRunningSshSessionsForRecovery(sessions, validActiveSessionId)
+        .filter((session) => session.id !== validActiveSessionId);
       if (runningSshSessions.length > 0) {
         const { loadMessages } = get();
         setTimeout(() => {
@@ -2038,6 +2125,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         securedKeys: clean(state.securedKeys),
         agentColorMap: clean(state.agentColorMap),
         gstackMode: clean(state.gstackMode),
+        cascadeMode: clean(state.cascadeMode),
       };
     });
 
@@ -2393,12 +2481,29 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
 
   setSystemInfo: (sessionId, systemInfo) => {
-    set((state) => ({
-      currentSystemInfo: {
-        ...state.currentSystemInfo,
-        [sessionId]: systemInfo,
-      },
-    }));
+    set((state) => {
+      const resolvedParableModel = state.isStreaming[sessionId]
+        && getSessionModel(state, sessionId) === PARABLE_MODE_ID
+        && systemInfo?.model
+        && systemInfo.model !== PARABLE_MODE_ID
+        ? systemInfo.model
+        : undefined;
+
+      return {
+        currentSystemInfo: {
+          ...state.currentSystemInfo,
+          [sessionId]: systemInfo,
+        },
+        ...(resolvedParableModel
+          ? {
+              activeStreamModel: {
+                ...state.activeStreamModel,
+                [sessionId]: resolvedParableModel,
+              },
+            }
+          : {}),
+      };
+    });
   },
 
   setPermissionMode: (sessionId, mode) => {
@@ -2487,6 +2592,20 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     if (hasElectronAPI) {
       window.electronAPI.sessions.update(sessionId, { gstackMode: mode || undefined }).catch((err: Error) => {
         console.error('[SessionStore] Failed to persist gstackMode:', err);
+      });
+    }
+  },
+
+  setCascadeMode: (sessionId, enabled) => {
+    set((state) => ({
+      cascadeMode: { ...state.cascadeMode, [sessionId]: enabled },
+      sessions: state.sessions.map((session) => session.id === sessionId
+        ? { ...session, cascadeMode: enabled }
+        : session),
+    }));
+    if (hasElectronAPI) {
+      window.electronAPI.sessions.update(sessionId, { cascadeMode: enabled }).catch((err: Error) => {
+        console.error('[SessionStore] Failed to persist Cascade mode:', err);
       });
     }
   },
@@ -2584,6 +2703,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       state.activeUserPrompt[sessionId] ||
       (state.messageQueue[sessionId]?.length ?? 0) > 0,
     );
+
+    if (isManualPickerChange && hasElectronAPI) {
+      window.electronAPI.claude.noteHarnessSwitch(sessionId, previousModel || 'auto', model);
+    }
 
     // A manual picker change is a hard boundary: any previously routed Auto
     // harness must not keep running or drain queued prompts under the old model.
@@ -2868,9 +2991,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             queuedMsg,
           ],
         },
-        isProcessingQueue: remoteActiveProcess
-          ? { ...state.isProcessingQueue, [sessionId]: true }
-          : state.isProcessingQueue,
+        // A queued/deferred prompt is not currently being drained. Main owns
+        // the authoritative processing bit and will publish it when dequeue
+        // actually starts.
+        isProcessingQueue: { ...state.isProcessingQueue, [sessionId]: false },
         sessionActivity: remoteActiveProcess
           ? { ...state.sessionActivity, [sessionId]: 'waiting' }
           : state.sessionActivity,
@@ -2909,13 +3033,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       state = get();
     }
 
-    const { addMessage, setStreaming, permissionMode, thinkingMode, selectedModel, gstackMode } = state;
+    const { addMessage, setStreaming, permissionMode, thinkingMode, selectedModel, gstackMode, cascadeMode } = state;
     const model = selectedModel[sessionId] || 'auto';
     const mode = normalizePermissionModeForModel(model, permissionMode[sessionId]);
     // Apply migration to handle old thinking mode values, default to 'high' (full capability)
     const thinking = migrateThinkingMode(thinkingMode[sessionId] || 'high');
     const activeGStackMode = gstackMode[sessionId] || undefined; // Pass GStack mode directly
-    console.log('[SessionStore] sendMessage - sessionId:', sessionId, 'permissionMode:', mode, 'gstackMode:', activeGStackMode, 'raw:', permissionMode[sessionId]);
+    const isCascadeActive = Boolean(cascadeMode[sessionId]);
+    console.log('[SessionStore] sendMessage - sessionId:', sessionId, 'permissionMode:', mode, 'gstackMode:', activeGStackMode, 'cascadeMode:', isCascadeActive, 'raw:', permissionMode[sessionId]);
 
     // Update session's updatedAt timestamp for recent activity and mark as idle (user sent a message).
     // Persist to backend immediately (not after streaming completes) so the
@@ -3119,7 +3244,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         supplementalMessagesForContext,
         get().fastMode,
         suppressUserMessage,
-        userMessage.id
+        userMessage.id,
+        isCascadeActive,
       );
       console.log('[SessionStore] sendMessage returned:', result);
     } catch (error) {
@@ -3241,6 +3367,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
               );
             }
           }
+
+          // Optimistic queued user bubbles belong after the hydrated history,
+          // even when a recovered transcript assigns an old assistant replay a
+          // fresh timestamp. Otherwise reload makes the assistant appear to
+          // answer after a prompt that has not been sent yet.
+          safeFinalMessages = pinQueuedMessagesAfterHydratedTimeline(
+            safeFinalMessages,
+            (state.messageQueue[sessionId] || []).map((message) => message.id),
+          );
 
           return {
             messages: { ...state.messages, [sessionId]: safeFinalMessages },
@@ -3716,7 +3851,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       const rawCurrentToolCalls = currentState.currentToolCalls[sessionId] || [];
       const unfinishedToolCalls = collectUnfinishedToolCalls(rawCurrentToolCalls, message.toolCalls);
       const hasUnfinishedVisibleTools = unfinishedToolCalls.length > 0;
-      if (hasUnfinishedVisibleTools && currentState.isStreaming[sessionId] && !isQueueDrainSuppressed(sessionId)) {
+      if (message.interrupted && hasUnfinishedVisibleTools && currentState.isStreaming[sessionId] && !isQueueDrainSuppressed(sessionId)) {
         set((state) => ({
           isStreaming: { ...state.isStreaming, [sessionId]: true },
           sessionActivity: { ...state.sessionActivity, [sessionId]: 'active' },
@@ -3736,7 +3871,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         await new Promise((resolve) => setTimeout(resolve, 250));
         const [backendActive, remoteActive] = await Promise.all([
           window.electronAPI.claude.hasActiveQuery(sessionId).catch(() => false),
-          window.electronAPI.ssh.hasActiveRemoteProcess(sessionId).catch(() => false),
+          hasRecoverableRemoteProcess(sessionId, currentState),
         ]);
         if (backendActive || remoteActive) {
           console.warn(
@@ -3785,8 +3920,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         console.warn(`[SessionStore] Settling ${unfinishedToolCalls.length} dangling tool call(s) before STREAM_END for inactive runtime`);
       }
 
-      if (currentState.isStreaming[sessionId] && !isQueueDrainSuppressed(sessionId)) {
-        const remoteActive = await hasLiveRemoteProcess(sessionId, currentState);
+      if (message.interrupted && currentState.isStreaming[sessionId] && !isQueueDrainSuppressed(sessionId)) {
+        const remoteActive = await hasRecoverableRemoteProcess(sessionId, currentState);
         if (remoteActive) {
           console.warn(`[SessionStore] Deferring STREAM_END for ${sessionId}; remote Claude process is still active`);
           // Add the message NOW before clearing the buffer — otherwise the
@@ -4053,7 +4188,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         await new Promise((resolve) => setTimeout(resolve, 250));
         const [backendActive, remoteActive] = await Promise.all([
           window.electronAPI.claude.hasActiveQuery(sessionId).catch(() => false),
-          window.electronAPI.ssh.hasActiveRemoteProcess(sessionId).catch(() => false),
+          hasRecoverableRemoteProcess(sessionId, currentState),
         ]);
         if (backendActive || remoteActive) {
           console.warn(
@@ -4071,7 +4206,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }
 
       if (!isQueueDrainSuppressed(sessionId)) {
-        const remoteActive = await hasLiveRemoteProcess(sessionId, currentState);
+        const remoteActive = await hasRecoverableRemoteProcess(sessionId, currentState);
         if (remoteActive) {
           console.warn(`[SessionStore] Deferring STREAM_ERROR cleanup for ${sessionId}; remote Claude process is still active: ${error}`);
           markRemoteProcessStreaming(sessionId, get, set);
@@ -4258,7 +4393,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // On wake from sleep, SSH transports are dead but detached remote turns
     // kept working — sweep running SSH sessions and reattach.
     const unsubSystemResumed = window.electronAPI.ssh.onSystemResumed?.(() => {
-      const runningSshSessions = get().sessions.filter(isRecentRunningSshSession);
+      const currentState = get();
+      const runningSshSessions = selectRunningSshSessionsForRecovery(
+        currentState.sessions,
+        currentState.activeSessionId,
+      );
       if (runningSshSessions.length === 0) return;
       console.log(`[SessionStore] System resumed from sleep; checking ${runningSshSessions.length} running SSH session(s) for detached turns`);
       const { loadMessages } = get();
@@ -4291,11 +4430,28 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         return;
       }
 
-      const sendDrainedMessage = (attempt = 0) => {
+      const sendDrainedMessage = async (attempt = 0): Promise<void> => {
         const latestState = get();
-        if (latestState.isStreaming[sessionId] && attempt < 10) {
-          setTimeout(() => sendDrainedMessage(attempt + 1), 50);
+        const backendActive = await window.electronAPI.claude.hasActiveQuery(sessionId).catch(() => false);
+        if (backendActive && attempt < 12_000) {
+          setTimeout(() => { void sendDrainedMessage(attempt + 1); }, 50);
           return;
+        }
+        if (backendActive) {
+          console.warn(`[SessionStore] Queue drain waited 10 minutes for ${sessionId}; sending with stale-state recovery`);
+        }
+        if (latestState.isStreaming[sessionId] && !backendActive) {
+          console.warn(`[SessionStore] Queue controller proved ${sessionId} idle; clearing stale renderer stream state`);
+          set((state) => ({
+            isStreaming: { ...state.isStreaming, [sessionId]: false },
+            isProcessingQueue: { ...state.isProcessingQueue, [sessionId]: false },
+            sessionActivity: { ...state.sessionActivity, [sessionId]: 'waiting' },
+            activeUserPrompt: { ...state.activeUserPrompt, [sessionId]: null },
+            currentToolCalls: {
+              ...state.currentToolCalls,
+              [sessionId]: settleUnfinishedToolCalls(state.currentToolCalls[sessionId]) || [],
+            },
+          }));
         }
 
         const existingMessages = latestState.messages[sessionId] || [];
@@ -4340,7 +4496,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         });
       };
 
-      sendDrainedMessage();
+      void sendDrainedMessage();
     });
 
     // Listen for queue:state-changed to keep the renderer in sync with the
@@ -4497,7 +4653,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   answerQuestion: async (sessionId, answers) => {
     if (!hasElectronAPI) return;
-    const { pendingQuestion, setPendingQuestion } = get();
+    const { pendingQuestion } = get();
     const request = pendingQuestion[sessionId];
 
     if (!request) {
@@ -4512,12 +4668,22 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     console.log('[Session Store] Answering question:', request.requestId, answers);
     await window.electronAPI.claude.respondToQuestion(response);
-    setPendingQuestion(sessionId, null);
+    // A multi-round interview can deliver its next question before this IPC
+    // promise settles. Only clear the request we actually answered.
+    set((state) => {
+      if (state.pendingQuestion[sessionId]?.requestId !== request.requestId) return state;
+      return {
+        pendingQuestion: {
+          ...state.pendingQuestion,
+          [sessionId]: null,
+        },
+      };
+    });
   },
 
   cancelQuestion: async (sessionId) => {
     if (!hasElectronAPI) return;
-    const { pendingQuestion, setPendingQuestion } = get();
+    const { pendingQuestion } = get();
     const request = pendingQuestion[sessionId];
 
     if (!request) return;
@@ -4528,7 +4694,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       answers: {},
       cancelled: true,
     } as any);
-    setPendingQuestion(sessionId, null);
+    set((state) => {
+      if (state.pendingQuestion[sessionId]?.requestId !== request.requestId) return state;
+      return {
+        pendingQuestion: {
+          ...state.pendingQuestion,
+          [sessionId]: null,
+        },
+      };
+    });
   },
 
   // Plan approval handling methods
@@ -4793,6 +4967,212 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     // Send new message (use fresh state, not the stale closure from before cancel)
     await get().sendMessage(sessionId, message, attachments);
+  },
+
+  fastStack: async (sessionId, message, attachments, queuedMessageId, suppressUserMessage = false) => {
+    if (!hasElectronAPI) return;
+
+    const initialState = get();
+    const [backendActive, remoteActive] = await Promise.all([
+      window.electronAPI.claude.hasActiveQuery(sessionId).catch(() => false),
+      window.electronAPI.ssh.hasActiveRemoteProcess(sessionId).catch(() => false),
+    ]);
+    const hasActiveTurn = Boolean(
+      initialState.isStreaming[sessionId]
+      || initialState.isProcessingQueue[sessionId]
+      || backendActive
+      || remoteActive
+    );
+
+    // With nothing to interrupt or dequeue, the shortcut is simply a normal
+    // send. Avoid manufacturing a native fork for an idle empty session.
+    if (!hasActiveTurn && !queuedMessageId) {
+      await initialState.sendMessage(sessionId, message, attachments);
+      return;
+    }
+
+    const selectedModel = getSessionModel(initialState, sessionId);
+    const fastStackSiblings = (initialState.messageQueue[sessionId] || []).filter(
+      (candidate) => candidate.id !== queuedMessageId,
+    );
+    const fastStackMessageId = queuedMessageId || `fast-stack-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+    const queuedMessageAlreadyVisible = Boolean(
+      queuedMessageId
+      && (initialState.messages[sessionId] || []).some((candidate) => candidate.id === queuedMessageId)
+    );
+
+    if (!suppressUserMessage && !queuedMessageAlreadyVisible) {
+      initialState.addMessage(sessionId, {
+        id: fastStackMessageId,
+        role: 'user',
+        content: message,
+        timestamp: new Date(),
+        harness: harnessFromModel(selectedModel),
+        attachments: (attachments as ChatMessage['attachments'])?.length
+          ? attachments as ChatMessage['attachments']
+          : undefined,
+      });
+    }
+
+    console.log(
+      `[Fast Stack] Preparing one-shot in-place fork for ${sessionId.substring(0, 8)}`
+      + `${queuedMessageId ? ` from queued message ${queuedMessageId}` : ''}`
+    );
+
+    // Renderer queue updates are immediate while the normal main-process
+    // enqueue is fire-and-forget. A user can click Stack in that small gap.
+    // Reconcile the visible snapshot first so every sibling is present in the
+    // held source-of-truth queue before the selected item is removed.
+    for (const queuedMessage of initialState.messageQueue[sessionId] || []) {
+      await (window.electronAPI.queue?.enqueue(
+        sessionId,
+        queuedMessage.message,
+        queuedMessage.attachments,
+        {
+          id: queuedMessage.id,
+          model: selectedModel,
+          suppressUserMessage: queuedMessage.suppressUserMessage,
+        },
+      ) || Promise.resolve());
+    }
+    await (window.electronAPI.queue?.beginFastStack(sessionId) || Promise.resolve());
+
+    if (queuedMessageId) {
+      // Remove only the selected message. Every sibling remains held in both
+      // queue copies until the Fast Stack turn completes.
+      await (window.electronAPI.queue?.remove(sessionId, queuedMessageId) || Promise.resolve());
+      set((state) => ({
+        messageQueue: {
+          ...state.messageQueue,
+          [sessionId]: (state.messageQueue[sessionId] || []).filter((candidate) => candidate.id !== queuedMessageId),
+        },
+      }));
+    }
+
+    const partialContent = initialState.currentStreamContent[sessionId] || '';
+    const partialToolCalls = initialState.currentToolCalls[sessionId] || [];
+    const partialContentBlocks = buildContentBlocksFromStreamEvents(initialState.streamEvents[sessionId] || []);
+    const streamModel = initialState.activeStreamModel[sessionId];
+
+    try {
+      await window.electronAPI.claude.cancel(sessionId).catch((error: unknown) => {
+        console.warn('[Fast Stack] Parent cancellation reported an error:', error);
+      });
+
+      if (partialContent || partialToolCalls.length > 0 || partialContentBlocks?.length) {
+        const interruptedMessage: ChatMessage = {
+          id: `fast-stack-interrupted-${Date.now()}`,
+          role: 'assistant',
+          content: partialContent || '(interrupted by Fast Stack)',
+          contentBlocks: partialContentBlocks,
+          toolCalls: partialToolCalls.length > 0 ? partialToolCalls : undefined,
+          timestamp: new Date(),
+          interrupted: true,
+          harness: harnessFromModel(streamModel),
+        };
+        persistSupplementalMessage(sessionId, interruptedMessage);
+        initialState.addMessage(sessionId, interruptedMessage);
+      }
+
+      // Invalidate late events from the cancelled parent without touching the
+      // unselected queue items or their already-visible user bubbles.
+      set((state) => ({
+        isStreaming: { ...state.isStreaming, [sessionId]: false },
+        isProcessingQueue: { ...state.isProcessingQueue, [sessionId]: false },
+        sessionActivity: { ...state.sessionActivity, [sessionId]: 'idle' },
+        activeStreamModel: { ...state.activeStreamModel, [sessionId]: undefined },
+        activeUserPrompt: { ...state.activeUserPrompt, [sessionId]: null },
+        streamGeneration: {
+          ...state.streamGeneration,
+          [sessionId]: (state.streamGeneration[sessionId] || 0) + 1,
+        },
+        streamEvents: { ...state.streamEvents, [sessionId]: [] },
+        currentStreamContent: { ...state.currentStreamContent, [sessionId]: '' },
+        currentThinkingContent: { ...state.currentThinkingContent, [sessionId]: '' },
+        currentToolCalls: { ...state.currentToolCalls, [sessionId]: [] },
+        pendingPermission: { ...state.pendingPermission, [sessionId]: null },
+        pendingQuestion: { ...state.pendingQuestion, [sessionId]: null },
+        activeMetaGoals: { ...state.activeMetaGoals, [sessionId]: null },
+      }));
+
+      const fork = await window.electronAPI.sessions.fastStackFork(sessionId);
+      console.log(
+        `[Fast Stack] In-place fork ready for ${sessionId.substring(0, 8)}: `
+        + `${fork.mode}${fork.sdkSessionId ? ` sdk=${fork.sdkSessionId.substring(0, 8)}` : ''}`
+      );
+
+      // Let stale cancel events settle before marking the replacement stream.
+      for (let attempt = 0; attempt < 12; attempt += 1) {
+        const [stillBackendActive, stillRemoteActive] = await Promise.all([
+          window.electronAPI.claude.hasActiveQuery(sessionId).catch(() => false),
+          window.electronAPI.ssh.hasActiveRemoteProcess(sessionId).catch(() => false),
+        ]);
+        if (!stillBackendActive && !stillRemoteActive) break;
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+
+      // The parent cancellation is fully settled. From this point the queue
+      // service's Fast Stack phase owns drain timing, so the generic cancel
+      // suppression must be released before the sibling drain can fire.
+      releaseQueueDrainSuppression(sessionId);
+      await (window.electronAPI.queue?.markFastStackRunning(sessionId) || Promise.resolve());
+      await get().sendMessage(sessionId, message, attachments, {
+        existingMessageId: fastStackMessageId,
+        suppressUserMessage,
+      });
+
+      // Fast Stack owns the held sibling snapshot through the replacement
+      // turn. Drain it directly before releasing the main phase so delivery
+      // cannot depend on a queue IPC event racing renderer STREAM_END.
+      if (fastStackSiblings.length > 0) {
+        for (const sibling of fastStackSiblings) {
+          await (window.electronAPI.queue?.remove(sessionId, sibling.id) || Promise.resolve());
+        }
+        set((state) => ({
+          messageQueue: {
+            ...state.messageQueue,
+            [sessionId]: (state.messageQueue[sessionId] || []).filter(
+              (candidate) => !fastStackSiblings.some((sibling) => sibling.id === candidate.id),
+            ),
+          },
+        }));
+
+        const siblingPrompt = fastStackSiblings
+          .map((sibling) => sibling.message.trim())
+          .filter(Boolean)
+          .join('\n\n');
+        const siblingAttachments = fastStackSiblings.flatMap((sibling) => sibling.attachments || []);
+        const primarySibling = fastStackSiblings.find((sibling) => !sibling.suppressUserMessage)
+          || fastStackSiblings[0];
+        await get().sendMessage(
+          sessionId,
+          siblingPrompt,
+          siblingAttachments.length > 0 ? siblingAttachments : undefined,
+          {
+            existingMessageId: primarySibling.id,
+            suppressUserMessage: fastStackSiblings.every((sibling) => sibling.suppressUserMessage),
+            fromQueueDrain: true,
+          },
+        );
+      }
+    } catch (error) {
+      console.error('[Fast Stack] Failed:', error);
+      const errorText = error instanceof Error ? error.message : String(error);
+      if (!suppressUserMessage) {
+        initialState.addMessage(sessionId, {
+          id: `fast-stack-error-${Date.now()}`,
+          role: 'assistant',
+          content: `Fast Stack failed: ${errorText}`,
+          timestamp: new Date(),
+          harness: harnessFromModel(selectedModel),
+        });
+      }
+    } finally {
+      // Safe after normal completion (the queue service already released its
+      // running phase), and essential if setup failed before a stream started.
+      releaseQueueDrainSuppression(sessionId);
+      await (window.electronAPI.queue?.abortFastStack(sessionId) || Promise.resolve()).catch(() => undefined);
+    }
   },
 
   // Setup progress methods

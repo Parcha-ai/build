@@ -150,7 +150,7 @@ export class CdpProxyService {
         return;
       }
 
-      const partitionName = `persist:browser-${targetSessionId}`;
+      const partitionName = browserService.getPartitionName(targetSessionId);
       const ses = session.fromPartition(partitionName);
       const filter: Electron.CookiesGetFilter = filterUrl ? { url: filterUrl } : {};
       ses.cookies.get(filter).then(cookies => {

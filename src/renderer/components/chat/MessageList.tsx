@@ -90,6 +90,10 @@ export default function MessageList({
   const activeSessionId = useSessionStore((state) => state.activeSessionId);
   const getAgentColor = useSessionStore((state) => state.getAgentColor);
   const effectiveSessionId = sessionId || activeSessionId || undefined;
+  const activeStreamModel = useSessionStore(useCallback((state) => {
+    if (!effectiveSessionId) return undefined;
+    return state.activeStreamModel[effectiveSessionId];
+  }, [effectiveSessionId]));
   const htmlRenderMode = useSessionStore(useCallback((state) => {
     if (!effectiveSessionId) return 'md';
     return state.htmlRenderMode[effectiveSessionId]
@@ -97,6 +101,9 @@ export default function MessageList({
       || 'md';
   }, [effectiveSessionId]));
   const renderHtmlResponse = htmlRenderMode === 'html';
+  const queuedMessagesWillSteer = isStreaming && Boolean(
+    activeStreamModel?.startsWith('codex:') || activeStreamModel?.startsWith('claude'),
+  );
 
   // Create a map for quick lookup of current tool call state by ID
   const toolCallMap = React.useMemo(() => {
@@ -397,7 +404,7 @@ export default function MessageList({
                     QUEUED
                   </span>
                   <span className="text-[10px] text-claude-text-secondary">
-                    Will send after current response
+                    {queuedMessagesWillSteer ? 'Will steer current response' : 'Will send after current response'}
                   </span>
                 </div>
                 <p className="text-sm text-claude-text break-words" style={{ overflowWrap: 'anywhere' }}>

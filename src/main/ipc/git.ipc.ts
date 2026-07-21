@@ -4,11 +4,35 @@ import { IPC_CHANNELS } from '../../shared/constants/channels';
 import { GitService } from '../services/git.service';
 import { sshService } from '../services/ssh.service';
 import { getSessionStoreName } from '../store-names';
-import type { Session } from '../../shared/types';
+import type { PullRequestStatus, PullRequestStatusResult, Session } from '../../shared/types';
+import { normalizeGitHubRepository, parsePullRequestStatus } from '../../shared/utils/pull-request-status';
 
 const gitService = new GitService();
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const sessionStore = new CachedStore({ name: getSessionStoreName() }) as any;
+const pullRequestStatusCache = new Map<string, { value: PullRequestStatusResult; expiresAt: number }>();
+const pullRequestStatusPending = new Map<string, Promise<PullRequestStatusResult>>();
+const MAX_CONCURRENT_REMOTE_PULL_REQUEST_LOOKUPS = 2;
+let activeRemotePullRequestLookups = 0;
+const remotePullRequestLookupWaiters: Array<() => void> = [];
+
+async function withRemotePullRequestLookupSlot<T>(lookup: () => Promise<T>): Promise<T> {
+  if (activeRemotePullRequestLookups >= MAX_CONCURRENT_REMOTE_PULL_REQUEST_LOOKUPS) {
+    await new Promise<void>((resolve) => remotePullRequestLookupWaiters.push(resolve));
+  }
+  activeRemotePullRequestLookups += 1;
+  try {
+    return await lookup();
+  } finally {
+    activeRemotePullRequestLookups = Math.max(0, activeRemotePullRequestLookups - 1);
+    remotePullRequestLookupWaiters.shift()?.();
+  }
+}
+
+function getRemotePullRequestLookupSessionId(session: Session): string {
+  const config = session.sshConfig!;
+  return `pr-status:${config.username}@${config.host}:${config.port || 22}:${config.privateKeyPath || ''}`;
+}
 
 const getStoredSession = (sessionId: string): Session | undefined => {
   return (sessionStore.get(`sessions.${sessionId}`)
@@ -114,5 +138,62 @@ export function registerGitHandlers(ipcMain: IpcMain): void {
   ipcMain.handle(IPC_CHANNELS.GIT_UNWATCH_BRANCH, async (_, sessionId: string) => {
     gitService.unwatchBranch(sessionId);
     return { success: true };
+  });
+
+  ipcMain.handle(IPC_CHANNELS.GIT_PULL_REQUEST_STATUS, async (_, sessionId: string) => {
+    const session = getStoredSession(sessionId);
+    if (!session) return { available: false, status: null } satisfies PullRequestStatusResult;
+    const cacheKey = `${sessionId}:${session.branch}`;
+    const cached = pullRequestStatusCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) return cached.value;
+
+    const pending = pullRequestStatusPending.get(cacheKey);
+    if (pending) return pending;
+
+    const lookup = (async (): Promise<PullRequestStatusResult> => {
+      try {
+        let value: PullRequestStatus | null;
+        if (session.sshConfig) {
+          value = await withRemotePullRequestLookupSlot(async () => {
+            const remoteWorkdir = session.worktreePath || session.sshConfig!.remoteWorkdir;
+            const lookupSessionId = getRemotePullRequestLookupSessionId(session);
+            try {
+              return parsePullRequestStatus(await sshService.getRemotePullRequestJson(
+                lookupSessionId,
+                session.sshConfig!,
+                session.branch,
+                remoteWorkdir,
+              ));
+            } catch {
+              const remoteUrl = await sshService.getRemoteOriginUrl(
+                lookupSessionId,
+                session.sshConfig!,
+                remoteWorkdir,
+              );
+              const repository = remoteUrl ? normalizeGitHubRepository(remoteUrl) : null;
+              return repository
+                ? gitService.getPullRequestStatusForRepository(session.branch, { repository })
+                : null;
+            }
+          });
+        } else {
+          value = await gitService.getPullRequestStatus(sessionId);
+        }
+        const result = { available: true, status: value } satisfies PullRequestStatusResult;
+        pullRequestStatusCache.set(cacheKey, { value: result, expiresAt: Date.now() + 45_000 });
+        return result;
+      } catch {
+        // A missing gh CLI, absent auth, or a repository without a GitHub remote
+        // should not add noise to the UI or production logs. Retry after a
+        // longer cooldown so configuring auth later recovers automatically.
+        const result = { available: false, status: null } satisfies PullRequestStatusResult;
+        pullRequestStatusCache.set(cacheKey, { value: result, expiresAt: Date.now() + 5 * 60_000 });
+        return result;
+      } finally {
+        pullRequestStatusPending.delete(cacheKey);
+      }
+    })();
+    pullRequestStatusPending.set(cacheKey, lookup);
+    return lookup;
   });
 }

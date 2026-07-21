@@ -131,9 +131,11 @@ export default function UnifiedMarketplace({
   installedMcpServers,
   onMcpServerInstalled,
 }: UnifiedMarketplaceProps) {
-  const [activeTab, setActiveTab] = useState<MarketplaceTab>('mcp');
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<MarketplaceTab>('plugins');
+  const [mcpLoading, setMcpLoading] = useState(true);
+  const [pluginLoading, setPluginLoading] = useState(true);
+  const [mcpError, setMcpError] = useState<string | null>(null);
+  const [pluginError, setPluginError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [debouncedSearchQuery, setDebouncedSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('All');
@@ -155,28 +157,39 @@ export default function UnifiedMarketplace({
   // Manual MCP install dialog state (for custom URLs/packages)
   const [showManualMcpInstallDialog, setShowManualMcpInstallDialog] = useState(false);
 
-  // Load data
-  const loadData = async () => {
-    setLoading(true);
-    setError(null);
-
+  const loadMcpData = async () => {
+    setMcpLoading(true);
+    setMcpError(null);
     try {
-      const [mcpData, pluginData] = await Promise.all([
-        window.electronAPI.mcp.getMarketplace(),
-        window.electronAPI.plugins.getAvailable(),
-      ]);
+      const mcpData = await window.electronAPI.mcp.getMarketplace();
       setMcpServers(mcpData);
+    } catch (err) {
+      console.error('[UnifiedMarketplace] Error loading MCP marketplace:', err);
+      setMcpError(err instanceof Error ? err.message : 'Failed to load MCP marketplace');
+    } finally {
+      setMcpLoading(false);
+    }
+  };
+
+  const loadPluginData = async () => {
+    setPluginLoading(true);
+    setPluginError(null);
+    try {
+      const pluginData = await window.electronAPI.plugins.getAvailable();
       setPlugins(pluginData);
     } catch (err) {
-      console.error('[UnifiedMarketplace] Error loading data:', err);
-      setError(err instanceof Error ? err.message : 'Failed to load marketplace');
+      console.error('[UnifiedMarketplace] Error loading plugin marketplace:', err);
+      setPluginError(err instanceof Error ? err.message : 'Failed to load plugin marketplace');
     } finally {
-      setLoading(false);
+      setPluginLoading(false);
     }
   };
 
   useEffect(() => {
-    loadData();
+    // The local plugin manifests should never wait for the separately paged
+    // remote MCP registry before they can render.
+    void loadPluginData();
+    void loadMcpData();
   }, []);
 
   // Debounce search query for better performance
@@ -191,10 +204,16 @@ export default function UnifiedMarketplace({
   // Refresh handler
   const handleRefresh = async () => {
     setRefreshing(true);
-    // Also update plugin marketplaces
-    await window.electronAPI.plugins.updateMarketplaces();
-    await loadData();
-    setRefreshing(false);
+    try {
+      if (activeTab === 'plugins') {
+        await window.electronAPI.plugins.updateMarketplaces();
+        await loadPluginData();
+      } else {
+        await loadMcpData();
+      }
+    } finally {
+      setRefreshing(false);
+    }
   };
 
   // Check if MCP server is installed
@@ -311,7 +330,7 @@ export default function UnifiedMarketplace({
     try {
       const result = await window.electronAPI.plugins.install(plugin.id, plugin.marketplace);
       if (result.success) {
-        await loadData(); // Refresh to show updated status
+        await loadPluginData(); // Refresh to show updated status
       } else {
         console.error('[UnifiedMarketplace] Plugin install failed:', result.error);
       }
@@ -331,7 +350,7 @@ export default function UnifiedMarketplace({
         ? await window.electronAPI.plugins.disable(plugin.id, plugin.marketplace)
         : await window.electronAPI.plugins.enable(plugin.id, plugin.marketplace);
       if (result.success) {
-        await loadData(); // Refresh to show updated status
+        await loadPluginData(); // Refresh to show updated status
       }
     } catch (err) {
       console.error('[UnifiedMarketplace] Plugin toggle error:', err);
@@ -354,34 +373,9 @@ export default function UnifiedMarketplace({
     }
   };
 
-  if (loading) {
-    return (
-      <div className="h-full flex items-center justify-center">
-        <div className="flex flex-col items-center gap-3">
-          <Loader2 size={24} className="animate-spin text-claude-accent" />
-          <span className="text-sm text-claude-text-secondary">Loading marketplace...</span>
-        </div>
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="h-full flex items-center justify-center">
-        <div className="flex flex-col items-center gap-3 text-center max-w-md">
-          <AlertCircle size={24} className="text-red-400" />
-          <p className="text-sm text-red-400">{error}</p>
-          <button
-            onClick={loadData}
-            className="flex items-center gap-2 px-3 py-1.5 text-xs font-mono bg-claude-surface text-claude-text hover:bg-claude-surface/80 transition-colors"
-          >
-            <RefreshCw size={12} />
-            Retry
-          </button>
-        </div>
-      </div>
-    );
-  }
+  const activeLoading = activeTab === 'plugins' ? pluginLoading : mcpLoading;
+  const activeError = activeTab === 'plugins' ? pluginError : mcpError;
+  const retryActiveTab = activeTab === 'plugins' ? loadPluginData : loadMcpData;
 
   return (
     <div className="h-full flex flex-col">
@@ -413,6 +407,31 @@ export default function UnifiedMarketplace({
         </button>
       </div>
 
+      {activeLoading ? (
+        <div className="flex-1 flex items-center justify-center">
+          <div className="flex flex-col items-center gap-3">
+            <Loader2 size={24} className="animate-spin text-claude-accent" />
+            <span className="text-sm text-claude-text-secondary">
+              Loading {activeTab === 'plugins' ? 'plugins' : 'MCP servers'}...
+            </span>
+          </div>
+        </div>
+      ) : activeError ? (
+        <div className="flex-1 flex items-center justify-center">
+          <div className="flex flex-col items-center gap-3 text-center max-w-md">
+            <AlertCircle size={24} className="text-red-400" />
+            <p className="text-sm text-red-400">{activeError}</p>
+            <button
+              onClick={() => void retryActiveTab()}
+              className="flex items-center gap-2 px-3 py-1.5 text-xs font-mono bg-claude-surface text-claude-text hover:bg-claude-surface/80 transition-colors"
+            >
+              <RefreshCw size={12} />
+              Retry
+            </button>
+          </div>
+        </div>
+      ) : (
+        <>
       {/* Search and Filter Bar */}
       <div className="p-3 border-b border-claude-border flex-shrink-0">
         <div className="flex items-center gap-2">
@@ -718,6 +737,8 @@ export default function UnifiedMarketplace({
           )
         )}
       </div>
+        </>
+      )}
 
       {/* MCP Install Dialog */}
       {showMcpInstallDialog && selectedMcpServer && (
@@ -737,7 +758,7 @@ export default function UnifiedMarketplace({
           onClose={() => setShowGitHubInstallDialog(false)}
           onSuccess={() => {
             setShowGitHubInstallDialog(false);
-            loadData(); // Refresh plugins list
+            void loadPluginData(); // Refresh plugins list
           }}
         />
       )}

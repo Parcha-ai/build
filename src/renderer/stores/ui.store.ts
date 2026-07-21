@@ -20,6 +20,106 @@ export interface MarkdownPanel {
   updatedAt: number;
 }
 
+export interface BrowserWorkspaceTab {
+  id: string;
+  ownerSessionId: string;
+  partitionId: string;
+  name: string;
+  url: string;
+  createdAt: number;
+}
+
+const BROWSER_WORKSPACE_KEY = 'grep-browser-workspace-v1';
+
+interface BrowserWorkspaceState {
+  tabs: BrowserWorkspaceTab[];
+  activeTabId: string | null;
+  activeTabIdsByPartition: Record<string, string>;
+}
+
+function loadBrowserWorkspace(): BrowserWorkspaceState {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(BROWSER_WORKSPACE_KEY) || '{}');
+    const tabs = Array.isArray(parsed.tabs)
+      ? parsed.tabs.filter((tab: Partial<BrowserWorkspaceTab>) => (
+        typeof tab.id === 'string'
+        && typeof tab.ownerSessionId === 'string'
+        && typeof tab.partitionId === 'string'
+        && typeof tab.name === 'string'
+        && typeof tab.url === 'string'
+      )) as BrowserWorkspaceTab[]
+      : [];
+    const activeTabId = typeof parsed.activeTabId === 'string' && tabs.some((tab) => tab.id === parsed.activeTabId)
+      ? parsed.activeTabId
+      : tabs[0]?.id || null;
+    const activeTabIdsByPartition = Object.fromEntries(
+      Object.entries(parsed.activeTabIdsByPartition || {}).filter(([partitionId, tabId]) => (
+        typeof tabId === 'string'
+        && tabs.some((tab) => tab.id === tabId && tab.partitionId === partitionId)
+      )),
+    ) as Record<string, string>;
+
+    // Migrate the old single-active-tab workspace without changing its storage
+    // key. Each Build session/fork family now remembers its own selected tab.
+    const activeTab = tabs.find((tab) => tab.id === activeTabId);
+    if (activeTab && !activeTabIdsByPartition[activeTab.partitionId]) {
+      activeTabIdsByPartition[activeTab.partitionId] = activeTab.id;
+    }
+    for (const tab of tabs) {
+      if (!activeTabIdsByPartition[tab.partitionId]) {
+        activeTabIdsByPartition[tab.partitionId] = tab.id;
+      }
+    }
+
+    return { tabs, activeTabId, activeTabIdsByPartition };
+  } catch {
+    return { tabs: [], activeTabId: null, activeTabIdsByPartition: {} };
+  }
+}
+
+function persistBrowserWorkspace(
+  tabs: BrowserWorkspaceTab[],
+  activeTabId: string | null,
+  activeTabIdsByPartition: Record<string, string>,
+): void {
+  try {
+    localStorage.setItem(BROWSER_WORKSPACE_KEY, JSON.stringify({
+      tabs,
+      activeTabId,
+      activeTabIdsByPartition,
+    }));
+  } catch { /* ignore storage failures */ }
+}
+
+function createBrowserTabId(): string {
+  return typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : `browser-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+const initialBrowserWorkspace = loadBrowserWorkspace();
+
+const SESSION_SPLIT_PANES_KEY = 'grep-session-split-panes-v1';
+
+function loadSessionSplitPanes(): Record<string, string> {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(SESSION_SPLIT_PANES_KEY) || '{}');
+    return Object.fromEntries(
+      Object.entries(parsed).filter(([groupId, sessionId]) => (
+        typeof groupId === 'string' && typeof sessionId === 'string'
+      )),
+    ) as Record<string, string>;
+  } catch {
+    return {};
+  }
+}
+
+function persistSessionSplitPanes(splitPanes: Record<string, string>): void {
+  try {
+    localStorage.setItem(SESSION_SPLIT_PANES_KEY, JSON.stringify(splitPanes));
+  } catch { /* ignore storage failures */ }
+}
+
 // Default mobile browser height (iPhone frame)
 const DEFAULT_MOBILE_BROWSER_HEIGHT = 667;
 
@@ -83,6 +183,10 @@ interface UIState {
 
   // Multi-session browser support: track which sessions have browsers enabled
   sessionBrowsersEnabled: Record<string, boolean>;
+  browserTabs: BrowserWorkspaceTab[];
+  activeBrowserTabId: string | null;
+  activeBrowserTabIdsByPartition: Record<string, string>;
+  sessionSplitPaneIds: Record<string, string>;
   // Per-session inspector state
   sessionInspectorActive: Record<string, boolean>;
   // Per-session selected element
@@ -149,6 +253,12 @@ interface UIState {
   setSessionSelectedElement: (sessionId: string, element: unknown | null) => void;
   cleanupSessionBrowser: (sessionId: string) => void;
   setSessionEditingText: (sessionId: string, isEditing: boolean) => void;
+  createBrowserTab: (ownerSessionId: string, partitionId: string, url: string, name?: string) => string;
+  setActiveBrowserTab: (tabId: string) => void;
+  renameBrowserTab: (tabId: string, name: string) => void;
+  updateBrowserTabUrl: (tabId: string, url: string) => void;
+  closeBrowserTab: (tabId: string) => void;
+  setSessionSplitPane: (groupId: string, sessionId: string | null) => void;
 }
 
 export const useUIStore = create<UIState>((set, get) => ({
@@ -212,6 +322,10 @@ export const useUIStore = create<UIState>((set, get) => ({
 
   // Multi-session browser state
   sessionBrowsersEnabled: {},
+  browserTabs: initialBrowserWorkspace.tabs,
+  activeBrowserTabId: initialBrowserWorkspace.activeTabId,
+  activeBrowserTabIdsByPartition: initialBrowserWorkspace.activeTabIdsByPartition,
+  sessionSplitPaneIds: loadSessionSplitPanes(),
   sessionInspectorActive: {},
   sessionSelectedElement: {},
   sessionEditingText: {},
@@ -589,15 +703,121 @@ export const useUIStore = create<UIState>((set, get) => ({
     delete newInspectorActive[sessionId];
     delete newSelectedElement[sessionId];
     delete newEditingText[sessionId];
+    const sessionSplitPaneIds = Object.fromEntries(
+      Object.entries(state.sessionSplitPaneIds).filter(([groupId, splitSessionId]) => (
+        groupId !== sessionId && splitSessionId !== sessionId
+      )),
+    ) as Record<string, string>;
+    persistSessionSplitPanes(sessionSplitPaneIds);
+    const browserTabs = state.browserTabs.filter((tab) => tab.ownerSessionId !== sessionId);
+    const activeBrowserTabIdsByPartition = Object.fromEntries(
+      Object.entries(state.activeBrowserTabIdsByPartition).filter(([partitionId, tabId]) => (
+        browserTabs.some((tab) => tab.id === tabId && tab.partitionId === partitionId)
+      )),
+    ) as Record<string, string>;
+    for (const tab of browserTabs) {
+      if (!activeBrowserTabIdsByPartition[tab.partitionId]) {
+        activeBrowserTabIdsByPartition[tab.partitionId] = tab.id;
+      }
+    }
+    const activeBrowserTabId = browserTabs.some((tab) => tab.id === state.activeBrowserTabId)
+      ? state.activeBrowserTabId
+      : browserTabs[0]?.id || null;
+    persistBrowserWorkspace(browserTabs, activeBrowserTabId, activeBrowserTabIdsByPartition);
     return {
       sessionBrowsersEnabled: newEnabled,
       sessionInspectorActive: newInspectorActive,
       sessionSelectedElement: newSelectedElement,
       sessionEditingText: newEditingText,
+      sessionSplitPaneIds,
+      browserTabs,
+      activeBrowserTabId,
+      activeBrowserTabIdsByPartition,
     };
   }),
 
   setSessionEditingText: (sessionId: string, isEditing: boolean) => set((state) => ({
     sessionEditingText: { ...state.sessionEditingText, [sessionId]: isEditing },
   })),
+
+  createBrowserTab: (ownerSessionId, partitionId, url, name) => {
+    const id = createBrowserTabId();
+    const state = get();
+    const tab: BrowserWorkspaceTab = {
+      id,
+      ownerSessionId,
+      partitionId,
+      name: name?.trim() || `Browser ${state.browserTabs.length + 1}`,
+      url,
+      createdAt: Date.now(),
+    };
+    const tabs = [...state.browserTabs, tab];
+    const activeBrowserTabIdsByPartition = {
+      ...state.activeBrowserTabIdsByPartition,
+      [partitionId]: id,
+    };
+    persistBrowserWorkspace(tabs, id, activeBrowserTabIdsByPartition);
+    set({
+      browserTabs: tabs,
+      activeBrowserTabId: id,
+      activeBrowserTabIdsByPartition,
+      isBrowserPanelOpen: true,
+    });
+    return id;
+  },
+
+  setActiveBrowserTab: (tabId) => set((state) => {
+    const tab = state.browserTabs.find((candidate) => candidate.id === tabId);
+    if (!tab) return state;
+    const activeBrowserTabIdsByPartition = {
+      ...state.activeBrowserTabIdsByPartition,
+      [tab.partitionId]: tabId,
+    };
+    persistBrowserWorkspace(state.browserTabs, tabId, activeBrowserTabIdsByPartition);
+    return { activeBrowserTabId: tabId, activeBrowserTabIdsByPartition };
+  }),
+
+  renameBrowserTab: (tabId, name) => set((state) => {
+    const normalized = name.replace(/\s+/g, ' ').trim();
+    if (!normalized) return state;
+    const tabs = state.browserTabs.map((tab) => tab.id === tabId ? { ...tab, name: normalized } : tab);
+    persistBrowserWorkspace(tabs, state.activeBrowserTabId, state.activeBrowserTabIdsByPartition);
+    return { browserTabs: tabs };
+  }),
+
+  updateBrowserTabUrl: (tabId, url) => set((state) => {
+    const tabs = state.browserTabs.map((tab) => tab.id === tabId ? { ...tab, url } : tab);
+    persistBrowserWorkspace(tabs, state.activeBrowserTabId, state.activeBrowserTabIdsByPartition);
+    return { browserTabs: tabs };
+  }),
+
+  closeBrowserTab: (tabId) => set((state) => {
+    const closingIndex = state.browserTabs.findIndex((tab) => tab.id === tabId);
+    if (closingIndex < 0) return state;
+    const closingTab = state.browserTabs[closingIndex];
+    const tabs = state.browserTabs.filter((tab) => tab.id !== tabId);
+    const partitionTabs = tabs.filter((tab) => tab.partitionId === closingTab.partitionId);
+    const partitionReplacement = partitionTabs[Math.min(
+      state.browserTabs.slice(0, closingIndex).filter((tab) => tab.partitionId === closingTab.partitionId).length,
+      Math.max(0, partitionTabs.length - 1),
+    )];
+    const activeBrowserTabIdsByPartition = { ...state.activeBrowserTabIdsByPartition };
+    if (activeBrowserTabIdsByPartition[closingTab.partitionId] === tabId) {
+      if (partitionReplacement) activeBrowserTabIdsByPartition[closingTab.partitionId] = partitionReplacement.id;
+      else delete activeBrowserTabIdsByPartition[closingTab.partitionId];
+    }
+    const activeTabId = state.activeBrowserTabId === tabId
+      ? partitionReplacement?.id || tabs[Math.min(closingIndex, tabs.length - 1)]?.id || null
+      : state.activeBrowserTabId;
+    persistBrowserWorkspace(tabs, activeTabId, activeBrowserTabIdsByPartition);
+    return { browserTabs: tabs, activeBrowserTabId: activeTabId, activeBrowserTabIdsByPartition };
+  }),
+
+  setSessionSplitPane: (groupId, sessionId) => set((state) => {
+    const sessionSplitPaneIds = { ...state.sessionSplitPaneIds };
+    if (sessionId) sessionSplitPaneIds[groupId] = sessionId;
+    else delete sessionSplitPaneIds[groupId];
+    persistSessionSplitPanes(sessionSplitPaneIds);
+    return { sessionSplitPaneIds };
+  }),
 }));

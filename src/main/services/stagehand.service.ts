@@ -93,7 +93,7 @@ export class StagehandService {
         return;
       }
 
-      const partitionName = `persist:browser-${targetSessionId}`;
+      const partitionName = browserService.getPartitionName(targetSessionId);
       const ses = session.fromPartition(partitionName);
 
       // Get cookies, optionally filtered by URL

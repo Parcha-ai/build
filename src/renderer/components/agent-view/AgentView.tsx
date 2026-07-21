@@ -6,6 +6,7 @@ import InputArea from '../chat/InputArea';
 import PermissionDialog from '../chat/PermissionDialog';
 import QuestionDialog from '../chat/QuestionDialog';
 import { getSessionDisplayName } from '../../utils/session-display';
+import PullRequestStatusIcon from '../git/PullRequestStatusIcon';
 
 const EMPTY_MESSAGES: never[] = [];
 const EMPTY_EVENTS: never[] = [];
@@ -75,6 +76,12 @@ export default function AgentView() {
                 {selectedSession.branch}
               </span>
             )}
+            <PullRequestStatusIcon
+              sessionId={selectedSession.id}
+              branch={selectedSession.branch}
+              size={11}
+              className="ml-1.5"
+            />
             {selectedSession.status === 'error' && selectedSession.errorMessage && (
               <span className="text-[9px] text-red-400 ml-auto truncate max-w-[50%]" title={selectedSession.errorMessage}>
                 {selectedSession.errorMessage}

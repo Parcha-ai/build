@@ -1,6 +1,11 @@
 import assert from 'assert';
 import fs from 'fs';
 import path from 'path';
+import type { ChatMessage } from '../src/shared/types';
+import {
+  buildUnifiedHarnessContext,
+  formatProjectInstructionContextFiles,
+} from '../src/main/services/codex-context';
 
 const root = path.resolve(__dirname, '..');
 const claudeService = fs.readFileSync(path.join(root, 'src/main/services/claude.service.ts'), 'utf8');
@@ -70,6 +75,16 @@ assert.match(
   /Auto Build Codex/,
   'Auto Build Codex continuity logs must be present for installed-build verification',
 );
+assert.match(
+  claudeService,
+  /codex:\s*\{\s*maxConversationChars: 120000,\s*maxProjectContextChars: 50000,\s*maxProjectContextFiles: 24,\s*maxFinalChars: 180000,/s,
+  'Codex handoffs must preserve substantial recent context below the initial prompt safety budget',
+);
+assert.match(
+  claudeService,
+  /continuityContext: pinnedBuildContinuityContext/,
+  'Codex handoffs must pin an extractive continuity checkpoint alongside raw history',
+);
 
 assert.match(
   codexService,
@@ -114,8 +129,8 @@ assert.match(
 
 assert.match(
   harnessCapabilities,
-  /codex:\s+\{\s*supportsAsyncInjection: false,\s*supportsMultiTurn: true,/,
-  'Codex must be modeled as sequentially multi-turn now that native thread resume is persisted',
+  /codex:\s+\{\s*supportsAsyncInjection: true,\s*supportsMultiTurn: true,/,
+  'Codex must support live steering and persisted native thread continuation',
 );
 assert.match(
   messageQueueService,
@@ -131,6 +146,50 @@ assert.match(
   terminalService,
   /this\.store\.get\(`discoveredSessions\.\$\{sessionId\}`\)/,
   'Terminal creation must work for forked/discovered sessions, not only sessions stored under sessions',
+);
+
+const recentParableState = 'RECENT_PARABLE_STATE_MUST_SURVIVE_CODEX_HANDOFF';
+const remoteProjectContext = formatProjectInstructionContextFiles([
+  {
+    label: 'project CLAUDE.md',
+    filePath: '/repo/CLAUDE.md',
+    content: `Important repository rules\n${'project instruction '.repeat(780)}`,
+  },
+  {
+    label: 'user command: pr.md',
+    filePath: '/home/test/.claude/commands/pr.md',
+    content: 'secondary command context '.repeat(500),
+  },
+], { maxChars: 16000, maxFiles: 12 });
+const parableMessages: ChatMessage[] = [
+  {
+    id: 'older-parable-work',
+    role: 'assistant',
+    content: `Earlier implementation details\n${'older working note '.repeat(1200)}`,
+    timestamp: new Date('2026-07-13T23:30:00Z'),
+    harness: 'claude',
+  },
+  {
+    id: 'latest-parable-work',
+    role: 'assistant',
+    content: `${recentParableState}: fixes are staged and frontend tsc is still running.`,
+    timestamp: new Date('2026-07-13T23:36:00Z'),
+    harness: 'claude',
+  },
+];
+const codexHandoff = buildUnifiedHarnessContext({
+  messages: parableMessages,
+  currentHarness: 'codex',
+  additionalProjectContext: remoteProjectContext,
+  includeProjectContext: false,
+  maxConversationChars: 24000,
+});
+const firstManualCodexPrompt = `${codexHandoff}\n\nContinue from Parable and finish the work.`;
+assert.ok(firstManualCodexPrompt.length < 240000, 'Parable -> Codex handoff must fit the expanded initial prompt budget');
+assert.match(firstManualCodexPrompt, new RegExp(recentParableState));
+assert.ok(
+  firstManualCodexPrompt.indexOf('<project_harness_context>') < firstManualCodexPrompt.indexOf(recentParableState),
+  'Recent Parable state must sit after broad project context so tail-preserving safety caps keep it',
 );
 
 console.log('manual native harness resume verifier passed');

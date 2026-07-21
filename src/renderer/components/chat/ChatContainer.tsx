@@ -17,7 +17,7 @@ import RemoteControlPanel from './RemoteControlPanel';
 import { SoundVisualization } from './SoundVisualization';
 import HistoryPanel from './HistoryPanel';
 import TokenDashboard from '../analytics/TokenDashboard';
-import { ArrowDown, History, GitBranch, Circle, ExternalLink } from 'lucide-react';
+import { ArrowDown, History, GitBranch, Circle, ExternalLink, X } from 'lucide-react';
 import type { Session, ToolCall } from '../../../shared/types';
 import { GSTACK_MODE_META } from '../../../shared/types';
 import { canSendMessageToSession } from '../../utils/session-input';
@@ -124,6 +124,7 @@ function SessionGitInfo({ sessionId }: { sessionId: string }) {
 
 interface ChatContainerProps {
   session: Session;
+  onClosePane?: () => void;
 }
 
 // Stable empty arrays/objects to avoid reference changes when session data is missing
@@ -134,7 +135,7 @@ const EMPTY_QUEUE: never[] = [];
 const EMPTY_BG_TASKS: never[] = [];
 const EMPTY_MONITORS: never[] = [];
 
-export default function ChatContainer({ session }: ChatContainerProps) {
+export default function ChatContainer({ session, onClosePane }: ChatContainerProps) {
   // Per-session data selectors — only re-render when THIS session's data changes
   const sessionMessages = useSessionStore(useCallback((s) => s.messages[session.id] || EMPTY_MESSAGES, [session.id]));
   const isSessionStreaming = useSessionStore(useCallback((s) => s.isStreaming[session.id] || false, [session.id]));
@@ -647,6 +648,16 @@ export default function ChatContainer({ session }: ChatContainerProps) {
         </div>
 
         <div className="flex items-center gap-2">
+          {onClosePane && (
+            <button
+              onClick={onClosePane}
+              className="p-1.5 text-claude-text-secondary hover:text-claude-text hover:bg-claude-bg transition-colors"
+              title="Close split pane"
+              aria-label="Close split pane"
+            >
+              <X size={14} />
+            </button>
+          )}
           {/* Audio visualization - shows when in audio mode and working/speaking */}
           {isAudioMode && (isSessionStreaming || isTTSPlaying) && (
             <div className="flex items-center gap-2">

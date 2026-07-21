@@ -18,7 +18,7 @@ assert.match(
 );
 
 const planNudgeCondition = inputArea.match(
-  /if \(\s*!planNudgeAction\s*&&\s*!isSending\s*&&\s*!hasQueuedMessages\s*&&\s*shouldSuggestPlanModeNudge\(message, attachments, currentModel, currentMode\)\s*\) \{/,
+  /if \(\s*!planNudgeAction\s*&&\s*!isSending\s*&&\s*!hasQueuedMessages\s*&&\s*shouldSuggestPlanModeNudge\(message, attachments, currentModel, currentMode, cascadeActive\)\s*\) \{/,
 )?.[0] || '';
 assert.ok(
   planNudgeCondition,

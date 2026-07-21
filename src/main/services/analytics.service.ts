@@ -6,6 +6,7 @@ import * as path from 'path';
 import * as readline from 'readline';
 import { randomUUID } from 'crypto';
 import type { Harness, RoutingDecision, TaskDomain, TaskTier } from '../../shared/types';
+import { getModelPricing } from '../../shared/config/model-pricing';
 
 export interface TokenEvent {
   eventId?: string;
@@ -139,6 +140,19 @@ export interface HarnessSelectionEvent {
   isManualSelection?: boolean;
 }
 
+export interface AutoPlanningEvent {
+  eventId?: string;
+  sessionId: string;
+  timestamp: number;
+  outcome: 'started' | 'approved' | 'rejected' | 'bypassed';
+  plannerModel: string;
+  changeKind: string;
+  confidence: number;
+  durationMs?: number;
+  questionCount?: number;
+  executionModel?: string;
+}
+
 export interface PromptRoutingFeatures {
   charCount: number;
   wordCount: number;
@@ -184,7 +198,7 @@ export interface RoutingTrainingEvent {
   manualSelection: boolean;
   taskTier?: TaskTier;
   taskDomain?: TaskDomain;
-  routingDecision?: Pick<RoutingDecision, 'tier' | 'domain' | 'resolvedModel' | 'resolvedHarness' | 'confidence' | 'method'>;
+  routingDecision?: Pick<RoutingDecision, 'tier' | 'domain' | 'resolvedModel' | 'resolvedHarness' | 'confidence' | 'method' | 'planningGate'>;
   permissionMode?: string;
   thinkingMode?: string;
   gstackMode?: string;
@@ -261,44 +275,6 @@ export interface HistoricalImportSummary {
   skippedFiles: number;
 }
 
-// Pricing per 1M tokens (USD)
-const MODEL_PRICING: Record<string, { input: number; output: number; cacheRead: number; cacheWrite: number }> = {
-  'claude-fable-5': { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.50 },
-  'claude-sonnet-5': { input: 3, output: 15, cacheRead: 0.30, cacheWrite: 3.75 },
-  'claude-opus-4-8': { input: 5, output: 25, cacheRead: 0.50, cacheWrite: 6.25 },
-  'claude-opus-4-7': { input: 5, output: 25, cacheRead: 0.50, cacheWrite: 6.25 },
-  'claude-opus-4-6': { input: 5, output: 25, cacheRead: 0.50, cacheWrite: 6.25 },
-  'claude-opus-4-5': { input: 5, output: 25, cacheRead: 0.50, cacheWrite: 6.25 },
-  'claude-sonnet-4-6': { input: 3, output: 15, cacheRead: 0.30, cacheWrite: 3.75 },
-  'claude-sonnet-4-5': { input: 3, output: 15, cacheRead: 0.30, cacheWrite: 3.75 },
-  'claude-sonnet-4-0': { input: 3, output: 15, cacheRead: 0.30, cacheWrite: 3.75 },
-  'claude-haiku-4-5': { input: 1, output: 5, cacheRead: 0.10, cacheWrite: 1.25 },
-  'claude-haiku-3-5': { input: 0.80, output: 4, cacheRead: 0.08, cacheWrite: 1 },
-  'gpt-5.6-sol': { input: 5, output: 30, cacheRead: 0.50, cacheWrite: 5 },
-  'gpt-5.6-terra': { input: 2.50, output: 15, cacheRead: 0.25, cacheWrite: 2.50 },
-  'gpt-5.6-luna': { input: 1, output: 6, cacheRead: 0.10, cacheWrite: 1 },
-  'gpt-5.5': { input: 5, output: 30, cacheRead: 0.50, cacheWrite: 5 },
-  'gpt-5.4-mini': { input: 0.75, output: 4.50, cacheRead: 0.075, cacheWrite: 0.75 },
-  'gpt-5.4': { input: 2.50, output: 15, cacheRead: 0.25, cacheWrite: 2.50 },
-  'gpt-5.3-codex': { input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 1.25 },
-  'gpt-5.1-codex': { input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 1.25 },
-  'gpt-5.1': { input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 1.25 },
-  'gpt-5': { input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 1.25 },
-  'gpt-5-mini': { input: 0.25, output: 2, cacheRead: 0.025, cacheWrite: 0.25 },
-  'o3': { input: 2, output: 8, cacheRead: 0.50, cacheWrite: 2 },
-  'composer-2.5': { input: 3, output: 15, cacheRead: 0.30, cacheWrite: 3 },
-  'gemini-3.5-flash': { input: 1.50, output: 9, cacheRead: 0.15, cacheWrite: 1.50 },
-  'gemini-2.5-pro': { input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 1.25 },
-  'gemini-2.5-flash': { input: 0.30, output: 2.50, cacheRead: 0.03, cacheWrite: 0.30 },
-  'deepseek-v4-flash': { input: 0.27, output: 1.10, cacheRead: 0.07, cacheWrite: 0.27 },
-  'deepseek-v4-pro': { input: 0.27, output: 1.10, cacheRead: 0.07, cacheWrite: 0.27 },
-  'deepseek-reasoner': { input: 0.55, output: 2.19, cacheRead: 0.14, cacheWrite: 0.55 },
-  'deepseek-v3.2': { input: 0.27, output: 1.10, cacheRead: 0.07, cacheWrite: 0.27 },
-  'deepseek-chat': { input: 0.27, output: 1.10, cacheRead: 0.07, cacheWrite: 0.27 },
-  'glm-5.2': { input: 1.40, output: 4.40, cacheRead: 0.26, cacheWrite: 0 },
-};
-
-const DEFAULT_PRICING = { input: 3, output: 15, cacheRead: 0.30, cacheWrite: 3.75 };
 const BASELINE_MODEL = 'codex:gpt-5.6-sol';
 const POSTHOG_DEFAULT_HOST = 'https://us.i.posthog.com';
 const SANITIZATION_VERSION = 'routing-intent-v1';
@@ -309,25 +285,6 @@ const DEFAULT_TIER: UsageTierConfig = {
   monthlyIncludedUsd: 100, // Pro plan ~$100 effective included usage
   planName: 'Pro',
 };
-
-function getPricingForModel(modelId: string): typeof DEFAULT_PRICING {
-  const normalized = modelId.toLowerCase();
-  for (const [key, pricing] of Object.entries(MODEL_PRICING)) {
-    if (normalized.includes(key) || normalized.includes(key.replace('claude-', ''))) {
-      return pricing;
-    }
-  }
-  if (normalized.includes('fable')) return MODEL_PRICING['claude-fable-5'];
-  if (normalized.includes('opus')) return MODEL_PRICING['claude-opus-4-7'];
-  if (normalized.includes('haiku')) return MODEL_PRICING['claude-haiku-4-5'];
-  if (normalized.includes('sonnet')) return MODEL_PRICING['claude-sonnet-5'];
-  if (normalized.includes('composer')) return MODEL_PRICING['composer-2.5'];
-  if (normalized.includes('gemini') && normalized.includes('flash')) return MODEL_PRICING['gemini-2.5-flash'];
-  if (normalized.includes('gemini') && normalized.includes('pro')) return MODEL_PRICING['gemini-2.5-pro'];
-  if (normalized.includes('deepseek')) return MODEL_PRICING['deepseek-chat'];
-  if (normalized.includes('glm-5.2') || normalized.includes('zai-glm')) return MODEL_PRICING['glm-5.2'];
-  return DEFAULT_PRICING;
-}
 
 function harnessFromModel(model: string): Harness {
   if (model.startsWith('codex:')) return 'codex';
@@ -446,7 +403,7 @@ export function estimateCost(
   cacheReadTokens: number,
   cacheWriteTokens: number,
 ): number {
-  const pricing = getPricingForModel(model);
+  const pricing = getModelPricing(model);
   const freshInputTokens = Math.max(0, inputTokens - cacheReadTokens - cacheWriteTokens);
   return (
     (freshInputTokens / 1_000_000) * pricing.input +
@@ -706,6 +663,7 @@ function compactRoutingDecision(decision?: RoutingTrainingEvent['routingDecision
     confidence: decision.confidence,
     method: decision.method,
     domain: decision.domain,
+    planningGate: decision.planningGate,
   };
 }
 
@@ -723,6 +681,7 @@ function sanitizePostHogProperties(properties: Record<string, unknown>): Record<
         resolvedHarness: decision.resolvedHarness,
         confidence: decision.confidence,
         method: decision.method,
+        planningGate: decision.planningGate,
       };
       continue;
     }
@@ -939,6 +898,23 @@ class AnalyticsService {
     events.push(normalizedEvent);
     this.store.set(key, events);
     this.capturePostHog('build_routing_training_example', { ...normalizedEvent });
+    return true;
+  }
+
+  recordAutoPlanningEvent(event: AutoPlanningEvent): boolean {
+    const key = `autoPlanning.${this.getDayKey(event.timestamp)}`;
+    const events = this.store.get(key, []) as AutoPlanningEvent[];
+    if (event.eventId && events.some((candidate) => candidate.eventId === event.eventId)) {
+      return false;
+    }
+    const normalized: AutoPlanningEvent = {
+      ...event,
+      eventId: event.eventId || randomUUID(),
+      timestamp: event.timestamp || Date.now(),
+    };
+    events.push(normalized);
+    this.store.set(key, events);
+    this.capturePostHog('build_auto_planning', { ...normalized });
     return true;
   }
 

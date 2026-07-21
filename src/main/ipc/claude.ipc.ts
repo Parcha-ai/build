@@ -26,6 +26,7 @@ import { updateDynamicSessionTitle } from '../services/session-title.service';
 import { sessionTurnService, type TurnTransition } from '../services/session-turn.service';
 import { recoveryService } from '../services/recovery.service';
 import { queueController } from '../services/queue-controller.service';
+import { slashWorkflowService } from '../services/slash-workflow.service';
 
 // Settings store for Ralph Loop check
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -44,6 +45,31 @@ const drainRemoteJobProgress = new Map<string, { jobDir: string; logBytes: numbe
 // drain falls back to sending the queued message as a new turn (old behavior).
 const drainInjectionFailures = new Map<string, number>();
 const MAX_INJECTION_RETRIES = 3;
+
+async function resolveCrossHarnessWorkflowMessage(
+  sessionId: string,
+  message: string,
+  session?: Awaited<ReturnType<typeof sessionService.getSession>>,
+): Promise<string> {
+  try {
+    const activeSession = session === undefined
+      ? await sessionService.getSession(sessionId).catch(() => null)
+      : session;
+    const resolved = await slashWorkflowService.resolveInvocation(sessionId, message, activeSession);
+    if (!resolved) return message;
+
+    console.log(
+      `[Slash Workflow] Resolved /${resolved.invocation.name} from ${resolved.definition.path} ` +
+      `for shared harness execution (${resolved.referencedDefinitions.length} referenced workflows)`
+    );
+    return resolved.prompt;
+  } catch (error) {
+    // A missing or temporarily unreachable extension source must not make the
+    // send button fail. Native harness handling remains the safe fallback.
+    console.warn(`[Slash Workflow] Failed to resolve workflow for ${sessionId}:`, error);
+    return message;
+  }
+}
 
 // Durable buffer for harness responses that are not backed by a Claude transcript.
 // Keep this out of electron-store: that store rewrites the whole JSON file
@@ -311,11 +337,11 @@ function writeAssistantToTranscript(
     model?: string | null;
     resolvedModel?: string | null;
   } = {},
-): void {
-  if (!hasRecoverableOutput(finalMessage)) return;
+): string {
+  if (!hasRecoverableOutput(finalMessage)) return finalMessage.id;
 
   const harness = finalMessage.harness || harnessFromModel(opts.model || opts.resolvedModel);
-  transcriptService.upsertMessage(sessionId, {
+  const result = transcriptService.upsertMessage(sessionId, {
     id: finalMessage.id || randomUUID(),
     role: 'assistant',
     content: finalMessage.content || '',
@@ -327,12 +353,14 @@ function writeAssistantToTranscript(
     interrupted: finalMessage.interrupted || undefined,
     contentBlocks: finalMessage.contentBlocks,
   });
+  return result.canonicalId;
 }
 
 function createTranscriptSnapshotWriter(sessionId: string, model?: string | null, overrideId?: string) {
-  const id = overrideId || randomUUID();
+  let id = overrideId || randomUUID();
   const startedAt = new Date();
   let lastWriteAt = 0;
+  let lastWrittenSignature = '';
   let pendingTimer: NodeJS.Timeout | null = null;
   let latestSnapshot: {
     content: string;
@@ -345,6 +373,8 @@ function createTranscriptSnapshotWriter(sessionId: string, model?: string | null
 
   const write = (): void => {
     if (!latestSnapshot) return;
+    const signature = JSON.stringify(latestSnapshot);
+    if (signature === lastWrittenSignature) return;
     lastWriteAt = Date.now();
     const snapshotMessage: ChatMessage = {
       id,
@@ -356,11 +386,12 @@ function createTranscriptSnapshotWriter(sessionId: string, model?: string | null
       interrupted: latestSnapshot.interrupted,
       harness: harnessFromModel(latestSnapshot.resolvedModel || model),
     };
-    writeAssistantToTranscript(sessionId, snapshotMessage, {
+    id = writeAssistantToTranscript(sessionId, snapshotMessage, {
       accumulatedThinking: latestSnapshot.accumulatedThinking,
       model,
       resolvedModel: latestSnapshot.resolvedModel,
     });
+    lastWrittenSignature = signature;
   };
 
   const schedule = (force = false): void => {
@@ -410,11 +441,13 @@ function createTranscriptSnapshotWriter(sessionId: string, model?: string | null
         resolvedModel: opts.resolvedModel,
         interrupted: finalizedMessage.interrupted,
       };
-      writeAssistantToTranscript(sessionId, finalizedMessage, {
+      id = writeAssistantToTranscript(sessionId, finalizedMessage, {
         accumulatedThinking: opts.accumulatedThinking,
         model,
         resolvedModel: opts.resolvedModel,
       });
+      finalizedMessage.id = id;
+      lastWrittenSignature = JSON.stringify(latestSnapshot);
       return finalizedMessage;
     },
   };
@@ -492,15 +525,22 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
     return claudeService.getAvailableModels();
   });
 
+  // Fire-and-forget so a model-picker click is ordered ahead of the next send
+  // IPC even when the user submits immediately after switching harnesses.
+  ipcMain.on(IPC_CHANNELS.CLAUDE_NOTE_HARNESS_SWITCH, (_event, data: { sessionId: string; fromModel: string; toModel: string }) => {
+    claudeService.noteHarnessSwitch(data.sessionId, data.fromModel, data.toModel);
+  });
+
   ipcMain.handle(
     IPC_CHANNELS.CLAUDE_SEND_MESSAGE,
-    async (event, sessionId: string, message: string, attachments?: Attachment[], permissionMode?: string, thinkingMode?: string, model?: string, gstackMode?: string, supplementalMessages?: ChatMessage[], fastMode?: boolean, suppressUserMessage?: boolean, userMessageId?: string) => {
+    async (event, sessionId: string, message: string, attachments?: Attachment[], permissionMode?: string, thinkingMode?: string, model?: string, gstackMode?: string, supplementalMessages?: ChatMessage[], fastMode?: boolean, suppressUserMessage?: boolean, userMessageId?: string, cascadeMode?: boolean) => {
       const mainWindow = getMainWindow();
       if (!mainWindow) return;
 
       // Send stream events to the SENDER window. If the sender is destroyed
       // (window closed/reloaded mid-stream), fall back to any live window.
       const senderContents = event.sender;
+      claudeService.setSessionRenderer(sessionId, senderContents);
       const sendToSender = (channel: string, ...args: unknown[]) => {
         if (!senderContents.isDestroyed()) {
           senderContents.send(channel, ...args);
@@ -520,12 +560,18 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
       // Ensure claudeService has the mainWindow reference for browser updates
       claudeService.setMainWindow(mainWindow);
 
-      console.log('[Claude IPC] sendMessage received with attachments:', attachments?.length || 0, 'model:', model, 'permissionMode:', permissionMode, 'gstackMode:', gstackMode, 'supplementalMessages:', supplementalMessages?.length || 0);
+      console.log('[Claude IPC] sendMessage received with attachments:', attachments?.length || 0, 'model:', model, 'permissionMode:', permissionMode, 'gstackMode:', gstackMode, 'cascadeMode:', Boolean(cascadeMode), 'supplementalMessages:', supplementalMessages?.length || 0);
       if (attachments) {
         attachments.forEach((a, i) => {
           console.log(`[Claude IPC] Attachment ${i}: type=${a?.type}, name=${a?.name}, content length=${a?.content?.length || 0}`);
         });
       }
+
+      // Resolve project/user .claude commands and skills before routing. The
+      // original invocation stays in the canonical transcript, while every
+      // harness receives the same authoritative workflow definition.
+      const streamSession = await sessionService.getSession(sessionId).catch(() => null);
+      const modelMessage = await resolveCrossHarnessWorkflowMessage(sessionId, message, streamSession);
 
       // Create batcher for this session
       const batcher = new ChunkBatcher(
@@ -550,6 +596,8 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
       let fullMessageContent = '';
       let accumulatedThinking = '';
       let hadError = false;
+      let pendingSshStreamError: string | undefined;
+      let terminalProviderFailure = false;
       let sentStreamEnd = false;
       let turnCompleted = false;
       let notifiedQueueStreamEnd = false;
@@ -614,7 +662,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
           let lastEventType = '';
           let lastEventTime = Date.now();
           const streamStartTime = Date.now();
-          for await (const event of claudeService.streamMessage(sessionId, message, attachments, permissionMode, thinkingMode, model, gstackMode, supplementalMessages, fastMode)) {
+          for await (const event of claudeService.streamMessage(sessionId, modelMessage, attachments, permissionMode, thinkingMode, model, gstackMode, supplementalMessages, fastMode, cascadeMode)) {
             claudeService.noteActiveQueryEvent(sessionId);
             eventCount++;
             lastEventType = event.type;
@@ -718,7 +766,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
                   // Retry by starting a new stream with the same message
                   console.log('[Claude IPC] Starting retry stream after compaction');
                   try {
-                    for await (const retryEvent of claudeService.streamMessage(sessionId, message, attachments, permissionMode, thinkingMode, model, gstackMode, supplementalMessages, fastMode)) {
+                    for await (const retryEvent of claudeService.streamMessage(sessionId, modelMessage, attachments, permissionMode, thinkingMode, model, gstackMode, supplementalMessages, fastMode, cascadeMode)) {
                       latestResolvedModel = retryEvent.resolvedModel || latestResolvedModel;
                       if (retryEvent.resolvedModel) {
                         const resolvedHarness = harnessFromModel(retryEvent.resolvedModel);
@@ -873,10 +921,15 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
 
                 // Regular error handling
                 batcher.flush();
-                sendToSender(IPC_CHANNELS.CLAUDE_STREAM_ERROR, {
-                  sessionId,
-                  error: event.error,
-                });
+                terminalProviderFailure = terminalProviderFailure || event.terminalFailure === true;
+                if (streamSession?.sshConfig) {
+                  pendingSshStreamError = event.error;
+                } else {
+                  sendToSender(IPC_CHANNELS.CLAUDE_STREAM_ERROR, {
+                    sessionId,
+                    error: event.error,
+                  });
+                }
                 hadError = true;
                 break;
               }
@@ -885,19 +938,61 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
         } catch (error) {
           // Flush any remaining batched content before error
           batcher.flush();
-          sendToSender(IPC_CHANNELS.CLAUDE_STREAM_ERROR, {
-            sessionId,
-            error: error instanceof Error ? error.message : 'Unknown error',
-          });
+          const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+          if (streamSession?.sshConfig) {
+            pendingSshStreamError = errorMessage;
+          } else {
+            sendToSender(IPC_CHANNELS.CLAUDE_STREAM_ERROR, {
+              sessionId,
+              error: errorMessage,
+            });
+          }
           hadError = true;
         } finally {
-          // Safety net: ALWAYS send STREAM_END if we haven't already, even after errors.
-          // The renderer's onStreamError handler clears isStreaming, but if the error
-          // event is lost (sender destroyed, IPC congestion, race condition), the session
-          // gets permanently stuck in "thinking..." state with all messages silently queued.
-          // Sending STREAM_END after STREAM_ERROR is safe — the renderer handles it
-          // gracefully even when isStreaming is already false.
-          if (!sentStreamEnd) {
+          claudeService.clearSessionRenderer(sessionId, senderContents);
+          const completedSession = streamSession || await sessionService.getSession(sessionId).catch(() => null);
+          let recoverableRemoteTurn = false;
+          let remoteRecoveryProbeUnavailable = false;
+
+          // An SSH transport ending is not the same thing as the agent turn
+          // ending. Probe the detached bridge before publishing a terminal
+          // event; otherwise the renderer persists a fake final response and
+          // may tear down the bridge while the remote agent is still working.
+          if (!sentStreamEnd && hadError && completedSession?.sshConfig && !terminalProviderFailure) {
+            try {
+              recoverableRemoteTurn = Boolean(await sshService.getLatestRecoverableRemoteProcess(
+                sessionId,
+                completedSession.sshConfig,
+                { throwOnError: true },
+              ));
+            } catch (probeError) {
+              // A failed probe usually means the same transport is still down.
+              // Keep the turn recoverable until reconnect instead of converting
+              // uncertainty into a false completion.
+              remoteRecoveryProbeUnavailable = true;
+              console.warn('[Claude IPC] Post-error remote turn probe unavailable; deferring finalization:', probeError);
+            }
+          }
+
+          const deferFinalizationForRemoteRecovery = recoverableRemoteTurn || remoteRecoveryProbeUnavailable;
+
+          if (pendingSshStreamError && !deferFinalizationForRemoteRecovery) {
+            sendToSender(IPC_CHANNELS.CLAUDE_STREAM_ERROR, {
+              sessionId,
+              error: pendingSshStreamError,
+            });
+          }
+
+          // Safety net for turns that really ended. Recoverable SSH turns keep
+          // their partial transcript snapshot but deliberately do not emit
+          // STREAM_END; the reattach handler owns their eventual final event.
+          if (!sentStreamEnd && deferFinalizationForRemoteRecovery) {
+            persistTranscriptSnapshot(true, true);
+            console.log(
+              `[Claude IPC] Deferring STREAM_END for recoverable SSH turn ${sessionId} ` +
+              `(job=${recoverableRemoteTurn ? 'found' : 'unknown'}, contentLength=${fullMessageContent.length})`
+            );
+          } else if (!sentStreamEnd) {
             console.log('[Claude IPC] Safety net: sending STREAM_END for', sessionId, 'hadError:', hadError, 'contentLength:', fullMessageContent.length);
             const finalMessage: ChatMessage = buildCompletedStreamMessage({
               content: fullMessageContent || '',
@@ -921,14 +1016,20 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
             });
           }
 
-          const completedSession = await sessionService.getSession(sessionId).catch(() => null);
-
           // Parallel state machine tracking (Phase 6 - diagnostic only)
-          if (hadError && completedSession?.sshConfig) {
+          if (hadError && completedSession?.sshConfig && !terminalProviderFailure) {
             void recoveryService.handleStreamError(sessionId, new Error('stream error'), completedSession.sshConfig)
               .catch(err => console.warn('[Turn] Recovery error:', err));
           } else {
-            sessionTurnService.transition(sessionId, 'IDLE', hadError ? 'stream error (non-SSH)' : 'stream completed');
+            sessionTurnService.transition(
+              sessionId,
+              'IDLE',
+              terminalProviderFailure
+                ? 'terminal provider failure'
+                : hadError
+                  ? 'stream error (non-SSH)'
+                  : 'stream completed',
+            );
           }
 
           if (completedSession?.sshConfig) {
@@ -945,24 +1046,16 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
             console.log(`[Claude IPC] Stream-end SSH cleanup scheduled in background for ${sessionId}`);
 
             if (hadError) {
-              // Await the reattach probe BEFORE notifying the queue to drain.
-              // Without this, the queue drain and reattach race each other,
-              // spawning rival remote processes milliseconds apart.
-              let remoteStillAlive = false;
-              try {
-                const job = await sshService.getLatestRecoverableRemoteProcess(sessionId, completedSession.sshConfig!);
-                if (job?.active) {
-                  remoteStillAlive = true;
-                  console.log(`[Claude IPC] Remote turn survived local stream error for ${sessionId}; requesting renderer reattach (queue drain suppressed)`);
-                  getMainWindow()?.webContents.send(IPC_CHANNELS.CLAUDE_REMOTE_TURN_RECOVERABLE, { sessionId });
-                }
-              } catch (probeError) {
-                console.warn('[Claude IPC] Post-error remote turn probe failed:', probeError);
-              }
-              if (!remoteStillAlive) {
+              if (deferFinalizationForRemoteRecovery) {
+                console.log(
+                  `[Claude IPC] Remote turn survived or may have survived local stream error for ${sessionId}; ` +
+                  'requesting renderer reattach (queue drain suppressed)'
+                );
+                sendToSender(IPC_CHANNELS.CLAUDE_REMOTE_TURN_RECOVERABLE, { sessionId });
+              } else {
                 notifyQueueStreamEnd(false);
               }
-              // When remoteStillAlive: the reattach handler (CLAUDE_RESUME_REMOTE_TURN)
+              // When recovery is deferred: the reattach handler (CLAUDE_RESUME_REMOTE_TURN)
               // fires its own notifyQueueStreamEnd on completion — no drain needed here.
             } else {
               notifyQueueStreamEnd(turnCompleted);
@@ -995,6 +1088,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
       if (!mainWindow) return;
 
       const senderContents = event.sender;
+      claudeService.setSessionRenderer(sessionId, senderContents);
       const sendToSender = (channel: string, ...args: unknown[]) => {
         if (!senderContents.isDestroyed()) {
           senderContents.send(channel, ...args);
@@ -1220,6 +1314,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
         });
         hadError = true;
       } finally {
+        claudeService.clearSessionRenderer(sessionId, senderContents);
         if (!sentStreamEnd) {
           const finalMessage: ChatMessage = buildCompletedStreamMessage({
             content: fullMessageContent || '',
@@ -1268,11 +1363,14 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
         notifyQueueStreamEnd(shouldDrainAfterResume, shouldDrainAfterResume && resumeCompletedWithResult);
 
         // Safety net: if the resume suppressed drain but the queue still has
-        // messages (e.g. a race-rescheduled injection), force a deferred drain
-        // so the message doesn't strand. The race handler's deferDrain(500)
-        // gets killed by onStreamEnd(drain:false) above — this rescues it.
+        // messages (e.g. a race-rescheduled injection), allow drain to bypass
+        // the remote-active gate. The race handler proved the query completed —
+        // the lingering remote process is cleanup, not an active turn. Without
+        // this, onStreamStart resets drainDeferredSince every resume cycle,
+        // preventing the 30s stale-remote escalation from ever triggering.
         if (!shouldDrainAfterResume && messageQueueService.length(sessionId) > 0) {
-          console.log(`[Claude IPC] Resume suppressed drain but queue has ${messageQueueService.length(sessionId)} pending message(s) for ${sessionId}; scheduling rescue drain`);
+          console.log(`[Claude IPC] Resume suppressed drain but queue has ${messageQueueService.length(sessionId)} pending message(s) for ${sessionId}; allowing remote-active bypass drain`);
+          messageQueueService.allowRemoteActiveDrain(sessionId);
           messageQueueService.deferDrain(sessionId, 500);
         }
 
@@ -1284,7 +1382,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
 
   ipcMain.handle(IPC_CHANNELS.CLAUDE_CANCEL, async (_, sessionId: string) => {
     messageQueueService.clear(sessionId);
-    claudeService.cancelQuery(sessionId);
+    await claudeService.cancelQuery(sessionId);
     // Wait for the abort signal to propagate through the SDK generator and
     // the generator to yield its final STREAM_END/error event. 200ms gives
     // the async generator time to unwind, preventing stale events from
@@ -1493,9 +1591,10 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
 
           messageQueueService.beginDrainAttempt(sessionId);
           const injectStartMs = Date.now();
+          const injectedText = await resolveCrossHarnessWorkflowMessage(sessionId, next.text, session);
           const injected = await claudeService.injectMessage(
             sessionId,
-            next.text,
+            injectedText,
             next.attachments as Attachment[] | undefined
           );
           const injectElapsedMs = Date.now() - injectStartMs;
@@ -1545,10 +1644,12 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
           if (!activeState.injectable && supportsActiveInjection && deferredMs >= STALE_QUEUE_DRAIN_REMOTE_PROCESS_GRACE_MS) {
             console.warn(
               `[Queue] Active query for ${sessionId} lost its injectable Query object while remote process is still active; ` +
-              `clearing local wrapper, requesting reattach, and deferring drain ` +
+              `preserving the remote turn, requesting reattach, and deferring drain ` +
               `(deferredMs=${deferredMs}, idleMs=${activeState.idleMs})`
             );
-            claudeService.clearLocalActiveQueryForRemoteReattach(sessionId);
+            // A recovered SSH turn now retains its stdin bridge, so the
+            // reattach wrapper is injectable. Never abort that wrapper here:
+            // aborting it used to kill the live remote question/turn.
             const mainWindow = getMainWindow();
             mainWindow?.webContents.send(IPC_CHANNELS.CLAUDE_REMOTE_TURN_RECOVERABLE, { sessionId });
             messageQueueService.deferDrain(sessionId, 5000);
@@ -1582,18 +1683,18 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
           `[Queue] Clearing stale active query before drain for ${sessionId}; ` +
           `deferredMs=${deferredMs}, ageMs=${activeState.ageMs}, idleMs=${activeState.idleMs}`
         );
-        claudeService.cancelQuery(sessionId);
+        await claudeService.cancelQuery(sessionId);
       }
     }
 
-	    if (remoteActive && canDrainPastRemoteActive) {
-	      console.warn(`[Queue] Draining queued turn for ${sessionId} after completed stream while remote bridge remains active`);
-	      if (session?.sshConfig) {
-	        await sshService.cleanupDetachedBridgeProcessesForNewTurn(sessionId, session.sshConfig, {
-	          killActive: false,
-	        });
-	        remoteActive = await readRemoteActive();
-	        console.log(
+    if (remoteActive && canDrainPastRemoteActive) {
+      console.warn(`[Queue] Draining queued turn for ${sessionId} after completed stream while remote bridge remains active`);
+      if (session?.sshConfig) {
+        await sshService.cleanupDetachedBridgeProcessesForNewTurn(sessionId, session.sshConfig, {
+          killActive: false,
+        });
+        remoteActive = await readRemoteActive();
+        console.log(
           `[Queue] Rechecked remote process after completed-stream bridge cleanup for ${sessionId}; ` +
           `remoteActive=${remoteActive ? 'yes' : 'no'}`
         );
@@ -1662,6 +1763,10 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
       messageQueueService.deferDrain(sessionId, 1000);
       return;
     }
+
+    // Both authoritative runtime probes are idle. Clear any stale processing
+    // bit left by a disconnect before transferring queue ownership to renderer.
+    messageQueueService.markRuntimeIdle(sessionId, { scheduleDrain: false });
 
     const mainWindow = getMainWindow();
     if (!mainWindow) return;

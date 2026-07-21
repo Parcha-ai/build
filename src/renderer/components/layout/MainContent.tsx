@@ -3,9 +3,11 @@ import { useSessionStore } from '../../stores/session.store';
 import { useUIStore } from '../../stores/ui.store';
 import { useEditorStore } from '../../stores/editor.store';
 import ChatContainer from '../chat/ChatContainer';
-import ForkTabs from '../chat/ForkTabs';
+import ForkTabs, { SESSION_TAB_DRAG_TYPE } from '../chat/ForkTabs';
 import TerminalContainer from '../terminal/TerminalContainer';
 import BrowserPreview from '../preview/BrowserPreview';
+import BrowserSessionTab from '../preview/BrowserSessionTab';
+import BrowserPreviewBoundary from '../preview/BrowserPreviewBoundary';
 import HtmlArtifactPanel from '../preview/HtmlArtifactPanel';
 import MarkdownResponsePanel from '../preview/MarkdownResponsePanel';
 import GitExplorer from '../git/GitExplorer';
@@ -17,15 +19,15 @@ import SetupProgress from '../session/SetupProgress';
 import CommandCenterGrid from '../command-center/CommandCenterGrid';
 import AgentView from '../agent-view/AgentView';
 import EmptyState from './EmptyState';
-import { X, GripVertical, GripHorizontal, Smartphone, Monitor, ArrowLeft } from 'lucide-react';
+import { X, GripVertical, GripHorizontal, Smartphone, Monitor, ArrowLeft, Plus } from 'lucide-react';
 import { getSessionDisplayName } from '../../utils/session-display';
+import { getBrowserPartitionId } from '../../../shared/utils/browser-partition';
 
 const PRIMARY_MODIFIER_KEY: 'metaKey' | 'ctrlKey' = /mac/i.test(navigator.platform) ? 'metaKey' : 'ctrlKey';
 
 export default function MainContent() {
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
   const sessions = useSessionStore((s) => s.sessions);
-  const commandCenterSessionIds = useSessionStore((s) => s.commandCenterSessionIds);
   const setActiveSession = useSessionStore((s) => s.setActiveSession);
   const activeSetupProgress = useSessionStore(useCallback(
     (s) => activeSessionId ? s.setupProgress[activeSessionId] || null : null,
@@ -52,8 +54,13 @@ export default function MainContent() {
   const toggleViewportMode = useUIStore((s) => s.toggleViewportMode);
   const mobileBrowserHeight = useUIStore((s) => s.mobileBrowserHeight);
   const setMobileBrowserHeight = useUIStore((s) => s.setMobileBrowserHeight);
-  const sessionBrowsersEnabled = useUIStore((s) => s.sessionBrowsersEnabled);
-  const enableSessionBrowser = useUIStore((s) => s.enableSessionBrowser);
+  const browserTabs = useUIStore((s) => s.browserTabs);
+  const activeBrowserTabIdsByPartition = useUIStore((s) => s.activeBrowserTabIdsByPartition);
+  const sessionSplitPaneIds = useUIStore((s) => s.sessionSplitPaneIds);
+  const setSessionSplitPane = useUIStore((s) => s.setSessionSplitPane);
+  const createBrowserTab = useUIStore((s) => s.createBrowserTab);
+  const setActiveBrowserTab = useUIStore((s) => s.setActiveBrowserTab);
+  const updateBrowserTabUrl = useUIStore((s) => s.updateBrowserTabUrl);
   const isCommandCenterActive = useUIStore((s) => s.isCommandCenterActive);
   const commandCenterFocusedSessionId = useUIStore((s) => s.commandCenterFocusedSessionId);
   const setCommandCenterFocusedSession = useUIStore((s) => s.setCommandCenterFocusedSession);
@@ -65,6 +72,9 @@ export default function MainContent() {
   const [isPanelResizing, setIsPanelResizing] = useState(false);
   const [isMobileBrowserResizing, setIsMobileBrowserResizing] = useState(false);
   const [customSplitRatio, setCustomSplitRatio] = useState<number | null>(null);
+  const [isSessionSplitDropActive, setIsSessionSplitDropActive] = useState(false);
+  const chatSplitAreaRef = React.useRef<HTMLDivElement>(null);
+  const previousPrimarySessionIdRef = React.useRef<string | null>(null);
 
   // Set default terminal height when panel opens
   useEffect(() => {
@@ -81,17 +91,18 @@ export default function MainContent() {
         e.preventDefault();
         e.stopPropagation();
 
-        // If browser panel is open, refresh the browser instead
-        const targetSessionId = isCommandCenterActive
-          ? commandCenterFocusedSessionId
-          : isAgentViewActive
-            ? agentViewSelectedSessionId
-            : activeSessionId;
-
-        if (isBrowserPanelOpen && targetSessionId) {
-          // Browser previews are keyed by the active tab/session, not the root session.
+        const sessionState = useSessionStore.getState();
+        const uiState = useUIStore.getState();
+        const selectedSession = sessionState.sessions.find((session) => session.id === sessionState.activeSessionId);
+        const partitionId = selectedSession
+          ? getBrowserPartitionId(selectedSession.id, sessionState.sessions)
+          : null;
+        const activeBrowserTab = partitionId
+          ? uiState.browserTabs.find((tab) => tab.id === uiState.activeBrowserTabIdsByPartition[partitionId])
+          : null;
+        if (isBrowserPanelOpen && activeBrowserTab) {
           window.dispatchEvent(new CustomEvent('grep-browser-refresh', {
-            detail: { sessionId: targetSessionId }
+            detail: { sessionId: activeBrowserTab.ownerSessionId, browserTabId: activeBrowserTab.id }
           }));
         }
         // Otherwise, just do nothing (CMD+R is disabled)
@@ -101,18 +112,18 @@ export default function MainContent() {
     // Use capture phase to intercept before Electron's default handler
     window.addEventListener('keydown', handleKeyDown, true);
     return () => window.removeEventListener('keydown', handleKeyDown, true);
-  }, [isBrowserPanelOpen, activeSessionId, agentViewSelectedSessionId, commandCenterFocusedSessionId, isAgentViewActive, isCommandCenterActive]);
+  }, [isBrowserPanelOpen]);
 
   const activeSession = sessions.find((s) => s.id === activeSessionId);
-  const browserTargetSessionId = isCommandCenterActive
+  const chatTargetSessionId = isCommandCenterActive
     ? commandCenterFocusedSessionId
     : isAgentViewActive
       ? agentViewSelectedSessionId
       : activeSessionId;
-  const browserTargetSession = browserTargetSessionId
-    ? sessions.find((s) => s.id === browserTargetSessionId) || null
+  const chatTargetSession = chatTargetSessionId
+    ? sessions.find((s) => s.id === chatTargetSessionId) || null
     : null;
-  const artifactTargetSessionId = browserTargetSessionId;
+  const artifactTargetSessionId = chatTargetSessionId;
   const isSessionSetup = activeSession?.status === 'setup' || activeSetupProgress?.status === 'running';
 
   // When Command Center is deactivated, restore activeSessionId from the last focused cell
@@ -141,20 +152,130 @@ export default function MainContent() {
     return unsubscribe;
   }, []);
 
-  // Auto-enable browser for the visible tab/session when browser panel is opened.
-  useEffect(() => {
-    if (isBrowserPanelOpen && browserTargetSessionId) {
-      if (!sessionBrowsersEnabled[browserTargetSessionId]) {
-        enableSessionBrowser(browserTargetSessionId);
-      }
-    }
-  }, [isBrowserPanelOpen, browserTargetSessionId, sessionBrowsersEnabled, enableSessionBrowser]);
+  const mountedBrowserTabs = useMemo(() => browserTabs.filter((tab) => (
+    sessions.some((session) => session.id === tab.ownerSessionId)
+  )), [browserTabs, sessions]);
+  const activeBrowserPartitionId = useMemo(() => (
+    chatTargetSession ? getBrowserPartitionId(chatTargetSession.id, sessions) : null
+  ), [chatTargetSession, sessions]);
+  const browserTabsForPartition = useMemo(() => mountedBrowserTabs.filter((tab) => (
+    tab.partitionId === activeBrowserPartitionId
+  )), [activeBrowserPartitionId, mountedBrowserTabs]);
+  const activeBrowserTabId = activeBrowserPartitionId
+    ? activeBrowserTabIdsByPartition[activeBrowserPartitionId] || null
+    : null;
+  const activeBrowserTab = browserTabsForPartition.find((tab) => tab.id === activeBrowserTabId)
+    || browserTabsForPartition[0]
+    || null;
+  const activeBrowserOwnerSession = activeBrowserTab
+    ? sessions.find((session) => session.id === activeBrowserTab.ownerSessionId) || null
+    : null;
 
-  const commandCenterSessions = useMemo(() => {
-    return commandCenterSessionIds
-      .map((id) => sessions.find((session) => session.id === id))
-      .filter((session): session is NonNullable<typeof session> => Boolean(session));
-  }, [commandCenterSessionIds, sessions]);
+  const createTabForSession = useCallback((session = chatTargetSession) => {
+    if (!session) return null;
+    const partitionId = getBrowserPartitionId(session.id, sessions);
+    const url = session.lastBrowserUrl || `http://localhost:${session.ports?.web || 3000}`;
+    return createBrowserTab(session.id, partitionId, url);
+  }, [chatTargetSession, createBrowserTab, sessions]);
+
+  // Each root Build session/fork family owns an independent browser tab group.
+  // Switching chat tabs inside the family keeps the same group, while switching
+  // a left-sidebar Build session restores that group's selected browser tab.
+  useEffect(() => {
+    if (!isBrowserPanelOpen) return;
+    if (browserTabsForPartition.length === 0) createTabForSession();
+    else if (!activeBrowserTabId || !browserTabsForPartition.some((tab) => tab.id === activeBrowserTabId)) {
+      setActiveBrowserTab(browserTabsForPartition[0].id);
+    }
+  }, [activeBrowserTabId, browserTabsForPartition, createTabForSession, isBrowserPanelOpen, setActiveBrowserTab]);
+
+  const activeSessionGroupId = activeSession
+    ? getBrowserPartitionId(activeSession.id, sessions)
+    : null;
+  const configuredSplitSessionId = activeSessionGroupId
+    ? sessionSplitPaneIds[activeSessionGroupId] || null
+    : null;
+  const splitSession = configuredSplitSessionId
+    ? sessions.find((session) => (
+      session.id === configuredSplitSessionId
+      && session.id !== activeSession?.id
+      && getBrowserPartitionId(session.id, sessions) === activeSessionGroupId
+    )) || null
+    : null;
+
+  // If the user selects the tab currently shown in the secondary pane, swap
+  // the old primary into that pane instead of rendering the same chat twice.
+  useEffect(() => {
+    if (!activeSession || !activeSessionGroupId) {
+      previousPrimarySessionIdRef.current = null;
+      return;
+    }
+
+    const previousPrimaryId = previousPrimarySessionIdRef.current;
+    if (configuredSplitSessionId === activeSession.id) {
+      const previousPrimary = sessions.find((session) => session.id === previousPrimaryId);
+      if (
+        previousPrimary
+        && previousPrimary.id !== activeSession.id
+        && getBrowserPartitionId(previousPrimary.id, sessions) === activeSessionGroupId
+      ) {
+        setSessionSplitPane(activeSessionGroupId, previousPrimary.id);
+      } else {
+        setSessionSplitPane(activeSessionGroupId, null);
+      }
+    } else if (configuredSplitSessionId && !splitSession) {
+      setSessionSplitPane(activeSessionGroupId, null);
+    }
+
+    previousPrimarySessionIdRef.current = activeSession.id;
+  }, [activeSession, activeSessionGroupId, configuredSplitSessionId, sessions, setSessionSplitPane, splitSession]);
+
+  useEffect(() => {
+    const clearSplitDrop = () => setIsSessionSplitDropActive(false);
+    window.addEventListener('dragend', clearSplitDrop);
+    window.addEventListener('drop', clearSplitDrop);
+    return () => {
+      window.removeEventListener('dragend', clearSplitDrop);
+      window.removeEventListener('drop', clearSplitDrop);
+    };
+  }, []);
+
+  const handleSessionSplitDragOver = useCallback((event: React.DragEvent<HTMLDivElement>) => {
+    if (!event.dataTransfer.types.includes(SESSION_TAB_DRAG_TYPE)) return;
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const isRightDropZone = event.clientX >= bounds.left + bounds.width * 0.55;
+    if (!isRightDropZone) {
+      setIsSessionSplitDropActive(false);
+      return;
+    }
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+    setIsSessionSplitDropActive(true);
+  }, []);
+
+  const handleSessionSplitDrop = useCallback((event: React.DragEvent<HTMLDivElement>) => {
+    if (!activeSession || !activeSessionGroupId) return;
+    const droppedSessionId = event.dataTransfer.getData(SESSION_TAB_DRAG_TYPE);
+    const droppedSession = sessions.find((session) => session.id === droppedSessionId);
+    if (
+      !droppedSession
+      || droppedSession.id === activeSession.id
+      || getBrowserPartitionId(droppedSession.id, sessions) !== activeSessionGroupId
+    ) {
+      setIsSessionSplitDropActive(false);
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    setSessionSplitPane(activeSessionGroupId, droppedSession.id);
+    setIsSessionSplitDropActive(false);
+  }, [activeSession, activeSessionGroupId, sessions, setSessionSplitPane]);
+
+  const handleSessionSplitDragLeave = useCallback((event: React.DragEvent<HTMLDivElement>) => {
+    const nextTarget = event.relatedTarget as Node | null;
+    if (nextTarget && event.currentTarget.contains(nextTarget)) return;
+    setIsSessionSplitDropActive(false);
+  }, []);
 
   // Calculate flex basis percentages based on split ratio
   const getFlexBasis = () => {
@@ -357,7 +478,37 @@ export default function MainContent() {
           ) : (
             <>
               <ForkTabs sessionId={activeSession.id} />
-              <ChatContainer session={activeSession} />
+              <div
+                ref={chatSplitAreaRef}
+                className="flex-1 min-h-0 flex overflow-hidden relative"
+                onDragOver={handleSessionSplitDragOver}
+                onDragLeave={handleSessionSplitDragLeave}
+                onDrop={handleSessionSplitDrop}
+              >
+                <div className="flex-1 min-w-0 flex overflow-hidden">
+                  <ChatContainer session={activeSession} />
+                </div>
+                {splitSession && (
+                  <>
+                    <div className="w-px flex-shrink-0 bg-claude-border shadow-[0_0_0_1px_rgba(255,255,255,0.025)]" />
+                    <div className="flex-1 min-w-0 flex overflow-hidden">
+                      <ChatContainer
+                        session={splitSession}
+                        onClosePane={() => {
+                          if (activeSessionGroupId) setSessionSplitPane(activeSessionGroupId, null);
+                        }}
+                      />
+                    </div>
+                  </>
+                )}
+                {isSessionSplitDropActive && (
+                  <div className="absolute z-40 top-1 bottom-1 right-1 w-[calc(50%_-_0.25rem)] pointer-events-none border-2 border-claude-accent bg-claude-accent/10 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.08)] flex items-center justify-center">
+                    <div className="px-3 py-2 bg-claude-surface border border-claude-accent text-[11px] font-mono font-bold uppercase tracking-wider text-claude-accent">
+                      Split right
+                    </div>
+                  </div>
+                )}
+              </div>
             </>
           )}
         </div>
@@ -406,48 +557,36 @@ export default function MainContent() {
             >
               {/* Left side of side panel: Browser, Git, Editor (stacked vertically) */}
               <div className={`flex flex-col overflow-hidden ${isExtensionsPanelOpen && isBrowserPanelOpen ? 'flex-1' : 'w-full h-full'}`}>
-                {/* Browser panel - render only the focused session's webview. */}
+                {/* Browser panel — independent from chat/session tab selection. */}
                 {isBrowserPanelOpen && (
                   <div className={`flex flex-col overflow-hidden ${isGitPanelOpen || isEditorOpen ? 'flex-1' : 'h-full'}`}>
                     <div className="h-10 flex items-center justify-between border-b border-claude-border bg-claude-surface">
-                      {/* Command Center mode: session tabs */}
-                      {isCommandCenterActive && commandCenterSessions.length > 1 ? (
-                        <div className="flex-1 flex items-center overflow-x-auto">
-                          {commandCenterSessions.map(session => {
-                            const isFocused = commandCenterFocusedSessionId
-                              ? commandCenterFocusedSessionId === session.id
-                              : false;
-                            return (
-                              <button
-                                key={session.id}
-                                onClick={() => setCommandCenterFocusedSession(session.id)}
-                                className={`flex items-center gap-1.5 px-3 py-2 text-xs font-mono border-r border-claude-border transition-colors whitespace-nowrap ${
-                                  isFocused
-                                    ? 'bg-claude-bg text-claude-text'
-                                    : 'bg-claude-surface text-claude-text-secondary hover:bg-claude-bg/50'
-                                }`}
-                              >
-                                <div
-                                  className={`w-1.5 h-1.5 flex-shrink-0 ${session.status === 'running' ? 'bg-green-500' : 'bg-gray-500'}`}
-                                  style={{ borderRadius: 0 }}
-                                />
-                                <span className="truncate max-w-[120px]">
-                                  {getSessionDisplayName(session)}
-                                </span>
-                              </button>
-                            );
-                          })}
-                        </div>
-                      ) : (
-                        <div className="flex items-center gap-2 px-3">
-                          <span className="text-sm font-medium">Browser Preview</span>
-                          {viewportMode === 'mobile' && (
-                            <span className="text-xs text-purple-400 font-medium">
-                              375 × {mobileBrowserHeight}
-                            </span>
-                          )}
-                        </div>
-                      )}
+                      <div className="flex-1 flex items-center overflow-x-auto">
+                        {browserTabsForPartition.map((tab) => (
+                          <BrowserSessionTab
+                            key={tab.id}
+                            tab={tab}
+                            ownerSession={sessions.find((session) => session.id === tab.ownerSessionId)}
+                            isActive={activeBrowserTab?.id === tab.id}
+                            onActivate={() => setActiveBrowserTab(tab.id)}
+                          />
+                        ))}
+                        <button
+                          type="button"
+                          onClick={() => createTabForSession()}
+                          disabled={!chatTargetSession}
+                          className="h-full px-2 text-claude-text-secondary hover:text-claude-text hover:bg-claude-bg/50 disabled:opacity-30"
+                          title="New browser tab"
+                          aria-label="New browser tab"
+                        >
+                          <Plus size={13} />
+                        </button>
+                        {viewportMode === 'mobile' && (
+                          <span className="ml-2 text-xs text-purple-400 font-medium whitespace-nowrap">
+                            375 × {mobileBrowserHeight}
+                          </span>
+                        )}
+                      </div>
                       <button
                         onClick={toggleBrowserPanel}
                         className="p-1 mx-2 rounded hover:bg-claude-bg text-claude-text-secondary hover:text-claude-text flex-shrink-0"
@@ -462,8 +601,28 @@ export default function MainContent() {
                         className={`${viewportMode === 'mobile' ? 'relative rounded-xl overflow-hidden shadow-2xl border-4 border-gray-700' : 'absolute inset-0'}`}
                         style={viewportMode === 'mobile' ? { width: 375, height: mobileBrowserHeight } : undefined}
                       >
-                        {browserTargetSession ? (
-                          <BrowserPreview key={browserTargetSession.id} session={browserTargetSession} isVisible={true} />
+                        {/* Persist every tab's URL, but keep only the visible tab's
+                            Chromium guest alive. A hidden <webview> still owns a
+                            renderer process, so mounting the whole saved workspace
+                            made inactive sessions consume gigabytes after restart. */}
+                        {activeBrowserTab && activeBrowserOwnerSession ? (
+                          <div
+                            key={activeBrowserTab.id}
+                            data-browser-tab-id={activeBrowserTab.id}
+                            data-browser-owner-session-id={activeBrowserTab.ownerSessionId}
+                            className="absolute inset-0"
+                          >
+                            <BrowserPreviewBoundary tabId={activeBrowserTab.id}>
+                              <BrowserPreview
+                                session={activeBrowserOwnerSession}
+                                isVisible={true}
+                                partitionId={activeBrowserTab.partitionId}
+                                browserTabId={activeBrowserTab.id}
+                                initialBrowserUrl={activeBrowserTab.url}
+                                onBrowserUrlChange={(url) => updateBrowserTabUrl(activeBrowserTab.id, url)}
+                              />
+                            </BrowserPreviewBoundary>
+                          </div>
                         ) : null}
                       </div>
                       {/* Vertical resize handle for mobile browser - only in mobile mode */}

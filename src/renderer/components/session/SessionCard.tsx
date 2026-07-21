@@ -4,6 +4,7 @@ import { useSessionStore } from '../../stores/session.store';
 import type { Session } from '../../../shared/types';
 import { GSTACK_MODE_META } from '../../../shared/types';
 import { getSessionDisplayName } from '../../utils/session-display';
+import PullRequestStatusIcon from '../git/PullRequestStatusIcon';
 
 /**
  * Truncate a file path to show at most the last N segments.
@@ -339,6 +340,7 @@ export default function SessionCard({ session, isActive, onClick, isFork = false
             <span className="text-[10px] truncate">
               {session.branch}
             </span>
+            <PullRequestStatusIcon sessionId={session.id} branch={session.branch} size={10} />
             <span className="text-[10px] text-claude-text-secondary/60 flex-shrink-0">
               · {formatRelativeDate(new Date(session.updatedAt))}
             </span>

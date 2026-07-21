@@ -8,8 +8,10 @@ import { AutoUnpackNativesPlugin } from '@electron-forge/plugin-auto-unpack-nati
 import { WebpackPlugin } from '@electron-forge/plugin-webpack';
 import { FusesPlugin } from '@electron-forge/plugin-fuses';
 import { FuseV1Options, FuseVersion } from '@electron/fuses';
+import { execFile } from 'child_process';
 import * as os from 'os';
 import * as path from 'path';
+import { promisify } from 'util';
 
 import { mainConfig } from './webpack.main.config';
 import { rendererConfig } from './webpack.renderer.config';
@@ -140,6 +142,53 @@ const config: ForgeConfig = {
           console.log(`[Packaging] Warning: QMD not found for ${platformKey}. Run 'npx ts-node scripts/setup-qmd.ts ${platformKey}' to set up.`);
         }
 
+        // Bundle the upstream Parable skill and dispatcher. Parable mode refreshes
+        // its managed copy in ~/.claude/skills so Claude Code can act as the
+        // meta-harness while Build remains the host UI/session runtime.
+        const parableSourceDir = path.join(__dirname, 'resources', 'parable');
+        const parableDestDir = path.join(resourcesPath, 'parable');
+        if (fs.existsSync(parableSourceDir)) {
+          await fs.copy(parableSourceDir, parableDestDir);
+          console.log(`[Packaging] Copied Parable skill to ${parableDestDir}`);
+        } else {
+          console.log('[Packaging] Warning: bundled Parable skill not found');
+        }
+
+        // Cascade is a separate, single-harness workflow mode. Bundle its
+        // upstream playbook and templates without tying it to Parable's cast.
+        const cascadeSourceDir = path.join(__dirname, 'resources', 'cascade');
+        const cascadeDestDir = path.join(resourcesPath, 'cascade');
+        if (fs.existsSync(cascadeSourceDir)) {
+          await fs.copy(cascadeSourceDir, cascadeDestDir);
+          console.log(`[Packaging] Copied Cascade skill to ${cascadeDestDir}`);
+        } else {
+          console.log('[Packaging] Warning: bundled Cascade skill not found');
+        }
+
+        // Auto Build's lightweight scope gate uses an app-owned skill. Keep it
+        // in Resources and inject it into every harness at runtime; do not add
+        // it to the host project's or user's skill directories.
+        const eightyTwentySourceDir = path.join(__dirname, 'resources', '80-20');
+        const eightyTwentyDestDir = path.join(resourcesPath, '80-20');
+        if (fs.existsSync(eightyTwentySourceDir)) {
+          await fs.copy(eightyTwentySourceDir, eightyTwentyDestDir);
+          console.log(`[Packaging] Copied 80/20 skill to ${eightyTwentyDestDir}`);
+        } else {
+          console.log('[Packaging] Warning: bundled 80/20 skill not found');
+        }
+
+        // Every user-facing harness gets the same app-owned, ADHD-friendly
+        // response contract. Bundle its source and MIT attribution without
+        // writing anything into the user's project or agent skill folders.
+        const adhdOutputSourceDir = path.join(__dirname, 'resources', 'i-have-adhd');
+        const adhdOutputDestDir = path.join(resourcesPath, 'i-have-adhd');
+        if (fs.existsSync(adhdOutputSourceDir)) {
+          await fs.copy(adhdOutputSourceDir, adhdOutputDestDir);
+          console.log(`[Packaging] Copied ADHD-friendly output skill to ${adhdOutputDestDir}`);
+        } else {
+          console.log('[Packaging] Warning: bundled ADHD-friendly output skill not found');
+        }
+
         if (options.platform === 'darwin') {
           const appPath = path.join(outputPath, 'Build.app');
 
@@ -200,8 +249,6 @@ const config: ForgeConfig = {
             try {
               // Avoid LaunchServices resolving com.parcha.build to an older
               // staged out/v*/Build.app after installing the fresh app.
-              const { execFile } = require('child_process');
-              const { promisify } = require('util');
               const execFileAsync = promisify(execFile);
               const lsregister = '/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister';
               const outRoot = path.join(__dirname, 'out');

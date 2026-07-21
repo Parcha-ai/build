@@ -9,6 +9,7 @@ import InputArea from '../chat/InputArea';
 import type { Session } from '../../../shared/types';
 import { canSendMessageToSession } from '../../utils/session-input';
 import { getSessionDisplayName } from '../../utils/session-display';
+import PullRequestStatusIcon from '../git/PullRequestStatusIcon';
 
 // Stable empty arrays to avoid reference changes
 const EMPTY_MESSAGES: never[] = [];
@@ -147,6 +148,11 @@ export default function CommandCenterCell({ session, forks, isFocused }: Command
               ACTIVE
             </span>
           )}
+          <PullRequestStatusIcon
+            sessionId={displaySession.id}
+            branch={displaySession.branch}
+            size={10}
+          />
         </div>
 
         {/* Fork tabs inline — only when session has forks */}
@@ -169,6 +175,13 @@ export default function CommandCenterCell({ session, forks, isFocused }: Command
                   title={getSessionDisplayName(fork)}
                 >
                   {label}
+                  <PullRequestStatusIcon
+                    sessionId={fork.id}
+                    branch={fork.branch}
+                    size={9}
+                    interactive={false}
+                    className="ml-1"
+                  />
                 </button>
               );
             })}
@@ -220,7 +233,21 @@ export default function CommandCenterCell({ session, forks, isFocused }: Command
         </div>
       )}
 
-      {/* Question dialog — only in focused cell */}
+      {/* Keep interactive requests visible even when another cell has focus. */}
+      {!isFocused && currentQuestion && (
+        <button
+          type="button"
+          className="flex-shrink-0 border-t border-blue-400/40 bg-blue-400/10 px-2 py-1.5 text-left text-[10px] font-bold uppercase tracking-[0.08em] text-blue-300 hover:bg-blue-400/20"
+          onClick={(event) => {
+            event.stopPropagation();
+            handleFocus();
+          }}
+        >
+          Question waiting · click to answer
+        </button>
+      )}
+
+      {/* Question dialog — focused cell */}
       {isFocused && currentQuestion && (
         <div className="border-t border-claude-border px-2 py-1.5 bg-claude-surface">
           <QuestionDialog

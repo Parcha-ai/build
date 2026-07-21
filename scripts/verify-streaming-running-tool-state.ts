@@ -45,8 +45,8 @@ assert.match(
 );
 assert.match(
   sessionStore,
-  /const keepActiveForRunningTools = hasUnfinishedToolCalls\(latestState\.currentToolCalls\[sessionId\]\);/,
-  'SSH remote monitor must not mark the UI idle while visible tool calls are still running',
+  /const backendStillActive = await window\.electronAPI\.claude\.hasActiveQuery\(sessionId\)[\s\S]*?settleUnfinishedToolCalls\(latestState\.currentToolCalls\[sessionId\]\)/,
+  'SSH remote monitor must use runtime liveness, then settle orphaned tool cards instead of staying active forever',
 );
 assert.match(
   installedVerifier,

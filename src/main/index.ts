@@ -531,6 +531,13 @@ const createWindow = (): void => {
   mainWindow.webContents.on('did-attach-webview', (event, webviewContents) => {
     console.log('[Main] Webview attached, id:', webviewContents.id);
 
+    // Configure the actual per-Build-session guest partition. BrowserPreview
+    // uses persist:browser-<rootSessionId>, so configuring only the legacy
+    // persist:browser session would leave grouped tabs without permissions.
+    webviewContents.session.setPermissionRequestHandler((_requestingContents, _permission, callback) => {
+      callback(true);
+    });
+
     // Forward Ctrl+Tab from webview to main window renderer so the session
     // switcher works even when the browser preview has focus. Webview has
     // its own renderer process — keyboard events don't reach the parent.
@@ -563,7 +570,9 @@ const createWindow = (): void => {
           action: 'allow',
           overrideBrowserWindowOptions: {
             webPreferences: {
-              partition: 'persist:browser',
+              // Reuse the exact guest session so OAuth cookies land in the
+              // originating Build session's profile.
+              session: webviewContents.session,
               webSecurity: false,
             }
           }
@@ -719,6 +728,10 @@ function createNewWindow(): void {
   win.webContents.on('did-attach-webview', (_event, webviewContents) => {
     console.log('[Main] Webview attached, id:', webviewContents.id);
 
+    webviewContents.session.setPermissionRequestHandler((_requestingContents, _permission, callback) => {
+      callback(true);
+    });
+
     webviewContents.on('before-input-event', (evt, input) => {
       const k = (input.key || '').toLowerCase();
       const primaryModifier = isMac ? input.meta : input.control;
@@ -747,7 +760,7 @@ function createNewWindow(): void {
           action: 'allow',
           overrideBrowserWindowOptions: {
             webPreferences: {
-              partition: 'persist:browser',
+              session: webviewContents.session,
               webSecurity: false,
             }
           }

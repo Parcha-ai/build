@@ -28,11 +28,29 @@ assert.doesNotMatch(claudeIpc, /killActive: hadError/, 'stream errors must never
 const killActiveTrueCount = (claudeIpc.match(/killActive: true/g) || []).length;
 assert.strictEqual(killActiveTrueCount, 1, 'exactly one killActive: true site in claude.ipc (gated stale-drain)');
 
-// 3. Post-error probe: when a stream ends in error on SSH, the main process
-// checks for a surviving remote job and asks the renderer to reattach.
-assert.match(claudeIpc, /Remote turn survived local stream error/);
-assert.match(claudeIpc, /getLatestRecoverableRemoteProcess\(sessionId, completedSession\.sshConfig!\)/);
+// 3. Post-error probe happens before the safety-net STREAM_END. A surviving
+// job — or a probe made uncertain by the same transport outage — defers final
+// text/persistence and asks the renderer to reattach.
+assert.match(claudeIpc, /Remote turn survived or may have survived local stream error/);
+assert.match(claudeIpc, /\{ throwOnError: true \}/);
+assert.match(claudeIpc, /deferFinalizationForRemoteRecovery/);
+assert.match(claudeIpc, /Deferring STREAM_END for recoverable SSH turn/);
+assert.match(claudeIpc, /pendingSshStreamError && !deferFinalizationForRemoteRecovery/);
+const remoteProbeIndex = claudeIpc.indexOf('getLatestRecoverableRemoteProcess(\n                sessionId');
+const safetyNetIndex = claudeIpc.indexOf('Safety net: sending STREAM_END for');
+assert.ok(remoteProbeIndex > 0 && safetyNetIndex > remoteProbeIndex,
+  'recoverability must be established before the IPC safety net publishes STREAM_END');
 assert.match(claudeIpc, /CLAUDE_REMOTE_TURN_RECOVERABLE, \{ sessionId \}/);
+
+// Reattach itself remains open while SSH is unavailable instead of producing
+// an empty terminal response. Once attached, renderer liveness is based on an
+// unreplayed bridge job, not an unrelated/stale session process.
+assert.match(claudeService, /SSH reattach unavailable for .*; retrying:/);
+assert.match(claudeService, /while \(!abortController\.signal\.aborted\)/);
+assert.match(sessionStore, /async function hasRecoverableRemoteProcess/);
+assert.doesNotMatch(sessionStore, /async function hasLiveRemoteProcess/);
+assert.match(sessionStore, /if \(message\.interrupted && hasUnfinishedVisibleTools/);
+assert.match(sessionStore, /if \(message\.interrupted && currentState\.isStreaming\[sessionId\]/);
 
 // 4. Drain stale-kill is progress-aware: a live, progressing remote turn is
 // reattached and the drain deferred; only a job whose log stopped growing for
@@ -82,6 +100,12 @@ assert.doesNotMatch(
   /job\.active && !job\.completed && !job\.recovered/,
   'active detached bridge jobs must not depend on the completed flag'
 );
+assert.match(sshService, /Recovered remote stdin bridge ready/);
+assert.match(
+  sshService,
+  /Aborting a recovered reader is a local detach, not user intent to kill/,
+  'losing the local reattach wrapper must not kill the surviving remote turn',
+);
 
 // 7. The SSH-exit stream error tells the user reattachment is automatic, and
 // explicit user cancel still kills remote work (the one intentional kill).
@@ -90,7 +114,10 @@ assert.match(claudeService, /formatRemoteClaudeProcessExitError/);
 assert.match(claudeService, /Boolean\(recoverableJob\?\.active\)/);
 assert.match(claudeService, /Remote Claude failed to start because the SSH remote workdir was not found or is not accessible/);
 const cancelQueryStart = claudeService.indexOf('cancelQuery(sessionId: string)');
-const cancelQueryBlock = claudeService.slice(cancelQueryStart, cancelQueryStart + 1600);
+const cancelQueryBlock = claudeService.slice(cancelQueryStart, cancelQueryStart + 3200);
 assert.match(cancelQueryBlock, /killActive: true/, 'explicit cancel must still kill remote work');
+assert.match(cancelQueryBlock, /this\.remoteCancellationCleanup\.set\(sessionId, cleanupPromise\)/);
+assert.match(claudeIpc, /await claudeService\.cancelQuery\(sessionId\)/);
+assert.match(claudeService, /Waiting for prior remote cancellation before starting/);
 
 console.log('verify-ssh-turn-survival: all checks passed');

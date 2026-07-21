@@ -26,6 +26,18 @@ export function registerQueueHandlers(ipcMain: IpcMain): void {
     return messageQueueService.getState(sessionId);
   });
 
+  ipcMain.handle('queue:fast-stack-begin', (_e, sessionId: string) => {
+    messageQueueService.beginFastStack(sessionId);
+  });
+
+  ipcMain.handle('queue:fast-stack-running', (_e, sessionId: string) => {
+    messageQueueService.markFastStackRunning(sessionId);
+  });
+
+  ipcMain.handle('queue:fast-stack-abort', (_e, sessionId: string) => {
+    messageQueueService.abortFastStack(sessionId);
+  });
+
   // Forward state changes to renderer
   messageQueueService.on('state-changed', (sessionId: string, state: unknown) => {
     for (const w of BrowserWindow.getAllWindows()) {

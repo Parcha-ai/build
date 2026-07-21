@@ -3,23 +3,22 @@ import fs from 'fs';
 import Module from 'module';
 import path from 'path';
 
-// Guards the generalized same-harness continuity bias: follow-up turns stay on
-// the previous turn's harness (native resume is cheaper than rebuilding
-// context), while genuinely new intents, explicit harness requests, plan
-// escalations, and capability needs re-route freely.
+// Guards settings-aligned continuity: native resume is reused only when it
+// agrees with the configured model for the newly resolved tier. Tier changes,
+// approved plans, custom routes, and explicit harness requests can switch.
 
 const root = path.resolve(__dirname, '..');
 const autoRouterSource = fs.readFileSync(path.join(root, 'src/main/services/auto-router.service.ts'), 'utf8');
 const claudeServiceSource = fs.readFileSync(path.join(root, 'src/main/services/claude.service.ts'), 'utf8');
 const flueMetaRouterSource = fs.readFileSync(path.join(root, 'src/main/services/flue-meta-router.service.ts'), 'utf8');
 
-// Static wiring: continuity must not be gated on approved plans alone.
+// Static wiring: settings choose first; continuity is only an optimization.
 assert.match(autoRouterSource, /isContinuationIntentMessage/);
-assert.match(autoRouterSource, /if \(options\.approvedPlanContinuation\) return true;/);
-assert.match(autoRouterSource, /return isContinuationIntentMessage\(message, signals\);/);
-assert.match(autoRouterSource, /Follow-up on previous \$\{continuationHarness\} turn/);
+assert.match(autoRouterSource, /if \(options\.approvedPlanContinuation && isApprovedPlanExecutionFollowup\(message\)\) return false;/);
+assert.match(autoRouterSource, /harnessFromModel\(configured\) === options\.continuationHarness/);
+assert.match(autoRouterSource, /Configured \$\{tier\} model \$\{configured\} matches the previous/);
 assert.match(autoRouterSource, /continuationHarness: routeOptions\.continuationHarness/);
-assert.match(autoRouterSource, /metaLead\.harness === continuationLead\.harness/);
+assert.match(autoRouterSource, /!metaLead && !customCategoryLead/);
 
 // claude.service resolves the previous route on EVERY Auto Build turn.
 assert.match(claudeServiceSource, /const continuationRoute = await this\.resolveLastAssistantRoute\(sessionId, normalizedSupplementalMessages, recentRoutingMessages\);/);
@@ -32,7 +31,7 @@ assert.doesNotMatch(
 // The meta-controller sees the previous turn and the continuity rule.
 assert.match(flueMetaRouterSource, /continuationHarness\?: Harness;/);
 assert.match(flueMetaRouterSource, /previousTurn: request\.continuationHarness \? \{/);
-assert.match(flueMetaRouterSource, /Continuity: previousTurn = last lead harness\/model/);
+assert.match(flueMetaRouterSource, /Reuse it only when it agrees with the fixed model for the resolved tier/);
 
 const settings = {
   autoRouterConfig: {
@@ -107,15 +106,18 @@ async function runContinuityAssertions(): Promise<void> {
     );
     assert.equal(followUp.resolvedHarness, 'codex', 'follow-up should stay on previous harness');
     assert.equal(followUp.resolvedModel, 'codex:gpt-5.5');
-    assert.match(followUp.reason, /Follow-up on previous codex turn/);
+    assert.match(followUp.reason, /Configured .* model codex:gpt-5.5 matches the previous codex harness/);
 
-    // 2. Anaphoric medium-length refinement sticks too.
+    // 2. A follow-up that resolves to Refinement follows the configured Cursor
+    // model instead of sticking to the previous Codex harness.
     const anaphoric = await autoRouterService.classifyAndRoute(
-      'continuity-anaphora-sticks',
+      'continuity-anaphora-follows-tier-settings',
       'That change broke the settings dialog spacing — adjust what you did so the buttons line up with the inputs again',
       baseOptions,
     );
-    assert.equal(anaphoric.resolvedHarness, 'codex', 'anaphoric refinement should stay on previous harness');
+    assert.equal(anaphoric.tier, 'refine');
+    assert.equal(anaphoric.resolvedHarness, 'cursor', 'refinement settings must beat prior-harness inertia');
+    assert.equal(anaphoric.resolvedModel, 'cursor:composer-2.5');
 
     // 3. A long, self-contained new request re-routes freely.
     const newIntent = await autoRouterService.classifyAndRoute(
@@ -150,7 +152,8 @@ async function runContinuityAssertions(): Promise<void> {
       'now update the readme section about CLAUDE.md too',
       baseOptions,
     );
-    assert.equal(bareMention.resolvedHarness, 'codex', 'bare harness-name mention should not break continuity');
+    assert.equal(bareMention.resolvedHarness, 'cursor', 'bare harness-name mention should still follow refinement settings');
+    assert.notEqual(bareMention.resolvedHarness, 'claude', 'bare CLAUDE.md mention must not act like an explicit Claude request');
 
     // 5. "New task" cue breaks stickiness even when short-ish.
     const newTask = await autoRouterService.classifyAndRoute(
@@ -169,12 +172,45 @@ async function runContinuityAssertions(): Promise<void> {
     assert.equal(planEscalation.tier, 'plan');
     assert.doesNotMatch(planEscalation.reason, /Follow-up on previous/);
 
+    // 7. A Build follow-up coming from a Claude planning model switches to the
+    // configured Execution model.
+    const crossTierSwitch = await autoRouterService.classifyAndRoute(
+      'continuity-build-settings-beat-claude',
+      'now implement the approved api retry plan',
+      {
+        ...baseOptions,
+        continuationHarness: 'claude' as const,
+        continuationModel: 'claude-opus-4-8',
+      },
+    );
+    assert.equal(crossTierSwitch.tier, 'build');
+    assert.equal(crossTierSwitch.resolvedHarness, 'codex');
+    assert.equal(crossTierSwitch.resolvedModel, 'codex:gpt-5.5');
+
+    // 8. Approval is a hard phase boundary even when the prior planning model
+    // is available and resumable.
+    const approvedPlan = await autoRouterService.classifyAndRoute(
+      'continuity-approved-plan-switches',
+      'Execute the approved plan now.',
+      {
+        ...baseOptions,
+        approvedPlanContinuation: true,
+        continuationHarness: 'claude' as const,
+        continuationModel: 'claude-opus-4-8',
+      },
+    );
+    assert.equal(approvedPlan.tier, 'build');
+    assert.equal(approvedPlan.resolvedHarness, 'codex');
+    assert.equal(approvedPlan.resolvedModel, 'codex:gpt-5.5');
+
     console.log(`[AutoRouter] follow-up → ${followUp.resolvedHarness}:${followUp.resolvedModel}`);
     console.log(`[AutoRouter] anaphoric → ${anaphoric.resolvedHarness}:${anaphoric.resolvedModel}`);
     console.log(`[AutoRouter] new intent → ${newIntent.resolvedHarness}:${newIntent.resolvedModel}`);
     console.log(`[AutoRouter] explicit switch → ${explicitSwitch.resolvedHarness}:${explicitSwitch.resolvedModel}`);
     console.log(`[AutoRouter] new task cue → ${newTask.resolvedHarness}:${newTask.resolvedModel}`);
     console.log(`[AutoRouter] plan escalation → ${planEscalation.resolvedHarness}:${planEscalation.resolvedModel}`);
+    console.log(`[AutoRouter] cross-tier switch → ${crossTierSwitch.resolvedHarness}:${crossTierSwitch.resolvedModel}`);
+    console.log(`[AutoRouter] approved plan → ${approvedPlan.resolvedHarness}:${approvedPlan.resolvedModel}`);
   } finally {
     moduleWithLoad._load = originalLoad;
   }

@@ -9,9 +9,30 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { spawn } from 'child_process';
-import type { ChatMessage, ToolCall, Session, QuestionRequest, QuestionResponse, Attachment, ContentBlock, CompactionStatus, CompactionComplete, PlanApprovalRequest, PlanApprovalResponse, OrchestrationPlan, OrchestrationStage, Harness, TaskTier, TaskDomain, RoutingDecision, MetaHarnessPolicy } from '../../shared/types';
+import type {
+  ChatMessage,
+  ToolCall,
+  Session,
+  QuestionRequest,
+  QuestionResponse,
+  Attachment,
+  ContentBlock,
+  CompactionStatus,
+  CompactionComplete,
+  PlanApprovalRequest,
+  PlanApprovalResponse,
+  OrchestrationPlan,
+  OrchestrationStage,
+  Harness,
+  TaskTier,
+  TaskDomain,
+  RoutingDecision,
+  MetaHarnessPolicy,
+  AutoPlanningState,
+  PlanningGateDecision,
+} from '../../shared/types';
 import { powerService } from './power.service';
-import { BrowserWindow, nativeImage } from 'electron';
+import { BrowserWindow, nativeImage, type WebContents } from 'electron';
 import { IPC_CHANNELS } from '../../shared/constants/channels';
 import { browserService } from './browser.service';
 import { cdpProxyService } from './cdp-proxy.service';
@@ -32,6 +53,9 @@ import { getGeminiService } from './gemini.service';
 import { getOpenCodeService } from './opencode.service';
 import { autoRouterService } from './auto-router.service';
 import { parableService, type PreparedParableRuntime } from './parable.service';
+import { cascadeService, type PreparedCascadeRuntime } from './cascade.service';
+import { eightyTwentyService } from './eighty-twenty.service';
+import { adhdOutputService } from './adhd-output.service';
 import { formatConversationContext, mergeConversationMessages, buildCrossHarnessContext, buildUnifiedHarnessContext, formatProjectInstructionContextFiles } from './codex-context';
 import { secureKeysService } from './secure-keys.service';
 import { analyticsService, estimateBaselineCost, estimateCost } from './analytics.service';
@@ -52,6 +76,8 @@ import {
 import { hasExistingSessionTitle, rememberAutoSessionTitle, sanitizeSessionTitle } from './session-title.service';
 import { hasFileAttachments, prepareFileAttachmentsForHarness } from './attachment-file-assets';
 import { PARABLE_MODE_ID } from '../../shared/config/parable';
+import { shouldResetNativeHarnessThread } from '../../shared/utils/harness-switch';
+import { normalizeClaudeSdkSessionId } from '../../shared/utils/claude-session-id';
 
 const STREAM_DEBUG = process.env.GREP_DEBUG_STREAMING === '1';
 const ATTACHMENT_ONLY_PROMPT = 'Use the attached file(s) as input for the current task. Continue from the existing session context and the latest user request instead of asking me to restate the task.';
@@ -74,6 +100,8 @@ const QUIET_IGNORED_SDK_SESSION_ID_SUBTYPES = new Set([
 const SDK_STATUS_NOTICE_INTERVAL_MS = 15_000;
 const TASK_PROGRESS_EMIT_INTERVAL_MS = 2_000;
 const TASK_PROGRESS_TEXT_CHANGE_INTERVAL_MS = 5_000;
+const AUTO_PLANNING_MIN_DISCOVERY_TURNS = 1;
+const AUTO_PLANNING_MAX_PLAN_WORDS = 500;
 
 interface HarnessContextLimits {
   maxConversationChars?: number;
@@ -95,6 +123,16 @@ const ASSUMED_REMOTE_CLI_CAPABILITIES: RemoteCliCapabilities = {
 };
 
 const CLI_HARNESS_CONTEXT_LIMITS: Partial<Record<Harness, HarnessContextLimits>> = {
+  // Keep the assembled handoff below Codex's 240K initial-prompt safety budget
+  // while preserving materially more recent history than the old 50K guard.
+  // The remaining headroom covers the current user turn, local/remote project
+  // instructions, execution policy, and Codex's own runtime context.
+  codex: {
+    maxConversationChars: 120000,
+    maxProjectContextChars: 50000,
+    maxProjectContextFiles: 24,
+    maxFinalChars: 180000,
+  },
   cursor: {
     maxConversationChars: 60000,
     maxProjectContextChars: 30000,
@@ -122,6 +160,7 @@ interface StreamEvent {
   result?: unknown;
   message?: ChatMessage;
   error?: string;
+  terminalFailure?: boolean;
   systemInfo?: {
     tools: string[];
     model: string;
@@ -160,9 +199,14 @@ interface StreamEvent {
 const CLAUDE_SDK_RESUME_CONTEXT_LIMIT_PERCENT = 95;
 
 interface PendingQuestion {
+  sessionId: string;
   resolve: (answers: Record<string, string>) => void;
   reject: (error: Error) => void;
 }
+
+type ClaudeToolPermissionDecision =
+  | { behavior: 'allow'; updatedInput: Record<string, unknown> }
+  | { behavior: 'deny'; message: string };
 
 interface PendingPermission {
   resolve: (response: { approved: boolean; modifiedInput?: Record<string, unknown> }) => void;
@@ -184,6 +228,26 @@ interface PlanApprovalRecord {
   planFilePath?: string;
 }
 
+interface ApprovedPlanArtifact {
+  content: string;
+  filePath: string;
+  pendingExecution?: boolean;
+  updatedAt?: string;
+}
+
+interface PendingAutoPlanExecutionHandoff {
+  approvedAt: number;
+  retirePlanningSession?: boolean;
+}
+
+interface PendingHarnessSwitch {
+  fromModel: string;
+  toModel: string;
+  fromHarness: Harness;
+  toHarness: Harness;
+  timestamp: number;
+}
+
 export class ClaudeService {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private store: any;
@@ -196,6 +260,14 @@ export class ClaudeService {
   private activeQueryStartedAt: Map<string, number> = new Map();
   private activeQueryLastEventAt: Map<string, number> = new Map();
   private activeQueryObjects: Map<string, Query> = new Map(); // Store Query objects for streamInput
+  // A recovered detached Claude process has no SDK Query object, but it still
+  // owns a live stream-json stdin socket. Keep that writable here so queued
+  // steering and control responses work after app restart / SSH reconnect.
+  private recoveredQueryInputs: Map<string, SpawnedProcess['stdin']> = new Map();
+  // Explicit cancellation must finish killing the prior remote bridge before
+  // a replacement turn can spawn, otherwise delayed cleanup can reap the new
+  // process (the Fast Stack race seen in production).
+  private remoteCancellationCleanup: Map<string, Promise<void>> = new Map();
   private sessionPermissionModes: Map<string, string> = new Map(); // Track current permission mode per session
   private prePlanPermissionModes: Map<string, string> = new Map(); // Track pre-plan mode for restoration after plan approval
   private autoBuildForcedPlanSessions: Set<string> = new Set(); // Track Auto Build's temporary plan-mode handoffs
@@ -204,9 +276,11 @@ export class ClaudeService {
   private pendingPlanApprovals: Map<string, PendingPlanApproval> = new Map();
   private planApprovalRecords: Map<string, PlanApprovalRecord> = new Map();
   private sessionPlanFiles: Map<string, { content: string; filePath: string }> = new Map(); // Cache plan content per session
-  private sessionApprovedPlanFiles: Map<string, { content: string; filePath: string }> = new Map(); // Last approved plan artifact per session
+  private sessionApprovedPlanFiles: Map<string, ApprovedPlanArtifact> = new Map(); // Last approved plan artifact per session
+  private pendingAutoPlanExecutionHandoffs: Map<string, PendingAutoPlanExecutionHandoff> = new Map();
   private lastPlanFeedback: Map<string, string> = new Map(); // Stores feedback from last plan rejection per session
   private mainWindow: BrowserWindow | null = null;
+  private sessionRenderers: Map<string, WebContents> = new Map();
   private onSessionNameChanged: (() => void) | null = null;
   private browserMcpServers: Map<string, any> = new Map();
 
@@ -262,6 +336,34 @@ export class ClaudeService {
 
   setMainWindow(window: BrowserWindow | null): void {
     this.mainWindow = window;
+  }
+
+  setSessionRenderer(sessionId: string, renderer: WebContents): void {
+    if (renderer.isDestroyed()) return;
+    this.sessionRenderers.set(sessionId, renderer);
+  }
+
+  clearSessionRenderer(sessionId: string, renderer?: WebContents): void {
+    const current = this.sessionRenderers.get(sessionId);
+    if (!current || (renderer && current.id !== renderer.id)) return;
+    this.sessionRenderers.delete(sessionId);
+  }
+
+  private sendInteractiveRendererEvent(sessionId: string, channel: string, payload: unknown): boolean {
+    const sessionRenderer = this.sessionRenderers.get(sessionId);
+    if (sessionRenderer && !sessionRenderer.isDestroyed()) {
+      sessionRenderer.send(channel, payload);
+      return true;
+    }
+    if (sessionRenderer?.isDestroyed()) {
+      this.sessionRenderers.delete(sessionId);
+    }
+
+    const liveWindows = BrowserWindow.getAllWindows().filter((window) => !window.isDestroyed());
+    for (const window of liveWindows) {
+      window.webContents.send(channel, payload);
+    }
+    return liveWindows.length > 0;
   }
 
   private updateStoredSession(sessionId: string, updater: (session: Session) => Session): boolean {
@@ -476,6 +578,7 @@ export class ClaudeService {
     this.activeQueryStartedAt.delete(sessionId);
     this.activeQueryLastEventAt.delete(sessionId);
     this.activeQueryObjects.delete(sessionId);
+    this.recoveredQueryInputs.delete(sessionId);
     return hadActiveQuery;
   }
 
@@ -485,7 +588,7 @@ export class ClaudeService {
       if (existing.holder === holder) {
         // Reentrant: recursive retry (e.g. streamMessage → yield* this.streamMessage)
         // inherits the outer caller's lock — return a no-op release.
-        return () => {};
+        return () => undefined;
       }
       console.log(`[Claude Service] Turn lock for ${sessionId.substring(0, 8)} held by "${existing.holder}"; "${holder}" waiting`);
       await existing.promise;
@@ -538,7 +641,9 @@ export class ClaudeService {
     return {
       active: true,
       aborted: false,
-      injectable: this.activeQueryObjects.has(sessionId),
+      injectable: this.activeQueryObjects.has(sessionId)
+        || this.recoveredQueryInputs.has(sessionId)
+        || codexService.canSteer(sessionId),
       ageMs: now - startedAt,
       idleMs: now - lastEventAt,
     };
@@ -860,6 +965,10 @@ When the user asks you to DESIGN something visual — a landing page, UI mockup,
   ): string {
     // Start with static content (cached by the API) then append dynamic context
     let append = ClaudeService.STATIC_SYSTEM_PROMPT;
+
+    // Default-on presentation contract for every native Claude turn. The
+    // contract also tells lead agents to preserve it when delegating work.
+    append += `\n\n${adhdOutputService.getSystemContext()}`;
 
     if (secureEnvContext) {
       append += `\n\n${secureEnvContext}`;
@@ -1380,11 +1489,11 @@ Read or source that file if you need the actual values. Do not print secret valu
   private getResolvedSdkSessionId(sessionId: string): string | undefined {
     const rawSdkSessionId = this.sessionStore.get(`sdkSessionMappings.${sessionId}`) as string | undefined
       || this.sessionStore.get(`sessions.${sessionId}.sdkSessionId`) as string | undefined;
-    return rawSdkSessionId && rawSdkSessionId !== 'new' ? rawSdkSessionId : undefined;
+    return normalizeClaudeSdkSessionId(rawSdkSessionId);
   }
 
   private getSshSdkResumeRepairCacheKey(sessionId: string, rawSdkSessionId: string | undefined): string {
-    return `${sessionId}:${rawSdkSessionId && rawSdkSessionId !== 'new' ? rawSdkSessionId : 'none'}`;
+    return `${sessionId}:${normalizeClaudeSdkSessionId(rawSdkSessionId) || 'none'}`;
   }
 
   private normalizeSdkResumeMatchText(value: string): string {
@@ -1455,7 +1564,7 @@ Read or source that file if you need the actual values. Do not print secret valu
     rawSdkSessionId: string | undefined,
     currentUserMessage: string,
   ): Promise<string | undefined> {
-    const currentSdkSessionId = rawSdkSessionId && rawSdkSessionId !== 'new' ? rawSdkSessionId : undefined;
+    const currentSdkSessionId = normalizeClaudeSdkSessionId(rawSdkSessionId);
     if (!session.sshConfig) return currentSdkSessionId;
 
     const prompts = this.getBuildUserPromptsForSdkResumeRepair(sessionId, currentUserMessage);
@@ -1581,7 +1690,8 @@ Read or source that file if you need the actual values. Do not print secret valu
   }
 
   private isCanonicalSdkSessionSystemMessage(systemMsg: { subtype?: string; session_id?: string }): boolean {
-    return !!systemMsg.session_id && (!systemMsg.subtype || systemMsg.subtype === 'init');
+    return !!normalizeClaudeSdkSessionId(systemMsg.session_id)
+      && (!systemMsg.subtype || systemMsg.subtype === 'init');
   }
 
   private logIgnoredSdkSessionId(sessionId: string, source: string, subtype: string): void {
@@ -1655,7 +1765,8 @@ Read or source that file if you need the actual values. Do not print secret valu
     systemMsg: { subtype?: string; session_id?: string },
     source: string
   ): string | undefined {
-    if (!systemMsg.session_id) return undefined;
+    const canonicalSdkSessionId = normalizeClaudeSdkSessionId(systemMsg.session_id);
+    if (!canonicalSdkSessionId) return undefined;
 
     if (!this.isCanonicalSdkSessionSystemMessage(systemMsg)) {
       this.logIgnoredSdkSessionId(sessionId, source, systemMsg.subtype || 'unknown');
@@ -1670,17 +1781,17 @@ Read or source that file if you need the actual values. Do not print secret valu
     // Resume turns must re-inject pre-baseline history every turn.
     const previousSdkSessionId = this.sessionStore.get(`sdkSessionMappings.${sessionId}`) as string | undefined;
     const hasBaseline = typeof this.sessionStore.get(`sdkSessionBaseline.${sessionId}`) === 'number';
-    if (previousSdkSessionId !== systemMsg.session_id || !hasBaseline) {
+    if (previousSdkSessionId !== canonicalSdkSessionId || !hasBaseline) {
       // Same-ID-but-no-baseline covers sessions from before baseline tracking
       // existed: we cannot know how much history their native session holds,
       // so mark "now" and re-inject everything older on subsequent turns.
       // Worst case for a healthy legacy session is bounded duplicate context;
       // worst case without this is permanent amnesia after an old restart.
       this.sessionStore.set(`sdkSessionBaseline.${sessionId}`, Date.now());
-      console.log(`[Claude SDK] Native session ${systemMsg.session_id.substring(0, 8)} for ${sessionId.substring(0, 8)} — baseline ${previousSdkSessionId !== systemMsg.session_id ? 'set (new session)' : 'backfilled (legacy)'} for pre-restart context re-injection`);
+      console.log(`[Claude SDK] Native session ${canonicalSdkSessionId.substring(0, 8)} for ${sessionId.substring(0, 8)} — baseline ${previousSdkSessionId !== canonicalSdkSessionId ? 'set (new session)' : 'backfilled (legacy)'} for pre-restart context re-injection`);
     }
-    this.sessionStore.set(`sdkSessionMappings.${sessionId}`, systemMsg.session_id);
-    return systemMsg.session_id;
+    this.sessionStore.set(`sdkSessionMappings.${sessionId}`, canonicalSdkSessionId);
+    return canonicalSdkSessionId;
   }
 
   /** Normalized comparable text for cross-transcript message matching. */
@@ -1876,7 +1987,10 @@ Read or source that file if you need the actual values. Do not print secret valu
     projectPath: string,
   ): string[] {
     const references: string[] = [];
-    const planFile = this.sessionPlanFiles.get(sessionId) || this.sessionApprovedPlanFiles.get(sessionId);
+    // Approved artifacts are injected only for an explicit execution follow-up.
+    // Keeping them in every unrelated handoff resurrects stale plan instructions
+    // long after the user has moved on to a different task.
+    const planFile = this.sessionPlanFiles.get(sessionId);
     if (planFile?.filePath) {
       references.push(`Plan file path: ${planFile.filePath}`);
     }
@@ -2086,14 +2200,16 @@ ${planContent}
     const contextLimits = CLI_HARNESS_CONTEXT_LIMITS[currentHarness];
     const remoteProjectContext = await this.buildRemoteProjectInstructionContext(sessionId, session, projectPath, contextLimits);
     const handoffReferences = this.buildAutoBuildHandoffReferences(sessionId, session, projectPath);
-    const approvedPlanHandoffContext = this.buildApprovedPlanHandoffContext(sessionId);
+    // CLI harnesses do not share Claude's system prompt. Embed the same
+    // app-owned default in their unified handoff, including Auto helper stages.
     const orchestrationAndPlanContext = [
-      approvedPlanHandoffContext,
+      adhdOutputService.getSystemContext(),
       autoOrchestrationContext,
-    ].filter(Boolean).join('\n\n');
-    const maxConversationChars = handoffReferences.length > 0
-      ? Math.min(contextLimits?.maxConversationChars ?? 24000, 24000)
-      : contextLimits?.maxConversationChars;
+    ].filter((value): value is string => Boolean(value?.trim())).join('\n\n');
+    const pinnedBuildContinuityContext = currentHarness === 'codex'
+      ? this.buildBuildSessionContinuityContext(sessionId, session, mergedMessages)
+      : '';
+    const maxConversationChars = contextLimits?.maxConversationChars;
 
     let context = buildUnifiedHarnessContext({
       messages: mergedMessages,
@@ -2101,6 +2217,7 @@ ${planContent}
       projectPath,
       additionalProjectContext: remoteProjectContext,
       orchestrationContext: orchestrationAndPlanContext,
+      continuityContext: pinnedBuildContinuityContext,
       handoffReferences,
       memoriesContext,
       includeProjectContext: session.sshConfig ? false : true,
@@ -2119,6 +2236,12 @@ ${planContent}
       });
     }
 
+    if (currentHarness === 'codex') {
+      console.log(
+        `[Claude Service] Codex handoff budget: project=${remoteProjectContext.length} chars conversation<=${maxConversationChars ?? 'default'} final=${context.length}/${contextLimits?.maxFinalChars ?? 'unbounded'} chars`,
+      );
+    }
+
     return context;
   }
 
@@ -2127,6 +2250,47 @@ ${planContent}
     if (model) {
       this.sessionStore.set(`harnessState.${sessionId}.lastAssistantModel`, model);
     }
+  }
+
+  noteHarnessSwitch(sessionId: string, fromModel: string, toModel: string): void {
+    if (!sessionId || !fromModel || !toModel || fromModel === toModel) return;
+    const key = `harnessState.${sessionId}.pendingHarnessSwitch`;
+    if (toModel === 'auto') {
+      this.sessionStore.delete(key);
+      return;
+    }
+    const marker: PendingHarnessSwitch = {
+      fromModel,
+      toModel,
+      fromHarness: this.getHarnessFromModel(fromModel),
+      toHarness: this.getHarnessFromModel(toModel),
+      timestamp: Date.now(),
+    };
+    this.sessionStore.set(key, marker);
+    console.log(
+      `[Claude Service] Recorded explicit harness switch ${marker.fromHarness}:${fromModel} -> ${marker.toHarness}:${toModel} for ${sessionId.substring(0, 8)}`,
+    );
+  }
+
+  private consumePendingHarnessSwitch(sessionId: string, selectedModel: string): PendingHarnessSwitch | undefined {
+    const key = `harnessState.${sessionId}.pendingHarnessSwitch`;
+    const marker = this.sessionStore.get(key) as PendingHarnessSwitch | undefined;
+    if (!marker) return undefined;
+
+    const isExpired = !Number.isFinite(marker.timestamp) || Date.now() - marker.timestamp > 60 * 60 * 1000;
+    const selectedHarness = this.getHarnessFromModel(selectedModel);
+    const targetsThisTurn = marker.toModel === selectedModel || marker.toHarness === selectedHarness;
+    if (isExpired) {
+      this.sessionStore.delete(key);
+      return undefined;
+    }
+    if (!targetsThisTurn) return undefined;
+
+    this.sessionStore.delete(key);
+    console.log(
+      `[Claude Service] Consuming explicit harness switch ${marker.fromHarness} -> ${marker.toHarness} for ${sessionId.substring(0, 8)}`,
+    );
+    return marker;
   }
 
   private getLastAssistantRoute(
@@ -2193,7 +2357,13 @@ ${planContent}
   }
 
   private getAutoBuildCodexPermissionMode(stage: OrchestrationStage, sdkPermissionMode?: string): string {
-    if (!this.canAutoBuildStageEdit(stage, sdkPermissionMode)) return 'dontAsk';
+    if (!this.canAutoBuildStageEdit(stage, sdkPermissionMode)) {
+      // A read-only follow-up still needs to execute tests and inspection
+      // commands. Preserve an explicit user-selected bypass mode instead of
+      // silently forcing Codex back through a remote Bubblewrap sandbox that
+      // may not be supported on the SSH host.
+      return sdkPermissionMode === 'bypassPermissions' ? 'bypassPermissions' : 'dontAsk';
+    }
     return sdkPermissionMode === 'bypassPermissions' ? 'bypassPermissions' : 'acceptEdits';
   }
 
@@ -2214,6 +2384,12 @@ ${planContent}
     if (!orchestration) return;
     try {
       autoRouterService.recordHarnessSuccess(sessionId, orchestration.leadHarness, orchestration.leadModel);
+      // Keep the approved artifact pending until the execution lead actually
+      // completes. A spawn/auth/transport failure must retry the configured
+      // Execution model on the next "go" instead of falling back to planning.
+      if (this.isApprovedPlanExecutionPending(sessionId)) {
+        this.markApprovedPlanExecutionCompleted(sessionId);
+      }
       const leadStage = orchestration.stages.find((stage) => stage.model === orchestration.leadModel && stage.trigger === 'now')
         || orchestration.stages[0];
       if (leadStage) {
@@ -2405,6 +2581,21 @@ ${leadContent.slice(0, leadContextLimit)}
       if (stageHarness === 'codex') {
         const codexModel = stage.model.split(':')[1];
         const codexPermissionMode = this.getAutoBuildCodexPermissionMode(stage, sdkPermissionMode);
+        if (session.sshConfig && codexPermissionMode === 'dontAsk') {
+          const sandbox = await sshService.detectRemoteCodexSandbox(sessionId, session.sshConfig);
+          if (!sandbox.supported) {
+            const detail = sandbox.reason
+              ? `Remote Codex read-only sandbox is unavailable: ${sandbox.reason}`
+              : 'Remote Codex read-only sandbox is unavailable.';
+            console.warn(`[Claude Service] Auto Build ${stageLabel}: ${detail}`);
+            this.recordHarnessCompletion(sessionId, session, stage.model, undefined, false, detail, stage.tier, taskDomain);
+            yield withStageSource({
+              type: 'text_delta',
+              content: `${this.formatAutoBuildStageFailure()}${detail}\n`,
+            });
+            return;
+          }
+        }
         const codexPolicy = translateHarnessPolicy({
           harness: stageHarness,
           model: stage.model,
@@ -4131,7 +4322,7 @@ ${leadContent.slice(0, leadContextLimit)}
       case 'getCookies': {
         const { session: electronSession } = await import('electron');
         const targetSid = browserService.getFirstSessionId() || sessionId;
-        const partitionName = `persist:browser-${targetSid}`;
+        const partitionName = browserService.getPartitionName(targetSid);
         const ses = electronSession.fromPartition(partitionName);
         const filter: Electron.CookiesGetFilter = input.url ? { url: input.url as string } : {};
         const cookies = await ses.cookies.get(filter);
@@ -4142,7 +4333,7 @@ ${leadContent.slice(0, leadContextLimit)}
       case 'setCookies': {
         const { session: electronSession } = await import('electron');
         const targetSid = browserService.getFirstSessionId() || sessionId;
-        const partitionName = `persist:browser-${targetSid}`;
+        const partitionName = browserService.getPartitionName(targetSid);
         const ses = electronSession.fromPartition(partitionName);
         const cookiesToSet = (input.cookies as Array<{ url: string; name: string; value: string; domain?: string; path?: string }>) || [];
         for (const cookie of cookiesToSet) {
@@ -4337,16 +4528,16 @@ ${leadContent.slice(0, leadContextLimit)}
       this.pendingPermissions.set(requestId, { resolve, reject, sessionId, toolName, input });
 
       // Send permission request to renderer
-      if (this.mainWindow) {
-        const request = {
-          sessionId,
-          requestId,
-          toolName,
-          toolInput: input,  // Use toolInput to match PermissionRequest type
-        };
+      const request = {
+        sessionId,
+        requestId,
+        toolName,
+        toolInput: input,  // Use toolInput to match PermissionRequest type
+      };
+      if (this.sendInteractiveRendererEvent(sessionId, IPC_CHANNELS.CLAUDE_PERMISSION_REQUEST, request)) {
         console.log('[Claude Service] Sending permission request to renderer:', toolName, 'sessionId:', sessionId, 'requestId:', requestId, 'input:', JSON.stringify(input));
-        this.mainWindow.webContents.send(IPC_CHANNELS.CLAUDE_PERMISSION_REQUEST, request);
       } else {
+        this.pendingPermissions.delete(requestId);
         reject(new Error('Main window not available'));
       }
 
@@ -4358,6 +4549,210 @@ ${leadContent.slice(0, leadContextLimit)}
         }
       }, 5 * 60 * 1000); // 5 minute timeout
     });
+  }
+
+  private getAutoPlanningState(sessionId: string): AutoPlanningState | undefined {
+    const value = this.sessionStore.get(`harnessState.${sessionId}.autoPlanning`) as AutoPlanningState | undefined;
+    if (!value || (value.status !== 'interview' && value.status !== 'awaiting-approval')) return undefined;
+    if (!value.originalRequest?.trim() || !value.model) return undefined;
+    return value;
+  }
+
+  private persistAutoPlanningState(sessionId: string, state: AutoPlanningState): void {
+    this.sessionStore.set(`harnessState.${sessionId}.autoPlanning`, state);
+  }
+
+  private clearAutoPlanningState(sessionId: string, reason: string): void {
+    if (this.getAutoPlanningState(sessionId)) {
+      console.log(`[Claude Service] Cleared Auto Build pre-flight state for ${sessionId.substring(0, 8)}: ${reason}`);
+    }
+    this.sessionStore.delete(`harnessState.${sessionId}.autoPlanning`);
+  }
+
+  private startAutoPlanningState(
+    sessionId: string,
+    originalRequest: string,
+    model: string,
+    gate: PlanningGateDecision,
+  ): AutoPlanningState {
+    const now = Date.now();
+    const state: AutoPlanningState = {
+      status: 'interview',
+      originalRequest,
+      model,
+      confidence: gate.confidence,
+      reason: gate.reason,
+      changeKind: gate.changeKind,
+      startedAt: now,
+      updatedAt: now,
+      questionCount: 0,
+      scopeChoiceConfirmed: false,
+    };
+    this.persistAutoPlanningState(sessionId, state);
+    analyticsService.recordAutoPlanningEvent({
+      sessionId,
+      timestamp: now,
+      outcome: 'started',
+      plannerModel: model,
+      changeKind: gate.changeKind,
+      confidence: gate.confidence,
+      questionCount: 0,
+    });
+    console.log(
+      `[Claude Service] Started Auto Build 80/20 scope choice for ${sessionId.substring(0, 8)} ` +
+      `with ${model} (${Math.round(gate.confidence * 100)}%: ${gate.changeKind})`,
+    );
+    return state;
+  }
+
+  private updateAutoPlanningState(
+    sessionId: string,
+    updates: Partial<AutoPlanningState>,
+  ): AutoPlanningState | undefined {
+    const state = this.getAutoPlanningState(sessionId);
+    if (!state) return undefined;
+    const updated: AutoPlanningState = {
+      ...state,
+      ...updates,
+      updatedAt: Date.now(),
+    };
+    this.persistAutoPlanningState(sessionId, updated);
+    return updated;
+  }
+
+  private isAutoPlanningBypass(message: string): boolean {
+    return /^(?:\/build-now|build now anyway)(?:\s+|$)/i.test(message.trim());
+  }
+
+  private isAutoPlanningFirstSliceQuestion(questions: unknown[]): boolean {
+    return questions.some((question) => {
+      if (!question || typeof question !== 'object') return false;
+      const candidate = question as { question?: unknown; options?: unknown };
+      const text = typeof candidate.question === 'string' ? candidate.question.trim() : '';
+      const optionCount = Array.isArray(candidate.options) ? candidate.options.length : 0;
+      if (!text || optionCount < 2 || optionCount > 3) return false;
+
+      return /(?:80\/20|first\s+(?:slice|step|feature)|highest[-\s]impact|narrowest\s+(?:wedge|slice)|start\s+with|do\s+first|ship\s+first|choose\s+one)/i.test(text);
+    });
+  }
+
+  private getAutoPlanningExitBlocker(
+    state: AutoPlanningState,
+    planContent?: string,
+  ): string | undefined {
+    const completedTurns = state.questionCount || 0;
+    if (completedTurns < AUTO_PLANNING_MIN_DISCOVERY_TURNS) {
+      return 'Auto Build 80/20 choice incomplete: present 2-3 plausible first slices, recommend one, and ask the user to choose in a single AskUserQuestion turn.';
+    }
+    if (!state.scopeChoiceConfirmed) {
+      return 'Auto Build 80/20 choice incomplete: present 2-3 plausible first slices in AskUserQuestion and make the user choose the single highest-impact slice to build first.';
+    }
+    if (planContent === undefined) return undefined;
+
+    if (!/^#{1,3}\s+80\/20 First Slice\s*$/im.test(planContent)
+      || !/^#{1,3}\s+Smallest Implementation\s*$/im.test(planContent)
+      || !/^#{1,3}\s+Not Now\s*$/im.test(planContent)
+      || !/^#{1,3}\s+Execution Handoff\s*$/im.test(planContent)) {
+      return 'Auto Build plan is not focused enough: use the four required 80/20 handoff sections, with exactly one user-selected feature in the first slice.';
+    }
+
+    const wordCount = planContent.trim().split(/\s+/).filter(Boolean).length;
+    if (wordCount > AUTO_PLANNING_MAX_PLAN_WORDS) {
+      return `Auto Build plan is too broad (${wordCount} words). Reduce it below ${AUTO_PLANNING_MAX_PLAN_WORDS} words and plan only the one selected first slice; move all follow-on work to Not Now.`;
+    }
+
+    return undefined;
+  }
+
+  private buildAutoPlanningSystemContext(state: AutoPlanningState, firstTurn: boolean): string {
+    const completedTurns = state.questionCount || 0;
+    let bundledPlaybook = '';
+    try {
+      bundledPlaybook = eightyTwentyService.loadPlaybook().systemContext;
+    } catch (error) {
+      console.error('[Claude Service] Failed to load bundled 80/20 planning skill:', error);
+    }
+    return `<auto_build_preflight_spec>
+Auto Build has paused implementation for one lightweight 80/20 scope decision.
+
+Original request:
+${state.originalRequest}
+
+${firstTurn
+    ? 'Follow the embedded Build 80/20 playbook. Present 2-3 credible first slices with one recommendation, then end this turn with exactly one AskUserQuestion choice. Do not run a discovery interview first.'
+    : 'The user has answered the 80/20 choice. Stop interviewing, preserve that selection, and produce the compact execution handoff now.'}
+
+Choice progress: ${completedTurns}/${AUTO_PLANNING_MIN_DISCOVERY_TURNS}. First slice confirmed: ${state.scopeChoiceConfirmed ? 'yes' : 'no'}.
+
+Requirements:
+- Stay in plan mode. Do not edit implementation files, run mutating commands, or start build/refine helpers.
+- Make one user decision, not a multi-round interview: the first question must itself offer 2-3 meaningfully different narrow slices and recommend the highest-impact option.
+- Once the user answers, do not ask another planning question unless their answer explicitly rejects every option without choosing or correcting one.
+- Optimize impact divided by effort and learning time. The chosen slice should deliver one observable user outcome through the thinnest viable vertical path and fit in one small implementation/PR. Do not propose a platform, generalized framework, multi-workstream roadmap, or exhaustive cleanup unless that one slice literally cannot work without it.
+- Treat every other attractive feature, hardening pass, migration, automation, and follow-up as "Not Now." Do not schedule or task them in this plan.
+- Keep the final approval document under ${AUTO_PLANNING_MAX_PLAN_WORDS} words and use exactly these top-level sections:
+  1. "80/20 First Slice" — name exactly one user-selected feature, why it wins, and one success signal.
+  2. "Smallest Implementation" — no more than three implementation steps for only that slice.
+  3. "Not Now" — everything deliberately deferred, without implementation tasks.
+  4. "Execution Handoff" — only the minimal touchpoints, main risk, and focused verification needed for the first slice.
+- Build's ExitPlanMode/Plan Panel is the single final approval gate. Do not ask for a second final approval inside the skill; call ExitPlanMode with the complete reviewed document.
+- Never invoke office-hours, secondary strategy reviews, or a separate /spec workflow from this automatic gate.
+</auto_build_preflight_spec>
+
+${bundledPlaybook}`;
+  }
+
+  private isAutoPlanningArtifactPath(value: unknown): boolean {
+    if (typeof value !== 'string' || !value.trim()) return false;
+    const normalized = value.replace(/\\/g, '/');
+    return normalized.startsWith('/tmp/')
+      || normalized === '/tmp'
+      || normalized.startsWith('~/.claude/plans/')
+      || normalized.startsWith('$HOME/.claude/plans/')
+      || normalized.includes('/.claude/plans/');
+  }
+
+  private isAutoPlanningSafeToolUse(toolName: string, input: Record<string, unknown>): boolean {
+    if (toolName === 'Write' || toolName === 'Edit' || toolName === 'NotebookEdit' || toolName === 'MultiEdit') {
+      const candidatePath = input.file_path || input.path || input.notebook_path;
+      return this.isAutoPlanningArtifactPath(candidatePath);
+    }
+
+    if (toolName !== 'Bash') return false;
+    const command = typeof input.command === 'string'
+      ? input.command
+      : typeof input.cmd === 'string'
+        ? input.cmd
+        : '';
+    if (!command.trim()) return false;
+
+    const forbidden = [
+      /\bapply_patch\b/i,
+      /\bgit\s+(?:add|commit|push|checkout|switch|reset|clean|merge|rebase|cherry-pick|apply|am|tag)\b/i,
+      /\b(?:npm|pnpm|yarn|bun)\s+(?:install|add|remove|update|upgrade|publish)\b/i,
+      /\b(?:sed|perl)\s+-i\b/i,
+      /\b(?:truncate|chmod|chown)\b/i,
+      /\b(?:python(?:3)?|node|ruby|php)\b/i,
+      /\b(?:patch|dd|install|make|cmake)\b/i,
+    ];
+    if (forbidden.some((pattern) => pattern.test(command))) return false;
+
+    const mutationCommand = command
+      .replace(/\d*>{1,2}\s*\/dev\/null/g, '')
+      .replace(/\d*>\s*&\d/g, '');
+    const genericMutationPattern = /\b(?:mkdir|touch|rm|rmdir|cp|mv|tee)\b|(?:^|[^<])>{1,2}(?!=)/i;
+    if (!genericMutationPattern.test(mutationCommand)) return true;
+
+    // The lightweight 80/20 pass may only maintain the normal Claude plan file
+    // or temporary prompt state. It has no separate workflow artifact tree.
+    const safeRootPattern = /(?:~|\$HOME|\/[^ \n"'`]+)?\/?\.claude\/plans(?:\/|$)|\/tmp(?:\/|$)/;
+    const projectMutationPattern = /(?:^|[\s"'`])(?:\.\/|src\/|app\/|packages?\/|scripts?\/|resources?\/|package(?:-lock)?\.json|forge\.config|tsconfig|README|CLAUDE\.md|AGENTS\.md)/i;
+    const mutationSegments = mutationCommand
+      .split(/(?:&&|\|\||;|\n)/)
+      .filter((segment) => genericMutationPattern.test(segment));
+    return mutationSegments.length > 0 && mutationSegments.every((segment) => (
+      safeRootPattern.test(segment) && !projectMutationPattern.test(segment)
+    ));
   }
 
   private rememberApprovedPlan(
@@ -4372,10 +4767,12 @@ ${leadContent.slice(0, leadContextLimit)}
     this.sessionApprovedPlanFiles.set(sessionId, {
       content,
       filePath: planFilePath || '',
+      pendingExecution: true,
     });
     this.sessionStore.set(`harnessState.${sessionId}.approvedPlan`, {
       content,
       filePath: planFilePath || '',
+      pendingExecution: true,
       updatedAt: new Date().toISOString(),
     });
     this.sessionPlanFiles.delete(sessionId);
@@ -4385,18 +4782,140 @@ ${leadContent.slice(0, leadContextLimit)}
     );
   }
 
+  private isApprovedPlanExecutionPending(sessionId: string): boolean {
+    const plan = this.sessionApprovedPlanFiles.get(sessionId)
+      || this.sessionStore.get(`harnessState.${sessionId}.approvedPlan`) as ApprovedPlanArtifact | undefined;
+    return Boolean(plan?.content?.trim() && plan.pendingExecution !== false);
+  }
+
+  private markApprovedPlanExecutionCompleted(sessionId: string): void {
+    const plan = this.sessionApprovedPlanFiles.get(sessionId)
+      || this.sessionStore.get(`harnessState.${sessionId}.approvedPlan`) as ApprovedPlanArtifact | undefined;
+    if (!plan?.content?.trim()) return;
+    const updated: ApprovedPlanArtifact = {
+      ...plan,
+      pendingExecution: false,
+      updatedAt: new Date().toISOString(),
+    };
+    this.sessionApprovedPlanFiles.set(sessionId, updated);
+    this.sessionStore.set(`harnessState.${sessionId}.approvedPlan`, updated);
+    console.log(`[Claude Service] Approved plan execution lead completed for ${sessionId.substring(0, 8)}`);
+  }
+
+  private isApprovedPlanExecutionRequest(message: string): boolean {
+    return /\b(?:go ahead|go do it|do it|fire it up|execute(?: the)? (?:approved )?plan|implement(?: the)? (?:approved )?plan|proceed|ship it|pr this)\b/i.test(message);
+  }
+
+  private scheduleAutoPlanExecutionHandoff(sessionId: string, retirePlanningSession = false): void {
+    if (this.pendingAutoPlanExecutionHandoffs.has(sessionId)) return;
+    this.pendingAutoPlanExecutionHandoffs.set(sessionId, {
+      approvedAt: Date.now(),
+      retirePlanningSession,
+    });
+
+    // The permission response must reach Claude Code before interrupt() is
+    // sent, otherwise the pending ExitPlanMode control request can remain
+    // unresolved. The next macrotask gives the SDK time to write that response.
+    setTimeout(() => {
+      const query = this.activeQueryObjects.get(sessionId);
+      if (query) {
+        console.log(`[Claude Service] Plan approved — interrupting planning harness for Auto execution handoff (${sessionId.substring(0, 8)})`);
+        void query.interrupt().catch((error) => {
+          console.warn('[Claude Service] Could not interrupt approved Auto planning query:', error);
+        });
+        return;
+      }
+
+      // After an app restart the SDK Query object is gone, but the detached
+      // Claude CLI is still connected through its recovered stdin socket. Use
+      // the same stream-json interrupt request that Query.interrupt() sends so
+      // approval remains an atomic planner -> executor boundary after SSH
+      // reconnects too.
+      const recoveredInput = this.recoveredQueryInputs.get(sessionId);
+      if (!recoveredInput) {
+        console.warn(`[Claude Service] Approved Auto plan has no live or recovered query to interrupt for ${sessionId.substring(0, 8)}; execution will start on the next Auto turn`);
+        return;
+      }
+
+      const requestId = `build-plan-handoff-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+      recoveredInput.write(`${JSON.stringify({
+        type: 'control_request',
+        request_id: requestId,
+        request: { subtype: 'interrupt' },
+      })}\n`, (error?: Error | null) => {
+        if (error) {
+          console.warn('[Claude Service] Could not interrupt recovered Auto planning query:', error);
+          return;
+        }
+        console.log(`[Claude Service] Plan approved — interrupted recovered planning harness for Auto execution handoff (${sessionId.substring(0, 8)})`);
+      });
+    }, 0);
+  }
+
+  private async consumeAutoPlanExecutionHandoff(
+    sessionId: string,
+    abortController: AbortController,
+  ): Promise<boolean> {
+    const handoff = this.pendingAutoPlanExecutionHandoffs.get(sessionId);
+    if (!handoff) return false;
+
+    this.pendingAutoPlanExecutionHandoffs.delete(sessionId);
+    console.log(
+      `[Claude Service] Planning harness stopped ${Date.now() - handoff.approvedAt}ms after approval; re-entering Auto Build for execution`
+    );
+
+    if (handoff.retirePlanningSession) {
+      // Approval is a real agent boundary, not merely a model parameter
+      // change on the planning transcript. Retire Claude's native planning
+      // thread even when the configured execution model is another Claude.
+      this.clearSdkSessionId(sessionId);
+      // A persistent Codex thread can also contain an earlier PLAN-mode
+      // preamble. The execution model must start from the approved artifact,
+      // not resume a native thread whose first instruction still forbids edits.
+      codexService.clearThreadId(sessionId);
+      this.sessionContextPercentage.delete(sessionId);
+      this.sessionStore.delete(`contextUsage.${sessionId}`);
+      console.log(`[Claude Service] Retired native planning session before Auto Build execution for ${sessionId.substring(0, 8)}`);
+    }
+
+    // Ask the interrupted iterator to close, but never let an unresponsive
+    // planning runtime block the execution handoff indefinitely.
+    const planningQuery = this.activeQueryObjects.get(sessionId);
+    if (planningQuery) {
+      let closeTimeout: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          planningQuery.return(undefined).then(() => undefined),
+          new Promise<void>((resolve) => {
+            closeTimeout = setTimeout(resolve, 2_000);
+          }),
+        ]);
+      } catch (error) {
+        console.warn('[Claude Service] Could not close interrupted planning query cleanly:', error);
+      } finally {
+        if (closeTimeout) clearTimeout(closeTimeout);
+      }
+    }
+
+    abortController.abort();
+    if (this.clearActiveQuery(sessionId, abortController)) {
+      powerService.sessionEnded();
+    }
+    this.backgroundListeners.get(sessionId)?.abort();
+    this.backgroundListeners.delete(sessionId);
+    return true;
+  }
+
   private applyPlanApprovalExecutionMode(sessionId: string): void {
     this.sessionPermissionModes.set(sessionId, 'bypassPermissions');
     this.prePlanPermissionModes.delete(sessionId);
     this.autoBuildForcedPlanSessions.delete(sessionId);
     this.persistSessionPermissionMode(sessionId, 'bypassPermissions');
 
-    if (this.mainWindow) {
-      this.mainWindow.webContents.send(IPC_CHANNELS.CLAUDE_PERMISSION_MODE_CHANGED, {
+    this.sendInteractiveRendererEvent(sessionId, IPC_CHANNELS.CLAUDE_PERMISSION_MODE_CHANGED, {
         sessionId,
         mode: 'bypassPermissions',
-      });
-    }
+    });
   }
 
   // Handle plan approval responses from the renderer
@@ -4410,6 +4929,25 @@ ${leadContent.slice(0, leadContextLimit)}
       return;
     }
 
+    const activePlanningState = this.getAutoPlanningState(sessionId);
+    if (response.approved && activePlanningState) {
+      const planContent = record?.planContent || response.planContent;
+      const approvalBlocker = planContent
+        ? this.getAutoPlanningExitBlocker(activePlanningState, planContent)
+        : 'Auto Build could not validate this plan. Continue the interview and submit the focused 80/20 plan again.';
+      if (approvalBlocker) {
+        console.warn(`[Claude Service] Ignoring invalid Auto Build plan approval: ${approvalBlocker}`);
+        this.lastPlanFeedback.set(sessionId, approvalBlocker);
+        this.updateAutoPlanningState(sessionId, { status: 'interview' });
+        if (pending) {
+          pending.resolve(false);
+          this.pendingPlanApprovals.delete(response.requestId);
+        }
+        this.planApprovalRecords.delete(response.requestId);
+        return;
+      }
+    }
+
     if (!response.approved && response.feedback) {
       this.lastPlanFeedback.set(sessionId, response.feedback);
     }
@@ -4418,10 +4956,40 @@ ${leadContent.slice(0, leadContextLimit)}
       const planContent = record?.planContent || response.planContent;
       const planFilePath = record?.planFilePath || response.planFilePath;
       this.rememberApprovedPlan(sessionId, planContent, planFilePath, pending ? 'live' : 'late');
+      const planningState = this.getAutoPlanningState(sessionId);
+      if (planningState) {
+        analyticsService.recordAutoPlanningEvent({
+          sessionId,
+          timestamp: Date.now(),
+          outcome: 'approved',
+          plannerModel: planningState.model,
+          changeKind: planningState.changeKind,
+          confidence: planningState.confidence,
+          durationMs: Date.now() - planningState.startedAt,
+          questionCount: planningState.questionCount,
+        });
+      }
+      this.clearAutoPlanningState(sessionId, 'plan approved');
       if (!pending) {
+        this.clearSdkSessionId(sessionId);
         this.applyPlanApprovalExecutionMode(sessionId);
         console.log('[Claude Service] Late plan approval recorded for next harness handoff:', response.requestId);
       }
+    } else {
+      const planningState = this.getAutoPlanningState(sessionId);
+      if (planningState) {
+        analyticsService.recordAutoPlanningEvent({
+          sessionId,
+          timestamp: Date.now(),
+          outcome: 'rejected',
+          plannerModel: planningState.model,
+          changeKind: planningState.changeKind,
+          confidence: planningState.confidence,
+          durationMs: Date.now() - planningState.startedAt,
+          questionCount: planningState.questionCount,
+        });
+      }
+      this.updateAutoPlanningState(sessionId, { status: 'interview' });
     }
 
     if (pending) {
@@ -4451,16 +5019,18 @@ ${leadContent.slice(0, leadContextLimit)}
       });
 
       // Send plan approval request to renderer
-      if (this.mainWindow) {
-        const request: PlanApprovalRequest = {
-          sessionId,
-          requestId,
-          planContent,
-          planFilePath,
-          allowedPrompts,
-        };
-        this.mainWindow.webContents.send(IPC_CHANNELS.CLAUDE_PLAN_APPROVAL_REQUEST, request);
+      const request: PlanApprovalRequest = {
+        sessionId,
+        requestId,
+        planContent,
+        planFilePath,
+        allowedPrompts,
+      };
+      if (this.sendInteractiveRendererEvent(sessionId, IPC_CHANNELS.CLAUDE_PLAN_APPROVAL_REQUEST, request)) {
+        console.log('[Claude Service] Sent plan approval request to originating renderer:', sessionId, requestId);
       } else {
+        this.pendingPlanApprovals.delete(requestId);
+        this.planApprovalRecords.delete(requestId);
         reject(new Error('Main window not available'));
       }
 
@@ -4480,17 +5050,18 @@ ${leadContent.slice(0, leadContextLimit)}
 
     return new Promise((resolve, reject) => {
       // Store the promise resolve/reject functions
-      this.pendingQuestions.set(requestId, { resolve, reject });
+      this.pendingQuestions.set(requestId, { sessionId, resolve, reject });
 
       // Send question request to renderer
-      if (this.mainWindow) {
-        const request: QuestionRequest = {
-          sessionId,
-          requestId,
-          questions: questions as any, // SDK types match our Question type
-        };
-        this.mainWindow.webContents.send(IPC_CHANNELS.CLAUDE_QUESTION_REQUEST, request);
+      const request: QuestionRequest = {
+        sessionId,
+        requestId,
+        questions: questions as any, // SDK types match our Question type
+      };
+      if (this.sendInteractiveRendererEvent(sessionId, IPC_CHANNELS.CLAUDE_QUESTION_REQUEST, request)) {
+        console.log('[Claude Service] Sent question request to originating renderer:', sessionId, requestId, 'questions:', questions.length);
       } else {
+        this.pendingQuestions.delete(requestId);
         reject(new Error('Main window not available'));
       }
 
@@ -4502,6 +5073,166 @@ ${leadContent.slice(0, leadContextLimit)}
         }
       }, 5 * 60 * 1000); // 5 minute timeout
     });
+  }
+
+  private async handleAskUserQuestionTool(
+    sessionId: string,
+    input: Record<string, unknown>,
+  ): Promise<ClaudeToolPermissionDecision> {
+    try {
+      const planningState = this.getAutoPlanningState(sessionId);
+      const questions = Array.isArray(input.questions) ? input.questions : [];
+      if (planningState && questions.length !== 1) {
+        return {
+          behavior: 'deny',
+          message: 'The Auto Build 80/20 gate requires one first-slice choice question. Offer 2-3 narrow options with one recommendation, then wait for the answer.',
+        };
+      }
+
+      const confirmsFirstSlice = planningState
+        ? this.isAutoPlanningFirstSliceQuestion(questions)
+        : false;
+      const answers = await this.askUserQuestion(sessionId, questions);
+      const hasAnswer = Object.values(answers).some((answer) => answer.trim().length > 0);
+      const currentPlanningState = this.getAutoPlanningState(sessionId);
+      if (currentPlanningState && hasAnswer) {
+        const updatedState = this.updateAutoPlanningState(sessionId, {
+          status: 'interview',
+          questionCount: (currentPlanningState.questionCount || 0) + 1,
+          scopeChoiceConfirmed: currentPlanningState.scopeChoiceConfirmed || confirmsFirstSlice,
+        });
+        console.log(
+          `[Claude Service] Auto Build 80/20 choice progress for ${sessionId.substring(0, 8)}: `
+          + `${updatedState?.questionCount || 0}/${AUTO_PLANNING_MIN_DISCOVERY_TURNS}, `
+          + `first-slice=${updatedState?.scopeChoiceConfirmed ? 'confirmed' : 'pending'}`,
+        );
+      }
+
+      return {
+        behavior: 'allow',
+        updatedInput: { ...input, answers },
+      };
+    } catch (error) {
+      console.error('[Claude Service] Error asking user question:', error);
+      return {
+        behavior: 'deny',
+        message: error instanceof Error ? error.message : 'Failed to get user response',
+      };
+    }
+  }
+
+  /** Reconstruct the SDK canUseTool contract for a detached Claude process.
+   * The SDK callback lived in the renderer process that disconnected, while
+   * the remote CLI keeps waiting on its stream-json control request. */
+  private async handleRecoveredCanUseTool(
+    sessionId: string,
+    toolName: string,
+    input: Record<string, unknown>,
+  ): Promise<ClaudeToolPermissionDecision> {
+    const normalizedToolName = toolName.toLowerCase().replace(/[_-]/g, '');
+    if ((normalizedToolName === 'askuserquestion' || normalizedToolName === 'askquestion') && input.questions) {
+      return this.handleAskUserQuestionTool(sessionId, input);
+    }
+
+    if (normalizedToolName === 'exitplanmode') {
+      try {
+        const planningState = this.getAutoPlanningState(sessionId);
+        if (planningState) {
+          const interviewBlocker = this.getAutoPlanningExitBlocker(planningState);
+          if (interviewBlocker) {
+            this.updateAutoPlanningState(sessionId, { status: 'interview' });
+            return { behavior: 'deny', message: interviewBlocker };
+          }
+        }
+
+        const cachedPlan = this.sessionPlanFiles.get(sessionId);
+        const planContent = typeof input.plan === 'string' && input.plan.trim()
+          ? input.plan
+          : cachedPlan?.content || 'The assistant wants to leave plan mode and begin implementation.';
+        const planFilePath = cachedPlan?.filePath || '';
+        if (planningState) {
+          const planBlocker = this.getAutoPlanningExitBlocker(planningState, planContent);
+          if (planBlocker) {
+            this.updateAutoPlanningState(sessionId, { status: 'interview' });
+            return { behavior: 'deny', message: planBlocker };
+          }
+        }
+
+        this.updateAutoPlanningState(sessionId, {
+          status: 'awaiting-approval',
+          planFilePath: planFilePath || undefined,
+        });
+        const approved = await this.askPlanApproval(
+          sessionId,
+          planContent,
+          planFilePath,
+          input.allowedPrompts as Array<{ tool: string; prompt: string }> | undefined,
+        );
+        if (!approved) {
+          this.updateAutoPlanningState(sessionId, { status: 'interview' });
+          return {
+            behavior: 'deny',
+            message: this.lastPlanFeedback.get(sessionId)
+              ? `Plan was not approved. User feedback: ${this.lastPlanFeedback.get(sessionId)}`
+              : 'Plan was not approved by the user. Please revise it based on user feedback.',
+          };
+        }
+
+        this.rememberApprovedPlan(sessionId, planContent, planFilePath, 'late');
+        this.applyPlanApprovalExecutionMode(sessionId);
+        if (planningState) {
+          this.scheduleAutoPlanExecutionHandoff(sessionId, true);
+        }
+        return { behavior: 'allow', updatedInput: input };
+      } catch (error) {
+        if (this.getAutoPlanningState(sessionId)) {
+          this.updateAutoPlanningState(sessionId, { status: 'interview' });
+        }
+        return {
+          behavior: 'deny',
+          message: error instanceof Error ? error.message : 'Failed to get plan approval',
+        };
+      }
+    }
+
+    const session = (this.sessionStore.get(`sessions.${sessionId}`) as (Session & { permissionMode?: string }) | undefined)
+      || (this.sessionStore.get(`discoveredSessions.${sessionId}`) as (Session & { permissionMode?: string }) | undefined);
+    const currentPermissionMode = this.getSessionPermissionMode(sessionId)
+      || session?.permissionMode
+      || (session?.autoBuildForcedPlanMode ? 'plan' : 'acceptEdits');
+    const modifyingTools = ['Write', 'Edit', 'Bash', 'NotebookEdit', 'MultiEdit', 'TodoWrite'];
+
+    if (currentPermissionMode === 'plan' && modifyingTools.includes(toolName)) {
+      if (this.getAutoPlanningState(sessionId) && this.isAutoPlanningSafeToolUse(toolName, input)) {
+        return { behavior: 'allow', updatedInput: input };
+      }
+      return {
+        behavior: 'deny',
+        message: 'In plan mode, write operations are not permitted. Please exit plan mode to make changes.',
+      };
+    }
+    if (currentPermissionMode === 'bypassPermissions') {
+      return { behavior: 'allow', updatedInput: input };
+    }
+
+    const shouldAsk = currentPermissionMode === 'default'
+      ? modifyingTools.includes(toolName)
+      : currentPermissionMode === 'acceptEdits' && toolName === 'Bash';
+    if (shouldAsk) {
+      try {
+        const response = await this.askUserPermission(sessionId, toolName, input);
+        return response.approved
+          ? { behavior: 'allow', updatedInput: response.modifiedInput || input }
+          : { behavior: 'deny', message: 'User denied permission for this tool' };
+      } catch (error) {
+        return {
+          behavior: 'deny',
+          message: error instanceof Error ? error.message : 'Failed to get permission response',
+        };
+      }
+    }
+
+    return { behavior: 'allow', updatedInput: input };
   }
 
   /**
@@ -4824,6 +5555,7 @@ ${leadContent.slice(0, leadContextLimit)}
     gstackMode?: string,
     supplementalMessages?: ChatMessage[],
     fastMode?: boolean,
+    cascadeMode?: boolean,
   ): AsyncGenerator<StreamEvent> {
     const apiKey = this.getApiKey();
 
@@ -4852,6 +5584,15 @@ ${leadContent.slice(0, leadContextLimit)}
       return;
     }
 
+    // A cancel IPC is not complete until its remote bridge cleanup is done.
+    // Waiting here closes the race where a replacement Fast Stack / plan
+    // execution process was spawned and then killed by the prior cleanup.
+    const pendingCancellation = this.remoteCancellationCleanup.get(sessionId);
+    if (pendingCancellation) {
+      console.log(`[Claude Service] Waiting for prior remote cancellation before starting ${sessionId.substring(0, 8)}`);
+      await pendingCancellation;
+    }
+
     // Do not compact other sessions from a foreground send. That made the app
     // start hidden Claude work in unrelated tabs, and it can steal/abort the
     // visible stream when a user switches back to that tab.
@@ -4865,6 +5606,7 @@ ${leadContent.slice(0, leadContextLimit)}
     const existingBackgroundListener = this.backgroundListeners.get(sessionId);
     const hadPriorRuntime = Boolean(existingController || existingBackgroundListener);
     if (hadPriorRuntime) {
+      this.pendingAutoPlanExecutionHandoffs.delete(sessionId);
       console.log(`[Claude Service] Aborting existing runtime for session ${sessionId.substring(0, 8)} before starting new one`);
       existingController?.abort();
       this.backgroundListeners.get(sessionId)?.abort();
@@ -4877,19 +5619,22 @@ ${leadContent.slice(0, leadContextLimit)}
       getOpenCodeService().cancel(sessionId);
     }
 
-    if (session.sshConfig) {
-      void sshService.cleanupDetachedBridgeProcessesForNewTurn(sessionId, session.sshConfig, {
-        killActive: false,
-      }).catch((error) => {
-        console.warn('[Claude Service] Background foreground SSH cleanup failed:', error);
-      });
-      console.log(`[Claude Service] Foreground SSH cleanup scheduled in background for ${sessionId.substring(0, 8)}`);
-    }
-
     // Serialize remote process spawns per session to prevent reattach+drain races
     const releaseTurnLock = session.sshConfig
       ? await this.acquireSessionTurnLock(sessionId, 'streamMessage')
       : undefined;
+
+    if (session.sshConfig) {
+      // Cleanup belongs inside the turn lock and must settle before spawning.
+      // A background scan can otherwise observe and reap the replacement job.
+      try {
+        await sshService.cleanupDetachedBridgeProcessesForNewTurn(sessionId, session.sshConfig, {
+          killActive: false,
+        });
+      } catch (error) {
+        console.warn('[Claude Service] Foreground SSH cleanup failed:', error);
+      }
+    }
 
     // Rate limit auto-retry flag — set in rate_limit_event, checked in result handler
     let pendingRateLimitRetry = false;
@@ -4903,7 +5648,17 @@ ${leadContent.slice(0, leadContextLimit)}
     // scans are guarded and run only on native Claude resume paths below.
     const rawSdkSessionId = this.sessionStore.get(`sdkSessionMappings.${sessionId}`) as string | undefined
       || this.sessionStore.get(`sessions.${sessionId}.sdkSessionId`) as string | undefined;
-    const sdkSessionId = rawSdkSessionId && rawSdkSessionId !== 'new' ? rawSdkSessionId : undefined;
+    const sdkSessionId = normalizeClaudeSdkSessionId(rawSdkSessionId);
+    const rawForkFromSdkSessionId = session.forkFromSdkSessionId;
+    const forkFromSdkSessionId = normalizeClaudeSdkSessionId(rawForkFromSdkSessionId);
+    if (rawForkFromSdkSessionId && !forkFromSdkSessionId) {
+      const { forkFromSdkSessionId: _, ...cleanSession } = session;
+      this.sessionStore.set(`sessions.${sessionId}`, cleanSession);
+      console.warn(
+        `[Claude Service] Dropped invalid native fork source for ${sessionId.substring(0, 8)}; `
+        + 'starting fresh with the cloned Build transcript'
+      );
+    }
 
     // Invalidate message cache - new message being sent (performance optimization)
     this.invalidateMessageCache(sessionId);
@@ -4920,6 +5675,7 @@ ${leadContent.slice(0, leadContextLimit)}
     // direct model. Without this, plan mode persists and blocks Bash/writes
     // even after the user switches away from Auto Build.
     if (model && model !== 'auto') {
+      this.clearAutoPlanningState(sessionId, 'user selected a direct model');
       const storedPlanMode = this.sessionPermissionModes.get(sessionId);
       const persistedAutoBuildPrePlanMode = this.getPersistedAutoBuildPrePlanMode(sessionId);
       const autoBuildForcedPlanMode = this.autoBuildForcedPlanSessions.has(sessionId) || Boolean(persistedAutoBuildPrePlanMode);
@@ -4955,7 +5711,42 @@ ${leadContent.slice(0, leadContextLimit)}
     let autoRoutedDomain: TaskDomain | undefined;
     let routingDecisionForAnalytics: RoutingDecision | undefined;
     let parableRuntime: PreparedParableRuntime | undefined;
+    let cascadeRuntime: PreparedCascadeRuntime | undefined;
+    const defaultOutputContext = adhdOutputService.getSystemContext();
+    const withCascadeContext = (context?: string): string => (
+      [context, cascadeRuntime?.systemContext].filter((value): value is string => Boolean(value?.trim())).join('\n\n')
+    );
+    const ensureCascadeContext = (context?: string): string => {
+      const current = context || '';
+      const withOutputContract = current.includes('<build_default_output_contract')
+        ? current
+        : [defaultOutputContext, current].filter(Boolean).join('\n\n');
+      if (!cascadeRuntime || withOutputContract.includes('<cascade_mode>')) return withOutputContract;
+      return withCascadeContext(withOutputContract);
+    };
     const normalizedSupplementalMessages = this.normalizeConversationMessages(supplementalMessages);
+    let autoPlanningState = this.getAutoPlanningState(sessionId);
+    let autoPlanningBypassed = false;
+    const autoPlanningForced = /^\/(?:80-20-first|spec-first)(?:\s+|$)/i.test(userMessage.trim());
+    if (autoPlanningState && this.isAutoPlanningBypass(userMessage)) {
+      const bypassRequest = autoPlanningState.originalRequest;
+      analyticsService.recordAutoPlanningEvent({
+        sessionId,
+        timestamp: Date.now(),
+        outcome: 'bypassed',
+        plannerModel: autoPlanningState.model,
+        changeKind: autoPlanningState.changeKind,
+        confidence: autoPlanningState.confidence,
+        durationMs: Date.now() - autoPlanningState.startedAt,
+        questionCount: autoPlanningState.questionCount,
+      });
+      this.clearAutoPlanningState(sessionId, 'explicit build-now override');
+      this.clearSdkSessionId(sessionId);
+      autoPlanningState = undefined;
+      autoPlanningBypassed = true;
+      userMessage = `Build the following request now. The user explicitly bypassed the pre-build 80/20 scope pass:\n\n${bypassRequest}`;
+      console.log(`[Claude Service] Auto Build pre-flight bypassed for ${sessionId.substring(0, 8)}`);
+    }
     const explicitGoalCommand = this.parseGoalCommand(userMessage);
     const goalOrchestration: { objective: string; source: 'slash-command' } | undefined = explicitGoalCommand;
     if (explicitGoalCommand) {
@@ -5044,6 +5835,40 @@ ${leadContent.slice(0, leadContextLimit)}
         console.log('[Claude Service] Using top available model:', selectedModel);
       }
 
+      if (selectedModel !== 'auto' && autoPlanningState) {
+        this.clearAutoPlanningState(sessionId, 'resolved selection is not Auto Build');
+        autoPlanningState = undefined;
+      }
+
+      // Cascade is a workflow overlay, not a pseudo-model. Install/embed the
+      // exact playbook while leaving the selected model and execution strategy
+      // untouched, so it works with every direct harness, Auto Build, and
+      // Parable.
+      if (cascadeMode) {
+        cascadeRuntime = cascadeService.prepareRuntime();
+        if (session.sshConfig) {
+          const remoteSkillDir = await sshService.syncLocalDirectoryToRemote(
+            sessionId,
+            session.sshConfig,
+            cascadeRuntime.skillDir,
+            '~/.build/workflows/cascade',
+          );
+          cascadeRuntime = {
+            ...cascadeRuntime,
+            skillDir: remoteSkillDir,
+            skillFile: `${remoteSkillDir}/SKILL.md`,
+            templatesFile: `${remoteSkillDir}/references/templates.md`,
+            systemContext: cascadeService.buildSystemContext(
+              remoteSkillDir,
+              cascadeRuntime.skillContent,
+              cascadeRuntime.templatesContent,
+            ),
+          };
+        }
+        autoOrchestrationContext = cascadeRuntime.systemContext;
+        console.log(`[Claude Service] Cascade workflow active — selected model remains ${selectedModel} skill=${cascadeRuntime.skillDir}`);
+      }
+
       // Parable mode — Claude Code itself is the meta-harness. Resolve the
       // pseudo-model to the configured Claude brain, install/load the upstream
       // skill, and expose the Settings cast through a real parable.toml. Unlike
@@ -5051,13 +5876,14 @@ ${leadContent.slice(0, leadContextLimit)}
       if (selectedModel === PARABLE_MODE_ID) {
         parableRuntime = parableService.prepareRuntime(sessionId);
         if (session.sshConfig) {
-          const syncResult = await sshService.syncSettings(sessionId, session.sshConfig);
-          if (!syncResult.success) {
-            console.warn('[Claude Service] Parable skill sync to SSH host was incomplete:', syncResult.error);
-          }
           const remoteConfigPath = `/tmp/build-parable-${sessionId.replace(/[^a-zA-Z0-9_-]/g, '-')}.toml`;
+          const remoteSkillDir = await sshService.syncLocalDirectoryToRemote(
+            sessionId,
+            session.sshConfig,
+            parableRuntime.skillDir,
+            '~/.claude/skills/parable-build',
+          );
           await sshService.writeRemoteFile(sessionId, session.sshConfig, remoteConfigPath, parableRuntime.configToml);
-          const remoteSkillDir = '~/.claude/skills/parable-build';
           parableRuntime = {
             ...parableRuntime,
             configPath: remoteConfigPath,
@@ -5072,10 +5898,18 @@ ${leadContent.slice(0, leadContextLimit)}
           };
         }
         selectedModel = parableRuntime.brainModel;
-        autoOrchestrationContext = parableRuntime.systemContext;
+        autoOrchestrationContext = withCascadeContext(parableRuntime.systemContext);
         selectionMode = 'manual';
         selectionSource = 'request';
         console.log(`[Claude Service] Parable mode active — Claude Code meta-harness brain=${selectedModel} config=${parableRuntime.configPath}`);
+        // Surface the concrete Claude brain immediately. The renderer keeps
+        // Parable selected, but uses this resolved model while the turn is
+        // active so its mode chip can mirror Auto Build's live model display.
+        yield {
+          type: 'system',
+          systemInfo: { tools: [], model: selectedModel },
+          resolvedModel: selectedModel,
+        };
       }
 
       // Auto Build mode — resolve 'auto' to a concrete model via the router
@@ -5091,6 +5925,17 @@ ${leadContent.slice(0, leadContextLimit)}
             console.warn('[Claude Service] Auto Build: Could not load recent messages for routing phase inference:', error);
           }
 
+          if (autoPlanningForced && !autoPlanningState) {
+            const sourceRequest = [...recentRoutingMessages].reverse().find((message) => (
+              message.role === 'user'
+              && Boolean(message.content?.trim())
+              && !/^\/(?:80-20-first|spec-first)(?:\s+|$)/i.test(message.content.trim())
+            ));
+            if (sourceRequest?.content?.trim()) {
+              userMessage = sourceRequest.content.trim();
+            }
+          }
+
           let remoteCliCapabilities: RemoteCliCapabilities | undefined;
           if (session.sshConfig) {
             remoteCliCapabilities = sshService.getCachedRemoteCliCapabilities(session.sshConfig);
@@ -5103,7 +5948,15 @@ ${leadContent.slice(0, leadContextLimit)}
             }
           }
 
-          const approvedPlanContinuation = Boolean(this.sessionApprovedPlanFiles.get(sessionId)?.content?.trim());
+          const approvedPlanPending = this.isApprovedPlanExecutionPending(sessionId);
+          const approvedPlanContinuation = approvedPlanPending
+            && this.isApprovedPlanExecutionRequest(userMessage);
+          if (approvedPlanPending && !approvedPlanContinuation) {
+            console.log(`[Claude Service] Ignoring pending approved plan for unrelated Auto turn ${sessionId.substring(0, 8)}`);
+          }
+          const approvedPlanHandoffContext = approvedPlanContinuation
+            ? this.buildApprovedPlanHandoffContext(sessionId)
+            : '';
           // Resolve the previous turn's harness/model on every Auto Build turn:
           // the router biases follow-up messages toward the same harness (native
           // resume is cheaper than rebuilding context) and switches only on
@@ -5123,14 +5976,34 @@ ${leadContent.slice(0, leadContextLimit)}
             recentMessages: recentRoutingMessages,
             goalObjective: goalOrchestration?.objective,
             goalSource: goalOrchestration?.source,
+            prePlanActive: Boolean(autoPlanningState),
+            prePlanBypassed: autoPlanningBypassed,
+            prePlanForced: autoPlanningForced,
           });
           const routedModel = routingDecision.resolvedModel;
           selectedModel = routedModel;
           routingDecisionForAnalytics = routingDecision;
-          autoOrchestrationContext = routingDecision.orchestration?.handoffPrompt || '';
+          autoOrchestrationContext = withCascadeContext([
+            approvedPlanHandoffContext,
+            routingDecision.orchestration?.handoffPrompt,
+          ].filter(Boolean).join('\n\n'));
           autoOrchestrationPlan = routingDecision.orchestration;
           autoRoutedTier = routingDecision.tier;
           autoRoutedDomain = routingDecision.domain;
+          if (routingDecision.planningGate?.action === 'start') {
+            const firstTurn = !autoPlanningState;
+            autoPlanningState = autoPlanningState || this.startAutoPlanningState(
+              sessionId,
+              userMessage,
+              routedModel,
+              routingDecision.planningGate,
+            );
+            autoOrchestrationContext = withCascadeContext([
+              approvedPlanHandoffContext,
+              routingDecision.orchestration?.handoffPrompt,
+              this.buildAutoPlanningSystemContext(autoPlanningState, firstTurn),
+            ].filter(Boolean).join('\n\n'));
+          }
           if (routingDecision.tier === 'plan') {
             autoBuildLeadPermissionMode = 'plan';
             if (sdkPermissionMode !== 'plan') {
@@ -5234,12 +6107,19 @@ ${leadContent.slice(0, leadContextLimit)}
         console.warn('[Claude Service] Failed to prepare secure environment variable handoff:', error);
       }
 
+      // The renderer records explicit model-picker switches before the send
+      // IPC. This marker is authoritative when native transcript metadata is
+      // stale or missing: never resume an old native harness thread across a
+      // real harness boundary.
+      const pendingHarnessSwitch = this.consumePendingHarnessSwitch(sessionId, selectedModel);
+
       // Route to OpenClaw when session has openclawConfig
       if (session.openclawConfig) {
         console.log(`[Claude Service] Routing to OpenClaw gateway: ${session.openclawConfig.gatewayUrl}`);
+        const openClawMessage = `${ensureCascadeContext()}\n\n${userMessage}`;
         for await (const event of openclawService.streamAsChat(
           sessionId,
-          userMessage,
+          openClawMessage,
           session.openclawConfig.gatewayUrl,
           session.openclawConfig.gatewayPassword
         )) {
@@ -5276,7 +6156,7 @@ ${leadContent.slice(0, leadContextLimit)}
         let shouldBuildCodexContext = true;
 
         if (usesNativeCodexThread) {
-          if (lastHarnessForCodex && lastHarnessForCodex !== 'codex') {
+          if (shouldResetNativeHarnessThread('codex', lastHarnessForCodex, pendingHarnessSwitch)) {
             console.log(`[Claude Service] ${codexSelectionLabel} selected after ${lastHarnessForCodex}; starting fresh native Codex thread with Build handoff context`);
             codexService.clearThreadId(sessionId);
             codexThreadId = undefined;
@@ -5313,7 +6193,10 @@ ${leadContent.slice(0, leadContextLimit)}
           }
         }
 
-        const codexContext = [secureEnvContext, conversationContext].filter(Boolean).join('\n\n');
+        // Native Codex/Cursor threads may resume without rebuilding unified
+        // context. Re-apply active workflow overlays on every turn so toggling
+        // Cascade takes effect immediately in an existing model session.
+        const codexContext = [secureEnvContext, ensureCascadeContext(conversationContext)].filter(Boolean).join('\n\n');
 
         const codexPrompt = nativeCodexGoalObjective
           ? `/goal ${nativeCodexGoalObjective}`
@@ -5370,7 +6253,7 @@ ${leadContent.slice(0, leadContextLimit)}
             normalizedSupplementalMessages,
             prefetchedRoutingMessages,
           );
-          if (lastHarness && lastHarness !== 'cursor') {
+          if (shouldResetNativeHarnessThread('cursor', lastHarness, pendingHarnessSwitch)) {
             console.log(`[Claude Service] Last turn was ${lastHarness}, not Cursor — starting fresh chat with context`);
             cursorCliService.clearChatId(sessionId);
             chatId = null;
@@ -5413,7 +6296,8 @@ ${leadContent.slice(0, leadContextLimit)}
           console.log(`[Claude Service] Cursor resuming chat ${chatId} for session ${sessionId.substring(0, 8)}`);
         }
 
-        const baseMessage = cursorContext ? `${cursorContext}\n\n${userMessage}` : userMessage;
+        const effectiveCursorContext = ensureCascadeContext(cursorContext);
+        const baseMessage = effectiveCursorContext ? `${effectiveCursorContext}\n\n${userMessage}` : userMessage;
         const { message: fullMessage, cleanup: cursorCleanup } = await this.prepareCliAttachments(sessionId, baseMessage, workDir, attachments, session.sshConfig);
 
         try {
@@ -5515,7 +6399,8 @@ ${leadContent.slice(0, leadContextLimit)}
           console.warn('[Claude Service] Could not load messages for Gemini context:', e);
         }
 
-        const baseGeminiMessage = geminiContext ? `${geminiContext}\n\n${userMessage}` : userMessage;
+        const effectiveGeminiContext = ensureCascadeContext(geminiContext);
+        const baseGeminiMessage = effectiveGeminiContext ? `${effectiveGeminiContext}\n\n${userMessage}` : userMessage;
         const { message: fullMessage, cleanup: geminiCleanup } = await this.prepareCliAttachments(sessionId, baseGeminiMessage, workDir, attachments, session.sshConfig);
         try {
           const geminiEvents = geminiService.streamMessage(sessionId, fullMessage, workDir, selectedModel, session.sshConfig, leadHarnessPolicy) as AsyncIterable<StreamEvent>;
@@ -5565,7 +6450,7 @@ ${leadContent.slice(0, leadContextLimit)}
           console.warn('[Claude Service] Could not load messages for OpenCode context:', e);
         }
 
-        const openCodeHandoffContext = [secureEnvContext, openCodeContext].filter(Boolean).join('\n\n');
+        const openCodeHandoffContext = [secureEnvContext, ensureCascadeContext(openCodeContext)].filter(Boolean).join('\n\n');
         const baseOpenCodeMessage = openCodeHandoffContext ? `${openCodeHandoffContext}\n\n${userMessage}` : userMessage;
         const { message: fullMessage, cleanup: openCodeCleanup } = await this.prepareCliAttachments(sessionId, baseOpenCodeMessage, workDir, attachments, session.sshConfig);
         try {
@@ -5657,9 +6542,11 @@ ${leadContent.slice(0, leadContextLimit)}
       // instructions causes it to redo completed work. Preserve the
       // context for delegate stages (Codex/Cursor after-plan handoffs).
       const delegateOrchestrationContext = autoOrchestrationContext;
-      if (effectiveSdkSessionId && model === 'auto' && autoOrchestrationContext) {
+      if (effectiveSdkSessionId && model === 'auto' && autoOrchestrationContext && !autoPlanningState) {
         console.log('[Claude Service] Same Claude harness resuming — clearing lead orchestration context');
-        autoOrchestrationContext = '';
+        // Auto's route handoff can be dropped on native resume, but active
+        // workflow overlays must be re-applied on every turn.
+        autoOrchestrationContext = cascadeRuntime?.systemContext || '';
       }
 
       // If native Claude resume is unavailable, the Build transcript becomes
@@ -5895,8 +6782,44 @@ ${leadContent.slice(0, leadContextLimit)}
         }
       }
 
+      // Parable has an additional turn-local control block. Claude Code can
+      // treat a dynamic system-prompt appendix as background metadata, while
+      // executor paths and completion rules are operational instructions for
+      // this exact turn. Put the compact runtime contract next to the user's
+      // request as well as keeping the full playbook in the system prompt.
+      const parableTurnControl = parableRuntime
+        ? [
+            '<parable_runtime_control priority="authoritative">',
+            'Parable mode is already installed and configured for this turn. Do not search for, locate, rediscover, or invoke a Parable skill or playbook.',
+            `Managed skill directory: ${parableRuntime.skillDir}`,
+            `Managed config: ${parableRuntime.configPath}`,
+            `Load cast/config exactly once with: bash ${path.join(parableRuntime.skillDir, 'scripts', 'parable-config.sh')}`,
+            `For 2+ disjoint external runs, use one foreground call only: bash ${path.join(parableRuntime.skillDir, 'scripts', 'parable-batch.sh')} <workdir> <executor> <plan.md> <executor> <plan.md> ...`,
+            `Run configured checks with: bash ${path.join(parableRuntime.skillDir, 'scripts', 'parable-verify.sh')} --when <post-implement|pre-commit>`,
+            'Plans belong under <workdir>/.parable/plans/. Never use /tmp/parable-plans.',
+            'Claude subagent reviewers run directly with the Agent tool; do not call parable-review.sh for them.',
+            'Do not end the turn until the foreground batch, checks, integrated review, fixups, and final checks are all complete.',
+            '</parable_runtime_control>',
+          ].join('\n')
+        : '';
+
+      const cascadeTurnControl = cascadeRuntime
+        ? [
+            '<cascade_runtime_control priority="authoritative">',
+            'Cascade workflow is already embedded for this turn. Do not search for, rediscover, or invoke another Cascade skill.',
+            `Managed skill: ${cascadeRuntime.skillFile}`,
+            `Managed templates: ${cascadeRuntime.templatesFile}`,
+            'Cascade does not replace the selected model or execution strategy. Keep using the model, Auto Build route, or Parable strategy selected by the user.',
+            'Inspect HEAD and docs/LOOP_CHAIN_*.md plus docs/evidence/ first, then choose PLAN, ADVANCE, or TAKEOVER.',
+            'For a new task, create the chain doc and task graph before BUILD. Default to autonomous pacing unless the user explicitly requests checkpointed pacing.',
+            'Do not advance without an evidence-backed EXIT.md. Stop honestly at AT_BOUND and all human gates.',
+            'A “Parallel track” inside a chain document is dependency bookkeeping only; it is separate from Cascade and does not implicitly change execution strategy.',
+            '</cascade_runtime_control>',
+          ].join('\n')
+        : '';
+
       // GStack mode is injected via system prompt append only (buildSystemPromptAppend)
-      let fullTextMessage = resolvedMessage;
+      let fullTextMessage = [parableTurnControl, cascadeTurnControl, resolvedMessage].filter(Boolean).join('\n\n');
       if (conversationSyncBlock) {
         fullTextMessage = `${conversationSyncBlock}\n\n${fullTextMessage}`;
       }
@@ -5989,7 +6912,7 @@ ${leadContent.slice(0, leadContextLimit)}
         try {
           const { session: electronSession } = await import('electron');
           const targetSid = browserService.getFirstSessionId() || sessionId;
-          const partitionName = `persist:browser-${targetSid}`;
+          const partitionName = browserService.getPartitionName(targetSid);
           const ses = electronSession.fromPartition(partitionName);
           const cookies = await ses.cookies.get({});
 
@@ -6438,7 +7361,7 @@ Begin by creating the task structure now.
           // For SSH forks: resume from the parent's SDK session + forkSession: true
           // so the remote transcript gets forked on the first query.
           ...(effectiveSdkSessionId ? { resume: effectiveSdkSessionId } : {}),
-          ...((session as any)?.forkFromSdkSessionId ? { resume: (session as any).forkFromSdkSessionId, forkSession: true } : {}),
+          ...(forkFromSdkSessionId ? { resume: forkFromSdkSessionId, forkSession: true } : {}),
           // Add MCP servers (browser tools + QMD semantic search if available)
           mcpServers: mcpServersConfig,
           // Spawn Claude Code either locally via a resolved Node binary or remotely over SSH.
@@ -6462,27 +7385,24 @@ Begin by creating the task structure now.
             // Handle AskUserQuestion tool (name may vary across SDK versions)
             const normalizedToolName = toolName.toLowerCase().replace(/[_-]/g, '');
             if ((normalizedToolName === 'askuserquestion' || normalizedToolName === 'askquestion') && input.questions) {
-              try {
-                const answers = await this.askUserQuestion(sessionId, input.questions as any);
-                return {
-                  behavior: 'allow' as const,
-                  updatedInput: {
-                    ...input,
-                    answers,
-                  },
-                };
-              } catch (error) {
-                console.error('[Claude Service] Error asking user question:', error);
-                return {
-                  behavior: 'deny' as const,
-                  message: error instanceof Error ? error.message : 'Failed to get user response',
-                };
-              }
+              return this.handleAskUserQuestionTool(sessionId, input);
             }
 
             // Handle ExitPlanMode - require user approval before proceeding
             if (normalizedToolName === 'exitplanmode') {
               try {
+                const planningState = this.getAutoPlanningState(sessionId);
+                if (planningState) {
+                  const interviewBlocker = this.getAutoPlanningExitBlocker(planningState);
+                  if (interviewBlocker) {
+                    this.updateAutoPlanningState(sessionId, { status: 'interview' });
+                    console.warn(`[Claude Service] Blocked premature Auto Build plan exit: ${interviewBlocker}`);
+                    return {
+                      behavior: 'deny' as const,
+                      message: interviewBlocker,
+                    };
+                  }
+                }
                 console.log('[Claude Service] ExitPlanMode called, requesting user approval');
 
                 let planContent = '';
@@ -6594,24 +7514,47 @@ Begin by creating the task structure now.
                   planContent = 'Plan content not found. The assistant wants to proceed with the implementation.';
                 }
 
+                if (planningState) {
+                  const planBlocker = this.getAutoPlanningExitBlocker(planningState, planContent);
+                  if (planBlocker) {
+                    this.updateAutoPlanningState(sessionId, { status: 'interview' });
+                    console.warn(`[Claude Service] Blocked broad Auto Build plan: ${planBlocker}`);
+                    return {
+                      behavior: 'deny' as const,
+                      message: planBlocker,
+                    };
+                  }
+                }
+
                 // Get allowedPrompts from input if present
                 const allowedPrompts = input.allowedPrompts as Array<{ tool: string; prompt: string }> | undefined;
 
                 // Ask user for approval
+                this.updateAutoPlanningState(sessionId, {
+                  status: 'awaiting-approval',
+                  planFilePath: planFilePath || undefined,
+                });
                 const approved = await this.askPlanApproval(sessionId, planContent, planFilePath, allowedPrompts);
 
                 if (approved) {
                   console.log('[Claude Service] Plan approved by user');
                   this.rememberApprovedPlan(sessionId, planContent, planFilePath, 'live');
                   this.applyPlanApprovalExecutionMode(sessionId);
-                  console.log('[Claude Service] Plan approved — switching to bypassPermissions mode for execution');
+                  if (selectionMode === 'auto') {
+                    this.scheduleAutoPlanExecutionHandoff(sessionId, true);
+                    console.log('[Claude Service] Plan approved — Auto will interrupt planning and re-route to the configured Execution model');
+                  } else {
+                    console.log('[Claude Service] Plan approved — switching to bypassPermissions mode for execution');
+                  }
 
                   return { behavior: 'allow' as const, updatedInput: input };
                 } else {
                   console.log('[Claude Service] Plan rejected by user');
+                  this.updateAutoPlanningState(sessionId, { status: 'interview' });
                   // Clean up cached plan content
                   this.sessionPlanFiles.delete(sessionId);
                   this.sessionApprovedPlanFiles.delete(sessionId);
+                  this.pendingAutoPlanExecutionHandoffs.delete(sessionId);
                   this.sessionStore.delete(`harnessState.${sessionId}.approvedPlan`);
 
                   // Use custom feedback if provided, otherwise use default message
@@ -6630,6 +7573,9 @@ Begin by creating the task structure now.
                 }
               } catch (error) {
                 console.error('[Claude Service] Error requesting plan approval:', error);
+                if (this.getAutoPlanningState(sessionId)) {
+                  this.updateAutoPlanningState(sessionId, { status: 'interview' });
+                }
                 return {
                   behavior: 'deny' as const,
                   message: error instanceof Error ? error.message : 'Failed to get plan approval',
@@ -6645,6 +7591,10 @@ Begin by creating the task structure now.
             if (currentPermissionMode === 'plan') {
               const writeTools = ['Write', 'Edit', 'Bash', 'NotebookEdit', 'TodoWrite'];
               if (writeTools.includes(toolName)) {
+                if (this.getAutoPlanningState(sessionId) && this.isAutoPlanningSafeToolUse(toolName, input)) {
+                  console.log(`[Claude Service] Auto pre-flight allowing scoped planning tool: ${toolName}`);
+                  return { behavior: 'allow' as const, updatedInput: input };
+                }
                 console.log(`[Claude Service] Plan mode - denying write tool: ${toolName}`);
                 return {
                   behavior: 'deny' as const,
@@ -7212,10 +8162,18 @@ Begin by creating the task structure now.
                   // Find and update the corresponding tool call
                   const toolCall = toolCalls.find(tc => tc.id === block.tool_use_id);
                   if (toolCall) {
+                    const normalizedCompletedTool = toolCall.name.toLowerCase().replace(/[_-]/g, '');
+                    const approvedExecutionHandoff = normalizedCompletedTool === 'exitplanmode'
+                      && this.pendingAutoPlanExecutionHandoffs.has(sessionId);
                     toolCall.status = 'completed';
-                    toolCall.result = content;
+                    // Interrupting the planner immediately after approval makes
+                    // Claude emit a stock "tool rejected" result even though
+                    // the user approved it. Preserve the true state in the UI.
+                    toolCall.result = approvedExecutionHandoff
+                      ? 'Plan approved. Handing off to the configured Execution model.'
+                      : content;
                     toolCall.completedAt = new Date();
-                    yield { type: 'tool_result', toolCall, result: content };
+                    yield { type: 'tool_result', toolCall, result: toolCall.result };
 
                     // Check if this is a Write tool call to a plan file
                     if (toolCall.name === 'Write') {
@@ -7230,6 +8188,7 @@ Begin by creating the task structure now.
                           // Cache the plan content for this session (for later ExitPlanMode use)
                           this.sessionPlanFiles.set(sessionId, { content: planContent, filePath });
                           this.sessionApprovedPlanFiles.delete(sessionId);
+                          this.pendingAutoPlanExecutionHandoffs.delete(sessionId);
                           this.sessionStore.delete(`harnessState.${sessionId}.approvedPlan`);
 
                           // Emit to renderer via IPC
@@ -7268,6 +8227,7 @@ Begin by creating the task structure now.
           case 'result': {
             // Result message may contain errors from the API
             const resultMsg = msg as SDKMessage & { is_error?: boolean; result?: string };
+            const autoPlanExecutionHandoffPending = this.pendingAutoPlanExecutionHandoffs.has(sessionId);
 
             // Check for empty text content blocks error
             if (resultMsg.is_error && resultMsg.result?.includes('text content blocks must be non-empty')) {
@@ -7372,7 +8332,7 @@ Begin by creating the task structure now.
               this.clearSdkSessionId(sessionId);
               yield { type: 'text_delta', content: '⚠️ Remote session expired — reconnecting automatically...\n\n' };
               // Pass selectedModel to skip re-routing on retry (same fix as stale-zero-token path)
-              yield* this.streamMessage(sessionId, userMessage, attachments, permissionMode, thinkingMode, selectedModel, gstackMode, supplementalMessages);
+              yield* this.streamMessage(sessionId, userMessage, attachments, permissionMode, thinkingMode, selectedModel, gstackMode, supplementalMessages, fastMode, cascadeMode);
               return;
             }
 
@@ -7385,12 +8345,12 @@ Begin by creating the task structure now.
               await new Promise(r => setTimeout(r, 10000));
               if (abortController.signal.aborted) return;
               yield { type: 'text_delta', content: '🔄 Retrying...\n\n' };
-              yield* this.streamMessage(sessionId, userMessage, attachments, permissionMode, thinkingMode, selectedModel, gstackMode, supplementalMessages);
+              yield* this.streamMessage(sessionId, userMessage, attachments, permissionMode, thinkingMode, selectedModel, gstackMode, supplementalMessages, fastMode, cascadeMode);
               return;
             }
 
             // Check for other API errors
-            if (resultMsg.is_error && resultMsg.result) {
+            if (resultMsg.is_error && resultMsg.result && !autoPlanExecutionHandoffPending) {
               this.recordAutoBuildLeadFailure(sessionId, autoOrchestrationPlan, resultMsg.result);
               yield { type: 'error', error: resultMsg.result };
               return;
@@ -7426,6 +8386,7 @@ Begin by creating the task structure now.
                 && outputTokens === 0
                 && !fullContent.trim()
                 && toolCalls.length === 0
+                && !autoPlanExecutionHandoffPending
               ) {
                 // An aborted/superseded turn (queue drain, rapid re-send) also
                 // surfaces as an empty zero-token result. That is NOT a stale
@@ -7442,7 +8403,7 @@ Begin by creating the task structure now.
                   this.resumeEmptyRetryAt.set(sessionId, Date.now());
                   console.warn(`[Claude SDK] Resume ${effectiveSdkSessionId} completed with empty zero-token result — retrying resume once before declaring stale`);
                   yield { type: 'text_delta', content: '⚠️ Remote session hiccup — retrying...\n\n' };
-                  yield* this.streamMessage(sessionId, userMessage, attachments, permissionMode, thinkingMode, selectedModel, gstackMode, supplementalMessages);
+                  yield* this.streamMessage(sessionId, userMessage, attachments, permissionMode, thinkingMode, selectedModel, gstackMode, supplementalMessages, fastMode, cascadeMode);
                   return;
                 }
                 // Second strike within 2 minutes: genuinely stale. Clear and
@@ -7457,7 +8418,7 @@ Begin by creating the task structure now.
                 // Claude; re-running it wastes time and, critically, means the retry
                 // goes through a different code path that can lose cross-harness
                 // context vs the explicit-model path (which always works).
-                yield* this.streamMessage(sessionId, userMessage, attachments, permissionMode, thinkingMode, selectedModel, gstackMode, supplementalMessages);
+                yield* this.streamMessage(sessionId, userMessage, attachments, permissionMode, thinkingMode, selectedModel, gstackMode, supplementalMessages, fastMode, cascadeMode);
                 return;
               }
 
@@ -7596,10 +8557,31 @@ Begin by creating the task structure now.
           // background tasks (Monitor, Agent) continue producing task_updated,
           // task_notification, and task_progress events after the assistant's turn ends.
           // Pass the raw iterator (NOT the Query) so it stays open.
-          this.startBackgroundTaskListener(sessionId, msgIterator, abortController.signal);
+          if (!this.pendingAutoPlanExecutionHandoffs.has(sessionId)) {
+            this.startBackgroundTaskListener(sessionId, msgIterator, abortController.signal);
+          }
           break;
         }
         iterResult = await msgIterator.next();
+      }
+
+      if (await this.consumeAutoPlanExecutionHandoff(sessionId, abortController)) {
+        // Retire the planning Query before recursively entering Auto. The turn
+        // lock is re-entrant for streamMessage, while controller identity keeps
+        // the outer finally block from clearing the new execution query.
+        yield* this.streamMessage(
+          sessionId,
+          'Execute the approved plan now.',
+          attachments,
+          'bypassPermissions',
+          undefined,
+          'auto',
+          gstackMode,
+          supplementalMessages,
+          fastMode,
+          cascadeMode,
+        );
+        return;
       }
 
       // Detect abnormal stream termination (e.g., remote process killed externally)
@@ -7698,6 +8680,25 @@ Begin by creating the task structure now.
 
       yield { type: 'message_complete', message, resolvedModel: selectedModel, ...(lastTerminalReason ? { terminalReason: lastTerminalReason } : {}) };
     } catch (error) {
+      // Some SDK versions end interrupt() by rejecting the iterator instead of
+      // returning a terminal result. Approval is still authoritative: retire
+      // the planning runtime and continue the same visible stream in Auto Build.
+      if (await this.consumeAutoPlanExecutionHandoff(sessionId, abortController)) {
+        yield* this.streamMessage(
+          sessionId,
+          'Execute the approved plan now.',
+          attachments,
+          'bypassPermissions',
+          undefined,
+          'auto',
+          gstackMode,
+          supplementalMessages,
+          fastMode,
+          cascadeMode,
+        );
+        return;
+      }
+
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       console.error('[Claude SDK] streamMessage error caught:', errorMessage);
 
@@ -7728,7 +8729,7 @@ Begin by creating the task structure now.
         this.clearSdkSessionId(sessionId);
         yield { type: 'text_delta', content: '⚠️ Remote session expired — reconnecting automatically...\n\n' };
         // Pass selectedModel to skip re-routing on retry (same fix as stale-zero-token path)
-        yield* this.streamMessage(sessionId, userMessage, attachments, permissionMode, thinkingMode, selectedModel, gstackMode, supplementalMessages);
+        yield* this.streamMessage(sessionId, userMessage, attachments, permissionMode, thinkingMode, selectedModel, gstackMode, supplementalMessages, fastMode, cascadeMode);
         return;
       } else if (errorMessage.match(/process exited with code|process terminated by signal/) && session?.sshConfig) {
         console.error('[Claude SDK] SSH process exit caught:', errorMessage);
@@ -7754,7 +8755,7 @@ Begin by creating the task structure now.
         await new Promise(r => setTimeout(r, 10000));
         if (abortController.signal.aborted) return;
         yield { type: 'text_delta', content: '🔄 Retrying...\n\n' };
-        yield* this.streamMessage(sessionId, userMessage, attachments, permissionMode, thinkingMode, model, gstackMode, supplementalMessages);
+        yield* this.streamMessage(sessionId, userMessage, attachments, permissionMode, thinkingMode, model, gstackMode, supplementalMessages, fastMode, cascadeMode);
         return;
       } else {
         this.recordAutoBuildLeadFailure(sessionId, autoOrchestrationPlan, errorMessage);
@@ -7799,11 +8800,39 @@ Begin by creating the task structure now.
     let recoveredCompletely = false;
 
     try {
-      const attached = await sshService.attachLatestDetachedCommandProcess(
-        sessionId,
-        session.sshConfig,
-        abortController.signal
-      );
+      let attached: Awaited<ReturnType<typeof sshService.attachLatestDetachedCommandProcess>> = null;
+      while (!abortController.signal.aborted) {
+        try {
+          attached = await sshService.attachLatestDetachedCommandProcess(
+            sessionId,
+            session.sshConfig,
+            abortController.signal
+          );
+          break;
+        } catch (error) {
+          // The detached turn continues on the remote host while this machine
+          // is asleep or offline. Keep the reattach generator alive and retry
+          // the transport instead of returning an empty terminal response.
+          console.warn(`[Claude Service] SSH reattach unavailable for ${sessionId}; retrying:`, error);
+          await new Promise<void>((resolve) => {
+            const finish = () => {
+              clearTimeout(timer);
+              abortController.signal.removeEventListener('abort', finish);
+              resolve();
+            };
+            if (abortController.signal.aborted) {
+              resolve();
+              return;
+            }
+            const timer = setTimeout(finish, 2000);
+            abortController.signal.addEventListener('abort', finish, { once: true });
+          });
+        }
+      }
+
+      if (abortController.signal.aborted) {
+        return;
+      }
 
       if (!attached) {
         yield { type: 'error', error: 'No recoverable remote Claude turn was found for this SSH session.' };
@@ -7833,6 +8862,63 @@ Begin by creating the task structure now.
         }
         return;
       }
+
+      const recoveredInput = attached.process.stdin;
+      this.recoveredQueryInputs.set(sessionId, recoveredInput);
+
+      const writeRecoveredControlResponse = async (payload: Record<string, unknown>): Promise<void> => {
+        await new Promise<void>((resolve, reject) => {
+          recoveredInput.write(`${JSON.stringify(payload)}\n`, (error?: Error | null) => {
+            if (error) reject(error);
+            else resolve();
+          });
+        });
+      };
+
+      const handleRecoveredControlMessage = async (rawMessage: Record<string, any>): Promise<boolean> => {
+        if (rawMessage.type === 'control_cancel_request') {
+          // The remote CLI cancelled a control request. The corresponding app
+          // dialog promise will either be replaced or expire; no response is
+          // required by the Claude stream-json protocol.
+          return true;
+        }
+        if (rawMessage.type !== 'control_request') return false;
+
+        const requestId = String(rawMessage.request_id || '');
+        const request = rawMessage.request || {};
+        try {
+          if (request.subtype !== 'can_use_tool') {
+            throw new Error(`Cannot restore unsupported control request subtype: ${String(request.subtype || 'unknown')}`);
+          }
+          const decision = await this.handleRecoveredCanUseTool(
+            sessionId,
+            String(request.tool_name || ''),
+            (request.input || {}) as Record<string, unknown>,
+          );
+          await writeRecoveredControlResponse({
+            type: 'control_response',
+            response: {
+              subtype: 'success',
+              request_id: requestId,
+              response: {
+                ...decision,
+                toolUseID: request.tool_use_id,
+              },
+            },
+          });
+          console.log(`[Claude Service] Answered recovered ${String(request.tool_name || 'tool')} control request for ${sessionId.substring(0, 8)}`);
+        } catch (error) {
+          await writeRecoveredControlResponse({
+            type: 'control_response',
+            response: {
+              subtype: 'error',
+              request_id: requestId,
+              error: error instanceof Error ? error.message : String(error),
+            },
+          });
+        }
+        return true;
+      };
 
       let selectedModel = model || session.model || 'claude-sonnet-4-6';
       let fullContent = '';
@@ -8121,10 +9207,18 @@ Begin by creating the task structure now.
               if (block.type !== 'tool_result') continue;
               const toolCall = toolCalls.find(tc => tc.id === block.tool_use_id);
               if (!toolCall) continue;
+              const normalizedCompletedTool = toolCall.name.toLowerCase().replace(/[_-]/g, '');
+              const approvedExecutionHandoff = normalizedCompletedTool === 'exitplanmode'
+                && this.pendingAutoPlanExecutionHandoffs.has(sessionId);
               toolCall.status = 'completed';
-              toolCall.result = block.content || '';
+              // Claude emits a stock rejection result when the host interrupts
+              // immediately after an approved ExitPlanMode request. The user
+              // approved it; keep the recovered transcript truthful.
+              toolCall.result = approvedExecutionHandoff
+                ? 'Plan approved. Handing off to the configured Execution model.'
+                : block.content || '';
               toolCall.completedAt = new Date();
-              events.push({ type: 'tool_result', toolCall, result: block.content || '' });
+              events.push({ type: 'tool_result', toolCall, result: toolCall.result });
             }
             break;
           }
@@ -8152,7 +9246,9 @@ Begin by creating the task structure now.
             if (resultMsg.is_error && resultMsg.result) {
               queryComplete = true;
               recoveredCompletely = true;
-              events.push({ type: 'error', error: resultMsg.result });
+              if (!this.pendingAutoPlanExecutionHandoffs.has(sessionId)) {
+                events.push({ type: 'error', error: resultMsg.result });
+              }
               break;
             }
 
@@ -8188,12 +9284,17 @@ Begin by creating the task structure now.
 
             queryComplete = true;
             recoveredCompletely = true;
-            events.push({
-              type: 'message_complete',
-              message: buildFinalMessage(false),
-              resolvedModel: selectedModel,
-              ...(lastTerminalReason ? { terminalReason: lastTerminalReason } : {}),
-            });
+            // An approved Auto plan continues in the same visible stream with
+            // the configured execution harness below. Do not publish a false
+            // terminal response for the interrupted planner.
+            if (!this.pendingAutoPlanExecutionHandoffs.has(sessionId)) {
+              events.push({
+                type: 'message_complete',
+                message: buildFinalMessage(false),
+                resolvedModel: selectedModel,
+                ...(lastTerminalReason ? { terminalReason: lastTerminalReason } : {}),
+              });
+            }
             break;
           }
 
@@ -8219,7 +9320,9 @@ Begin by creating the task structure now.
           if (jsonStart < 0) continue;
 
           try {
-            const msg = JSON.parse(trimmed.slice(jsonStart)) as SDKMessage;
+            const rawMessage = JSON.parse(trimmed.slice(jsonStart)) as Record<string, any>;
+            if (await handleRecoveredControlMessage(rawMessage)) continue;
+            const msg = rawMessage as SDKMessage;
             for (const event of handleRecoveredMessage(msg)) {
               yield event;
             }
@@ -8242,7 +9345,11 @@ Begin by creating the task structure now.
         const jsonStart = trailing.indexOf('{');
         if (jsonStart >= 0) {
           try {
-            const msg = JSON.parse(trailing.slice(jsonStart)) as SDKMessage;
+            const rawMessage = JSON.parse(trailing.slice(jsonStart)) as Record<string, any>;
+            if (await handleRecoveredControlMessage(rawMessage)) {
+              return;
+            }
+            const msg = rawMessage as SDKMessage;
             for (const event of handleRecoveredMessage(msg)) {
               yield event;
             }
@@ -8274,6 +9381,22 @@ Begin by creating the task structure now.
         // idling for a next message that will never arrive.
         await sshService.signalDetachedBridgeJobStdinEof(sessionId, session.sshConfig, attachedJobDir);
         await sshService.markDetachedBridgeJobRecovered(sessionId, session.sshConfig, attachedJobDir);
+      }
+
+      if (await this.consumeAutoPlanExecutionHandoff(sessionId, abortController)) {
+        // The recovered reader owns a different lock holder than streamMessage.
+        // Release it before re-entering Auto or the execution turn would wait
+        // forever behind the completed planner reattach.
+        releaseTurnLock();
+        yield* this.streamMessage(
+          sessionId,
+          'Execute the approved plan now.',
+          undefined,
+          'bypassPermissions',
+          undefined,
+          'auto',
+        );
+        return;
       }
     } catch (error) {
       yield { type: 'error', error: error instanceof Error ? error.message : String(error) };
@@ -8485,6 +9608,9 @@ Begin by creating the task structure now.
     this.sessionContextPercentage.delete(sessionId);
     this.sessionStore.delete(`contextUsage.${sessionId}`);
     this.sessionPlanFiles.delete(sessionId);
+    this.sessionApprovedPlanFiles.delete(sessionId);
+    this.pendingAutoPlanExecutionHandoffs.delete(sessionId);
+    this.clearAutoPlanningState(sessionId, 'session deleted');
     this.browserMcpServers.delete(sessionId);
 
     // requestId-keyed maps — iterate and find matching sessionId
@@ -8494,11 +9620,29 @@ Begin by creating the task structure now.
         this.pendingPermissions.delete(reqId);
       }
     }
-    // pendingQuestions and pendingPlanApprovals lack sessionId field —
-    // they self-clean via existing timeouts. Acceptable for deletion.
+    for (const [reqId, pending] of this.pendingQuestions.entries()) {
+      if (pending.sessionId === sessionId) {
+        pending.reject(new Error('Session deleted'));
+        this.pendingQuestions.delete(reqId);
+      }
+    }
+    // pendingPlanApprovals self-clean through the existing timeout.
   }
 
-  cancelQuery(sessionId: string): void {
+  /** Clear harness-native continuation handles before an in-place Fast Stack
+   * turn. Claude's SDK mapping is replaced by SessionService; other harnesses
+   * start a fresh native thread and receive the merged Build transcript. */
+  prepareFastStack(sessionId: string): void {
+    codexService.clearThreadId(sessionId);
+    getCursorCliService().clearChatId(sessionId);
+    this.resumeEmptyRetryAt.delete(sessionId);
+    this.backgroundListeners.get(sessionId)?.abort();
+    this.backgroundListeners.delete(sessionId);
+    console.log(`[Claude Service] Cleared native continuation handles for Fast Stack ${sessionId.substring(0, 8)}`);
+  }
+
+  async cancelQuery(sessionId: string): Promise<void> {
+    this.pendingAutoPlanExecutionHandoffs.delete(sessionId);
     const controller = this.activeQueries.get(sessionId);
     const backgroundListener = this.backgroundListeners.get(sessionId);
     if (controller) {
@@ -8519,10 +9663,6 @@ Begin by creating the task structure now.
 
     const session = (this.sessionStore.get(`sessions.${sessionId}`) as Session | undefined)
       || (this.sessionStore.get(`discoveredSessions.${sessionId}`) as Session | undefined);
-    if (session?.sshConfig) {
-      sshService.cleanupDetachedBridgeProcessesForNewTurn(sessionId, session.sshConfig, { killActive: true }).catch(() => undefined);
-    }
-
     // Reject pending permissions — the query that requested them is dead
     for (const [reqId, pending] of this.pendingPermissions.entries()) {
       if (pending.sessionId === sessionId) {
@@ -8530,16 +9670,48 @@ Begin by creating the task structure now.
         this.pendingPermissions.delete(reqId);
       }
     }
+    for (const [reqId, pending] of this.pendingQuestions.entries()) {
+      if (pending.sessionId === sessionId) {
+        pending.reject(new Error('Query cancelled'));
+        this.pendingQuestions.delete(reqId);
+      }
+    }
+
+    if (session?.sshConfig) {
+      const existingCleanup = this.remoteCancellationCleanup.get(sessionId);
+      if (existingCleanup) {
+        await existingCleanup;
+        return;
+      }
+
+      const cleanupPromise = sshService.cleanupDetachedBridgeProcessesForNewTurn(
+        sessionId,
+        session.sshConfig,
+        { killActive: true },
+      ).catch((error) => {
+        console.warn(`[Claude Service] Remote cancellation cleanup failed for ${sessionId.substring(0, 8)}:`, error);
+      }).finally(() => {
+        if (this.remoteCancellationCleanup.get(sessionId) === cleanupPromise) {
+          this.remoteCancellationCleanup.delete(sessionId);
+        }
+      });
+      this.remoteCancellationCleanup.set(sessionId, cleanupPromise);
+      await cleanupPromise;
+    }
   }
 
   /**
-   * Inject a message into an active query using Query.streamInput.
-   * This lets queued follow-ups enter the running Claude Code process without
-   * starting a second turn or waiting for the current response to finish.
+   * Inject a message into the active harness turn. Claude uses
+   * Query.streamInput; persistent Codex chat turns use app-server turn/steer.
    */
   async injectMessage(sessionId: string, message: string, attachments?: Attachment[]): Promise<boolean> {
+    if (codexService.canSteer(sessionId)) {
+      return codexService.steer(sessionId, message, attachments);
+    }
+
     const queryObj = this.activeQueryObjects.get(sessionId);
-    if (!queryObj) {
+    const recoveredInput = this.recoveredQueryInputs.get(sessionId);
+    if (!queryObj && !recoveredInput) {
       console.log('[Claude Service] injectMessage: No active query for session', sessionId);
       return false;
     }
@@ -8583,11 +9755,62 @@ Begin by creating the task structure now.
       }
     }
 
-    console.log('[Claude Service] injectMessage: Injecting queued message via Query.streamInput for session', sessionId);
+    console.log(
+      `[Claude Service] injectMessage: Injecting queued message via ${recoveredInput ? 'recovered SSH stdin' : 'Query.streamInput'} for session`,
+      sessionId,
+    );
 
     try {
       const resizeImage = this.resizeImageIfNeeded.bind(this);
       const normalizeBase64ImageData = this.normalizeBase64ImageData.bind(this);
+      if (recoveredInput) {
+        const imageAttachments = attachments?.filter(a => a.type === 'image') || [];
+        let content: string | Array<
+          { type: 'text'; text: string }
+          | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } }
+        > = safeMessage;
+
+        if (imageAttachments.length > 0) {
+          content = [{ type: 'text', text: safeMessage }];
+          for (const attachment of imageAttachments) {
+            const ext = attachment.name.split('.').pop()?.toLowerCase();
+            const mediaType = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg'
+              : ext === 'gif' ? 'image/gif'
+                : ext === 'webp' ? 'image/webp'
+                  : 'image/png';
+            const resizedData = await resizeImage(normalizeBase64ImageData(attachment.content), mediaType);
+            content.push({
+              type: 'image',
+              source: { type: 'base64', media_type: mediaType, data: resizedData },
+            });
+          }
+        }
+
+        await new Promise<void>((resolve, reject) => {
+          recoveredInput.write(`${JSON.stringify({
+            type: 'user',
+            message: { role: 'user', content },
+            parent_tool_use_id: null,
+            session_id: '',
+          })}\n`, (error?: Error | null) => {
+            if (error) reject(error);
+            else resolve();
+          });
+        });
+        console.log('[Claude Service] injectMessage: Message injected successfully via recovered SSH stdin');
+        return true;
+      }
+
+      let markInputWritten!: () => void;
+      let inputWritten = false;
+      const inputWrittenPromise = new Promise<void>((resolve) => {
+        markInputWritten = () => {
+          if (inputWritten) return;
+          inputWritten = true;
+          resolve();
+        };
+      });
+
       const createMessageStream = async function* (): AsyncIterable<SDKUserMessage> {
         const imageAttachments = attachments?.filter(a => a.type === 'image') || [];
         const hasImagesLocal = imageAttachments.length > 0;
@@ -8636,10 +9859,39 @@ Begin by creating the task structure now.
             session_id: '',
           } as SDKUserMessage;
         }
+
+        // The SDK's streamInput() writes each yielded message before asking the
+        // iterator for the next item. Reaching here therefore means transport.write
+        // accepted this message. streamInput itself can remain pending in
+        // waitForFirstResult for the rest of an active turn, which is not a
+        // delivery acknowledgement and must not hold the queue row indefinitely.
+        markInputWritten();
       };
 
-      await queryObj.streamInput(createMessageStream());
-      console.log('[Claude Service] injectMessage: Message injected successfully via Query.streamInput');
+      const streamInputPromise = queryObj!.streamInput(createMessageStream());
+      const deliveryOutcome = await Promise.race([
+        inputWrittenPromise.then(() => 'written' as const),
+        streamInputPromise.then(() => 'settled' as const),
+        new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 5000)),
+      ]);
+
+      if (deliveryOutcome === 'timeout') {
+        void streamInputPromise.catch((error) => {
+          console.error('[Claude Service] injectMessage: Timed-out streamInput later failed:', error);
+        });
+        console.warn('[Claude Service] injectMessage: Query.streamInput did not accept input within 5000ms');
+        return false;
+      }
+      if (!inputWritten) {
+        console.warn('[Claude Service] injectMessage: Query.streamInput settled before writing the queued message');
+        return false;
+      }
+
+      // Observe eventual SDK settlement without awaiting waitForFirstResult.
+      void streamInputPromise.catch((error) => {
+        console.error('[Claude Service] injectMessage: Query.streamInput failed after accepting input:', error);
+      });
+      console.log('[Claude Service] injectMessage: Message accepted by Query.streamInput transport');
       return true;
     } catch (error) {
       console.error('[Claude Service] injectMessage: Failed to inject message:', error);
@@ -8654,24 +9906,6 @@ Begin by creating the task structure now.
    */
   hasActiveQuery(sessionId: string): boolean {
     return this.getActiveQueryState(sessionId).active;
-  }
-
-  /**
-   * Clear a stale local stream wrapper without killing the remote SSH turn.
-   * Used when the queue sees a surviving remote process but the local Query
-   * object is gone, so async injection cannot work and resumeRemoteTurn would
-   * otherwise reject because activeQueries still contains the session.
-   */
-  clearLocalActiveQueryForRemoteReattach(sessionId: string): boolean {
-    const controller = this.activeQueries.get(sessionId);
-    if (!controller) return false;
-
-    controller.abort();
-    const cleared = this.clearActiveQuery(sessionId, controller);
-    if (cleared) {
-      powerService.sessionEnded();
-    }
-    return cleared;
   }
 
   /**

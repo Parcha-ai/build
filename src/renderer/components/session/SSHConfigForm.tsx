@@ -68,6 +68,7 @@ export default function SSHConfigForm({ onBack, onConnect, teleportSource, onTel
   const [sessionName, setSessionName] = useState('');
   const [worktreeScript, setWorktreeScript] = useState('');
   const [syncSettings, setSyncSettings] = useState(true);
+  const [forwardGitHubCredentials, setForwardGitHubCredentials] = useState(false);
 
   // Status
   const [isTesting, setIsTesting] = useState(false);
@@ -103,6 +104,9 @@ export default function SSHConfigForm({ onBack, onConnect, teleportSource, onTel
     setSessionName(saved.sessionName || '');
     setWorktreeScript(saved.worktreeScript || '');
     setSyncSettings(saved.syncSettings ?? true);
+    // This must be an affirmative opt-in. Legacy saved SSH configs predate the
+    // field and therefore remain safely disabled after upgrading.
+    setForwardGitHubCredentials(saved.forwardGitHubCredentials === true);
   };
 
   // Load saved config on mount
@@ -129,6 +133,10 @@ export default function SSHConfigForm({ onBack, onConnect, teleportSource, onTel
     if (isLoading) return;
     const key = host.trim().toLowerCase();
     if (!key || key === appliedHostKey) return;
+
+    // An opt-in from one host must never bleed into another while its saved
+    // config is loading (or when the new host has no saved config at all).
+    setForwardGitHubCredentials(false);
 
     const timeoutId = setTimeout(async () => {
       try {
@@ -266,10 +274,21 @@ export default function SSHConfigForm({ onBack, onConnect, teleportSource, onTel
         passphrase: passphrase || undefined,
         worktreeScript: worktreeScript || undefined,
         syncSettings,
+        forwardGitHubCredentials,
       };
 
       // Save config via IPC (persisted to electron-store)
-      await window.electronAPI.ssh.saveConfig({ host, port, username, privateKeyPath, remoteWorkdir, sessionName, worktreeScript, syncSettings });
+      await window.electronAPI.ssh.saveConfig({
+        host,
+        port,
+        username,
+        privateKeyPath,
+        remoteWorkdir,
+        sessionName,
+        worktreeScript,
+        syncSettings,
+        forwardGitHubCredentials,
+      });
 
       // In teleport mode, call onTeleport instead of onConnect
       if (isTeleportMode && onTeleport) {
@@ -541,6 +560,25 @@ export default function SSHConfigForm({ onBack, onConnect, teleportSource, onTel
               <label htmlFor="syncSettings" className="text-[11px] text-claude-text cursor-pointer flex items-center gap-1.5">
                 <Settings size={11} className="text-claude-text-secondary" />
                 Sync settings to remote (~/.claude/agents, commands, CLAUDE.md)
+              </label>
+            </div>
+
+            {/* Personal GitHub identity/auth must never ride along with the
+                broader settings sync unless the user explicitly asks for it. */}
+            <div className="flex items-start gap-2 py-1 pl-5">
+              <input
+                type="checkbox"
+                id="forwardGitHubCredentials"
+                checked={forwardGitHubCredentials}
+                onChange={(e) => setForwardGitHubCredentials(e.target.checked)}
+                disabled={!syncSettings}
+                className="w-3.5 h-3.5 mt-0.5 accent-amber-500 disabled:opacity-40"
+              />
+              <label htmlFor="forwardGitHubCredentials" className={`text-[11px] flex flex-col gap-0.5 ${syncSettings ? 'text-claude-text cursor-pointer' : 'text-claude-text-secondary cursor-not-allowed'}`}>
+                <span>Forward local GitHub identity &amp; authentication</span>
+                <span className="text-[9px] text-claude-text-secondary leading-relaxed">
+                  Opt in to copy ~/.gitconfig and GitHub CLI auth, then use gh as the remote Git credential helper. Leave off to preserve remote or bot credentials.
+                </span>
               </label>
             </div>
 

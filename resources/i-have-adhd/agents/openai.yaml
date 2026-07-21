@@ -1,0 +1,4 @@
+interface:
+  display_name: "ADHD-friendly output"
+  short_description: "Action-first, scannable responses for every Build agent"
+  default_prompt: "Apply the ADHD-friendly output contract to every response."

@@ -45,7 +45,7 @@ function decodeAttachmentContent(attachment: Attachment): Buffer {
 }
 
 function contentPreview(buffer: Buffer): string {
-  const text = buffer.toString('utf8').replace(/\u0000/g, '');
+  const text = buffer.toString('utf8').split('\u0000').join('');
   return text.length > FILE_PREVIEW_CHAR_LIMIT
     ? truncateMiddlePreservingTail(text, FILE_PREVIEW_CHAR_LIMIT, {
       marker: '\n\n[... attached file preview truncated; read the file path for full contents ...]\n\n',
