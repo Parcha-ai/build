@@ -894,9 +894,10 @@ function startRunningSshProcessMonitors(
 
         startRemoteProcessMonitor(session.id, getState, setState, loadMessages, {
           recoverableKnown: true,
-          // Background sessions poll without attaching; the active session
-          // attaches so the surviving turn streams live in the visible chat.
-          attachStream: session.id === getState().activeSessionId,
+          // Recovery is intentionally serialized by waitForNoActiveStream, so
+          // attach every surviving turn in sequence and persist its replay even
+          // when its tab is not active.
+          attachStream: true,
         });
       } catch (error) {
         console.warn('[SessionStore] Failed to check recoverable SSH process during startup reattach:', session.id, error);

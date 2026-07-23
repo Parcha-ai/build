@@ -433,9 +433,9 @@ export default function MessageList({
           return (
             <div className="flex items-center gap-2 text-claude-text-secondary">
               <div className="flex gap-0.5">
-                <div className="w-2 h-2" style={{ backgroundColor: modeMeta.color, animation: 'pulse-square 1.2s ease-in-out infinite 0s' }} />
-                <div className="w-2 h-2" style={{ backgroundColor: modeMeta.color, animation: 'pulse-square 1.2s ease-in-out infinite 0.4s' }} />
-                <div className="w-2 h-2" style={{ backgroundColor: modeMeta.color, animation: 'pulse-square 1.2s ease-in-out infinite 0.8s' }} />
+                <div className="live-thinking-indicator w-2 h-2" style={{ backgroundColor: modeMeta.color, animation: 'pulse-square 1.2s ease-in-out infinite 0s' }} />
+                <div className="live-thinking-indicator w-2 h-2" style={{ backgroundColor: modeMeta.color, animation: 'pulse-square 1.2s ease-in-out infinite 0.4s' }} />
+                <div className="live-thinking-indicator w-2 h-2" style={{ backgroundColor: modeMeta.color, animation: 'pulse-square 1.2s ease-in-out infinite 0.8s' }} />
               </div>
               <span className="text-sm" style={{ color: modeMeta.color }}>{modeMeta.shortName} is thinking...</span>
             </div>
@@ -445,9 +445,9 @@ export default function MessageList({
         return (
           <div className="flex items-center gap-2 text-claude-text-secondary">
             <div className="flex gap-0.5">
-              <div className="w-2 h-2 bg-claude-accent" style={{ animation: 'pulse-square 1.2s ease-in-out infinite 0s' }} />
-              <div className="w-2 h-2 bg-claude-accent" style={{ animation: 'pulse-square 1.2s ease-in-out infinite 0.4s' }} />
-              <div className="w-2 h-2 bg-claude-accent" style={{ animation: 'pulse-square 1.2s ease-in-out infinite 0.8s' }} />
+              <div className="live-thinking-indicator w-2 h-2 bg-claude-accent" style={{ animation: 'pulse-square 1.2s ease-in-out infinite 0s' }} />
+              <div className="live-thinking-indicator w-2 h-2 bg-claude-accent" style={{ animation: 'pulse-square 1.2s ease-in-out infinite 0.4s' }} />
+              <div className="live-thinking-indicator w-2 h-2 bg-claude-accent" style={{ animation: 'pulse-square 1.2s ease-in-out infinite 0.8s' }} />
             </div>
             <span className="text-sm">Build is thinking...</span>
           </div>

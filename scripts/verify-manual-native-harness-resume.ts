@@ -67,7 +67,7 @@ assert.match(
 );
 assert.match(
   claudeService,
-  /\{ resumeThreadId: codexThreadId, persistThread: usesNativeCodexThread \}/,
+  /resumeThreadId: codexThreadId,[\s\S]*?persistThread: usesNativeCodexThread,[\s\S]*?developerInstructions:/,
   'Codex must pass the native thread id and persist new native threads for manual and Auto Build routes',
 );
 assert.match(

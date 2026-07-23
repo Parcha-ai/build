@@ -26,8 +26,8 @@ const TOOL_NAME_ALIASES: Record<string, string> = {
   browser_snapshot: 'BrowserSnapshot',
   browser_type: 'BrowserType',
   cat: 'Read',
-  command: 'Bash',
-  command_execution: 'Bash',
+  command: 'Command',
+  command_execution: 'Command',
   create_file: 'Write',
   create_plan: 'Task',
   createplan: 'Task',
@@ -177,7 +177,8 @@ function normalizeToolInput(toolName: string, input: ToolInput): ToolInput {
   const filePath = getString(input, ['file_path', 'path', 'file', 'filepath', 'absolute_path', 'target_file']);
 
   switch (toolName) {
-    case 'Bash': {
+    case 'Bash':
+    case 'Command': {
       const command = getString(input, ['command', 'cmd', 'script', 'shell_command']);
       const description = getString(input, ['description', 'summary']);
       return {

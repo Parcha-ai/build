@@ -36,6 +36,8 @@ interface BridgeInstance {
   stdoutBuffer: string;
   /** Request counter for generating synthetic IDs when needed. */
   requestCounter: number;
+  /** Captures a spawn/exit failure that can happen before readiness listeners attach. */
+  startupError?: Error;
 }
 
 const STARTUP_TIMEOUT_MS = 30_000;
@@ -208,12 +210,14 @@ class McpStdioBridgeService {
 
     child.on('error', (err) => {
       console.error(`[MCP Bridge] ${serverId} process error:`, err.message);
+      newBridge.startupError = new Error(`${serverId} stdio process error during startup: ${err.message}`);
       newBridge.alive = false;
       this.rejectAllPending(newBridge, new Error(`MCP process crashed: ${err.message}`));
     });
 
     child.on('exit', (code, signal) => {
       console.log(`[MCP Bridge] ${serverId} process exited: code=${code} signal=${signal}`);
+      newBridge.startupError = new Error(`${serverId} stdio process exited during startup: code=${code} signal=${signal}`);
       newBridge.alive = false;
       this.rejectAllPending(newBridge, new Error(`MCP process exited: code=${code} signal=${signal}`));
     });
@@ -280,9 +284,39 @@ class McpStdioBridgeService {
   }
 
   private async waitForReady(bridge: BridgeInstance, serverId: string): Promise<void> {
+    if (bridge.startupError) {
+      throw bridge.startupError;
+    }
+
     return new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const cleanup = () => {
+        clearTimeout(timeout);
+        bridge.child.removeListener('exit', handleExit);
+        bridge.child.removeListener('error', handleError);
+        delete (bridge as any)._initChecker;
+      };
+      const fail = (error: Error) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(error);
+      };
+      const succeed = () => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        bridge.alive = true;
+        resolve();
+      };
+      const handleExit = (code: number | null, signal: NodeJS.Signals | null) => {
+        fail(new Error(`${serverId} stdio process exited during startup: code=${code} signal=${signal}`));
+      };
+      const handleError = (err: Error) => {
+        fail(new Error(`${serverId} stdio process error during startup: ${err.message}`));
+      };
       const timeout = setTimeout(() => {
-        reject(new Error(`${serverId} stdio process did not become ready within ${STARTUP_TIMEOUT_MS}ms`));
+        fail(new Error(`${serverId} stdio process did not become ready within ${STARTUP_TIMEOUT_MS}ms`));
       }, STARTUP_TIMEOUT_MS);
 
       // Check if the process is alive after a short delay
@@ -304,12 +338,10 @@ class McpStdioBridgeService {
         try {
           const msg = JSON.parse(line);
           if (msg.id === '__bridge_init__') {
-            clearTimeout(timeout);
-            bridge.alive = true;
             // Send initialized notification
             const initialized = JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' });
             bridge.child.stdin?.write(initialized + '\n');
-            resolve();
+            succeed();
             return true;
           }
         } catch {
@@ -322,15 +354,13 @@ class McpStdioBridgeService {
       (bridge as any)._initChecker = checkResponse;
 
       // If the child dies before we hear back, reject
-      bridge.child.once('exit', () => {
-        clearTimeout(timeout);
-        reject(new Error(`${serverId} stdio process exited during startup`));
-      });
+      bridge.child.once('exit', handleExit);
+      bridge.child.once('error', handleError);
 
-      bridge.child.once('error', (err) => {
-        clearTimeout(timeout);
-        reject(new Error(`${serverId} stdio process error during startup: ${err.message}`));
-      });
+      if (bridge.startupError) {
+        fail(bridge.startupError);
+        return;
+      }
 
       // Send the init request
       bridge.child.stdin?.write(initRequest + '\n');

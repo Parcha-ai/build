@@ -48,6 +48,8 @@ interface RemoteCommandProcessOptions {
   env?: Record<string, string | undefined>;
   signal?: AbortSignal;
   closeStdinOnEnd?: boolean;
+  /** Persistent harness turns must never degrade to connection-owned SSH exec. */
+  requireDetached?: boolean;
 }
 
 // Bridge job commands that resumeRemoteTurn knows how to replay. Every harness
@@ -896,7 +898,7 @@ export class SSHService {
       const client = await this.getConnection(sessionId, config);
       const legacyTmuxName = `grep-${sessionId.substring(0, 8)}`;
       const jobs = await this.listDetachedBridgeJobs(sessionId, config);
-      if (jobs.some(job => job.active && !job.recovered && (!job.command || job.command === 'claude'))) {
+      if (jobs.some(job => job.active && !job.recovered && (!job.command || RECOVERABLE_BRIDGE_COMMANDS.has(job.command)))) {
         return true;
       }
 
@@ -905,7 +907,7 @@ export class SSHService {
         this.buildSessionEnvProcessLoop(sessionId, [
           'cmd="$(ps -p "$pid" -o args= 2>/dev/null || true)"',
           'case "$cmd" in',
-          'claude|claude\\ *|*/claude|*/claude\\ *|*\\ claude|*\\ claude\\ *|*@anthropic-ai/claude-code*|*/claude-code/*|cursor-agent|cursor-agent\\ *|*/cursor-agent|*/cursor-agent\\ *|*\\ cursor-agent|*\\ cursor-agent\\ *|agent|agent\\ *|*/agent|*/agent\\ *|*\\ agent|*\\ agent\\ *) kill -0 "$pid" 2>/dev/null && { active=1; break; } ;;',
+          'claude|claude\\ *|*/claude|*/claude\\ *|*\\ claude|*\\ claude\\ *|*@anthropic-ai/claude-code*|*/claude-code/*|codex|codex\\ *|*/codex|*/codex\\ *|*\\ codex|*\\ codex\\ *|cursor-agent|cursor-agent\\ *|*/cursor-agent|*/cursor-agent\\ *|*\\ cursor-agent|*\\ cursor-agent\\ *|agent|agent\\ *|*/agent|*/agent\\ *|*\\ agent|*\\ agent\\ *) kill -0 "$pid" 2>/dev/null && { active=1; break; } ;;',
           'esac',
         ].join('\n')) + '; ' +
         `if test "$active" = "0" && tmux has-session -t ${this.quoteForShell(legacyTmuxName)} 2>/dev/null; then active=1; fi; ` +
@@ -970,6 +972,7 @@ export class SSHService {
         'pidfile="$jobdir/pid"; log="$jobdir/stdout.log"; exitfile="$jobdir/exit.json"; recoveredfile="$jobdir/recovered.json"; ' +
         'pid="$(cat "$pidfile" 2>/dev/null || true)"; ' +
         'cmdname="$(sed -n \'s/^[[:space:]]*"command"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p\' "$jobdir/config.json" 2>/dev/null | head -1)"; ' +
+        'test -n "$cmdname" || cmdname="$(sed -n \'s/^[[:space:]]*"command"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p\' "$jobdir/metadata.json" 2>/dev/null | head -1)"; ' +
         'active=0; test -n "$pid" && kill -0 "$pid" 2>/dev/null && active=1; ' +
         'hasexit=0; test -f "$exitfile" && hasexit=1; ' +
         'exitcode=""; test "$hasexit" = "1" && exitcode="$(sed -n \'s/.*"code"[[:space:]]*:[[:space:]]*\\(-\\{0,1\\}[0-9][0-9]*\\|null\\).*/\\1/p\' "$exitfile" 2>/dev/null | head -1)"; ' +
@@ -1265,7 +1268,11 @@ git -C "$workdir" rev-parse --abbrev-ref HEAD 2>/dev/null || true
 
         // Notify renderer of connection loss for immediate UI feedback
         try {
-          const windows = BrowserWindow.getAllWindows();
+          // BrowserWindow is unavailable when the SSH service is exercised by
+          // the standalone live verifier outside Electron.
+          const windows = typeof BrowserWindow?.getAllWindows === 'function'
+            ? BrowserWindow.getAllWindows()
+            : [];
           for (const win of windows) {
             win.webContents.send(IPC_CHANNELS.SSH_CONNECTION_LOST, { sessionId, reason: 'SSH connection closed unexpectedly' });
           }
@@ -1621,13 +1628,32 @@ fi
     const key = this.getRemoteBridgeInstallKey(config);
     const existing = this.remoteBridgeReady.get(key);
     if (existing) {
-      return existing;
+      const install = await existing;
+      try {
+        const client = await this.getConnection(sessionId, config);
+        const validation = await this.execCommand(
+          client,
+          `test -s ${this.quoteForShell(install.bridgePath)} && echo ready || echo missing`
+        );
+        if (validation.trim().split('\n').pop() === 'ready') {
+          return install;
+        }
+      } catch (error) {
+        console.warn('[SSH Service] Failed to validate cached detached bridge install:', error);
+      }
+
+      // /tmp may be cleaned independently of the desktop app. Never retain a
+      // promise that points at a vanished installer for the rest of app life.
+      const current = this.remoteBridgeReady.get(key);
+      if (current && current !== existing) {
+        return current;
+      }
+      this.remoteBridgeReady.delete(key);
+      console.warn('[SSH Service] Cached detached bridge install is missing; reinstalling');
     }
 
     const promise = (async () => {
       const client = await this.getConnection(sessionId, config);
-      const safeUsername = config.username.replace(/[^a-zA-Z0-9_-]/g, '-');
-      const bridgePath = `/tmp/claudette-remote-bridge-${safeUsername}.js`;
 
       const nodeResult = await this.execCommand(
         client,
@@ -1638,7 +1664,19 @@ fi
         throw new Error('Remote machine needs node or nodejs installed to keep SSH sessions running after disconnects.');
       }
 
-      await this.execCommand(client, `mkdir -p ${this.quoteForShell('/tmp/claudette-ssh-bridge')}`);
+      const homeResult = await this.execCommand(client, `printf '%s\n' "$HOME"`);
+      const remoteHome = homeResult.trim().split('\n').filter(Boolean).pop() || '';
+      if (!remoteHome.startsWith('/')) {
+        throw new Error('Remote HOME is unavailable; cannot install the detached process bridge.');
+      }
+      const installDir = `${remoteHome.replace(/\/+$/, '')}/.build/bridge`;
+      const bridgePath = `${installDir}/claudette-remote-bridge.js`;
+
+      await this.execCommand(
+        client,
+        `mkdir -p ${this.quoteForShell(installDir)} ${this.quoteForShell('/tmp/claudette-ssh-bridge')} && `
+        + `chmod 700 ${this.quoteForShell(installDir)} ${this.quoteForShell('/tmp/claudette-ssh-bridge')}`
+      );
       await this.writeRemoteFile(sessionId, config, bridgePath, REMOTE_DETACHED_BRIDGE_SCRIPT);
       await this.execCommand(client, `chmod 700 ${this.quoteForShell(bridgePath)}`);
 
@@ -1872,6 +1910,9 @@ fi
     let finalized = false;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let exitPoller: ReturnType<typeof setInterval> | null = null;
+    let exitPollInFlight = false;
+    let exitPollFailures = 0;
+    let lastExitPollWarningAt = 0;
     let fallbackProcess: SpawnedProcess | null = null;
     let bridgeLaunched = false;
 
@@ -2108,7 +2149,8 @@ fi
     };
 
     const pollForExit = async (): Promise<void> => {
-      if (finalized || killed) return;
+      if (finalized || killed || exitPollInFlight) return;
+      exitPollInFlight = true;
       try {
         const client = await this.getConnection(sessionId, config);
         const output = await this.execCommand(
@@ -2131,8 +2173,17 @@ fi
           (parsed.signal as NodeJS.Signals | null) || null,
           true
         );
+        exitPollFailures = 0;
       } catch (error) {
-        console.warn('[SSH Service] Detached bridge exit poll failed:', error);
+        exitPollFailures += 1;
+        const now = Date.now();
+        if (lastExitPollWarningAt === 0 || now - lastExitPollWarningAt >= 30_000) {
+          console.warn(`[SSH Service] Detached bridge exit poll failed (${exitPollFailures} attempt${exitPollFailures === 1 ? '' : 's'}):`, error);
+          lastExitPollWarningAt = now;
+          exitPollFailures = 0;
+        }
+      } finally {
+        exitPollInFlight = false;
       }
     };
 
@@ -2188,13 +2239,18 @@ fi
 
     void (async () => {
       try {
-        await this.launchDetachedRemoteBridge(sessionId, config, bridge);
+        const launchState = await this.launchDetachedRemoteBridge(sessionId, config, bridge);
         bridgeLaunched = true;
         await attachReader();
-        await openStdinBridge();
+        if (launchState === 'running') {
+          await openStdinBridge();
+        }
         exitPoller = setInterval(() => {
           void pollForExit();
         }, 1000);
+        if (launchState === 'exited') {
+          void pollForExit();
+        }
       } catch (error) {
         if (bridgeLaunched) {
           console.warn('[SSH Service] Detached bridge launched but initial attach failed; retrying:', error);
@@ -2211,6 +2267,18 @@ fi
         if (error instanceof Error && error.message.includes('Remote workdir not found')) {
           console.warn('[SSH Service] Detached bridge refused missing remote workdir:', error.message);
           emitter.emit('error', error);
+          passThrough.stdout.end();
+          options.signal?.removeEventListener('abort', abortHandler);
+          return;
+        }
+
+        if (options.requireDetached) {
+          const detachedError = new Error(
+            `Persistent remote process could not start because the detached SSH bridge failed: ${error instanceof Error ? error.message : String(error)}`
+          );
+          console.error('[SSH Service] Refusing direct SSH fallback for persistent harness turn:', detachedError);
+          clearTimers();
+          emitter.emit('error', detachedError);
           passThrough.stdout.end();
           options.signal?.removeEventListener('abort', abortHandler);
           return;
@@ -2347,6 +2415,9 @@ fi
     let finalized = false;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let exitPoller: ReturnType<typeof setInterval> | null = null;
+    let exitPollInFlight = false;
+    let exitPollFailures = 0;
+    let lastExitPollWarningAt = 0;
 
     const clearTimers = () => {
       if (reconnectTimer) {
@@ -2554,7 +2625,8 @@ fi
     };
 
     const pollForExit = async (): Promise<void> => {
-      if (finalized || killed) return;
+      if (finalized || killed || exitPollInFlight) return;
+      exitPollInFlight = true;
       try {
         const client = await this.getConnection(sessionId, config);
         const output = await this.execCommand(
@@ -2598,8 +2670,17 @@ fi
         if (trimmed === '__GONE__') {
           await finalize(1, null, true);
         }
+        exitPollFailures = 0;
       } catch (error) {
-        console.warn('[SSH Service] Recovered bridge exit poll failed:', error);
+        exitPollFailures += 1;
+        const now = Date.now();
+        if (lastExitPollWarningAt === 0 || now - lastExitPollWarningAt >= 30_000) {
+          console.warn(`[SSH Service] Recovered bridge exit poll failed (${exitPollFailures} attempt${exitPollFailures === 1 ? '' : 's'}):`, error);
+          lastExitPollWarningAt = now;
+          exitPollFailures = 0;
+        }
+      } finally {
+        exitPollInFlight = false;
       }
     };
 
@@ -2683,13 +2764,17 @@ fi
   private async launchDetachedRemoteBridge(
     sessionId: string,
     config: SSHConfig,
-    bridge: DetachedRemoteBridgeConfig
-  ): Promise<void> {
+    bridge: DetachedRemoteBridgeConfig,
+    attempt = 0,
+  ): Promise<'running' | 'exited'> {
     await this.assertRemoteWorkdirExists(sessionId, config, bridge.cwd);
     const install = await this.ensureDetachedRemoteBridge(sessionId, config);
     const client = await this.getConnection(sessionId, config);
 
-    await this.execCommand(client, `mkdir -p ${this.quoteForShell(bridge.jobDir)}`);
+    await this.execCommand(
+      client,
+      `mkdir -p ${this.quoteForShell(bridge.jobDir)} && chmod 700 ${this.quoteForShell(bridge.jobDir)}`
+    );
     await this.execCommand(
       client,
       `find ${this.quoteForShell(this.getDetachedBridgeSessionDir(sessionId))} -mindepth 1 -maxdepth 1 -type d -mmin +360 -exec rm -rf {} + 2>/dev/null || true`
@@ -2703,8 +2788,13 @@ fi
       args: bridge.args,
       cwd: bridge.cwd,
     }, null, 2));
+    await this.execCommand(
+      client,
+      `chmod 600 ${this.quoteForShell(`${bridge.jobDir}/config.json`)} ${this.quoteForShell(`${bridge.jobDir}/metadata.json`)}`
+    );
 
-    const startCommand = `${this.getRemoteCommandPathPrefix(config)} && (nohup ${install.nodeCommand} ${this.quoteForShell(install.bridgePath)} spawn ${this.quoteForShell(`${bridge.jobDir}/config.json`)} >/dev/null 2>&1 </dev/null & echo __claudette_bridge_started__)`;
+    const launcherLogPath = `${bridge.jobDir}/launcher.log`;
+    const startCommand = `${this.getRemoteCommandPathPrefix(config)} && (nohup ${install.nodeCommand} ${this.quoteForShell(install.bridgePath)} spawn ${this.quoteForShell(`${bridge.jobDir}/config.json`)} >${this.quoteForShell(launcherLogPath)} 2>&1 </dev/null & echo __claudette_bridge_started__)`;
     await new Promise<void>((resolve, reject) => {
       client.exec(startCommand, (err, channel) => {
         if (err) {
@@ -2762,15 +2852,45 @@ fi
     while (Date.now() < deadline) {
       const ready = await this.execCommand(
         client,
-        `test -S ${this.quoteForShell(bridge.socketPath)} && test -f ${this.quoteForShell(bridge.logPath)} && echo ready || echo waiting`
+        `if test -S ${this.quoteForShell(bridge.socketPath)} && test -f ${this.quoteForShell(bridge.logPath)}; then echo running; `
+        + `elif test -f ${this.quoteForShell(bridge.exitPath)} && test -f ${this.quoteForShell(bridge.logPath)}; then echo exited; `
+        + `else echo waiting; fi`
       );
-      if (ready.trim() === 'ready') {
-        return;
+      const state = ready.trim().split('\n').pop();
+      if (state === 'running' || state === 'exited') {
+        await this.execCommand(client, `rm -f ${this.quoteForShell(launcherLogPath)}`);
+        return state;
       }
       await new Promise((resolve) => setTimeout(resolve, 200));
     }
 
-    throw new Error('Timed out waiting for detached remote process bridge');
+    const diagnostic = await this.execCommand(
+      client,
+      `if test -s ${this.quoteForShell(launcherLogPath)}; then tail -c 2000 ${this.quoteForShell(launcherLogPath)}; `
+      + `elif test -s ${this.quoteForShell(bridge.exitPath)}; then cat ${this.quoteForShell(bridge.exitPath)}; `
+      + `else echo 'bridge produced no launcher diagnostics'; fi`
+    ).catch(() => 'bridge diagnostics unavailable');
+
+    const installKey = this.getRemoteBridgeInstallKey(config);
+    this.remoteBridgeReady.delete(installKey);
+    if (attempt === 0) {
+      console.warn(`[SSH Service] Detached bridge did not become ready; reinstalling once (${diagnostic.trim()})`);
+      await this.killDetachedProcess(sessionId, config, bridge).catch(() => undefined);
+      await this.execCommand(
+        client,
+        `rm -f ${[
+          bridge.socketPath,
+          bridge.logPath,
+          bridge.exitPath,
+          bridge.eofPath,
+          bridge.pidPath,
+          launcherLogPath,
+        ].map((path) => this.quoteForShell(path)).join(' ')}`
+      );
+      return this.launchDetachedRemoteBridge(sessionId, config, bridge, attempt + 1);
+    }
+
+    throw new Error(`Timed out waiting for detached remote process bridge: ${diagnostic.trim()}`);
   }
 
   private async killDetachedProcess(
@@ -2828,6 +2948,7 @@ fi
       env: filteredEnv,
       signal: sdkOptions.signal,
       closeStdinOnEnd: true,
+      requireDetached: true,
     });
   }
 

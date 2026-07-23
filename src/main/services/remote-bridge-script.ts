@@ -31,7 +31,14 @@ function normalizeCwd(cwd) {
 }
 
 function runSpawn(configPath) {
-  const config = parseConfig(configPath);
+  let config;
+  try {
+    config = parseConfig(configPath);
+  } finally {
+    // The config contains provider credentials. Remove even malformed configs;
+    // metadata.json contains the safe fields needed for discovery/recovery.
+    safeUnlink(configPath);
+  }
   fs.mkdirSync(config.jobDir, { recursive: true });
   safeUnlink(config.socketPath);
   safeUnlink(config.eofPath);

@@ -81,7 +81,7 @@ function verifyWiringAndCopy(): void {
   const queuePanel = fs.readFileSync(path.join(root, 'src/renderer/components/chat/MessageQueuePanel.tsx'), 'utf8');
 
   assert.ok(codexService.includes("connection.request('turn/steer'"));
-  assert.ok(codexService.includes('nativeThread?.persistThread\n      ? this.spawnCodexAppServer'));
+  assert.ok(codexService.includes('preparedNativeThread?.persistThread\n      ? this.spawnCodexAppServer'));
   assert.ok(claudeService.includes('codexService.canSteer(sessionId)'));
   assert.ok(claudeService.includes('return codexService.steer(sessionId, message, attachments);'));
   assert.ok(codexService.includes("const args = ['app-server'];"));

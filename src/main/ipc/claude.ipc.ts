@@ -604,6 +604,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
       let needsCompactionRetry = false;
       let latestResolvedModel: string | undefined;
       let activeQueueHarness = harnessFromModel(model);
+      const turnLockOwner = Symbol('claude-ipc-send-message');
       const accumulatedToolCalls: ToolCall[] = [];
       const accumulatedContentBlocks: ContentBlock[] = [];
       const transcriptSnapshot = createTranscriptSnapshotWriter(sessionId, model);
@@ -662,7 +663,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
           let lastEventType = '';
           let lastEventTime = Date.now();
           const streamStartTime = Date.now();
-          for await (const event of claudeService.streamMessage(sessionId, modelMessage, attachments, permissionMode, thinkingMode, model, gstackMode, supplementalMessages, fastMode, cascadeMode)) {
+          for await (const event of claudeService.streamMessage(sessionId, modelMessage, attachments, permissionMode, thinkingMode, model, gstackMode, supplementalMessages, fastMode, cascadeMode, turnLockOwner)) {
             claudeService.noteActiveQueryEvent(sessionId);
             eventCount++;
             lastEventType = event.type;
@@ -766,7 +767,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
                   // Retry by starting a new stream with the same message
                   console.log('[Claude IPC] Starting retry stream after compaction');
                   try {
-                    for await (const retryEvent of claudeService.streamMessage(sessionId, modelMessage, attachments, permissionMode, thinkingMode, model, gstackMode, supplementalMessages, fastMode, cascadeMode)) {
+                    for await (const retryEvent of claudeService.streamMessage(sessionId, modelMessage, attachments, permissionMode, thinkingMode, model, gstackMode, supplementalMessages, fastMode, cascadeMode, turnLockOwner)) {
                       latestResolvedModel = retryEvent.resolvedModel || latestResolvedModel;
                       if (retryEvent.resolvedModel) {
                         const resolvedHarness = harnessFromModel(retryEvent.resolvedModel);

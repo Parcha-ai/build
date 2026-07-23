@@ -28,6 +28,11 @@ import {
   type CodexAppServerMessage,
 } from './codex-app-server-connection';
 import { filterRemoteCodexEnvironment } from '../utils/remote-codex-env';
+import {
+  codexFileChangeToolInput,
+  normalizeCodexFileChanges,
+  type CodexFileChange,
+} from './codex-file-change';
 
 const STREAM_DEBUG = process.env.GREP_DEBUG_STREAMING === '1';
 // Codex prompts are streamed over stdin locally and through the detached SSH
@@ -129,7 +134,7 @@ interface CodexJsonEvent {
     command?: string;
     aggregated_output?: string;
     status?: string;
-    changes?: Array<{ kind: string; path: string }>;
+    changes?: CodexFileChange[];
     server?: string;
     tool?: string;
     arguments?: Record<string, unknown>;
@@ -166,6 +171,8 @@ interface CodexExecutionMode {
 interface CodexNativeThreadOptions {
   resumeThreadId?: string;
   persistThread?: boolean;
+  developerInstructions?: string;
+  markDeveloperInstructionsSeeded?: boolean;
 }
 
 interface ActiveCodexAppServer {
@@ -187,6 +194,7 @@ class CodexServiceImpl {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private sessionStore: any = new CachedStore({ name: getSessionStoreName() }) as any;
   private readonly CODEX_INSTRUCTION_CONTEXT_CHAR_LIMIT = 30000;
+  private readonly CODEX_DEVELOPER_INSTRUCTIONS_VERSION = 1;
 
   getOpenAiApiKey(): string | undefined {
     const userKey = settingsStore.get('openAiApiKey') as string | undefined;
@@ -259,12 +267,29 @@ class CodexServiceImpl {
   clearThreadId(sessionId: string): void {
     this.codexThreadIds.delete(sessionId);
     this.sessionStore.delete(`harnessState.${sessionId}.codexThreadId`);
+    this.sessionStore.delete(`harnessState.${sessionId}.codexDeveloperInstructions`);
   }
 
   private rememberThreadId(sessionId: string, threadId: string): void {
     this.codexThreadIds.set(sessionId, threadId);
     this.sessionStore.set(`harnessState.${sessionId}.codexThreadId`, threadId);
     console.log(`[Codex Service] Remembered native Codex thread ${threadId} for session ${sessionId.substring(0, 8)}`);
+  }
+
+  private hasSeededDeveloperInstructions(sessionId: string, threadId: string): boolean {
+    const seeded = this.sessionStore.get(`harnessState.${sessionId}.codexDeveloperInstructions`) as {
+      threadId?: string;
+      version?: number;
+    } | undefined;
+    return seeded?.threadId === threadId && seeded.version === this.CODEX_DEVELOPER_INSTRUCTIONS_VERSION;
+  }
+
+  private rememberDeveloperInstructions(sessionId: string, threadId: string): void {
+    this.sessionStore.set(`harnessState.${sessionId}.codexDeveloperInstructions`, {
+      threadId,
+      version: this.CODEX_DEVELOPER_INSTRUCTIONS_VERSION,
+    });
+    console.log(`[Codex Service] Seeded native Codex developer instructions for thread ${threadId}`);
   }
 
   private isBenignDiagnosticLine(line: string): boolean {
@@ -347,7 +372,7 @@ class CodexServiceImpl {
               type: 'tool_use',
               toolCall: {
                 id: item.id,
-                name: 'Bash',
+                name: 'Command',
                 input: { command: item.command },
                 status: 'running',
               },
@@ -358,7 +383,7 @@ class CodexServiceImpl {
               toolCall: {
                 id: item.id,
                 name: 'Edit',
-                input: { changes: item.changes },
+                input: codexFileChangeToolInput(item.changes || []),
                 status: 'running',
               },
             };
@@ -391,10 +416,21 @@ class CodexServiceImpl {
             type: 'tool_use',
             toolCall: {
               id: item.id,
-              name: 'Bash',
+              name: 'Command',
               input: { command: item.command },
               status: item.status === 'completed' ? 'completed' : 'running',
               result: item.aggregated_output,
+            },
+          };
+        }
+        if (item.type === 'file_change') {
+          return {
+            type: 'tool_use',
+            toolCall: {
+              id: item.id,
+              name: 'Edit',
+              input: codexFileChangeToolInput(item.changes || []),
+              status: item.status === 'completed' ? 'completed' : 'running',
             },
           };
         }
@@ -412,7 +448,7 @@ class CodexServiceImpl {
             type: 'tool_result',
             toolCall: {
               id: item.id,
-              name: 'Bash',
+              name: 'Command',
               input: { command: item.command },
               status: item.status === 'completed' ? 'completed' : 'failed',
               result: item.aggregated_output,
@@ -425,7 +461,7 @@ class CodexServiceImpl {
             toolCall: {
               id: item.id,
               name: 'Edit',
-              input: { changes: item.changes },
+              input: codexFileChangeToolInput(item.changes || []),
               status: item.status === 'completed' ? 'completed' : 'failed',
             },
           };
@@ -523,16 +559,7 @@ class CodexServiceImpl {
         return {
           id,
           type: 'file_change',
-          changes: Array.isArray(item.changes)
-            ? item.changes.flatMap((change) => {
-                if (!change || typeof change !== 'object') return [];
-                const record = change as Record<string, unknown>;
-                return [{
-                  kind: typeof record.kind === 'string' ? record.kind : 'update',
-                  path: typeof record.path === 'string' ? record.path : '',
-                }];
-              })
-            : [],
+          changes: normalizeCodexFileChanges(item.changes),
           status: item.status === 'completed' ? 'completed' : item.status === 'failed' || item.status === 'declined' ? 'failed' : 'in_progress',
         };
       case 'mcpToolCall':
@@ -574,6 +601,19 @@ class CodexServiceImpl {
         return {
           type: message.method === 'item/started' ? 'item.started' : 'item.completed',
           item,
+        };
+      }
+      case 'item/fileChange/patchUpdated': {
+        const itemId = typeof params.itemId === 'string' ? params.itemId : undefined;
+        if (!itemId) return null;
+        return {
+          type: 'item.updated',
+          item: {
+            id: itemId,
+            type: 'file_change',
+            changes: normalizeCodexFileChanges(params.changes),
+            status: 'in_progress',
+          },
         };
       }
       case 'turn/completed': {
@@ -744,6 +784,7 @@ class CodexServiceImpl {
           env: processEnv,
           signal: abortController.signal,
           closeStdinOnEnd: true,
+          requireDetached: true,
         })
       : spawn(binary, args, {
           cwd: workingDir,
@@ -802,6 +843,9 @@ class CodexServiceImpl {
         ephemeral: nativeThread?.persistThread !== true,
         historyMode: 'legacy',
         threadSource: 'grep-build',
+        ...(nativeThread?.developerInstructions
+          ? { developerInstructions: nativeThread.developerInstructions }
+          : {}),
       };
 
       let threadResponse: Record<string, unknown>;
@@ -812,6 +856,9 @@ class CodexServiceImpl {
             model: codexModel || null,
             cwd: workingDir,
             approvalPolicy,
+            ...(nativeThread.developerInstructions
+              ? { developerInstructions: nativeThread.developerInstructions }
+              : {}),
           });
           console.log(`[Codex App Server] Resumed thread ${nativeThread.resumeThreadId}`);
         } catch (error) {
@@ -830,6 +877,9 @@ class CodexServiceImpl {
       }
       if (nativeThread?.persistThread) {
         this.rememberThreadId(sessionId, threadId);
+      }
+      if (nativeThread?.markDeveloperInstructionsSeeded) {
+        this.rememberDeveloperInstructions(sessionId, threadId);
       }
 
       const turnResponse = await connection.request('turn/start', {
@@ -1149,6 +1199,7 @@ class CodexServiceImpl {
       cwd: workingDir,
       env: remoteEnv,
       closeStdinOnEnd: true,
+      requireDetached: true,
     });
 
     const rl = readline.createInterface({ input: process.stdout });
@@ -1224,10 +1275,23 @@ class CodexServiceImpl {
     }
 
     if (sshConfig) {
-      const syncResult = await sshService.syncMcpConfigsToRemote(sessionId, sshConfig);
-      if (!syncResult.success) {
-        yield { type: 'error', error: `Failed to sync MCP config to remote: ${syncResult.error}` };
-        return;
+      if (nativeThread?.persistThread) {
+        // ClaudeService already schedules this sync at turn start. Native Codex
+        // threads must not wait behind optional MCP bridge startup before they
+        // can resume; the existing remote config remains usable for this turn.
+        void sshService.syncMcpConfigsToRemote(sessionId, sshConfig).then((syncResult) => {
+          if (!syncResult.success) {
+            console.warn('[Codex Service] Background remote MCP sync failed:', syncResult.error);
+          }
+        }).catch((error) => {
+          console.warn('[Codex Service] Background remote MCP sync failed:', error);
+        });
+      } else {
+        const syncResult = await sshService.syncMcpConfigsToRemote(sessionId, sshConfig);
+        if (!syncResult.success) {
+          yield { type: 'error', error: `Failed to sync MCP config to remote: ${syncResult.error}` };
+          return;
+        }
       }
     } else {
       const syncResult = await mcpService.syncLocalHarnessConfigs();
@@ -1256,7 +1320,38 @@ class CodexServiceImpl {
     const promptWithFiles = preparedAssets.filePromptBlock
       ? `${preparedAssets.filePromptBlock}\n\n${prompt || ATTACHMENT_ONLY_PROMPT}`
       : prompt;
-    const promptWithInstructions = await this.prependCodexInstructionContext(sessionId, promptWithFiles, workingDir, sshConfig);
+    let preparedNativeThread = nativeThread;
+    let promptWithInstructions = promptWithFiles;
+    if (nativeThread?.persistThread) {
+      const shouldSeedDeveloperInstructions = !nativeThread.resumeThreadId
+        || !this.hasSeededDeveloperInstructions(sessionId, nativeThread.resumeThreadId);
+      if (shouldSeedDeveloperInstructions) {
+        const projectInstructions = await this.buildCodexInstructionContext(sessionId, workingDir, sshConfig);
+        const developerInstructions = [
+          nativeThread.developerInstructions,
+          projectInstructions,
+        ].filter((value): value is string => Boolean(value?.trim())).join('\n\n');
+        preparedNativeThread = {
+          ...nativeThread,
+          developerInstructions,
+          markDeveloperInstructionsSeeded: true,
+        };
+        console.log(
+          `[Codex Service] Seeding native thread developer instructions (${developerInstructions.length} chars)`,
+        );
+      } else {
+        // Stable project/harness instructions are persisted on the native
+        // thread. Keep resumed turn input limited to turn-local context.
+        preparedNativeThread = {
+          ...nativeThread,
+          developerInstructions: undefined,
+          markDeveloperInstructionsSeeded: false,
+        };
+        console.log(`[Codex Service] Reusing native thread developer instructions for ${nativeThread.resumeThreadId}`);
+      }
+    } else {
+      promptWithInstructions = await this.prependCodexInstructionContext(sessionId, promptWithFiles, workingDir, sshConfig);
+    }
     const promptWithModeContext = this.buildPromptWithExecutionMode(promptWithInstructions, executionMode);
     let safePrompt = prompt;
     if (promptWithModeContext.length > MAX_CODEX_INITIAL_PROMPT_CHARS) {
@@ -1269,7 +1364,7 @@ class CodexServiceImpl {
     // Persistent manual/Auto Build Codex threads use app-server so normal
     // queued messages can steer the active turn. One-off Codex tool calls keep
     // the simpler exec transport.
-    const eventSource = nativeThread?.persistThread
+    const eventSource = preparedNativeThread?.persistThread
       ? this.spawnCodexAppServer(
           sessionId,
           safePrompt,
@@ -1279,16 +1374,16 @@ class CodexServiceImpl {
           codexModel,
           preparedAssets.imagePaths,
           executionMode,
-          nativeThread,
+          preparedNativeThread,
         )
       : sshConfig
-        ? this.spawnCodexSSH(sessionId, safePrompt, workingDir, apiKey, sshConfig, codexModel, preparedAssets.imagePaths, executionMode, nativeThread)
-        : this.spawnCodex(sessionId, safePrompt, workingDir, apiKey, codexModel, preparedAssets.imagePaths, executionMode, nativeThread);
+        ? this.spawnCodexSSH(sessionId, safePrompt, workingDir, apiKey, sshConfig, codexModel, preparedAssets.imagePaths, executionMode, preparedNativeThread)
+        : this.spawnCodex(sessionId, safePrompt, workingDir, apiKey, codexModel, preparedAssets.imagePaths, executionMode, preparedNativeThread);
 
     try {
       yield* this.translateCodexEventStream(eventSource, {
         sessionId,
-        persistThread: nativeThread?.persistThread,
+        persistThread: preparedNativeThread?.persistThread,
       });
     } catch (error) {
       if ((error as Error).name === 'AbortError') {

@@ -21,6 +21,26 @@ interface TodoItem {
   activeForm?: string;
 }
 
+interface EditChange {
+  kind: string;
+  path: string;
+  diff?: string;
+}
+
+function getEditChanges(input: Record<string, unknown>): EditChange[] {
+  if (!Array.isArray(input.changes)) return [];
+  return input.changes.flatMap((rawChange) => {
+    if (!rawChange || typeof rawChange !== 'object') return [];
+    const change = rawChange as Record<string, unknown>;
+    if (typeof change.path !== 'string' || !change.path) return [];
+    return [{
+      kind: typeof change.kind === 'string' ? change.kind : 'update',
+      path: change.path,
+      ...(typeof change.diff === 'string' && change.diff ? { diff: change.diff } : {}),
+    }];
+  });
+}
+
 // Map tool names to icons and labels
 const TOOL_CONFIG: Record<string, {
   icon: React.ElementType;
@@ -31,6 +51,7 @@ const TOOL_CONFIG: Record<string, {
   iconSize?: number;    // Optional icon size override
 }> = {
   Bash: { icon: Terminal, label: 'Bash', color: 'text-green-400' },
+  Command: { icon: Terminal, label: 'Command', color: 'text-green-400' },
   BashOutput: { icon: Terminal, label: 'Bash Output', color: 'text-green-400' },
   KillShell: { icon: Terminal, label: 'Kill Shell', color: 'text-red-400' },
   Read: { icon: FileText, label: 'Read', color: 'text-blue-400' },
@@ -138,6 +159,7 @@ function getSubagentType(input: Record<string, unknown>): string | null {
 function formatToolInput(name: string, input: Record<string, unknown>): string {
   switch (name) {
     case 'Bash':
+    case 'Command':
       return (input.command as string) || 'Running command...';
     case 'BashOutput':
       return (input.shell_id as string) || 'Reading shell output...';
@@ -152,7 +174,13 @@ function formatToolInput(name: string, input: Record<string, unknown>): string {
     case 'Write':
       return (input.file_path as string) || 'Writing file...';
     case 'Edit':
-      return (input.file_path as string) || 'Editing file...';
+      if (input.file_path) return input.file_path as string;
+      {
+        const changes = getEditChanges(input);
+        if (changes.length === 1) return changes[0].path;
+        if (changes.length > 1) return `${changes.length} files changed`;
+      }
+      return 'Editing file...';
     case 'Delete':
       return (input.file_path as string) || 'Deleting file...';
     case 'Ls':
@@ -543,6 +571,60 @@ function DiffView({ oldString, newString, filePath, toolCallId, priority = false
   );
 }
 
+// Codex app-server provides a unified diff for each FileUpdateChange rather
+// than Claude's old_string/new_string pair. Render that native payload instead
+// of leaving the Edit card in a permanent loading state.
+function UnifiedDiffView({ change, toolCallId, priority = false }: { change: EditChange; toolCallId: string; priority?: boolean }) {
+  const openFile = useEditorStore((state) => state.openFile);
+  const lineCount = change.diff?.split('\n').length || 1;
+  const editorHeight = `${Math.min(priority ? 300 : 240, Math.max(88, lineCount * 19 + 44))}px`;
+  const kindLabel = change.kind === 'add' ? 'Added' : change.kind === 'delete' ? 'Deleted' : 'Updated';
+
+  return (
+    <div className="space-y-2 text-xs">
+      <div className="flex items-center gap-2 font-semibold">
+        <span className="text-claude-text-secondary uppercase text-[10px] tracking-wide">{kindLabel}</span>
+        <ClickableFilePath filePath={change.path} />
+      </div>
+      {change.diff ? (
+        <div
+          className="border border-claude-border overflow-hidden cursor-pointer hover:border-blue-400 transition-colors"
+          onClick={() => openFile?.(change.path)}
+          title="Click to open file in editor"
+        >
+          <div className="px-2 py-1 bg-claude-surface text-claude-text-secondary text-xs font-bold uppercase border-b border-claude-border" style={{ letterSpacing: '0.05em' }}>
+            PATCH (Click to open file)
+          </div>
+          <LazyMonacoEditor
+            editorId={`patch-${toolCallId}-${change.path}`}
+            height={editorHeight}
+            language="diff"
+            value={change.diff}
+            priority={priority}
+            options={{
+              readOnly: true,
+              minimap: { enabled: false },
+              scrollBeyondLastLine: false,
+              fontSize: 12,
+              lineNumbers: 'off',
+              folding: false,
+              renderLineHighlight: 'none',
+              contextmenu: false,
+              automaticLayout: true,
+              wordWrap: 'off',
+              scrollbar: {
+                vertical: 'auto',
+                horizontal: 'auto',
+                alwaysConsumeMouseWheel: false,
+              },
+            }}
+          />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 // Render expanded content based on tool type
 function ExpandedContent({ toolCall, priority = false }: { toolCall: ToolCall; priority?: boolean }) {
   const { name, input, result } = toolCall;
@@ -672,8 +754,9 @@ function ExpandedContent({ toolCall, priority = false }: { toolCall: ToolCall; p
     );
   }
 
-  // Special rendering for Bash tool - show command line
-  if (name === 'Bash') {
+  // Shell-backed Codex executions are deliberately labelled Command so a
+  // read/test invocation is not mistaken for a file edit performed by Bash.
+  if (name === 'Bash' || name === 'Command') {
     const command = (input.command as string) || '';
 
     // Show loading state if no command yet
@@ -752,9 +835,11 @@ function ExpandedContent({ toolCall, priority = false }: { toolCall: ToolCall; p
     const oldString = (input.old_string as string) || '';
     const newString = (input.new_string as string) || '';
     const filePath = (input.file_path as string) || '';
+    const changes = getEditChanges(input);
+    const unifiedDiff = (input.unified_diff as string) || '';
 
     // Show loading state if no content yet
-    if (!oldString && !newString && !filePath) {
+    if (!oldString && !newString && !filePath && changes.length === 0 && isRunning) {
       return (
         <div className="flex items-center gap-2 text-xs text-claude-text-secondary">
           <Loader2 size={12} className="animate-spin" />
@@ -767,11 +852,37 @@ function ExpandedContent({ toolCall, priority = false }: { toolCall: ToolCall; p
       return <DiffView oldString={oldString} newString={newString} filePath={filePath} toolCallId={toolCall.id} priority={priority} />;
     }
 
+    if (changes.length > 0) {
+      const displayChanges = changes.map((change, index) => (
+        index === 0 && !change.diff && unifiedDiff
+          ? { ...change, diff: unifiedDiff }
+          : change
+      ));
+      return (
+        <div className="space-y-4">
+          {displayChanges.map((change, index) => (
+            <UnifiedDiffView
+              key={`${change.path}-${index}`}
+              change={change}
+              toolCallId={`${toolCall.id}-${index}`}
+              priority={priority}
+            />
+          ))}
+        </div>
+      );
+    }
+
     // Have file path but no diff content yet
-    return (
+    if (filePath && isRunning) return (
       <div className="flex items-center gap-2 text-xs text-claude-text-secondary">
         <Loader2 size={12} className="animate-spin" />
         <span>Loading changes for {filePath.split('/').pop() || filePath}...</span>
+      </div>
+    );
+
+    return (
+      <div className="text-xs text-claude-text-secondary">
+        {filePath ? <ClickableFilePath filePath={filePath} /> : 'Edit completed; Codex did not provide patch details.'}
       </div>
     );
   }
