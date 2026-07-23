@@ -31,7 +31,7 @@ assert.doesNotMatch(
 // The meta-controller sees the previous turn and the continuity rule.
 assert.match(flueMetaRouterSource, /continuationHarness\?: Harness;/);
 assert.match(flueMetaRouterSource, /previousTurn: request\.continuationHarness \? \{/);
-assert.match(flueMetaRouterSource, /Reuse it only when it agrees with the fixed model for the resolved tier/);
+assert.match(flueMetaRouterSource, /Continuity may reuse previousTurn only when it matches fixed\/custom settings for the resolved tier/);
 
 const settings = {
   autoRouterConfig: {
@@ -203,6 +203,26 @@ async function runContinuityAssertions(): Promise<void> {
     assert.equal(approvedPlan.resolvedHarness, 'codex');
     assert.equal(approvedPlan.resolvedModel, 'codex:gpt-5.5');
 
+    // 9. PR/release workflows are execution phase boundaries. Neither their
+    // embedded plan/review language nor a frustrated prose wrapper may send
+    // them back through a plan-only Claude turn.
+    const resolvedPrWorkflow = await autoRouterService.classifyAndRoute(
+      'explicit-pr-workflow-executes',
+      '<invoked_workflow kind="command" name="/pr" scope="project" path="/repo/.claude/commands/pr.md">\nReview the plan, run tests, push, and create the PR.\n</invoked_workflow>',
+      { ...baseOptions, permissionMode: 'bypassPermissions' },
+    );
+    assert.equal(resolvedPrWorkflow.tier, 'build');
+    assert.equal(resolvedPrWorkflow.planningGate.action, 'none');
+    assert.equal(resolvedPrWorkflow.resolvedModel, 'codex:gpt-5.5');
+
+    const frustratedPrWorkflow = await autoRouterService.classifyAndRoute(
+      'frustrated-pr-workflow-executes',
+      'stop wasting my time and do the fucking /pr',
+      { ...baseOptions, permissionMode: 'bypassPermissions' },
+    );
+    assert.equal(frustratedPrWorkflow.tier, 'build');
+    assert.equal(frustratedPrWorkflow.planningGate.action, 'none');
+
     console.log(`[AutoRouter] follow-up → ${followUp.resolvedHarness}:${followUp.resolvedModel}`);
     console.log(`[AutoRouter] anaphoric → ${anaphoric.resolvedHarness}:${anaphoric.resolvedModel}`);
     console.log(`[AutoRouter] new intent → ${newIntent.resolvedHarness}:${newIntent.resolvedModel}`);
@@ -211,6 +231,7 @@ async function runContinuityAssertions(): Promise<void> {
     console.log(`[AutoRouter] plan escalation → ${planEscalation.resolvedHarness}:${planEscalation.resolvedModel}`);
     console.log(`[AutoRouter] cross-tier switch → ${crossTierSwitch.resolvedHarness}:${crossTierSwitch.resolvedModel}`);
     console.log(`[AutoRouter] approved plan → ${approvedPlan.resolvedHarness}:${approvedPlan.resolvedModel}`);
+    console.log(`[AutoRouter] explicit /pr → ${resolvedPrWorkflow.resolvedHarness}:${resolvedPrWorkflow.resolvedModel}`);
   } finally {
     moduleWithLoad._load = originalLoad;
   }

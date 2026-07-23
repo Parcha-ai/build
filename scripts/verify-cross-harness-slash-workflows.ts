@@ -45,7 +45,14 @@ assert.deepEqual(parseSlashWorkflowInvocation('invoke /release workflow with sta
   arguments: 'staging',
   originalMessage: 'invoke /release workflow with staging',
 });
+assert.deepEqual(parseSlashWorkflowInvocation('stop wasting my time and do the fucking /pr'), {
+  name: 'pr',
+  arguments: '',
+  originalMessage: 'stop wasting my time and do the fucking /pr',
+});
 assert.equal(parseSlashWorkflowInvocation('Can you explain what /pr does?'), null);
+assert.equal(parseSlashWorkflowInvocation("why didn't you run /pr?"), null);
+assert.equal(parseSlashWorkflowInvocation('do not run /pr'), null);
 
 const commands = [
   command('pr', 'USER PR', 'user'),

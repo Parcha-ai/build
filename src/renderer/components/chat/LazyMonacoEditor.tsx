@@ -109,19 +109,10 @@ export function LazyMonacoEditor({
           minHeight: numericHeight,
         }}
       >
-        {hasBeenVisible ? (
-          // Was visible, now scrolled out - show compact placeholder
-          <div className="text-claude-text-secondary text-xs font-mono flex items-center gap-2">
-            <Code size={14} />
-            <span>Scroll to view code</span>
-          </div>
-        ) : (
-          // Never been visible - loading state
-          <div className="text-claude-text-secondary text-xs font-mono flex items-center gap-2">
-            <Loader2 size={14} className="animate-spin" />
-            <span>Loading editor...</span>
-          </div>
-        )}
+        <div className="text-claude-text-secondary text-xs font-mono flex items-center gap-2">
+          <Code size={14} />
+          <span>{hasBeenVisible ? 'Scroll to view code' : 'Code preview'}</span>
+        </div>
       </div>
     );
   }
@@ -285,8 +276,8 @@ export function LazyDiffEditor({
         }}
       >
         <div className="text-claude-text-secondary text-xs font-mono flex items-center gap-2">
-          <Loader2 size={14} className="animate-spin" />
-          <span>Loading diff editor...</span>
+          <Code size={14} />
+          <span>Diff preview</span>
         </div>
       </div>
     );

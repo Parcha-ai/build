@@ -39,16 +39,21 @@ const claudeService = read('src/main/services/claude.service.ts');
 assert.match(claudeService, /append \+= `\\n\\n\$\{adhdOutputService\.getSystemContext\(\)\}`/);
 assert.match(
   claudeService,
-  /const orchestrationAndPlanContext = \[\s*adhdOutputService\.getSystemContext\(\),\s*autoOrchestrationContext,/,
-  'new CLI threads and Auto helper stages must receive the default contract',
+  /const orchestrationAndPlanContext = \[\s*options\.includeDefaultOutputContext === false \? '' : adhdOutputService\.getSystemContext\(\),\s*autoOrchestrationContext,/,
+  'CLI handoffs must include the default contract unless a native instruction layer owns it',
 );
 assert.match(
   claudeService,
   /const withOutputContract = current\.includes\('<build_default_output_contract'\)[\s\S]{0,180}\[defaultOutputContext, current\]/,
-  'resumed native CLI threads must receive the default contract on every turn',
+  'non-Codex resumed CLI threads must receive the default contract on every turn',
 );
 assert.match(claudeService, /const openClawMessage = `\$\{ensureCascadeContext\(\)\}\\n\\n\$\{userMessage\}`/);
-assert.match(claudeService, /codexContext = \[secureEnvContext, ensureCascadeContext\(conversationContext\)\]/);
+assert.match(
+  claudeService,
+  /stableCodexDeveloperInstructions = \[secureEnvContext, defaultOutputContext\]/,
+  'native Codex threads must receive the default contract as stable developer instructions',
+);
+assert.match(claudeService, /: \[secureEnvContext, ensureCascadeContext\(conversationContext\)\]/);
 assert.match(claudeService, /effectiveCursorContext = ensureCascadeContext\(cursorContext\)/);
 assert.match(claudeService, /effectiveGeminiContext = ensureCascadeContext\(geminiContext\)/);
 assert.match(claudeService, /ensureCascadeContext\(openCodeContext\)/);

@@ -123,6 +123,11 @@ const mainMarkers = [
   'Prepared file attachments for Codex prompt',
   'Failed to prepare file attachments',
   'Remembered native Codex thread',
+  'Seeded native Codex developer instructions',
+  'Reusing native thread developer instructions',
+  'Background remote MCP sync failed',
+  'claude-ipc-send-message',
+  'stdio process error during startup',
   'Resuming native SSH Codex thread',
   'filterRemoteCodexEnvironment',
   'Codex app-server process exited',
@@ -169,6 +174,8 @@ const mainMarkers = [
   'label:"New Session",accelerator:"CommandOrControl+N"',
   'Overrode stale Auto Build plan permission for direct model turn',
   'Auto Build plan route using turn-local plan permission',
+  'Explicit mutating workflow invocation must execute immediately',
+  'Cleared stale Auto Build plan marker for',
   'Cleared Auto Build plan marker; session mode remains',
   'Late plan approval recorded for next harness handoff',
   'approved plan for handoff context',
@@ -254,6 +261,7 @@ const rendererMarkers = [
   'Toggle HTML Preview',
   'Forward local GitHub identity & authentication',
   'Leave off to preserve remote or bot credentials.',
+  'live-thinking-indicator',
 ];
 
 for (const marker of mainMarkers) {

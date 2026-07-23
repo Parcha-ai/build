@@ -110,6 +110,9 @@ const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
   });
 
   await waitFor(() => fs.existsSync(config.logPath) && fs.existsSync(config.pidPath), 'bridge log and pid');
+  if (fs.existsSync(configPath)) {
+    throw new Error('Bridge must unlink the credential-bearing config after parsing it');
+  }
   await waitFor(() => fs.readFileSync(config.logPath, 'utf8').includes('hello '), 'first streamed delta');
 
   const pid = fs.readFileSync(config.pidPath, 'utf8').trim();

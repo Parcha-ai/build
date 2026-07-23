@@ -18,6 +18,10 @@ assertContains(
   'Auto Build plan routes must force the lead harness into turn-local plan permission mode and remember how to restore execution mode',
 );
 assertContains(
+  /Cleared stale Auto Build plan marker for \$\{routingDecision\.tier\} execution route/,
+  'A Build/Verify/Refine route must clear Auto Build forced-plan markers instead of carrying plan state forward',
+);
+assertContains(
   /codexService\.streamAsChat\([^;]*autoBuildLeadPermissionMode(?:,|\))/s,
   'Codex lead execution must receive the Auto Build lead permission mode',
 );

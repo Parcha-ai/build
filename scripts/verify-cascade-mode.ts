@@ -56,7 +56,10 @@ assert.match(
   claudeService,
   /autoOrchestrationContext = withCascadeContext\(\[\s*approvedPlanHandoffContext,\s*routingDecision\.orchestration\?\.handoffPrompt,/,
 );
-assert.match(claudeService, /const codexContext = \[secureEnvContext, ensureCascadeContext\(conversationContext\)\]/);
+assert.match(
+  claudeService,
+  /const codexContext = usesNativeCodexThread[\s\S]*?\[conversationContext, cascadeRuntime\?\.systemContext\][\s\S]*?: \[secureEnvContext, ensureCascadeContext\(conversationContext\)\]/,
+);
 assert.match(claudeService, /const effectiveCursorContext = ensureCascadeContext\(cursorContext\)/);
 assert.match(claudeService, /const effectiveGeminiContext = ensureCascadeContext\(geminiContext\)/);
 assert.match(claudeService, /\[secureEnvContext, ensureCascadeContext\(openCodeContext\)\]/);

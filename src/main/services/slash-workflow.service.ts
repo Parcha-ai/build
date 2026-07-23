@@ -91,12 +91,27 @@ export function parseSlashWorkflowInvocation(message: string): SlashWorkflowInvo
   // Build uses this explicit form when asking a manually selected harness to
   // invoke a workflow. Keep the grammar deliberately narrow so ordinary prose
   // mentioning /commands is never rewritten behind the user's back.
-  const explicit = trimmed.match(/^(?:run|use|invoke)\s+\/([a-zA-Z0-9][a-zA-Z0-9:_-]*)(?:\s+(?:skill|command|workflow))?(?:\s+(?:with\s+)?([\s\S]+))?$/i);
-  if (!explicit) return null;
+  const explicit = trimmed.match(/^(?:run|use|invoke|execute|start|do)\s+(?:(?:the|this|fucking|damn)\s+)*\/([a-zA-Z0-9][a-zA-Z0-9:_-]*)(?:\s+(?:skill|command|workflow))?(?:\s+(?:with\s+)?([\s\S]+))?$/i);
+  if (explicit) {
+    return {
+      name: explicit[1],
+      arguments: (explicit[2] || '').trim(),
+      originalMessage: message,
+    };
+  }
+
+  // Frustrated follow-ups often put the imperative after a short preface
+  // ("stop waiting and do the /pr"). Recognize the command at the end while
+  // rejecting retrospective/negative prose such as "why didn't you run /pr?"
+  // or "do not run /pr".
+  const embedded = trimmed.match(/\b(?:run|use|invoke|execute|start|do)\s+(?:(?:the|this|fucking|damn)\s+)*\/([a-zA-Z0-9][a-zA-Z0-9:_-]*)(?:\s+(?:skill|command|workflow))?(?:\s+(?:with\s+)?([\s\S]+?))?[.!]*$/i);
+  if (!embedded) return null;
+  const prefix = trimmed.slice(0, embedded.index || 0);
+  if (/\b(?:why|whether|if)\b|\b(?:don'?t|do not|never)\b/i.test(prefix)) return null;
 
   return {
-    name: explicit[1],
-    arguments: (explicit[2] || '').trim(),
+    name: embedded[1],
+    arguments: (embedded[2] || '').trim(),
     originalMessage: message,
   };
 }

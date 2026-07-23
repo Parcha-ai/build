@@ -115,6 +115,24 @@ const REFINE_SIGNALS = [
   'swap', 'replace the', 'quick fix', 'minor',
 ];
 
+const MUTATING_WORKFLOW_NAMES = '(?:pr|git-pr|pr-tests|pr-loop|release|deploy|ship)';
+
+/** Explicit execution workflows are phase boundaries, not planning requests.
+ * The resolved cross-harness prompt contains an invoked_workflow tag; the
+ * prose form covers a turn before slash expansion or a direct router call. */
+function isExplicitMutatingWorkflowExecution(message: string): boolean {
+  if (new RegExp(`<invoked_workflow\\b[^>]*\\bname=["']/${MUTATING_WORKFLOW_NAMES}["']`, 'i').test(message)) {
+    return true;
+  }
+
+  const trimmed = message.trim();
+  if (new RegExp(`^/${MUTATING_WORKFLOW_NAMES}(?:\\s|$)`, 'i').test(trimmed)) return true;
+  if (new RegExp(`\\b(?:don'?t|do not|never)\\s+(?:(?:run|execute|invoke|start|do)\\s+)?(?:the\\s+)?/${MUTATING_WORKFLOW_NAMES}\\b`, 'i').test(trimmed)) {
+    return false;
+  }
+  return new RegExp(`\\b(?:run|execute|invoke|start|do|finish|continue|resume)\\b[\\s\\S]{0,80}?/${MUTATING_WORKFLOW_NAMES}\\b`, 'i').test(trimmed);
+}
+
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -2490,7 +2508,16 @@ class AutoRouterService {
     const phase = mergeSessionPhase(storedPhase, inferredPhase);
     sessionPhases.set(sessionId, phase);
     const signals = extractTaskSignals(message, routeOptions.attachmentCount || 0, routeOptions.attachmentTypes || []);
-    let planningGate = classifyPlanningGateHeuristic(message, signals, routeOptions);
+    const explicitWorkflowExecution = isExplicitMutatingWorkflowExecution(message)
+      && canRunMutatingStages(routeOptions.permissionMode);
+    let planningGate = explicitWorkflowExecution
+      ? {
+        action: 'none' as const,
+        confidence: 1,
+        reason: 'Explicit mutating workflow invocation must execute immediately',
+        changeKind: 'general' as const,
+      }
+      : classifyPlanningGateHeuristic(message, signals, routeOptions);
     if (!config.prePlanEnabled) {
       planningGate = {
         action: 'none',
@@ -2501,10 +2528,18 @@ class AutoRouterService {
     }
 
     // Step 1: Heuristic classification
-    let requestedResult = classifyHeuristic(message, routeOptions.gstackMode, routeOptions.permissionMode, phase);
+    let requestedResult: HeuristicResult = explicitWorkflowExecution
+      ? {
+        tier: 'build',
+        confidence: 1,
+        reason: 'User explicitly invoked a mutating execution workflow',
+      }
+      : classifyHeuristic(message, routeOptions.gstackMode, routeOptions.permissionMode, phase);
 
     // Step 2: Apply workflow awareness
-    let result = applyWorkflowAwareness(requestedResult, phase, signals, message);
+    let result = explicitWorkflowExecution
+      ? requestedResult
+      : applyWorkflowAwareness(requestedResult, phase, signals, message);
     result = enforcePermissionMode(result, routeOptions.permissionMode);
     const approvedPlanExecution = Boolean(
       routeOptions.approvedPlanContinuation
@@ -2538,6 +2573,7 @@ class AutoRouterService {
     // is still delegated through existing harnesses.
     if (
       !useDeterministicFastPath
+      && !explicitWorkflowExecution
       && !routeOptions.skipMetaController
       && !routeOptions.prePlanActive
       && !routeOptions.prePlanForced

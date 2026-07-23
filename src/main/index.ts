@@ -1000,6 +1000,9 @@ app.on('will-quit', () => {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const { CachedStore } = require('./cached-store');
   CachedStore.flushAll();
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { SessionMessageCacheStore } = require('./session-message-cache-store');
+  SessionMessageCacheStore.flushAll();
 
   // Do not kill SSH remote Claude jobs here. They are launched through the
   // detached bridge specifically so in-flight remote work survives app quits,

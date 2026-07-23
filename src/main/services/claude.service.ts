@@ -4,6 +4,7 @@ import type { ImageBlockParam, TextBlockParam } from '@anthropic-ai/sdk/resource
 import { z } from 'zod';
 import Store from 'electron-store';
 import { CachedStore } from '../cached-store';
+import { SessionMessageCacheStore } from '../session-message-cache-store';
 import { getSessionStoreName } from '../store-names';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -32,7 +33,7 @@ import type {
   PlanningGateDecision,
 } from '../../shared/types';
 import { powerService } from './power.service';
-import { BrowserWindow, nativeImage, type WebContents } from 'electron';
+import { app, BrowserWindow, nativeImage, type WebContents } from 'electron';
 import { IPC_CHANNELS } from '../../shared/constants/channels';
 import { browserService } from './browser.service';
 import { cdpProxyService } from './cdp-proxy.service';
@@ -253,10 +254,9 @@ export class ClaudeService {
   private store: any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private sessionStore: any;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private messageCacheStore: any;
+  private messageCacheStore: SessionMessageCacheStore<ChatMessage[]>;
   private activeQueries: Map<string, AbortController> = new Map();
-  private sessionTurnLocks: Map<string, { promise: Promise<void>; release: () => void; holder: string }> = new Map();
+  private sessionTurnLocks: Map<string, { promise: Promise<void>; release: () => void; holder: string; owner: symbol }> = new Map();
   private activeQueryStartedAt: Map<string, number> = new Map();
   private activeQueryLastEventAt: Map<string, number> = new Map();
   private activeQueryObjects: Map<string, Query> = new Map(); // Store Query objects for streamInput
@@ -313,7 +313,7 @@ export class ClaudeService {
   constructor() {
     this.store = new Store({ name: 'claudette-settings' });
     this.sessionStore = new CachedStore({ name: getSessionStoreName() }) as any;
-    this.messageCacheStore = new CachedStore({ name: 'claudette-message-cache' }) as any;
+    this.messageCacheStore = new SessionMessageCacheStore<ChatMessage[]>(app.getPath('userData'));
   }
 
   private formatRemoteClaudeProcessExitError(
@@ -582,20 +582,20 @@ export class ClaudeService {
     return hadActiveQuery;
   }
 
-  async acquireSessionTurnLock(sessionId: string, holder: string): Promise<() => void> {
-    const existing = this.sessionTurnLocks.get(sessionId);
-    if (existing) {
-      if (existing.holder === holder) {
-        // Reentrant: recursive retry (e.g. streamMessage → yield* this.streamMessage)
-        // inherits the outer caller's lock — return a no-op release.
+  async acquireSessionTurnLock(sessionId: string, holder: string, owner = Symbol(holder)): Promise<() => void> {
+    let existing = this.sessionTurnLocks.get(sessionId);
+    while (existing) {
+      if (existing.owner === owner) {
+        // Recursive retries for one visible send inherit its owner token.
         return () => undefined;
       }
       console.log(`[Claude Service] Turn lock for ${sessionId.substring(0, 8)} held by "${existing.holder}"; "${holder}" waiting`);
       await existing.promise;
+      existing = this.sessionTurnLocks.get(sessionId);
     }
     let release!: () => void;
     const promise = new Promise<void>(resolve => { release = resolve; });
-    this.sessionTurnLocks.set(sessionId, { promise, release, holder });
+    this.sessionTurnLocks.set(sessionId, { promise, release, holder, owner });
     console.log(`[Claude Service] Turn lock acquired for ${sessionId.substring(0, 8)} by "${holder}"`);
     return () => {
       if (this.sessionTurnLocks.get(sessionId)?.release === release) {
@@ -2185,7 +2185,11 @@ ${planContent}
     projectPath: string,
     autoOrchestrationContext: string,
     prefetchedTranscriptMessages?: ChatMessage[],
-    options: { includeCurrentHarnessMessages?: boolean } = {},
+    options: {
+      includeCurrentHarnessMessages?: boolean;
+      includeProjectInstructionContext?: boolean;
+      includeDefaultOutputContext?: boolean;
+    } = {},
   ): Promise<string> {
     const transcriptMessages = prefetchedTranscriptMessages
       ?? await this.getCanonicalMessages(sessionId, ROUTING_TRANSCRIPT_LIMIT, { allowSdkFallback: false });
@@ -2198,12 +2202,15 @@ ${planContent}
       })
       : '';
     const contextLimits = CLI_HARNESS_CONTEXT_LIMITS[currentHarness];
-    const remoteProjectContext = await this.buildRemoteProjectInstructionContext(sessionId, session, projectPath, contextLimits);
+    const remoteProjectContext = options.includeProjectInstructionContext === false
+      ? ''
+      : await this.buildRemoteProjectInstructionContext(sessionId, session, projectPath, contextLimits);
     const handoffReferences = this.buildAutoBuildHandoffReferences(sessionId, session, projectPath);
     // CLI harnesses do not share Claude's system prompt. Embed the same
-    // app-owned default in their unified handoff, including Auto helper stages.
+    // app-owned default in their unified handoff unless a native thread will
+    // receive it through the app-server developer-instruction layer.
     const orchestrationAndPlanContext = [
-      adhdOutputService.getSystemContext(),
+      options.includeDefaultOutputContext === false ? '' : adhdOutputService.getSystemContext(),
       autoOrchestrationContext,
     ].filter((value): value is string => Boolean(value?.trim())).join('\n\n');
     const pinnedBuildContinuityContext = currentHarness === 'codex'
@@ -2220,7 +2227,9 @@ ${planContent}
       continuityContext: pinnedBuildContinuityContext,
       handoffReferences,
       memoriesContext,
-      includeProjectContext: session.sshConfig ? false : true,
+      includeProjectContext: options.includeProjectInstructionContext === false
+        ? false
+        : !session.sshConfig,
       maxConversationChars,
       maxProjectContextChars: contextLimits?.maxProjectContextChars,
       maxProjectContextFiles: contextLimits?.maxProjectContextFiles,
@@ -5556,6 +5565,7 @@ ${bundledPlaybook}`;
     supplementalMessages?: ChatMessage[],
     fastMode?: boolean,
     cascadeMode?: boolean,
+    turnLockOwner?: symbol,
   ): AsyncGenerator<StreamEvent> {
     const apiKey = this.getApiKey();
 
@@ -5620,9 +5630,8 @@ ${bundledPlaybook}`;
     }
 
     // Serialize remote process spawns per session to prevent reattach+drain races
-    const releaseTurnLock = session.sshConfig
-      ? await this.acquireSessionTurnLock(sessionId, 'streamMessage')
-      : undefined;
+    const effectiveTurnLockOwner = turnLockOwner ?? Symbol('streamMessage');
+    const releaseTurnLock = await this.acquireSessionTurnLock(sessionId, 'streamMessage', effectiveTurnLockOwner);
 
     if (session.sshConfig) {
       // Cleanup belongs inside the turn lock and must settle before spawning.
@@ -6016,6 +6025,15 @@ ${bundledPlaybook}`;
               this.persistAutoBuildForcedPlanMode(sessionId, prePlanMode);
             }
             console.log(`[Claude Service] Auto Build plan route using turn-local plan permission; session mode remains ${sdkPermissionMode}`);
+          } else {
+            const hadForcedPlanMarker = this.autoBuildForcedPlanSessions.has(sessionId)
+              || Boolean(this.getPersistedAutoBuildPrePlanMode(sessionId));
+            if (hadForcedPlanMarker) {
+              this.autoBuildForcedPlanSessions.delete(sessionId);
+              this.prePlanPermissionModes.delete(sessionId);
+              this.clearPersistedAutoBuildForcedPlanMode(sessionId);
+              console.log(`[Claude Service] Cleared stale Auto Build plan marker for ${routingDecision.tier} execution route`);
+            }
           }
           if (routingDecision.resolvedEffort) {
             thinkingMode = routingDecision.resolvedEffort;
@@ -6183,7 +6201,11 @@ ${bundledPlaybook}`;
               projectPath,
               autoOrchestrationContext,
               prefetchedRoutingMessages,
-              { includeCurrentHarnessMessages: includeCurrentCodexHistory },
+              {
+                includeCurrentHarnessMessages: includeCurrentCodexHistory,
+                includeProjectInstructionContext: !usesNativeCodexThread,
+                includeDefaultOutputContext: !usesNativeCodexThread,
+              },
             );
             if (conversationContext) {
               console.log(`[Claude Service] Codex unified harness context: ${conversationContext.length} chars`);
@@ -6196,7 +6218,12 @@ ${bundledPlaybook}`;
         // Native Codex/Cursor threads may resume without rebuilding unified
         // context. Re-apply active workflow overlays on every turn so toggling
         // Cascade takes effect immediately in an existing model session.
-        const codexContext = [secureEnvContext, ensureCascadeContext(conversationContext)].filter(Boolean).join('\n\n');
+        const stableCodexDeveloperInstructions = [secureEnvContext, defaultOutputContext]
+          .filter((value): value is string => Boolean(value?.trim()))
+          .join('\n\n');
+        const codexContext = usesNativeCodexThread
+          ? [conversationContext, cascadeRuntime?.systemContext].filter(Boolean).join('\n\n')
+          : [secureEnvContext, ensureCascadeContext(conversationContext)].filter(Boolean).join('\n\n');
 
         const codexPrompt = nativeCodexGoalObjective
           ? `/goal ${nativeCodexGoalObjective}`
@@ -6212,7 +6239,11 @@ ${bundledPlaybook}`;
           attachments,
           autoBuildLeadPermissionMode,
           leadHarnessPolicy,
-          { resumeThreadId: codexThreadId, persistThread: usesNativeCodexThread },
+          {
+            resumeThreadId: codexThreadId,
+            persistThread: usesNativeCodexThread,
+            developerInstructions: usesNativeCodexThread ? stableCodexDeveloperInstructions : undefined,
+          },
         ) as AsyncIterable<StreamEvent>;
         for await (const event of this.streamLeadWithAutoBuildStages(
           codexEvents,
@@ -8332,7 +8363,7 @@ Begin by creating the task structure now.
               this.clearSdkSessionId(sessionId);
               yield { type: 'text_delta', content: '⚠️ Remote session expired — reconnecting automatically...\n\n' };
               // Pass selectedModel to skip re-routing on retry (same fix as stale-zero-token path)
-              yield* this.streamMessage(sessionId, userMessage, attachments, permissionMode, thinkingMode, selectedModel, gstackMode, supplementalMessages, fastMode, cascadeMode);
+              yield* this.streamMessage(sessionId, userMessage, attachments, permissionMode, thinkingMode, selectedModel, gstackMode, supplementalMessages, fastMode, cascadeMode, effectiveTurnLockOwner);
               return;
             }
 
@@ -8345,7 +8376,7 @@ Begin by creating the task structure now.
               await new Promise(r => setTimeout(r, 10000));
               if (abortController.signal.aborted) return;
               yield { type: 'text_delta', content: '🔄 Retrying...\n\n' };
-              yield* this.streamMessage(sessionId, userMessage, attachments, permissionMode, thinkingMode, selectedModel, gstackMode, supplementalMessages, fastMode, cascadeMode);
+              yield* this.streamMessage(sessionId, userMessage, attachments, permissionMode, thinkingMode, selectedModel, gstackMode, supplementalMessages, fastMode, cascadeMode, effectiveTurnLockOwner);
               return;
             }
 
@@ -8403,7 +8434,7 @@ Begin by creating the task structure now.
                   this.resumeEmptyRetryAt.set(sessionId, Date.now());
                   console.warn(`[Claude SDK] Resume ${effectiveSdkSessionId} completed with empty zero-token result — retrying resume once before declaring stale`);
                   yield { type: 'text_delta', content: '⚠️ Remote session hiccup — retrying...\n\n' };
-                  yield* this.streamMessage(sessionId, userMessage, attachments, permissionMode, thinkingMode, selectedModel, gstackMode, supplementalMessages, fastMode, cascadeMode);
+                  yield* this.streamMessage(sessionId, userMessage, attachments, permissionMode, thinkingMode, selectedModel, gstackMode, supplementalMessages, fastMode, cascadeMode, effectiveTurnLockOwner);
                   return;
                 }
                 // Second strike within 2 minutes: genuinely stale. Clear and
@@ -8418,7 +8449,7 @@ Begin by creating the task structure now.
                 // Claude; re-running it wastes time and, critically, means the retry
                 // goes through a different code path that can lose cross-harness
                 // context vs the explicit-model path (which always works).
-                yield* this.streamMessage(sessionId, userMessage, attachments, permissionMode, thinkingMode, selectedModel, gstackMode, supplementalMessages, fastMode, cascadeMode);
+                yield* this.streamMessage(sessionId, userMessage, attachments, permissionMode, thinkingMode, selectedModel, gstackMode, supplementalMessages, fastMode, cascadeMode, effectiveTurnLockOwner);
                 return;
               }
 
@@ -8580,6 +8611,7 @@ Begin by creating the task structure now.
           supplementalMessages,
           fastMode,
           cascadeMode,
+          effectiveTurnLockOwner,
         );
         return;
       }
@@ -8695,6 +8727,7 @@ Begin by creating the task structure now.
           supplementalMessages,
           fastMode,
           cascadeMode,
+          effectiveTurnLockOwner,
         );
         return;
       }
@@ -8729,7 +8762,7 @@ Begin by creating the task structure now.
         this.clearSdkSessionId(sessionId);
         yield { type: 'text_delta', content: '⚠️ Remote session expired — reconnecting automatically...\n\n' };
         // Pass selectedModel to skip re-routing on retry (same fix as stale-zero-token path)
-        yield* this.streamMessage(sessionId, userMessage, attachments, permissionMode, thinkingMode, selectedModel, gstackMode, supplementalMessages, fastMode, cascadeMode);
+        yield* this.streamMessage(sessionId, userMessage, attachments, permissionMode, thinkingMode, selectedModel, gstackMode, supplementalMessages, fastMode, cascadeMode, effectiveTurnLockOwner);
         return;
       } else if (errorMessage.match(/process exited with code|process terminated by signal/) && session?.sshConfig) {
         console.error('[Claude SDK] SSH process exit caught:', errorMessage);
@@ -8755,7 +8788,7 @@ Begin by creating the task structure now.
         await new Promise(r => setTimeout(r, 10000));
         if (abortController.signal.aborted) return;
         yield { type: 'text_delta', content: '🔄 Retrying...\n\n' };
-        yield* this.streamMessage(sessionId, userMessage, attachments, permissionMode, thinkingMode, model, gstackMode, supplementalMessages, fastMode, cascadeMode);
+        yield* this.streamMessage(sessionId, userMessage, attachments, permissionMode, thinkingMode, model, gstackMode, supplementalMessages, fastMode, cascadeMode, effectiveTurnLockOwner);
         return;
       } else {
         this.recordAutoBuildLeadFailure(sessionId, autoOrchestrationPlan, errorMessage);
@@ -9607,6 +9640,7 @@ Begin by creating the task structure now.
     this.autoBuildForcedPlanSessions.delete(sessionId);
     this.sessionContextPercentage.delete(sessionId);
     this.sessionStore.delete(`contextUsage.${sessionId}`);
+    this.messageCacheStore.delete(sessionId);
     this.sessionPlanFiles.delete(sessionId);
     this.sessionApprovedPlanFiles.delete(sessionId);
     this.pendingAutoPlanExecutionHandoffs.delete(sessionId);

@@ -113,6 +113,20 @@ code, pre {
   animation: pulse 2s infinite;
 }
 
+/*
+ * Infinite animations inside a very tall Chromium scroll layer can make a
+ * tiny status icon repaint the whole transcript. ChatContainer adds this class
+ * only after the active transcript crosses a conservative complexity limit.
+ * Text and color continue to communicate state without continuous repaints.
+ */
+.reduce-continuous-motion .animate-spin,
+.reduce-continuous-motion .animate-pulse,
+.reduce-continuous-motion .animate-ping,
+.reduce-continuous-motion .animate-bounce,
+.reduce-continuous-motion [style*='infinite']:not(.live-thinking-indicator) {
+  animation: none !important;
+}
+
 /* Status indicator colors */
 .status-running {
   @apply bg-green-500;
@@ -162,4 +176,3 @@ code, pre {
 [data-radix-popper-content-wrapper] {
   z-index: 50 !important;
 }
-

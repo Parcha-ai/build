@@ -156,6 +156,19 @@ export default function ChatContainer({ session, onClosePane }: ChatContainerPro
   // Codex second opinion state
   // Codex overlay state removed — Codex runs as a model in the existing chat
 
+  // Chromium can repaint the entire transcript layer for every frame of a tiny
+  // infinite spinner. On tool-heavy conversations that made a few status icons
+  // consume roughly half a CPU core and eventually starve input. Preserve the
+  // status labels, but suppress continuous motion once the transcript is large.
+  const reduceContinuousMotion = useMemo(() => {
+    let toolCallCount = streamingToolCalls.length;
+    for (const message of sessionMessages) {
+      toolCallCount += message.toolCalls?.length || 0;
+      if (toolCallCount >= 24) return true;
+    }
+    return sessionMessages.length >= 80;
+  }, [sessionMessages, streamingToolCalls.length]);
+
   // Action selectors — stable references, never cause re-renders
   const approvePermission = useSessionStore((s) => s.approvePermission);
   const denyPermission = useSessionStore((s) => s.denyPermission);
@@ -621,7 +634,7 @@ export default function ChatContainer({ session, onClosePane }: ChatContainerPro
 
   return (
     <div className="flex-1 flex overflow-hidden min-w-0">
-    <div className={`flex-1 flex flex-col overflow-hidden font-mono bg-claude-bg min-w-0 ${isHistoryPanelOpen ? '' : ''}`}>
+    <div className={`flex-1 flex flex-col overflow-hidden font-mono bg-claude-bg min-w-0 ${reduceContinuousMotion ? 'reduce-continuous-motion' : ''}`}>
       {/* Header - brutalist */}
       <div className="h-10 border-b border-claude-border flex items-center justify-between px-4 bg-claude-surface/50">
         <div className="flex items-center gap-2 min-w-0">
