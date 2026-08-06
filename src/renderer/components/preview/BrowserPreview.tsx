@@ -14,10 +14,12 @@ import {
   FileSpreadsheet,
   Presentation,
   File,
+  MoreHorizontal,
 } from 'lucide-react';
 import { useUIStore } from '../../stores/ui.store';
 import { useSessionStore } from '../../stores/session.store';
 import type { Session } from '../../../shared/types';
+import ArcImportMenu from './ArcImportMenu';
 
 interface AutomationIndicator {
   type: 'click' | 'type' | 'navigate' | 'snapshot';
@@ -191,6 +193,17 @@ export default function BrowserPreview({
   const [isAutomationActive, setIsAutomationActive] = useState(false);
   const [automationIndicator, setAutomationIndicator] = useState<AutomationIndicator | null>(null);
   const [clickRipples, setClickRipples] = useState<Array<{ id: number; x: number; y: number }>>([]);
+  const [isToolbarMenuOpen, setToolbarMenuOpen] = useState(false);
+  const toolbarMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!isToolbarMenuOpen) return undefined;
+    const closeOnOutsideClick = (event: MouseEvent) => {
+      if (!toolbarMenuRef.current?.contains(event.target as Node)) setToolbarMenuOpen(false);
+    };
+    document.addEventListener('mousedown', closeOnOutsideClick);
+    return () => document.removeEventListener('mousedown', closeOnOutsideClick);
+  }, [isToolbarMenuOpen]);
 
   // Use per-session inspector state for multi-session support
   const {
@@ -851,6 +864,8 @@ Use the Edit tool to make the change. The page will reload automatically once yo
           const elementWithScreenshot = {
             ...data,
             screenshot: screenshotBase64,
+            pageUrl: url,
+            selectedAt: Date.now(),
           };
 
           // Generate structured markdown for the element context
@@ -1522,16 +1537,23 @@ ${data.textContent ? `**Text Content:** "${data.textContent.slice(0, 100)}${data
     }
   };
 
-  if (session.status !== 'running') {
-    return (
-      <div
-        className="h-full flex items-center justify-center bg-claude-bg text-claude-text-secondary"
-        style={{ display: isVisible ? 'flex' : 'none' }}
-      >
-        <p>Start the session to preview</p>
-      </div>
-    );
-  }
+  const captureViewport = async () => {
+    const webview = webviewRef.current;
+    if (!webview) return;
+    try {
+      const image = await webview.capturePage();
+      const dataUrl = image.toDataURL();
+      const base64 = dataUrl.split(',')[1] || '';
+      window.electronAPI.browser.sendChatInsert({
+        sessionId: session.id,
+        screenshot: base64,
+        content: '',
+      });
+      logBrowserPreview('[BrowserPreview] Screenshot captured and attached to input');
+    } catch (error) {
+      console.error('[BrowserPreview] Screenshot capture failed:', error);
+    }
+  };
 
   return (
     <div
@@ -1539,45 +1561,42 @@ ${data.textContent ? `**Text Content:** "${data.textContent.slice(0, 100)}${data
       style={{ display: isVisible ? 'flex' : 'none' }}
     >
       {/* Toolbar */}
-      <div className="h-10 flex items-center gap-2 px-2 bg-claude-surface border-b border-claude-border">
+      <div
+        data-testid="browser-toolbar"
+        className="h-10 flex flex-shrink-0 items-center gap-1 px-2 bg-claude-surface border-b border-claude-border"
+      >
         {/* Navigation */}
         <button
           onClick={() => webviewRef.current?.goBack()}
           disabled={!canGoBack}
-          className="p-1.5 rounded hover:bg-claude-bg transition-colors disabled:opacity-30"
+          className="flex-shrink-0 p-1.5 rounded hover:bg-claude-bg transition-colors disabled:opacity-30"
+          title="Back"
         >
           <ArrowLeft size={16} />
         </button>
         <button
           onClick={() => webviewRef.current?.goForward()}
           disabled={!canGoForward}
-          className="p-1.5 rounded hover:bg-claude-bg transition-colors disabled:opacity-30"
+          className="flex-shrink-0 p-1.5 rounded hover:bg-claude-bg transition-colors disabled:opacity-30"
+          title="Forward"
         >
           <ArrowRight size={16} />
         </button>
         <button
           onClick={() => webviewRef.current?.reloadIgnoringCache()}
-          className="p-1.5 rounded hover:bg-claude-bg transition-colors"
+          className="flex-shrink-0 p-1.5 rounded hover:bg-claude-bg transition-colors"
           title="Hard refresh (ignore cache)"
         >
           <RotateCw size={16} className={isLoading ? 'animate-spin' : ''} />
         </button>
-        <button
-          onClick={clearStorage}
-          className="p-1.5 rounded hover:bg-claude-bg transition-colors text-red-400 hover:text-red-300"
-          title="Clear all storage (cookies, localStorage, sessionStorage, IndexedDB)"
-        >
-          <Trash2 size={16} />
-        </button>
-
         {/* URL bar */}
-        <form onSubmit={handleUrlSubmit} className="flex-1">
+        <form onSubmit={handleUrlSubmit} className="min-w-0 flex-1">
           {(() => {
             const docInfo = getDocumentInfo(url);
             if (docInfo.isFile && docInfo.docType !== 'web') {
               // Show document-style URL bar
               return (
-                <div className="w-full px-3 py-1 bg-claude-bg border border-claude-border rounded text-sm flex items-center gap-2">
+                <div className="flex min-w-0 w-full items-center gap-2 rounded border border-claude-border bg-claude-bg px-3 py-1 text-sm">
                   <DocumentIcon docType={docInfo.docType} className="w-4 h-4 text-claude-text-secondary flex-shrink-0" />
                   <span className="truncate text-claude-text" title={url}>
                     {docInfo.displayName}
@@ -1594,16 +1613,20 @@ ${data.textContent ? `**Text Content:** "${data.textContent.slice(0, 100)}${data
                 type="text"
                 value={inputUrl}
                 onChange={(e) => setInputUrl(e.target.value)}
-                className="w-full px-3 py-1 bg-claude-bg border border-claude-border rounded text-sm focus:outline-none focus:border-claude-accent font-mono"
+                className="min-w-0 w-full rounded border border-claude-border bg-claude-bg px-3 py-1 font-mono text-sm focus:border-claude-accent focus:outline-none"
               />
             );
           })()}
         </form>
 
         {/* Actions */}
+        <ArcImportMenu
+          partitionId={partitionId || session.id}
+          onImported={() => webviewRef.current?.reloadIgnoringCache()}
+        />
         <button
           onClick={() => setInspectorActive(!isInspectorActive)}
-          className={`p-1.5 rounded transition-colors ${
+          className={`flex-shrink-0 p-1.5 rounded transition-colors ${
             isInspectorActive
               ? 'text-white'
               : 'hover:bg-claude-bg'
@@ -1613,54 +1636,69 @@ ${data.textContent ? `**Text Content:** "${data.textContent.slice(0, 100)}${data
         >
           <Target size={16} />
         </button>
-        <button
-          onClick={async () => {
-            const webview = webviewRef.current;
-            if (!webview) return;
-            try {
-              const image = await webview.capturePage();
-              const dataUrl = image.toDataURL();
-              const base64 = dataUrl.split(',')[1] || '';
-              // Dispatch to InputArea as an image attachment
-              window.electronAPI.browser.sendChatInsert({
-                sessionId: session.id,
-                screenshot: base64,
-                content: '',
-              });
-              logBrowserPreview('[BrowserPreview] Screenshot captured and attached to input');
-            } catch (err) {
-              console.error('[BrowserPreview] Screenshot capture failed:', err);
-            }
-          }}
-          className="p-1.5 rounded hover:bg-claude-bg transition-colors"
-          title="Screenshot viewport and attach to input"
-        >
-          <Camera size={16} />
-        </button>
-        <button
-          onClick={() => webviewRef.current?.openDevTools()}
-          className="p-1.5 rounded hover:bg-claude-bg transition-colors"
-          title="Open DevTools"
-        >
-          <Code size={16} />
-        </button>
-        <button
-          onClick={() => window.electronAPI.app.openExternal(url)}
-          className="p-1.5 rounded hover:bg-claude-bg transition-colors"
-          title="Open in browser"
-        >
-          <ExternalLink size={16} />
-        </button>
-        <button
-          onClick={() => window.electronAPI.app.openBrowserWindow()}
-          className="p-1.5 rounded hover:bg-claude-bg transition-colors"
-          title="Pop out to separate window"
-        >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <rect x="2" y="7" width="15" height="14" rx="2" />
-            <rect x="7" y="3" width="15" height="14" rx="2" />
-          </svg>
-        </button>
+        <div ref={toolbarMenuRef} className="relative flex-shrink-0">
+          <button
+            type="button"
+            onClick={() => setToolbarMenuOpen((current) => !current)}
+            className={`p-1.5 rounded transition-colors ${isToolbarMenuOpen ? 'bg-claude-bg text-claude-accent' : 'hover:bg-claude-bg'}`}
+            title="More browser actions"
+            aria-label="More browser actions"
+            aria-expanded={isToolbarMenuOpen}
+          >
+            <MoreHorizontal size={16} />
+          </button>
+          {isToolbarMenuOpen && (
+            <div
+              data-testid="browser-toolbar-menu"
+              className="absolute right-0 top-full z-50 mt-2 w-56 overflow-hidden rounded-lg border border-claude-border bg-claude-surface py-1 shadow-2xl"
+            >
+              <button
+                type="button"
+                onClick={() => { setToolbarMenuOpen(false); void captureViewport(); }}
+                className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-claude-text hover:bg-claude-bg"
+              >
+                <Camera size={14} />
+                Screenshot to chat
+              </button>
+              <button
+                type="button"
+                onClick={() => { setToolbarMenuOpen(false); void clearStorage(); }}
+                className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-red-300 hover:bg-claude-bg"
+              >
+                <Trash2 size={14} />
+                Clear browser data
+              </button>
+              <div className="my-1 border-t border-claude-border" />
+              <button
+                type="button"
+                onClick={() => { setToolbarMenuOpen(false); webviewRef.current?.openDevTools(); }}
+                className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-claude-text hover:bg-claude-bg"
+              >
+                <Code size={14} />
+                Open DevTools
+              </button>
+              <button
+                type="button"
+                onClick={() => { setToolbarMenuOpen(false); void window.electronAPI.app.openExternal(url); }}
+                className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-claude-text hover:bg-claude-bg"
+              >
+                <ExternalLink size={14} />
+                Open in system browser
+              </button>
+              <button
+                type="button"
+                onClick={() => { setToolbarMenuOpen(false); void window.electronAPI.app.openBrowserWindow(); }}
+                className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-claude-text hover:bg-claude-bg"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="2" y="7" width="15" height="14" rx="2" />
+                  <rect x="7" y="3" width="15" height="14" rx="2" />
+                </svg>
+                Pop out browser
+              </button>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Inspector mode banner */}

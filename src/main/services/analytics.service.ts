@@ -7,6 +7,7 @@ import * as readline from 'readline';
 import { randomUUID } from 'crypto';
 import type { Harness, RoutingDecision, TaskDomain, TaskTier } from '../../shared/types';
 import { getModelPricing } from '../../shared/config/model-pricing';
+import { CachedStore } from '../cached-store';
 
 export interface TokenEvent {
   eventId?: string;
@@ -331,7 +332,7 @@ function extractAssistantText(content: unknown): string {
 }
 
 function normalizeModelForAnalytics(model: string | undefined): string {
-  if (!model) return 'claude-opus-4-7';
+  if (!model) return 'claude-opus-5';
   if (model.startsWith('claude-') || model.includes(':')) return model;
   return model;
 }
@@ -381,7 +382,7 @@ function inferOverrideModelFromUserMessage(message: string): string | undefined 
   if (/\b(fable)\b/.test(lower)) return 'claude-fable-5';
   if (/\b(haiku)\b/.test(lower)) return 'claude-haiku-4-5';
   if (/\b(sonnet)\b/.test(lower)) return 'claude-sonnet-5';
-  if (/\b(opus)\b/.test(lower)) return 'claude-opus-4-7';
+  if (/\b(opus)\b/.test(lower)) return 'claude-opus-5';
   return undefined;
 }
 
@@ -778,7 +779,11 @@ class AnalyticsService {
   private harnessInsightsCache?: { expiresAt: number; insights: HarnessInsight[] };
 
   constructor() {
-    this.store = new Store({ name: 'claudette-analytics' });
+    // Completion records a token event and a harness outcome back-to-back.
+    // Raw electron-store rewrites the entire multi-megabyte analytics file for
+    // each set(), synchronously on Electron's main thread. Keep those updates
+    // in memory and coalesce their disk persistence outside the completion path.
+    this.store = new CachedStore({ name: 'claudette-analytics' });
     this.settingsStore = new Store({ name: 'claudette-settings' });
     this.tierConfig = this.store.get('tierConfig', DEFAULT_TIER) as UsageTierConfig;
     this.ensureDistinctId();

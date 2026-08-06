@@ -75,7 +75,9 @@ assert.match(mainContent, /Each root Build session\/fork family owns an independ
 assert.doesNotMatch(mainContent, /conversationBrowserTabs|Browser tabs mirror the visible chat\/session tabs/);
 assert.match(mainContent, /\{browserTabsForPartition\.map\(\(tab\) =>/);
 assert.doesNotMatch(mainContent, /\{mountedBrowserTabs\.map\(\(tab\) =>/, 'the main window must not mount saved tabs from inactive sessions');
-assert.match(mainContent, /\{activeBrowserTab && activeBrowserOwnerSession \? \(/);
+assert.match(mainContent, /const activeBrowserRuntimeSession = chatTargetSession \|\| activeBrowserOwnerSession/);
+assert.match(mainContent, /\{activeBrowserTab && activeBrowserRuntimeSession \? \(/);
+assert.match(mainContent, /session=\{activeBrowserRuntimeSession\}/);
 assert.match(mainContent, /isVisible=\{true\}/);
 assert.match(mainContent, /partitionId=\{activeBrowserTab\.partitionId\}/);
 assert.match(mainContent, /browserTabId=\{activeBrowserTab\.id\}/);
@@ -88,7 +90,8 @@ assert.match(browserSessionTab, /closeBrowserTab\(tab\.id\)/);
 
 assert.match(rendererApp, /\{browserTabsForPartition\.map\(\(tab\) =>/);
 assert.doesNotMatch(rendererApp, /\{mountedBrowserTabs\.map\(\(tab\) =>/, 'the pop-out window must not restore every saved tab as a live webview');
-assert.match(rendererApp, /session=\{activeBrowserOwnerSession\}/);
+assert.match(rendererApp, /const activeBrowserRuntimeSession = fallbackOwner \|\| activeBrowserOwnerSession/);
+assert.match(rendererApp, /session=\{activeBrowserRuntimeSession\}/);
 assert.match(rendererApp, /isVisible=\{true\}/);
 assert.match(rendererApp, /activeBrowserTabIdsByPartition\[activeBrowserPartitionId\]/);
 assert.match(rendererApp, /partitionId=\{activeBrowserTab\.partitionId\}/);
@@ -120,6 +123,12 @@ assert.match(browserPreview, /partition=\{partitionName\}/);
 assert.match(browserPreview, /registerWebview\(session\.id, webContentsId, partitionName\)/);
 assert.match(browserPreview, /if \(!isVisible \|\| !webviewReady\) return/);
 assert.match(browserPreview, /browserTabId && !isVisibleRef\.current/);
+assert.doesNotMatch(
+  browserPreview,
+  /session\.status !== 'running'/,
+  'a saved browser tab must remain usable while its storage-owner session is stopped or reattaching',
+);
+assert.doesNotMatch(browserPreview, /Start the session to preview/);
 
 for (const [name, source] of [
   ['browser IPC', browserIpc],

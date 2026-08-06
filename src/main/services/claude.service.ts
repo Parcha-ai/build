@@ -10,6 +10,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { spawn } from 'child_process';
+import { Transform } from 'stream';
 import type {
   ChatMessage,
   ToolCall,
@@ -79,6 +80,10 @@ import { hasFileAttachments, prepareFileAttachmentsForHarness } from './attachme
 import { PARABLE_MODE_ID } from '../../shared/config/parable';
 import { shouldResetNativeHarnessThread } from '../../shared/utils/harness-switch';
 import { normalizeClaudeSdkSessionId } from '../../shared/utils/claude-session-id';
+import { ClaudePersistentInput } from './claude-persistent-input';
+import { filterParableClaudeArguments } from '../utils/parable-claude-args';
+import { parseSlashWorkflowInvocation, slashWorkflowService } from './slash-workflow.service';
+import { normalizeRemoteWorkdir } from '../../shared/utils/remote-workdir';
 
 const STREAM_DEBUG = process.env.GREP_DEBUG_STREAMING === '1';
 const ATTACHMENT_ONLY_PROMPT = 'Use the attached file(s) as input for the current task. Continue from the existing session context and the latest user request instead of asking me to restate the task.';
@@ -87,7 +92,7 @@ const ANSI_BELL = String.fromCharCode(7);
 const ANSI_COLOR_CODE_RE = new RegExp(`${ANSI_ESCAPE}\\[[0-9;]*m`, 'g');
 const ANSI_M_CODE_RE = new RegExp(`${ANSI_ESCAPE}\\[[^m]*m`, 'g');
 const OSC8_LINK_RE = new RegExp(`${ANSI_ESCAPE}\\]8;;[^${ANSI_BELL}${ANSI_ESCAPE}]*(${ANSI_BELL}|${ANSI_ESCAPE}\\\\)`, 'g');
-const NOISY_SDK_SYSTEM_SUBTYPES = new Set(['thinking_tokens', 'status']);
+const NOISY_SDK_SYSTEM_SUBTYPES = new Set(['thinking_tokens', 'status', 'background_tasks_changed']);
 const QUIET_IGNORED_SDK_SESSION_ID_SUBTYPES = new Set([
   ...NOISY_SDK_SYSTEM_SUBTYPES,
   'commands_changed',
@@ -97,7 +102,12 @@ const QUIET_IGNORED_SDK_SESSION_ID_SUBTYPES = new Set([
   'task_progress',
   'task_started',
   'task_updated',
+  'background_tasks_changed',
 ]);
+
+function quotePosixShellArgument(value: string): string {
+  return `'${value.replace(/'/g, `'"'"'`)}'`;
+}
 const SDK_STATUS_NOTICE_INTERVAL_MS = 15_000;
 const TASK_PROGRESS_EMIT_INTERVAL_MS = 2_000;
 const TASK_PROGRESS_TEXT_CHANGE_INTERVAL_MS = 5_000;
@@ -260,6 +270,10 @@ export class ClaudeService {
   private activeQueryStartedAt: Map<string, number> = new Map();
   private activeQueryLastEventAt: Map<string, number> = new Map();
   private activeQueryObjects: Map<string, Query> = new Map(); // Store Query objects for streamInput
+  // Claude Agent SDK closes stdin after a string/finite prompt. Keep one
+  // explicitly controlled input stream open across interim result messages so
+  // long-running Bash/Agent work survives until final synthesis.
+  private persistentQueryInputs: Map<string, ClaudePersistentInput> = new Map();
   // A recovered detached Claude process has no SDK Query object, but it still
   // owns a live stream-json stdin socket. Keep that writable here so queued
   // steering and control responses work after app restart / SSH reconnect.
@@ -289,6 +303,11 @@ export class ClaudeService {
   private sshSdkResumeRepairChecks: Map<string, { sdkSessionId?: string; checkedAt: number }> = new Map();
   private ignoredSdkSessionIdLogState: Map<string, { count: number; lastLoggedAt: number }> = new Map();
   private sdkStatusNoticeAt: Map<string, number> = new Map();
+  // Claude can emit a top-level result while work it launched is still active.
+  // Keep every execution-bearing SDK task here so that result is treated as an
+  // interim checkpoint instead of tearing down the native query (and its
+  // background shells) before the work can finish.
+  private activeParentBlockingTasks: Map<string, Set<string>> = new Map();
   // Tracks the last time an empty zero-token resume result triggered a
   // resume-intact retry, so a second strike within the window escalates to a
   // fresh restart instead of retrying forever.
@@ -536,14 +555,20 @@ export class ClaudeService {
    */
   setSessionPermissionMode(sessionId: string, mode: string): void {
     console.log(`[Claude Service] Setting permission mode for ${sessionId}: ${mode}`);
+    const currentMode = this.sessionPermissionModes.get(sessionId);
+    const hasAutoBuildPlanMarker = this.autoBuildForcedPlanSessions.has(sessionId)
+      || Boolean(this.getPersistedAutoBuildPrePlanMode(sessionId));
+    if (mode !== 'plan' && (currentMode === 'plan' || hasAutoBuildPlanMarker)) {
+      this.retireNativePlanningContinuations(sessionId, 'permission mode left Plan');
+    }
     this.autoBuildForcedPlanSessions.delete(sessionId);
     this.clearPersistedAutoBuildForcedPlanMode(sessionId);
     // When entering plan mode, store the previous mode for restoration after plan approval
     if (mode === 'plan') {
-      const currentMode = this.sessionPermissionModes.get(sessionId) || 'acceptEdits';
-      if (currentMode !== 'plan') {
-        this.prePlanPermissionModes.set(sessionId, currentMode);
-        console.log(`[Claude Service] Stored pre-plan mode for ${sessionId}: ${currentMode}`);
+      const prePlanMode = currentMode || 'acceptEdits';
+      if (prePlanMode !== 'plan') {
+        this.prePlanPermissionModes.set(sessionId, prePlanMode);
+        console.log(`[Claude Service] Stored pre-plan mode for ${sessionId}: ${prePlanMode}`);
       }
     }
     this.sessionPermissionModes.set(sessionId, mode);
@@ -578,6 +603,8 @@ export class ClaudeService {
     this.activeQueryStartedAt.delete(sessionId);
     this.activeQueryLastEventAt.delete(sessionId);
     this.activeQueryObjects.delete(sessionId);
+    this.persistentQueryInputs.get(sessionId)?.close();
+    this.persistentQueryInputs.delete(sessionId);
     this.recoveredQueryInputs.delete(sessionId);
     return hadActiveQuery;
   }
@@ -641,7 +668,8 @@ export class ClaudeService {
     return {
       active: true,
       aborted: false,
-      injectable: this.activeQueryObjects.has(sessionId)
+      injectable: this.persistentQueryInputs.has(sessionId)
+        || this.activeQueryObjects.has(sessionId)
         || this.recoveredQueryInputs.has(sessionId)
         || codexService.canSteer(sessionId),
       ageMs: now - startedAt,
@@ -654,8 +682,7 @@ export class ClaudeService {
    * This proactively compacts the conversation history before it gets too large
    */
   async triggerManualCompaction(sessionId: string): Promise<boolean> {
-    const queryObj = this.activeQueryObjects.get(sessionId);
-    if (!queryObj) {
+    if (!this.persistentQueryInputs.has(sessionId) && !this.recoveredQueryInputs.has(sessionId)) {
       console.log('[Claude Service] Cannot compact - no active query for session:', sessionId);
       return false;
     }
@@ -663,22 +690,8 @@ export class ClaudeService {
     try {
       console.log('[Claude Service] Triggering manual compaction for session:', sessionId);
 
-      // Send /compact command via streamInput
-      const compactCommand: AsyncIterable<any> = {
-        [Symbol.asyncIterator]: async function* () {
-          yield {
-            type: 'user',
-            message: {
-              role: 'user',
-              content: '/compact',
-            },
-            parent_tool_use_id: null,
-            session_id: sessionId,
-          };
-        }
-      };
-
-      await queryObj.streamInput(compactCommand);
+      const injected = await this.injectMessage(sessionId, '/compact');
+      if (!injected) return false;
       console.log('[Claude Service] Manual compaction triggered successfully');
       return true;
     } catch (error) {
@@ -801,7 +814,8 @@ export class ClaudeService {
       { id: PARABLE_MODE_ID, name: 'Parable', description: 'Claude Code meta-harness — plans, casts executors, verifies, and reviews' },
       { id: 'claude-sonnet-5', name: 'Sonnet 5', description: 'Latest Claude Sonnet - strong coding and agentic work with Sonnet-tier speed' },
       { id: 'claude-fable-5', name: 'Fable 5', description: 'Most capable Claude model - best for demanding coding and long-horizon agentic work' },
-      { id: 'claude-opus-4-8', name: 'Opus 4.8', description: 'Latest and most capable model - best for complex tasks' },
+      { id: 'claude-opus-5', name: 'Opus 5', description: 'Latest Claude Opus - deep reasoning for complex coding and long-running agents' },
+      { id: 'claude-opus-4-8', name: 'Opus 4.8', description: 'Previous generation Opus for complex tasks' },
       { id: 'claude-opus-4-7', name: 'Opus 4.7', description: 'Highly capable model' },
       { id: 'claude-opus-4-6', name: 'Opus 4.6', description: 'Highly capable model' },
       { id: 'claude-opus-4-5-20251101', name: 'Opus 4.5', description: 'Previous generation Opus' },
@@ -894,6 +908,9 @@ export class ClaudeService {
     const supportedModels = [
       'claude-sonnet-5',
       'claude-fable-5',
+      'claude-opus-5',
+      'claude-opus-4-8',
+      'claude-opus-4-7',
       'claude-opus-4-6',
       'claude-opus-4-5',
       'claude-sonnet-4-6',
@@ -909,8 +926,8 @@ export class ClaudeService {
    * Get Computer Use beta header for the model
    */
   private getComputerUseBetaHeader(model: string): string {
-    // Sonnet 5, Fable 5, Opus 4.6/4.5, and Sonnet 4.6 use newer beta version
-    if (model.includes('sonnet-5') || model.includes('fable-5') || model.includes('opus-4-6') || model.includes('opus-4-5') || model.includes('sonnet-4-6')) {
+    // Current Claude 4.5+ and Claude 5 models use the November 2025 computer-use contract.
+    if (model.includes('sonnet-5') || model.includes('fable-5') || model.includes('opus-5') || model.includes('opus-4-8') || model.includes('opus-4-7') || model.includes('opus-4-6') || model.includes('opus-4-5') || model.includes('sonnet-4-6')) {
       return 'computer-use-2025-11-24';
     }
     // Other models use older beta version
@@ -927,7 +944,7 @@ export class ClaudeService {
   private static readonly STATIC_SYSTEM_PROMPT = `
 ## Build Agent
 
-You are the Build agent, an AI development assistant running inside the Build desktop application. You have access to a browser preview panel via MCP tools (claudette-browser) that allows you to test changes you make to web applications in real-time.
+You are the Build agent, an AI development assistant running inside the Build desktop application. You have access to a browser preview panel via MCP tools (build-browser) that allows you to test changes you make to web applications in real-time.
 
 ### Browser Testing Capabilities
 
@@ -951,7 +968,7 @@ You are intelligent enough to determine what URLs to test based on the project s
 
 ### Design Mode
 
-When the user asks you to DESIGN something visual — a landing page, UI mockup, slide deck, poster, dashboard concept, brand exploration, or similar — call the DesignMode tool (claudette-design) with a complete design brief, then END YOUR TURN with a one-line handoff message. A dedicated design session (Open Design) takes over the view and its design-specialized agent does the designing — you do not write design files yourself, and you do not open the browser to preview designs. Design files land in a workspace folder inside this session and the design conversation syncs back to you automatically, so when the user returns you have full context to integrate the designs into code. Regular coding tasks do NOT need design mode.
+When the user asks you to DESIGN something visual — a landing page, UI mockup, slide deck, poster, dashboard concept, brand exploration, or similar — call the DesignMode tool (claudette-design) with a complete design brief, then END YOUR TURN with a one-line handoff message. DesignMode takes over the view and its design-specialized agent does the designing — you do not write design files yourself, and you do not open the browser to preview designs. Design, DesignSync, and open-design are different capabilities and are never substitutes for DesignMode. Design files land in a workspace folder inside this session and the design conversation syncs back to you automatically, so when the user returns you have full context to integrate the designs into code. Regular coding tasks do NOT need design mode.
 `;
 
   private buildSystemPromptAppend(
@@ -1172,6 +1189,138 @@ For substantive responses (more than ~500 characters of content), respond with a
       once: child.once.bind(child) as SpawnedProcess['once'],
       off: child.off.bind(child) as SpawnedProcess['off'],
     };
+  }
+
+  private filterParableLauncherPrelude(processHandle: SpawnedProcess): SpawnedProcess {
+    let pending = '';
+    let protocolStarted = false;
+    const filteredStdout = new Transform({
+      transform(chunk: Buffer | string, _encoding, callback) {
+        if (protocolStarted) {
+          callback(null, chunk);
+          return;
+        }
+        pending += chunk.toString();
+        let newline = pending.indexOf('\n');
+        while (newline >= 0) {
+          const line = pending.slice(0, newline + 1);
+          pending = pending.slice(newline + 1);
+          if (line.trimStart().startsWith('{')) {
+            protocolStarted = true;
+            this.push(line);
+            if (pending) {
+              this.push(pending);
+              pending = '';
+            }
+            break;
+          }
+          newline = pending.indexOf('\n');
+        }
+        callback();
+      },
+      flush(callback) {
+        if (protocolStarted && pending) this.push(pending);
+        callback();
+      },
+    });
+    processHandle.stdout.pipe(filteredStdout);
+    return {
+      stdin: processHandle.stdin,
+      stdout: filteredStdout,
+      get killed() {
+        return processHandle.killed;
+      },
+      get exitCode() {
+        return processHandle.exitCode;
+      },
+      kill: processHandle.kill.bind(processHandle),
+      on: processHandle.on.bind(processHandle) as SpawnedProcess['on'],
+      once: processHandle.once.bind(processHandle) as SpawnedProcess['once'],
+      off: processHandle.off.bind(processHandle) as SpawnedProcess['off'],
+    };
+  }
+
+  private createLocalParableClaudeCodeProcess(
+    runtime: PreparedParableRuntime,
+    nodeExecutable: string | undefined,
+    options: { command: string; args: string[]; cwd?: string; env: Record<string, string | undefined>; signal: AbortSignal }
+  ): SpawnedProcess {
+    const sdkLaunch = this.resolveLocalClaudeLaunch(nodeExecutable, options);
+    const safeCwd = options.cwd && fs.existsSync(options.cwd) ? options.cwd : process.cwd();
+    const existingPath = options.env.PATH || process.env.PATH || '';
+    // Upstream Parable deliberately launches the configured `claude` binary.
+    // The Agent SDK often supplies `node /path/to/cli.js` instead of a global
+    // executable, so expose that exact invocation as a short-lived PATH shim.
+    // This keeps all Parable lifecycle logic upstream without requiring users
+    // to install a second, potentially mismatched Claude Code CLI.
+    const hasScriptEntrypoint = sdkLaunch.mode !== 'sdk-command'
+      && this.isJavaScriptEntrypoint(sdkLaunch.args[0]);
+    const shimPrefixArgs = hasScriptEntrypoint ? [sdkLaunch.args[0]] : [];
+    const forwardedArgs = hasScriptEntrypoint ? sdkLaunch.args.slice(1) : sdkLaunch.args;
+    const shimDir = fs.mkdtempSync(path.join(os.tmpdir(), 'claudette-parable-'));
+    const shimPath = path.join(shimDir, 'claude');
+    const shimInvocation = [sdkLaunch.command, ...shimPrefixArgs]
+      .map(quotePosixShellArgument)
+      .join(' ');
+    fs.writeFileSync(shimPath, `#!/bin/sh\nexec ${shimInvocation} "$@"\n`, { mode: 0o700 });
+    const launcherCommand = nodeExecutable || runtime.launcherPath;
+    const launcherArgs = [
+      ...(nodeExecutable ? [runtime.launcherPath] : []),
+      '--brain',
+      'auto',
+      '--',
+      ...filterParableClaudeArguments(forwardedArgs),
+    ];
+    let child;
+    try {
+      child = spawn(
+        launcherCommand,
+        launcherArgs,
+        {
+          cwd: safeCwd,
+          env: {
+            ...options.env,
+            PATH: [shimDir, existingPath].filter(Boolean).join(path.delimiter),
+          },
+          stdio: ['pipe', 'pipe', 'pipe'],
+          signal: options.signal,
+          windowsHide: true,
+        },
+      );
+    } catch (error) {
+      fs.rmSync(shimDir, { recursive: true, force: true });
+      throw error;
+    }
+    let shimRemoved = false;
+    const removeShim = () => {
+      if (shimRemoved) return;
+      shimRemoved = true;
+      fs.rmSync(shimDir, { recursive: true, force: true });
+    };
+    child.once('close', removeShim);
+    child.once('error', removeShim);
+    child.stderr?.on('data', (chunk) => {
+      const message = chunk.toString().trim();
+      if (message) console.warn('[Claude Service] Parable launcher:', message);
+    });
+    if (!child.stdin || !child.stdout) {
+      throw new Error('Failed to create Parable-wrapped Claude Code process stdio');
+    }
+    const processHandle: SpawnedProcess = {
+      stdin: child.stdin,
+      stdout: child.stdout,
+      get killed() {
+        return child.killed;
+      },
+      get exitCode() {
+        return child.exitCode;
+      },
+      kill: child.kill.bind(child),
+      on: child.on.bind(child) as SpawnedProcess['on'],
+      once: child.once.bind(child) as SpawnedProcess['once'],
+      off: child.off.bind(child) as SpawnedProcess['off'],
+    };
+    return this.filterParableLauncherPrelude(processHandle);
   }
 
   private resolveLocalNodeExecutable(): string | undefined {
@@ -1568,11 +1717,26 @@ Read or source that file if you need the actual values. Do not print secret valu
     if (!session.sshConfig) return currentSdkSessionId;
 
     const prompts = this.getBuildUserPromptsForSdkResumeRepair(sessionId, currentUserMessage);
-    if (prompts.length === 0) return currentSdkSessionId;
+    const remoteWorkdir = session.worktreePath || session.sshConfig.remoteWorkdir || session.repoPath || '';
+    if (prompts.length === 0) {
+      if (!currentSdkSessionId) return undefined;
+      const currentContent = await sshService.fetchRemoteTranscript(
+        sessionId,
+        session.sshConfig,
+        currentSdkSessionId,
+        remoteWorkdir,
+        { full: false },
+      );
+      if (currentContent) return currentSdkSessionId;
+      console.warn(
+        `[Claude Service] SSH Claude SDK resume ${currentSdkSessionId.substring(0, 8)} for `
+        + `${sessionId.substring(0, 8)} has no remote transcript; starting from Build context`,
+      );
+      return undefined;
+    }
 
     let requiredScore = Math.min(2, prompts.length);
     const requiredRecentPrefix = Math.min(3, prompts.length);
-    const remoteWorkdir = session.worktreePath || session.sshConfig.remoteWorkdir || session.repoPath || '';
     let currentScore = 0;
     let currentRecentPrefix = 0;
     let currentTranscriptFound = false;
@@ -1650,7 +1814,7 @@ Read or source that file if you need the actual values. Do not print secret valu
         'recent-prefix prompts; no better remote transcript found'
       );
     }
-    return currentSdkSessionId;
+    return currentTranscriptFound ? currentSdkSessionId : undefined;
   }
 
   private async repairSshSdkSessionIdFromBuildTranscriptOnce(
@@ -1659,7 +1823,7 @@ Read or source that file if you need the actual values. Do not print secret valu
     rawSdkSessionId: string | undefined,
     currentUserMessage: string,
   ): Promise<string | undefined> {
-    const currentSdkSessionId = rawSdkSessionId && rawSdkSessionId !== 'new' ? rawSdkSessionId : undefined;
+    const currentSdkSessionId = normalizeClaudeSdkSessionId(rawSdkSessionId);
     if (!session.sshConfig) return currentSdkSessionId;
 
     const cacheKey = this.getSshSdkResumeRepairCacheKey(sessionId, rawSdkSessionId);
@@ -1821,7 +1985,28 @@ Read or source that file if you need the actual values. Do not print secret valu
 
   private clearSdkSessionId(sessionId: string): void {
     this.sessionStore.delete(`sessions.${sessionId}.sdkSessionId`);
+    // A remote fork source is another one-shot native resume handle. Leaving
+    // it behind makes every recovery retry pass the same dead --resume value
+    // even after the canonical mapping has been cleared.
+    this.sessionStore.delete(`sessions.${sessionId}.forkFromSdkSessionId`);
     this.sessionStore.delete(`sdkSessionMappings.${sessionId}`);
+  }
+
+  /**
+   * Plan permission is turn-local, but native harness transcripts persist the
+   * instruction that activated it. Retire those continuations at the phase
+   * boundary so a later Build turn cannot resume a thread that still believes
+   * it is read-only. The Build transcript remains the continuity source for
+   * the fresh native session.
+   */
+  private retireNativePlanningContinuations(sessionId: string, reason: string): void {
+    this.clearSdkSessionId(sessionId);
+    codexService.clearThreadId(sessionId);
+    this.sessionContextPercentage.delete(sessionId);
+    this.sessionStore.delete(`contextUsage.${sessionId}`);
+    console.log(
+      `[Claude Service] Retired native planning continuations for ${sessionId.substring(0, 8)}: ${reason}`,
+    );
   }
 
   private getSessionContextPercentage(sessionId: string): number | undefined {
@@ -1836,6 +2021,7 @@ Read or source that file if you need the actual values. Do not print secret valu
     const currentModel = model || '';
     const hasLargeContext = currentModel.includes('fable-5')
       || currentModel.includes('sonnet-5')
+      || currentModel.includes('opus-5')
       || currentModel.includes('opus-4-8')
       || currentModel.includes('opus-4-7')
       || currentModel.includes('opus-4-6')
@@ -2908,7 +3094,7 @@ ${leadContent.slice(0, leadContextLimit)}
   private getDesignMcpServer(sessionId: string) {
     const designModeTool = tool(
       'DesignMode',
-      'Hand off to a design session (powered by Open Design). Call this whenever the user asks to design something visual: a landing page, UI mockup, slide deck, poster, dashboard, brand exploration, or similar. The app switches to a dedicated design canvas with its own design-specialized agent that does the designing — you do NOT create the design yourself. Pass the full design brief; it seeds the design session. Design files land in a workspace folder inside this session, and the design conversation syncs back to you automatically.',
+      'Start the exact DesignMode capability for this session. Call this whenever the user asks for DesignMode or asks to design something visual: a landing page, UI mockup, slide deck, poster, dashboard, brand exploration, or similar. Design, DesignSync, and open-design are different capabilities and are never substitutes. The app switches to a dedicated design canvas with its own design-specialized agent that does the designing — you do NOT create the design yourself. Pass the full design brief; it seeds the design session. Design files land in a workspace folder inside this session, and the design conversation syncs back to you automatically.',
       {
         brief: z.string().describe('The complete design brief to hand to the design agent — what to design, style direction, content, constraints. Be specific; this becomes the design session\'s opening prompt.'),
       },
@@ -2926,23 +3112,21 @@ ${leadContent.slice(0, leadContextLimit)}
               isError: true,
             };
           }
-          const workspace = await designService.ensureDesignWorkspace(
+          const activation = await designService.activateDesignMode({
             sessionId,
-            cwd,
-            currentSession?.name || args.brief.slice(0, 60),
-            sshConfig?.remoteWorkdir ? { config: sshConfig, remoteWorkdir: sshConfig.remoteWorkdir } : undefined
-          );
-          await mcpService.syncLocalHarnessConfigs(workspace.daemonUrl).catch((error) => {
-            console.warn('[Claude Service] OpenDesign MCP cross-harness sync failed:', error);
-          });
-          const run = await designService.startDesignRun(sessionId, args.brief);
+            sessionCwd: cwd,
+            sessionName: currentSession?.name || args.brief.slice(0, 60),
+            ssh: sshConfig?.remoteWorkdir
+              ? { config: sshConfig, remoteWorkdir: sshConfig.remoteWorkdir }
+              : undefined,
+          }, args.brief);
 
           // Switch the session view to the design session (full takeover)
           if (this.mainWindow) {
             this.mainWindow.webContents.send(IPC_CHANNELS.DESIGN_OPEN_PANEL, {
               sessionId,
-              url: run.conversationUrl,
-              workspaceDir: workspace.workspaceDir,
+              url: activation.conversationUrl,
+              workspaceDir: activation.workspace.workspaceDir,
               takeover: true,
             });
           }
@@ -2954,7 +3138,7 @@ ${leadContent.slice(0, leadContextLimit)}
                 'Design session opened — the app has switched to the design canvas and the brief has been handed to the design agent, which will do the designing.',
                 '',
                 'Do NOT design or write design files yourself. End your turn now with a single short sentence telling the user the design session is ready and the brief has been handed over.',
-                `Design files will appear in ${workspace.workspaceDir} and the design conversation syncs back to you automatically, so you will have full context when the user returns.`,
+                `Design files will appear in ${activation.workspace.workspaceDir} and the design conversation syncs back to you automatically, so you will have full context when the user returns.`,
               ].join('\n'),
             }],
           };
@@ -4165,7 +4349,7 @@ ${leadContent.slice(0, leadContextLimit)}
     );
 
     const mcpServer = createSdkMcpServer({
-      name: 'claudette-browser',
+      name: 'build-browser',
       version: '2.0.0', // Upgraded to Stagehand-powered automation
       tools: [
         // ============ COMPUTER USE API TOOL ============
@@ -5043,13 +5227,9 @@ ${bundledPlaybook}`;
         reject(new Error('Main window not available'));
       }
 
-      // Set a timeout in case the user never responds (10 minute timeout for plans)
-      setTimeout(() => {
-        if (this.pendingPlanApprovals.has(requestId)) {
-          this.pendingPlanApprovals.delete(requestId);
-          reject(new Error('Plan approval response timeout'));
-        }
-      }, 10 * 60 * 1000); // 10 minute timeout
+      // Deliberately no wall-clock timeout: a plan is an interactive gate and
+      // remains valid until the user responds or the owning turn/session is
+      // explicitly cancelled. Cancellation paths reject this promise.
     });
   }
 
@@ -5074,13 +5254,9 @@ ${bundledPlaybook}`;
         reject(new Error('Main window not available'));
       }
 
-      // Set a timeout in case the user never responds
-      setTimeout(() => {
-        if (this.pendingQuestions.has(requestId)) {
-          this.pendingQuestions.delete(requestId);
-          reject(new Error('Question response timeout'));
-        }
-      }, 5 * 60 * 1000); // 5 minute timeout
+      // Deliberately no wall-clock timeout: AskUserQuestion is an interactive
+      // gate and remains valid until the user responds or the owning
+      // turn/session is explicitly cancelled.
     });
   }
 
@@ -5594,6 +5770,23 @@ ${bundledPlaybook}`;
       return;
     }
 
+    if (session.sshConfig) {
+      const normalizedRemoteWorkdir = normalizeRemoteWorkdir(session.sshConfig.remoteWorkdir);
+      const normalizedWorktreePath = normalizeRemoteWorkdir(session.worktreePath);
+      const normalizedRepoPath = normalizeRemoteWorkdir(session.repoPath);
+      if (
+        normalizedRemoteWorkdir !== session.sshConfig.remoteWorkdir
+        || normalizedWorktreePath !== session.worktreePath
+        || normalizedRepoPath !== session.repoPath
+      ) {
+        session.sshConfig.remoteWorkdir = normalizedRemoteWorkdir || normalizedWorktreePath || normalizedRepoPath || '~';
+        session.worktreePath = normalizedWorktreePath || session.sshConfig.remoteWorkdir;
+        session.repoPath = normalizedRepoPath || session.worktreePath;
+        this.updateStoredSession(sessionId, () => session);
+        console.warn(`[Claude Service] Repaired display-prefixed remote workdir for ${sessionId.substring(0, 8)}: ${session.worktreePath}`);
+      }
+    }
+
     // A cancel IPC is not complete until its remote bridge cleanup is done.
     // Waiting here closes the race where a replacement Fast Stack / plan
     // execution process was spawned and then killed by the prior cleanup.
@@ -5628,6 +5821,7 @@ ${bundledPlaybook}`;
       getGeminiService().cancel(sessionId);
       getOpenCodeService().cancel(sessionId);
     }
+    this.activeParentBlockingTasks.delete(sessionId);
 
     // Serialize remote process spawns per session to prevent reattach+drain races
     const effectiveTurnLockOwner = turnLockOwner ?? Symbol('streamMessage');
@@ -5659,12 +5853,32 @@ ${bundledPlaybook}`;
       || this.sessionStore.get(`sessions.${sessionId}.sdkSessionId`) as string | undefined;
     const sdkSessionId = normalizeClaudeSdkSessionId(rawSdkSessionId);
     const rawForkFromSdkSessionId = session.forkFromSdkSessionId;
-    const forkFromSdkSessionId = normalizeClaudeSdkSessionId(rawForkFromSdkSessionId);
-    if (rawForkFromSdkSessionId && !forkFromSdkSessionId) {
+    // Legacy builds could write the parent Build tab id into this field when
+    // the parent had no native Claude mapping. Both ids are UUIDs, so reject a
+    // remote fork source that collides with a known Build session explicitly.
+    const forkSourceSession = rawForkFromSdkSessionId
+      ? this.sessionStore.get(`sessions.${rawForkFromSdkSessionId}`) as Session | undefined
+      : undefined;
+    const forkSourceNativeId = rawForkFromSdkSessionId
+      ? normalizeClaudeSdkSessionId(
+          this.sessionStore.get(`sdkSessionMappings.${rawForkFromSdkSessionId}`)
+          || forkSourceSession?.sdkSessionId,
+        )
+      : undefined;
+    const forkSourceIsBuildSessionId = Boolean(
+      session.sshConfig
+      && rawForkFromSdkSessionId
+      && forkSourceSession
+      && forkSourceNativeId !== rawForkFromSdkSessionId
+    );
+    const forkFromSdkSessionId = forkSourceIsBuildSessionId
+      ? undefined
+      : normalizeClaudeSdkSessionId(rawForkFromSdkSessionId);
+    if (rawForkFromSdkSessionId && (!forkFromSdkSessionId || forkSourceIsBuildSessionId)) {
       const { forkFromSdkSessionId: _, ...cleanSession } = session;
       this.sessionStore.set(`sessions.${sessionId}`, cleanSession);
       console.warn(
-        `[Claude Service] Dropped invalid native fork source for ${sessionId.substring(0, 8)}; `
+        `[Claude Service] Dropped ${forkSourceIsBuildSessionId ? 'Build-session' : 'invalid'} native fork source for ${sessionId.substring(0, 8)}; `
         + 'starting fresh with the cloned Build transcript'
       );
     }
@@ -5689,6 +5903,7 @@ ${bundledPlaybook}`;
       const persistedAutoBuildPrePlanMode = this.getPersistedAutoBuildPrePlanMode(sessionId);
       const autoBuildForcedPlanMode = this.autoBuildForcedPlanSessions.has(sessionId) || Boolean(persistedAutoBuildPrePlanMode);
       if (autoBuildForcedPlanMode) {
+        this.retireNativePlanningContinuations(sessionId, 'direct model selected after Auto Build plan');
         const shouldRestoreAutoBuildPlanMode = storedPlanMode === 'plan' || effectivePermissionMode === 'plan';
         const restored = this.prePlanPermissionModes.get(sessionId) || persistedAutoBuildPrePlanMode || 'acceptEdits';
         if (shouldRestoreAutoBuildPlanMode) {
@@ -5734,6 +5949,7 @@ ${bundledPlaybook}`;
       return withCascadeContext(withOutputContract);
     };
     const normalizedSupplementalMessages = this.normalizeConversationMessages(supplementalMessages);
+    const inputWasResolvedWorkflowPrompt = userMessage.trimStart().startsWith('<invoked_workflow ');
     let autoPlanningState = this.getAutoPlanningState(sessionId);
     let autoPlanningBypassed = false;
     const autoPlanningForced = /^\/(?:80-20-first|spec-first)(?:\s+|$)/i.test(userMessage.trim());
@@ -5783,12 +5999,8 @@ ${bundledPlaybook}`;
         console.log(`[Claude Service] Starting in plan mode, stored default pre-plan mode: acceptEdits`);
       }
 
-      if (session.sshConfig) {
-        // Fire-and-forget: MCP sync runs in background, never blocks the turn
-        sshService.syncMcpConfigsToRemote(sessionId, session.sshConfig).catch((err) => {
-          console.warn('[Claude Service] Background MCP sync failed (non-blocking):', err);
-        });
-      }
+      // SSH session setup owns remote migrations and MCP synchronization.
+      // Model turns must never trigger that network or filesystem work.
 
       // Map thinking mode to effort levels (via maxThinkingTokens)
       // The Claude Agent SDK uses maxThinkingTokens, which maps to Claude 4.6's effort parameter:
@@ -5804,9 +6016,9 @@ ${bundledPlaybook}`;
       //   - medium (thinking): 10,000 tokens
       //   - high (ultrathink): 60,000-100,000 tokens (model-dependent)
       //
-      // IMPORTANT: Opus models have a max output token limit of 64,000
-      // The thinking tokens count towards this limit, so we cap ultrathink at 60,000
-      // to leave room for the actual response (~4,000 tokens buffer)
+      // Legacy Opus models have a 64,000-token output limit; Opus 5 raises it to 128,000.
+      // Thinking tokens count toward that limit, so legacy manual-thinking paths retain
+      // their 60,000-token cap while adaptive Claude 5 models use the effort setting.
       // Model selection priority:
       // 1. Explicit model parameter (from UI selector)
       // Model resolution priority:
@@ -5878,30 +6090,34 @@ ${bundledPlaybook}`;
         console.log(`[Claude Service] Cascade workflow active — selected model remains ${selectedModel} skill=${cascadeRuntime.skillDir}`);
       }
 
-      // Parable mode — Claude Code itself is the meta-harness. Resolve the
-      // pseudo-model to the configured Claude brain, install/load the upstream
-      // skill, and expose the Settings cast through a real parable.toml. Unlike
-      // Auto Build, no application router or helper-stage plan is created.
+      // Parable mode — Claude Code remains the sole harness. Before setup is
+      // ready it runs normally with the exact upstream onboarding playbook.
+      // Once every selected subscription is authorized, the SDK child is
+      // launched through Parable itself so upstream owns the proxy, catalog,
+      // brain selection, named agents, signal forwarding, and cleanup.
       if (selectedModel === PARABLE_MODE_ID) {
         parableRuntime = parableService.prepareRuntime(sessionId);
         if (session.sshConfig) {
-          const remoteConfigPath = `/tmp/build-parable-${sessionId.replace(/[^a-zA-Z0-9_-]/g, '-')}.toml`;
           const remoteSkillDir = await sshService.syncLocalDirectoryToRemote(
             sessionId,
             session.sshConfig,
             parableRuntime.skillDir,
             '~/.claude/skills/parable-build',
           );
-          await sshService.writeRemoteFile(sessionId, session.sshConfig, remoteConfigPath, parableRuntime.configToml);
+          const remoteStatus = await sshService.getRemoteParableSubscriptionStatus(
+            sessionId,
+            session.sshConfig,
+          );
           parableRuntime = {
             ...parableRuntime,
-            configPath: remoteConfigPath,
             skillDir: remoteSkillDir,
             skillFile: `${remoteSkillDir}/SKILL.md`,
-            systemContext: parableService.buildSystemContext(parableRuntime.config, remoteSkillDir, remoteConfigPath, parableRuntime.skillContent),
+            launcherPath: remoteStatus.launcherPath,
+            subscriptionStatus: remoteStatus,
+            useSubscriptionLauncher: remoteStatus.ready,
+            systemContext: parableService.buildSystemContext(remoteSkillDir, remoteStatus, parableRuntime.skillContent),
             env: {
               ...parableRuntime.env,
-              PARABLE_CONFIG: remoteConfigPath,
               PARABLE_SKILL_DIR: remoteSkillDir,
             },
           };
@@ -5910,7 +6126,10 @@ ${bundledPlaybook}`;
         autoOrchestrationContext = withCascadeContext(parableRuntime.systemContext);
         selectionMode = 'manual';
         selectionSource = 'request';
-        console.log(`[Claude Service] Parable mode active — Claude Code meta-harness brain=${selectedModel} config=${parableRuntime.configPath}`);
+        console.log(
+          `[Claude Service] Parable mode active — Claude Code harness brain=${selectedModel} `
+          + `subscriptionLauncher=${parableRuntime.useSubscriptionLauncher ? 'ready' : 'onboarding'}`,
+        );
         // Surface the concrete Claude brain immediately. The renderer keeps
         // Parable selected, but uses this resolved model while the turn is
         // active so its mode chip can mirror Auto Build's live model display.
@@ -5989,7 +6208,7 @@ ${bundledPlaybook}`;
             prePlanBypassed: autoPlanningBypassed,
             prePlanForced: autoPlanningForced,
           });
-          const routedModel = routingDecision.resolvedModel;
+          let routedModel = routingDecision.resolvedModel;
           selectedModel = routedModel;
           routingDecisionForAnalytics = routingDecision;
           autoOrchestrationContext = withCascadeContext([
@@ -6029,10 +6248,49 @@ ${bundledPlaybook}`;
             const hadForcedPlanMarker = this.autoBuildForcedPlanSessions.has(sessionId)
               || Boolean(this.getPersistedAutoBuildPrePlanMode(sessionId));
             if (hadForcedPlanMarker) {
+              this.retireNativePlanningContinuations(
+                sessionId,
+                `Auto Build advanced from Plan to ${routingDecision.tier}`,
+              );
               this.autoBuildForcedPlanSessions.delete(sessionId);
               this.prePlanPermissionModes.delete(sessionId);
               this.clearPersistedAutoBuildForcedPlanMode(sessionId);
               console.log(`[Claude Service] Cleared stale Auto Build plan marker for ${routingDecision.tier} execution route`);
+            }
+          }
+          if (
+            session.sshConfig
+            && routedModel.startsWith('codex:')
+            && autoBuildLeadPermissionMode !== 'bypassPermissions'
+          ) {
+            const sandbox = await sshService.detectRemoteCodexSandbox(sessionId, session.sshConfig);
+            if (!sandbox.supported) {
+              const settings = this.store.get('settings', {}) as Record<string, unknown>;
+              const routerConfig = (settings.autoRouterConfig || {}) as Record<string, unknown>;
+              const fallbackModel = [
+                routerConfig.prePlanModel,
+                routerConfig.fallbackModel,
+                'claude-fable-5',
+                'claude-sonnet-4-6',
+              ].find((candidate): candidate is string => (
+                typeof candidate === 'string' && candidate.startsWith('claude-')
+              ));
+              if (fallbackModel && remoteCliCapabilities?.claude !== false) {
+                const unavailableReason = sandbox.reason || 'remote Codex sandbox unavailable';
+                console.warn(
+                  `[Claude Service] Auto Build ${routingDecision.tier} route cannot use sandboxed Codex on SSH `
+                  + `(${unavailableReason}); falling back to ${fallbackModel}`,
+                );
+                routedModel = fallbackModel;
+                selectedModel = fallbackModel;
+                routingDecision.resolvedModel = fallbackModel;
+                routingDecision.resolvedHarness = 'claude';
+                routingDecision.reason = `${routingDecision.reason}; remote Codex sandbox unavailable, used ${fallbackModel}`;
+                routingDecision.orchestration = undefined;
+                routingDecisionForAnalytics = routingDecision;
+                autoOrchestrationPlan = undefined;
+                autoOrchestrationContext = withCascadeContext(approvedPlanHandoffContext);
+              }
             }
           }
           if (routingDecision.resolvedEffort) {
@@ -6066,6 +6324,22 @@ ${bundledPlaybook}`;
         }
       }
       selectedModel = selectedModel || 'claude-sonnet-4-6';
+
+      // Auto Router owns prose intent classification. Once it selects the PR
+      // category, load the installed project workflow instead of maintaining a
+      // second English-phrase parser in the slash-command layer.
+      if (routingDecisionForAnalytics?.categoryId === 'pr' && !inputWasResolvedWorkflowPrompt) {
+        const directInvocation = parseSlashWorkflowInvocation(userMessage);
+        const workflowRequest = directInvocation
+          ? `/${directInvocation.name}${directInvocation.arguments ? ` ${directInvocation.arguments}` : ''}`
+          : '/pr';
+        const resolvedWorkflow = await slashWorkflowService.resolveInvocation(sessionId, workflowRequest, session);
+        userMessage = resolvedWorkflow?.prompt || workflowRequest;
+        console.log(
+          `[Claude Service] Auto Router PR category loaded ${resolvedWorkflow?.definition.path || workflowRequest}`,
+        );
+      }
+
       const missionPolicy = routingDecisionForAnalytics?.missionControl;
       const turnPolicy: MetaHarnessPolicy = {
         ...(missionPolicy || {}),
@@ -6150,6 +6424,7 @@ ${bundledPlaybook}`;
       if (selectedModel?.startsWith('codex:')) {
         const codexModel = selectedModel.split(':')[1];
         console.log(`[Claude Service] Routing to Codex model=${codexModel} ssh=${!!session.sshConfig}`);
+        yield { type: 'thinking_delta', content: 'Preparing Codex session…\n' };
         const projectPath = session.worktreePath || session.repoPath || session.sshConfig?.remoteWorkdir || process.cwd();
 
         const nativeCodexGoalObjective = routingDecisionForAnalytics?.goal?.source === 'slash-command'
@@ -6517,8 +6792,33 @@ ${bundledPlaybook}`;
       // Non-Claude harness turns are captured in Build transcript supplemental
       // context and injected alongside the SDK resume.
       let effectiveSdkSessionId = sdkSessionId;
-      if (sdkSessionId && session.sshConfig) {
-        console.log('[Claude Service] SSH foreground Claude turn: resuming stored Claude SDK session without repair scan');
+      let effectiveForkFromSdkSessionId = forkFromSdkSessionId;
+      const requestedResumeSessionId = effectiveForkFromSdkSessionId || effectiveSdkSessionId;
+      if (requestedResumeSessionId && session.sshConfig) {
+        const repairedResumeSessionId = await this.repairSshSdkSessionIdFromBuildTranscriptOnce(
+          sessionId,
+          session,
+          requestedResumeSessionId,
+          userMessage,
+        );
+        if (!repairedResumeSessionId) {
+          console.warn(
+            `[Claude Service] Retiring missing SSH Claude resume ${requestedResumeSessionId.substring(0, 8)} `
+            + `for ${sessionId.substring(0, 8)}; cloned Build transcript remains authoritative`,
+          );
+          this.clearSdkSessionId(sessionId);
+          effectiveSdkSessionId = undefined;
+          effectiveForkFromSdkSessionId = undefined;
+        } else if (effectiveForkFromSdkSessionId) {
+          effectiveForkFromSdkSessionId = repairedResumeSessionId;
+          this.sessionStore.set(`sessions.${sessionId}.forkFromSdkSessionId`, repairedResumeSessionId);
+        } else {
+          effectiveSdkSessionId = repairedResumeSessionId;
+        }
+      }
+      const verifiedResumeSessionId = effectiveForkFromSdkSessionId || effectiveSdkSessionId;
+      if (verifiedResumeSessionId && session.sshConfig) {
+        console.log('[Claude Service] SSH foreground Claude turn: probing the verified Claude SDK resume owner');
         // A live remote Claude process can still own this SDK session —
         // background tasks/monitors keep the process alive after its turn
         // completes. Spawning a second process with --resume on that same
@@ -6542,9 +6842,11 @@ ${bundledPlaybook}`;
           if (liveClaudeJob || remoteProcessActive) {
             console.warn(
               `[Claude Service] Live remote Claude process (${liveClaudeJob ? `pid ${liveClaudeJob.pid || '?'}` : 'remote-process probe'}) still owns SDK session ` +
-              `${sdkSessionId.substring(0, 8)} — starting fresh turn with full Build transcript context instead of a doomed resume`
+              `${verifiedResumeSessionId.substring(0, 8)} — starting fresh turn with full Build transcript context instead of a doomed resume`
             );
+            this.clearSdkSessionId(sessionId);
             effectiveSdkSessionId = undefined;
+            effectiveForkFromSdkSessionId = undefined;
           }
         } catch (probeError) {
           console.warn('[Claude Service] Could not probe live remote Claude processes before resume:', probeError);
@@ -6738,6 +7040,19 @@ ${bundledPlaybook}`;
         console.warn('[Claude Service] Could not load transcript messages for Claude continuity context:', error);
       }
 
+      // If no installed definition was found, keep any direct native slash
+      // command as the actual user prompt. This boundary is generic; workflow
+      // intent and model selection remain owned by Auto Router.
+      const nativeSlashWorkflowInvocation = Boolean(parseSlashWorkflowInvocation(userMessage));
+      if (nativeSlashWorkflowInvocation && conversationSyncBlock) {
+        supplementalConversationContext = [conversationSyncBlock, supplementalConversationContext]
+          .filter(Boolean)
+          .join('\n\n');
+        supplementalConversationContextLabel = 'Authoritative Session Context for Native Slash Workflow';
+        conversationSyncBlock = '';
+        console.log('[Claude Service] Preserved native slash workflow prompt boundary; moved conversation sync to system context');
+      }
+
       // Design session sync-back: if this session has an Open Design workspace,
       // pull the design conversation so the coding agent knows what was
       // designed (files are already on disk in the workspace).
@@ -6821,15 +7136,18 @@ ${bundledPlaybook}`;
       const parableTurnControl = parableRuntime
         ? [
             '<parable_runtime_control priority="authoritative">',
-            'Parable mode is already installed and configured for this turn. Do not search for, locate, rediscover, or invoke a Parable skill or playbook.',
+            parableRuntime.useSubscriptionLauncher
+              ? 'Parable subscription mode is active through the upstream launcher. Claude Code is the parent harness and its parable-* named agents are exact models routed through the user-owned loopback proxy.'
+              : 'Parable subscription mode is not ready yet. Follow the embedded upstream first-time onboarding flow; do not pretend the selected OAuth providers are connected.',
             `Managed skill directory: ${parableRuntime.skillDir}`,
-            `Managed config: ${parableRuntime.configPath}`,
-            `Load cast/config exactly once with: bash ${path.join(parableRuntime.skillDir, 'scripts', 'parable-config.sh')}`,
-            `For 2+ disjoint external runs, use one foreground call only: bash ${path.join(parableRuntime.skillDir, 'scripts', 'parable-batch.sh')} <workdir> <executor> <plan.md> <executor> <plan.md> ...`,
+            `Setup status: ${parableRuntime.subscriptionStatus.ready ? 'all selected providers authorized' : parableRuntime.subscriptionStatus.configured ? 'staged; run parable auth login' : 'not staged'}`,
+            ...(parableRuntime.useSubscriptionLauncher
+              ? [`Load the routed cast exactly once with: bash ${path.join(parableRuntime.skillDir, 'scripts', 'parable-config.sh')}`]
+              : [`Use the bundled installer at ${path.join(parableRuntime.skillDir, 'parable.sh')} after collecting the choices required by the playbook.`]),
             `Run configured checks with: bash ${path.join(parableRuntime.skillDir, 'scripts', 'parable-verify.sh')} --when <post-implement|pre-commit>`,
             'Plans belong under <workdir>/.parable/plans/. Never use /tmp/parable-plans.',
-            'Claude subagent reviewers run directly with the Agent tool; do not call parable-review.sh for them.',
-            'Do not end the turn until the foreground batch, checks, integrated review, fixups, and final checks are all complete.',
+            'Delegate exact-model executors through their generated parable-* Agent names. Do not start separate Codex, Cursor, Gemini, or OpenCode harnesses for the subscription cast.',
+            'Do not end an implementation turn until delegated work, checks, integrated review, fixups, and final checks are complete.',
             '</parable_runtime_control>',
           ].join('\n')
         : '';
@@ -6849,19 +7167,46 @@ ${bundledPlaybook}`;
           ].join('\n')
         : '';
 
-      // GStack mode is injected via system prompt append only (buildSystemPromptAppend)
-      let fullTextMessage = [parableTurnControl, cascadeTurnControl, resolvedMessage].filter(Boolean).join('\n\n');
-      if (conversationSyncBlock) {
-        fullTextMessage = `${conversationSyncBlock}\n\n${fullTextMessage}`;
+      const domContext = hasDomElements
+        ? domElementAttachments.map((el, i) => {
+            return `<selected-element index="${i + 1}" selector="${el.name}">\n${el.content}\n</selected-element>`;
+          }).join('\n\n')
+        : '';
+
+      // Do not prepend any app-authored text to a native slash command. Runtime
+      // controls, attachments, DOM context, and continuity remain available in
+      // the system appendix, while the SDK user prompt stays exact so the
+      // harness resolves the project's command/skill definition itself.
+      let fullTextMessage: string;
+      if (nativeSlashWorkflowInvocation) {
+        const nativeSlashTurnContext = [
+          parableTurnControl,
+          cascadeTurnControl,
+          fileAttachmentPrompt,
+          domContext,
+        ].filter(Boolean).join('\n\n');
+        if (nativeSlashTurnContext) {
+          supplementalConversationContext = [nativeSlashTurnContext, supplementalConversationContext]
+            .filter(Boolean)
+            .join('\n\n');
+          supplementalConversationContextLabel = 'Authoritative Session Context for Native Slash Workflow';
+        }
+        fullTextMessage = resolvedMessage;
+        console.log(`[Claude Service] Native slash workflow prompt preserved exactly: ${JSON.stringify(fullTextMessage)}`);
+      } else {
+        // GStack mode is injected via system prompt append only (buildSystemPromptAppend)
+        fullTextMessage = [parableTurnControl, cascadeTurnControl, resolvedMessage].filter(Boolean).join('\n\n');
+        if (conversationSyncBlock) {
+          fullTextMessage = `${conversationSyncBlock}\n\n${fullTextMessage}`;
+        }
+        if (fileAttachmentPrompt) {
+          fullTextMessage = `${fileAttachmentPrompt}\n\n${fullTextMessage || ATTACHMENT_ONLY_PROMPT}`;
+        }
+        if (domContext) {
+          fullTextMessage = `${domContext}\n\n${fullTextMessage}`;
+        }
       }
-      if (fileAttachmentPrompt) {
-        fullTextMessage = `${fileAttachmentPrompt}\n\n${fullTextMessage || ATTACHMENT_ONLY_PROMPT}`;
-      }
-      if (hasDomElements) {
-        const domContext = domElementAttachments.map((el, i) => {
-          return `<selected-element index="${i + 1}" selector="${el.name}">\n${el.content}\n</selected-element>`;
-        }).join('\n\n');
-        fullTextMessage = `${domContext}\n\n${fullTextMessage}`;
+      if (domContext) {
         console.log('[Claude Service] Added DOM element context to message');
       }
 
@@ -6972,7 +7317,7 @@ ${bundledPlaybook}`;
       // browser automation when the session has never used the browser panel.
       const sessionHasBrowserHistory = session.sshConfig ? !!(session as any).lastBrowserUrl : true;
       if (sessionHasBrowserHistory) {
-        mcpServersConfig['claudette-browser'] = this.getBrowserMcpServer(sessionId);
+        mcpServersConfig['build-browser'] = this.getBrowserMcpServer(sessionId);
         console.log('[Claude Service] Browser MCP tools enabled', session.sshConfig ? '(SSH session)' : '(local session)');
       } else {
         console.log('[Claude Service] Browser MCP tools skipped — SSH session with no browser history');
@@ -7060,11 +7405,11 @@ ${bundledPlaybook}`;
       if (session.sshConfig) {
         hooks.PreToolUse = [
           {
-            matcher: 'mcp__claudette-browser__Browser*', // Match all MCP browser tools
+            matcher: 'mcp__build-browser__Browser*', // Match all MCP browser tools
             hooks: [async (input: any, toolUseID: string | undefined, options: any) => {
               console.log('[SSH Browser Intercept] PreToolUse hook called with:', JSON.stringify({ input, toolUseID, optionsKeys: Object.keys(options || {}) }));
               const fullToolName = input?.tool_name || input?.toolName || '';
-              const toolName = fullToolName.replace('mcp__claudette-browser__', '');
+              const toolName = fullToolName.replace('mcp__build-browser__', '');
               console.log('[SSH Browser Intercept] Extracted tool name:', fullToolName, '->', toolName);
 
               if (toolName.startsWith('Browser')) {
@@ -7325,8 +7670,24 @@ Begin by creating the task structure now.
         console.warn('[Claude Service] Could not resolve native CLI binary path:', e);
       }
 
+      const initialSdkInput: SDKUserMessage | AsyncIterable<SDKUserMessage> = typeof prompt === 'string'
+        ? {
+          type: 'user',
+          message: {
+            role: 'user',
+            content: prompt,
+          },
+          parent_tool_use_id: null,
+          session_id: effectiveSdkSessionId || '',
+        } as SDKUserMessage
+        : prompt;
+      const persistentPromptInput = new ClaudePersistentInput(initialSdkInput);
+
       const messages = query({
-        prompt,
+        // Always use a persistent AsyncIterable. Passing a string makes the
+        // SDK mark this as isSingleUserTurn and Claude Code exits immediately
+        // after an interim result, killing background Bash/Agent tasks.
+        prompt: persistentPromptInput,
         options: {
           cwd: projectPath,
           ...(resolvedCliBinaryPath ? { pathToClaudeCodeExecutable: resolvedCliBinaryPath } : {}),
@@ -7334,12 +7695,17 @@ Begin by creating the task structure now.
           permissionMode: cliPermissionMode,
           ...(requiresDangerFlag ? { allowDangerouslySkipPermissions: true } : {}),
           includePartialMessages: true,
+          // Build owns visual-design handoff through the session-scoped
+          // DesignMode tool. Claude Code's separate DesignSync capability can
+          // otherwise win tool search and silently write into a shared design
+          // system instead of opening the requested DesignMode workspace.
+          disallowedTools: ['DesignSync'],
           // Use computed model — resolve custom:* IDs to actual API model names
           model: this.resolveCustomModelId(selectedModel),
-          // 1M context is native for Sonnet 5, Fable 5, Opus 4.6, and Sonnet 4.6.
+          // 1M context is native for Sonnet 5, Fable 5, Opus 5, Opus 4.6, and Sonnet 4.6.
           // Legacy models (Sonnet 4.5, Sonnet 4) still need the beta until Apr 30 2026
           // Skip betas for Foundry and third-party Claude-compatible proxies.
-          ...(!settings.foundryEnabled && !selectedModel.startsWith('custom:') && !selectedModel.includes('sonnet-5') && !selectedModel.includes('fable-5') && !selectedModel.includes('opus-4-6') && !selectedModel.includes('sonnet-4-6')
+          ...(!settings.foundryEnabled && !selectedModel.startsWith('custom:') && !selectedModel.includes('sonnet-5') && !selectedModel.includes('fable-5') && !selectedModel.includes('opus-5') && !selectedModel.includes('opus-4-6') && !selectedModel.includes('sonnet-4-6')
             ? { betas: ['context-1m-2025-08-07' as const] }
             : {}),
           ...(claudePolicy?.thinking ? { thinking: claudePolicy.thinking } : {}),
@@ -7392,7 +7758,7 @@ Begin by creating the task structure now.
           // For SSH forks: resume from the parent's SDK session + forkSession: true
           // so the remote transcript gets forked on the first query.
           ...(effectiveSdkSessionId ? { resume: effectiveSdkSessionId } : {}),
-          ...(forkFromSdkSessionId ? { resume: forkFromSdkSessionId, forkSession: true } : {}),
+          ...(effectiveForkFromSdkSessionId ? { resume: effectiveForkFromSdkSessionId, forkSession: true } : {}),
           // Add MCP servers (browser tools + QMD semantic search if available)
           mcpServers: mcpServersConfig,
           // Spawn Claude Code either locally via a resolved Node binary or remotely over SSH.
@@ -7400,10 +7766,28 @@ Begin by creating the task structure now.
             if (sshConfig) {
               console.log('[Claude Service] Creating SSH remote process for session:', sessionId);
               console.log('[Claude Service] SDK spawn options:', { command: options.command, args: options.args, cwd: options.cwd });
-              return sshService.createRemoteProcess(
-                sessionId,
-                sshConfig,
-                options
+              const remoteProcess = parableRuntime?.useSubscriptionLauncher
+                ? sshService.createRemoteParableProcess(
+                    sessionId,
+                    sshConfig,
+                    options,
+                    parableRuntime.launcherPath,
+                  )
+                : sshService.createRemoteProcess(
+                    sessionId,
+                    sshConfig,
+                    options,
+                  );
+              return parableRuntime?.useSubscriptionLauncher
+                ? this.filterParableLauncherPrelude(remoteProcess)
+                : remoteProcess;
+            }
+
+            if (parableRuntime?.useSubscriptionLauncher) {
+              return this.createLocalParableClaudeCodeProcess(
+                parableRuntime,
+                localNodeExecutable,
+                options,
               );
             }
 
@@ -7707,8 +8091,12 @@ Begin by creating the task structure now.
         },
       });
 
-      // Store the Query object so we can inject messages via streamInput
+      // Store the Query and its persistent input. Follow-ups must enqueue on
+      // this original stream; calling Query.streamInput() with another finite
+      // iterable eventually invokes transport.endInput() and terminates the
+      // same remote CLI we are trying to keep alive.
       this.activeQueryObjects.set(sessionId, messages);
+      this.persistentQueryInputs.set(sessionId, persistentPromptInput);
 
       let fullContent = '';
       const toolCalls: ToolCall[] = [];
@@ -7755,6 +8143,7 @@ Begin by creating the task structure now.
       };
 
       let queryComplete = false;
+      let awaitingBackgroundWorkSynthesis = false;
       let lastTerminalReason: string | undefined; // From SDK result message (v0.2.91+)
       let lastToolName: string | undefined; // Track last tool for analytics attribution
       // Context occupancy = input tokens of the LAST single API call. The result
@@ -8361,7 +8750,7 @@ Begin by creating the task structure now.
             if (resultMsg.is_error && resultMsg.result?.includes('No conversation found with session ID')) {
               console.error('[Claude SDK] Stale session ID — auto-healing:', resultMsg.result);
               this.clearSdkSessionId(sessionId);
-              yield { type: 'text_delta', content: '⚠️ Remote session expired — reconnecting automatically...\n\n' };
+              yield { type: 'thinking_delta', content: 'Remote session expired — reconnecting automatically...\n' };
               // Pass selectedModel to skip re-routing on retry (same fix as stale-zero-token path)
               yield* this.streamMessage(sessionId, userMessage, attachments, permissionMode, thinkingMode, selectedModel, gstackMode, supplementalMessages, fastMode, cascadeMode, effectiveTurnLockOwner);
               return;
@@ -8411,8 +8800,9 @@ Begin by creating the task structure now.
               const currentModel = successResult.model || selectedModel || 'claude-opus-4-6';
               const contextWindowSize = this.getContextWindowSize(currentModel);
 
+              const attemptedResumeSessionId = effectiveForkFromSdkSessionId || effectiveSdkSessionId;
               if (
-                effectiveSdkSessionId
+                attemptedResumeSessionId
                 && inputTokens === 0
                 && outputTokens === 0
                 && !fullContent.trim()
@@ -8423,7 +8813,7 @@ Begin by creating the task structure now.
                 // surfaces as an empty zero-token result. That is NOT a stale
                 // session — clearing it would orphan a healthy conversation.
                 if (abortController.signal.aborted) {
-                  console.warn(`[Claude SDK] Resume ${effectiveSdkSessionId} returned empty result but turn was aborted/superseded — keeping SDK session`);
+                  console.warn(`[Claude SDK] Resume ${attemptedResumeSessionId} returned empty result but turn was aborted/superseded — keeping SDK session`);
                   return;
                 }
                 // First strike: retry the resume as-is. Transient failures
@@ -8432,8 +8822,8 @@ Begin by creating the task structure now.
                 const lastEmptyRetryAt = this.resumeEmptyRetryAt.get(sessionId) || 0;
                 if (Date.now() - lastEmptyRetryAt > 120000) {
                   this.resumeEmptyRetryAt.set(sessionId, Date.now());
-                  console.warn(`[Claude SDK] Resume ${effectiveSdkSessionId} completed with empty zero-token result — retrying resume once before declaring stale`);
-                  yield { type: 'text_delta', content: '⚠️ Remote session hiccup — retrying...\n\n' };
+                  console.warn(`[Claude SDK] Resume ${attemptedResumeSessionId} completed with empty zero-token result — retrying resume once before declaring stale`);
+                  yield { type: 'thinking_delta', content: 'Remote session hiccup — retrying...\n' };
                   yield* this.streamMessage(sessionId, userMessage, attachments, permissionMode, thinkingMode, selectedModel, gstackMode, supplementalMessages, fastMode, cascadeMode, effectiveTurnLockOwner);
                   return;
                 }
@@ -8441,9 +8831,9 @@ Begin by creating the task structure now.
                 // restart fresh — the baseline mechanism re-injects the full
                 // Build transcript so no context is lost.
                 this.resumeEmptyRetryAt.delete(sessionId);
-                console.warn(`[Claude SDK] Resume ${effectiveSdkSessionId} empty twice — clearing stale SDK session and retrying fresh`);
+                console.warn(`[Claude SDK] Resume ${attemptedResumeSessionId} empty twice — clearing stale SDK session and retrying fresh`);
                 this.clearSdkSessionId(sessionId);
-                yield { type: 'text_delta', content: '⚠️ Remote session handle was stale — reconnecting automatically...\n\n' };
+                yield { type: 'thinking_delta', content: 'Remote session handle was stale — reconnecting automatically...\n' };
                 // Pass selectedModel (the auto-router's resolved model) instead of
                 // 'auto' to skip re-routing on retry. The auto-router already chose
                 // Claude; re-running it wastes time and, critically, means the retry
@@ -8557,9 +8947,30 @@ Begin by creating the task structure now.
               lastTerminalReason = resultWithReason.terminal_reason;
             }
 
-            // Mark query as complete so we exit the loop
-            // (For SSH sessions, the process stays alive for next query, so iterator won't close naturally)
-            queryComplete = true;
+            const activeBackgroundTaskCount = this.activeParentBlockingTasks.get(sessionId)?.size || 0;
+            if (activeBackgroundTaskCount > 0) {
+              // Claude can emit a top-level result while Agent/Task children or
+              // background Bash commands are still running. Treat that as an
+              // interim checkpoint, not the user-facing end of the turn. The
+              // same native query remains open and receives a continuation when
+              // the last task ends.
+              awaitingBackgroundWorkSynthesis = true;
+              console.warn(
+                `[Claude SDK] Deferring terminal result for ${sessionId.substring(0, 8)}; `
+                + `${activeBackgroundTaskCount} background task(s) still running`,
+              );
+              yield {
+                type: 'thinking_delta',
+                content: `Waiting for ${activeBackgroundTaskCount} background task${activeBackgroundTaskCount === 1 ? '' : 's'} to finish before completing the turn.\n`,
+              };
+            } else {
+              // Final synthesis is the only point where the persistent SDK
+              // input may end. Closing it asks Query.streamInput() to call
+              // transport.endInput(); doing this at an interim result would
+              // make Claude Code kill its still-running Bash/Agent children.
+              queryComplete = true;
+              this.persistentQueryInputs.get(sessionId)?.close();
+            }
             break;
           }
 
@@ -8572,6 +8983,24 @@ Begin by creating the task structure now.
               console.log('[Claude SDK] Unhandled message type:', msg.type, 'subtype:', (msg as any).subtype, JSON.stringify(msg).slice(0, 200));
             }
             break;
+        }
+
+        if (
+          awaitingBackgroundWorkSynthesis
+          && (this.activeParentBlockingTasks.get(sessionId)?.size || 0) === 0
+        ) {
+          awaitingBackgroundWorkSynthesis = false;
+          console.log(
+            `[Claude SDK] Background work finished for ${sessionId.substring(0, 8)}; `
+            + 'continuing the parent turn for synthesis',
+          );
+          const continued = await this.injectMessage(
+            sessionId,
+            'All delegated agents and background commands have finished. Inspect their final results now, continue the original workflow, complete every requested action, verify the outcome, and only then give the user the final result. Do not return another status-only handoff.',
+          );
+          if (!continued) {
+            throw new Error('Background work finished, but Build could not resume the parent turn for synthesis.');
+          }
         }
 
         // If query is complete (result message received), exit the main loop
@@ -8632,6 +9061,7 @@ Begin by creating the task structure now.
       }
 
       this.recordAutoBuildLeadSuccess(sessionId, autoOrchestrationPlan);
+      this.activeParentBlockingTasks.delete(sessionId);
       this.rememberLastAssistantHarness(sessionId, this.getHarnessFromModel(selectedModel), selectedModel);
 
       const projectPathForStages = session.worktreePath || session.repoPath || session.sshConfig?.remoteWorkdir || process.cwd();
@@ -8760,7 +9190,7 @@ Begin by creating the task structure now.
       } else if (errorMessage.includes('No conversation found with session ID')) {
         console.error('[Claude SDK] Stale session ID (exception) — auto-healing:', errorMessage);
         this.clearSdkSessionId(sessionId);
-        yield { type: 'text_delta', content: '⚠️ Remote session expired — reconnecting automatically...\n\n' };
+        yield { type: 'thinking_delta', content: 'Remote session expired — reconnecting automatically...\n' };
         // Pass selectedModel to skip re-routing on retry (same fix as stale-zero-token path)
         yield* this.streamMessage(sessionId, userMessage, attachments, permissionMode, thinkingMode, selectedModel, gstackMode, supplementalMessages, fastMode, cascadeMode, effectiveTurnLockOwner);
         return;
@@ -8800,6 +9230,9 @@ Begin by creating the task structure now.
         const sess = this.sessionStore.get(`sessions.${sessionId}`) as Session | undefined;
         if (sess?.sshConfig) sshService.markSessionInactive(sessionId);
         powerService.sessionEnded();
+      }
+      if (abortController.signal.aborted) {
+        this.activeParentBlockingTasks.delete(sessionId);
       }
       releaseTurnLock?.();
     }
@@ -8868,7 +9301,11 @@ Begin by creating the task structure now.
       }
 
       if (!attached) {
-        yield { type: 'error', error: 'No recoverable remote Claude turn was found for this SSH session.' };
+        // Recoverability is probed before this method acquires the turn lock.
+        // A completed bridge can be reaped in that gap. That is an ordinary
+        // no-op; surfacing it as a chat error makes a healthy queued send look
+        // like it failed even though queue drain starts the new turn next.
+        console.log(`[Claude Service] Reattach found no remaining remote turn for ${sessionId.substring(0, 8)}; returning silently`);
         return;
       }
 
@@ -8896,8 +9333,33 @@ Begin by creating the task structure now.
         return;
       }
 
+      if (bridgeCommand === 'cursor' || bridgeCommand === 'gemini' || bridgeCommand === 'opencode') {
+        const recoveredEvents: AsyncIterable<StreamEvent> = bridgeCommand === 'cursor'
+          ? getCursorCliService().replayDetachedAsChat(sessionId, attached.process, session.model) as AsyncIterable<StreamEvent>
+          : bridgeCommand === 'gemini'
+            ? getGeminiService().replayDetachedAsChat(sessionId, attached.process, session.model) as AsyncIterable<StreamEvent>
+            : getOpenCodeService().replayDetachedAsChat(sessionId, attached.process, session.model) as AsyncIterable<StreamEvent>;
+
+        for await (const chatEvent of recoveredEvents) {
+          if (chatEvent.type === 'message_complete') recoveredCompletely = true;
+          yield chatEvent;
+        }
+        if (attachedJobDir && recoveredCompletely) {
+          await sshService.signalDetachedBridgeJobStdinEof(sessionId, session.sshConfig, attachedJobDir);
+          await sshService.markDetachedBridgeJobRecovered(sessionId, session.sshConfig, attachedJobDir);
+        } else if (!recoveredCompletely) {
+          const label = bridgeCommand === 'cursor' ? 'Cursor' : bridgeCommand === 'gemini' ? 'Gemini' : 'OpenCode';
+          yield { type: 'error', error: `Recovered remote ${label} turn ended without a result.` };
+        }
+        return;
+      }
+
       const recoveredInput = attached.process.stdin;
       this.recoveredQueryInputs.set(sessionId, recoveredInput);
+      // Rebuild this from the detached bridge log. Keeping a stale in-memory
+      // snapshot from a previous reader can make a completed task look active
+      // forever, while starting empty and replaying task events is deterministic.
+      this.activeParentBlockingTasks.delete(sessionId);
 
       const writeRecoveredControlResponse = async (payload: Record<string, unknown>): Promise<void> => {
         await new Promise<void>((resolve, reject) => {
@@ -8962,6 +9424,7 @@ Begin by creating the task structure now.
       let textBufferAgentId: string | undefined;
       let thinkingBuffer = '';
       let queryComplete = false;
+      let awaitingBackgroundWorkSynthesis = false;
       let lastTerminalReason: string | undefined;
       // Last single API call's input tokens — true context occupancy. The
       // result message's usage is cumulative across the turn and unusable
@@ -9065,6 +9528,14 @@ Begin by creating the task structure now.
 
             if (systemMsg.model) {
               selectedModel = systemMsg.model;
+            }
+
+            // Rebuild the authoritative background-task set while replaying
+            // the detached log. This must happen before interpreting a result:
+            // Claude can produce an interim result while local agents/Bash
+            // jobs continue for hours on the SSH host.
+            if (this.forwardTaskSystemMessage(sessionId, systemMsg)) {
+              break;
             }
 
             if (systemMsg.subtype === 'status') {
@@ -9315,18 +9786,31 @@ Begin by creating the task structure now.
               lastTerminalReason = resultMsg.terminal_reason;
             }
 
-            queryComplete = true;
-            recoveredCompletely = true;
-            // An approved Auto plan continues in the same visible stream with
-            // the configured execution harness below. Do not publish a false
-            // terminal response for the interrupted planner.
-            if (!this.pendingAutoPlanExecutionHandoffs.has(sessionId)) {
+            const activeBackgroundTaskCount = this.activeParentBlockingTasks.get(sessionId)?.size || 0;
+            if (attached.job.active && activeBackgroundTaskCount > 0) {
+              awaitingBackgroundWorkSynthesis = true;
+              console.warn(
+                `[Claude SDK] Recovered interim result for ${sessionId.substring(0, 8)}; `
+                + `${activeBackgroundTaskCount} background task(s) still running`,
+              );
               events.push({
-                type: 'message_complete',
-                message: buildFinalMessage(false),
-                resolvedModel: selectedModel,
-                ...(lastTerminalReason ? { terminalReason: lastTerminalReason } : {}),
+                type: 'thinking_delta',
+                content: `Reattached to the remote turn. Waiting for ${activeBackgroundTaskCount} background task${activeBackgroundTaskCount === 1 ? '' : 's'} to finish before completing it.\n`,
               });
+            } else {
+              queryComplete = true;
+              recoveredCompletely = true;
+              // An approved Auto plan continues in the same visible stream with
+              // the configured execution harness below. Do not publish a false
+              // terminal response for the interrupted planner.
+              if (!this.pendingAutoPlanExecutionHandoffs.has(sessionId)) {
+                events.push({
+                  type: 'message_complete',
+                  message: buildFinalMessage(false),
+                  resolvedModel: selectedModel,
+                  ...(lastTerminalReason ? { terminalReason: lastTerminalReason } : {}),
+                });
+              }
             }
             break;
           }
@@ -9336,6 +9820,36 @@ Begin by creating the task structure now.
         }
 
         return events;
+      };
+
+      const maybeContinueRecoveredBackgroundWork = async (): Promise<void> => {
+        if (
+          !awaitingBackgroundWorkSynthesis
+          || queryComplete
+          || !attached.job.active
+          || (this.activeParentBlockingTasks.get(sessionId)?.size || 0) > 0
+        ) {
+          return;
+        }
+
+        // The original stream-json stdin is still open on the detached SSH
+        // bridge. Continue that exact Claude Code process so it can consume the
+        // completed task outputs and produce the real final answer. Starting a
+        // new SDK query here would lose the live task handles and transcript.
+        awaitingBackgroundWorkSynthesis = false;
+        await writeRecoveredControlResponse({
+          type: 'user',
+          message: {
+            role: 'user',
+            content: 'All delegated agents and background commands have finished. Inspect their final results now, continue the original workflow, complete every requested action, verify the outcome, and only then give the user the final result. Do not return another status-only handoff.',
+          },
+          parent_tool_use_id: null,
+          session_id: '',
+        });
+        console.log(
+          `[Claude SDK] Background work finished for recovered turn ${sessionId.substring(0, 8)}; `
+          + 'queued final synthesis on the original SSH stdin',
+        );
       };
 
       let pending = '';
@@ -9365,9 +9879,11 @@ Begin by creating the task structure now.
             }
           }
 
-          // The result message is the turn's terminal event. Stop replaying —
-          // a process whose stdin was orphaned by an app close never exits on
-          // its own, and tailing it would pin this stream open forever.
+          await maybeContinueRecoveredBackgroundWork();
+
+          // Only a result observed with no live background work is terminal.
+          // An interim result keeps tailing the detached bridge until its tasks
+          // finish and the continuation above produces a final synthesis.
           if (queryComplete) break;
         }
         if (queryComplete) break;
@@ -9386,6 +9902,7 @@ Begin by creating the task structure now.
             for (const event of handleRecoveredMessage(msg)) {
               yield event;
             }
+            await maybeContinueRecoveredBackgroundWork();
           } catch {
             // Ignore trailing partial/non-JSON bridge output.
           }
@@ -9446,7 +9963,7 @@ Begin by creating the task structure now.
   private backgroundListeners = new Map<string, AbortController>();
 
   private forwardTaskSystemMessage(sessionId: string, msg: SDKMessage | (SDKMessage & { subtype?: string })): boolean {
-    const taskSubtypes = new Set(['notification', 'task_updated', 'task_notification', 'task_progress', 'task_started']);
+    const taskSubtypes = new Set(['notification', 'task_updated', 'task_notification', 'task_progress', 'task_started', 'background_tasks_changed']);
     const raw = msg as SDKMessage & {
       subtype?: string;
       key?: string;
@@ -9470,9 +9987,61 @@ Begin by creating the task structure now.
         error?: string;
         is_backgrounded?: boolean;
       };
+      tasks?: Array<{
+        task_id?: string;
+        task_type?: string;
+        description?: string;
+        subagent_type?: string;
+      }>;
     };
     const subtype = raw.subtype || (taskSubtypes.has(String((msg as SDKMessage).type)) ? String((msg as SDKMessage).type) : undefined);
     if (!subtype || !taskSubtypes.has(subtype)) return false;
+
+    if (subtype === 'background_tasks_changed') {
+      // Claude Code emits this as the authoritative snapshot of tasks that
+      // will be killed if the streaming-input process is allowed to exit.
+      // It also repairs any task_started notification missed during an SSH
+      // reconnect or app restart.
+      const blocking = new Set(
+        (raw.tasks || [])
+          .filter((task) => task.task_type === 'local_agent'
+            || task.task_type === 'local_bash'
+            || Boolean(task.subagent_type))
+          .map((task) => task.task_id)
+          .filter((taskId): taskId is string => Boolean(taskId)),
+      );
+      if (blocking.size > 0) {
+        this.activeParentBlockingTasks.set(sessionId, blocking);
+      } else {
+        this.activeParentBlockingTasks.delete(sessionId);
+      }
+      console.log(`[Claude SDK] Background task snapshot: ${blocking.size} blocking task(s)`);
+      return true;
+    }
+
+    if (raw.task_id) {
+      const blocksParentCompletion = raw.task_type === 'local_agent'
+        || raw.task_type === 'local_bash'
+        || Boolean(raw.subagent_type);
+      if (subtype === 'task_started' && blocksParentCompletion) {
+        const active = this.activeParentBlockingTasks.get(sessionId) || new Set<string>();
+        active.add(raw.task_id);
+        this.activeParentBlockingTasks.set(sessionId, active);
+      }
+
+      const terminalStatus = subtype === 'task_notification'
+        ? raw.status
+        : subtype === 'task_updated'
+          ? raw.patch?.status
+          : undefined;
+      if (terminalStatus && ['completed', 'failed', 'killed', 'cancelled', 'stopped'].includes(terminalStatus)) {
+        const active = this.activeParentBlockingTasks.get(sessionId);
+        active?.delete(raw.task_id);
+        if (active?.size === 0) {
+          this.activeParentBlockingTasks.delete(sessionId);
+        }
+      }
+    }
 
     if (subtype === 'notification') {
       console.log('[Claude SDK] Notification:', raw.key, raw.text?.slice(0, 100));
@@ -9572,7 +10141,7 @@ Begin by creating the task structure now.
     const controller = new AbortController();
     this.backgroundListeners.set(sessionId, controller);
 
-    const taskSubtypes = new Set(['notification', 'task_updated', 'task_notification', 'task_progress', 'task_started']);
+    const taskSubtypes = new Set(['notification', 'task_updated', 'task_notification', 'task_progress', 'task_started', 'background_tasks_changed']);
 
     (async () => {
       try {
@@ -9624,6 +10193,7 @@ Begin by creating the task structure now.
     this.clearActiveQuery(sessionId);
     this.backgroundListeners.get(sessionId)?.abort();
     this.backgroundListeners.delete(sessionId);
+    this.activeParentBlockingTasks.delete(sessionId);
 
     // Kill remote processes if this is an SSH session
     const session = (this.sessionStore.get(`sessions.${sessionId}`) as Session | undefined);
@@ -9660,7 +10230,13 @@ Begin by creating the task structure now.
         this.pendingQuestions.delete(reqId);
       }
     }
-    // pendingPlanApprovals self-clean through the existing timeout.
+    for (const [reqId, pending] of this.pendingPlanApprovals.entries()) {
+      if (pending.sessionId === sessionId) {
+        pending.reject(new Error('Session deleted'));
+        this.pendingPlanApprovals.delete(reqId);
+        this.planApprovalRecords.delete(reqId);
+      }
+    }
   }
 
   /** Clear harness-native continuation handles before an in-place Fast Stack
@@ -9687,6 +10263,7 @@ Begin by creating the task structure now.
     // Stop background task listener
     backgroundListener?.abort();
     this.backgroundListeners.delete(sessionId);
+    this.activeParentBlockingTasks.delete(sessionId);
     // Also kill any active external harness process for this session.
     codexService.cancel(sessionId);
     openclawService.cancel(sessionId);
@@ -9708,6 +10285,13 @@ Begin by creating the task structure now.
       if (pending.sessionId === sessionId) {
         pending.reject(new Error('Query cancelled'));
         this.pendingQuestions.delete(reqId);
+      }
+    }
+    for (const [reqId, pending] of this.pendingPlanApprovals.entries()) {
+      if (pending.sessionId === sessionId) {
+        pending.reject(new Error('Query cancelled'));
+        this.pendingPlanApprovals.delete(reqId);
+        this.planApprovalRecords.delete(reqId);
       }
     }
 
@@ -9735,8 +10319,9 @@ Begin by creating the task structure now.
   }
 
   /**
-   * Inject a message into the active harness turn. Claude uses
-   * Query.streamInput; persistent Codex chat turns use app-server turn/steer.
+   * Inject a message into the active harness turn. Claude enqueues on the
+   * original persistent SDK input (or recovered SSH stdin); persistent Codex
+   * chat turns use app-server turn/steer.
    */
   async injectMessage(sessionId: string, message: string, attachments?: Attachment[]): Promise<boolean> {
     if (codexService.canSteer(sessionId)) {
@@ -9744,8 +10329,9 @@ Begin by creating the task structure now.
     }
 
     const queryObj = this.activeQueryObjects.get(sessionId);
+    const persistentInput = this.persistentQueryInputs.get(sessionId);
     const recoveredInput = this.recoveredQueryInputs.get(sessionId);
-    if (!queryObj && !recoveredInput) {
+    if (!queryObj && !persistentInput && !recoveredInput) {
       console.log('[Claude Service] injectMessage: No active query for session', sessionId);
       return false;
     }
@@ -9790,7 +10376,11 @@ Begin by creating the task structure now.
     }
 
     console.log(
-      `[Claude Service] injectMessage: Injecting queued message via ${recoveredInput ? 'recovered SSH stdin' : 'Query.streamInput'} for session`,
+      `[Claude Service] injectMessage: Injecting queued message via ${recoveredInput
+        ? 'recovered SSH stdin'
+        : persistentInput
+          ? 'persistent SDK input'
+          : 'legacy Query.streamInput'} for session`,
       sessionId,
     );
 
@@ -9833,6 +10423,42 @@ Begin by creating the task structure now.
         });
         console.log('[Claude Service] injectMessage: Message injected successfully via recovered SSH stdin');
         return true;
+      }
+
+      if (persistentInput) {
+        const imageAttachments = attachments?.filter(a => a.type === 'image') || [];
+        let content: string | Array<
+          { type: 'text'; text: string }
+          | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } }
+        > = safeMessage;
+
+        if (imageAttachments.length > 0) {
+          content = [{ type: 'text', text: safeMessage }];
+          for (const attachment of imageAttachments) {
+            const ext = attachment.name.split('.').pop()?.toLowerCase();
+            const mediaType = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg'
+              : ext === 'gif' ? 'image/gif'
+                : ext === 'webp' ? 'image/webp'
+                  : 'image/png';
+            const resizedData = await resizeImage(normalizeBase64ImageData(attachment.content), mediaType);
+            content.push({
+              type: 'image',
+              source: { type: 'base64', media_type: mediaType, data: resizedData },
+            });
+          }
+        }
+
+        const accepted = persistentInput.enqueue({
+          type: 'user',
+          message: { role: 'user', content: content as any },
+          parent_tool_use_id: null,
+          session_id: '',
+        } as SDKUserMessage);
+        console.log(
+          `[Claude Service] injectMessage: ${accepted ? 'Queued' : 'Rejected'} message on persistent SDK input for session`,
+          sessionId,
+        );
+        return accepted;
       }
 
       let markInputWritten!: () => void;
@@ -9902,6 +10528,8 @@ Begin by creating the task structure now.
         markInputWritten();
       };
 
+      // Legacy fallback for SDK queries created before persistent inputs were
+      // introduced. New turns must never reach this finite streamInput path.
       const streamInputPromise = queryObj!.streamInput(createMessageStream());
       const deliveryOutcome = await Promise.race([
         inputWrittenPromise.then(() => 'written' as const),

@@ -11,11 +11,11 @@ const license = read('resources/i-have-adhd/LICENSE');
 assert.match(skill, /^name:\s*i-have-adhd$/m);
 assert.match(skill, /responding to ANY user message/);
 for (const rule of [
-  'Lead with the next action',
+  'Lead with the outcome or required action',
   'Number multi-step tasks',
-  'End with one concrete next action',
+  'End with one concrete next action only when required',
   'Suppress tangents',
-  'Restate state every turn',
+  'Restate active state while work remains',
   'Give specific time estimates',
   'Make completed work visible',
   'Matter-of-fact tone for errors',
@@ -24,6 +24,11 @@ for (const rule of [
 ]) {
   assert.match(skill, new RegExp(rule.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
 }
+assert.match(skill, /Agency comes before presentation/);
+assert.match(skill, /do the work before giving the final response/);
+assert.match(skill, /Do not replace execution with a plan, an edit recipe, verification commands, an execution handoff, or a status-only report/);
+assert.match(skill, /Treat delegated-agent findings as internal evidence/);
+assert.match(skill, /Forbidden role-play preambles include "M here, reporting for duty\."/);
 assert.match(license, /MIT License/);
 assert.match(license, /Copyright \(c\) 2026 Ayoub Ghriss/);
 
@@ -33,9 +38,16 @@ assert.equal(playbook.skillContent, skill);
 assert.match(playbook.systemContext, /<build_default_output_contract/);
 assert.match(playbook.systemContext, /every user-facing agent/);
 assert.match(playbook.systemContext, /every delegated or sub-agent prompt/);
+assert.match(playbook.systemContext, /controls presentation, not agency or task scope/);
+assert.match(playbook.systemContext, /Never replace execution with a plan, edit recipe, verification commands, delegated-agent handoff, or status-only report/);
 assert.match(playbook.systemContext, /Explicit user formatting instructions and safety requirements override/);
 
+const autoRouterService = read('src/main/services/auto-router.service.ts');
+assert.match(autoRouterService, /Execution ownership: when the request is actionable and tools and authority are available, execute it now/);
+assert.match(autoRouterService, /Delegation does not transfer ownership to the user/);
+
 const claudeService = read('src/main/services/claude.service.ts');
+const sshService = read('src/main/services/ssh.service.ts');
 assert.match(claudeService, /append \+= `\\n\\n\$\{adhdOutputService\.getSystemContext\(\)\}`/);
 assert.match(
   claudeService,
@@ -57,6 +69,14 @@ assert.match(claudeService, /: \[secureEnvContext, ensureCascadeContext\(convers
 assert.match(claudeService, /effectiveCursorContext = ensureCascadeContext\(cursorContext\)/);
 assert.match(claudeService, /effectiveGeminiContext = ensureCascadeContext\(geminiContext\)/);
 assert.match(claudeService, /ensureCascadeContext\(openCodeContext\)/);
+assert.match(sshService, /LEGACY_BUNDLED_ADHD_SKILL_SHA256/);
+assert.match(sshService, /disableLegacyBundledOutputSkills/);
+assert.match(sshService, /build-legacy-disabled-944ddb6a/);
+assert.match(
+  sshService,
+  /runPreSessionSetup[\s\S]*?await this\.disableLegacyBundledOutputSkills/,
+  'legacy output-skill migration belongs in one-time SSH session setup, not every model turn',
+);
 
 const forgeConfig = read('forge.config.ts');
 assert.match(forgeConfig, /resources', 'i-have-adhd/);

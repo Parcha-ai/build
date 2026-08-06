@@ -3,14 +3,23 @@ import { Readable, Writable, PassThrough } from 'stream';
 import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import * as net from 'net';
+import * as os from 'os';
+import * as path from 'path';
 import { BrowserWindow } from 'electron';
-import type { SSHConfig } from '../../shared/types';
+import type { ParableSubscriptionStatus, ParableVendor, SSHConfig } from '../../shared/types';
 import { IPC_CHANNELS } from '../../shared/constants/channels';
 import { REMOTE_DETACHED_BRIDGE_SCRIPT } from './remote-bridge-script';
 import { filterRemoteClaudeEnvironment } from '../utils/remote-claude-env';
+import { filterParableClaudeArguments } from '../utils/parable-claude-args';
+import {
+  MCP_REMOTE_AUTH_DIR_NAME,
+  ensurePinnedMcpRemoteAuthDirectory,
+} from '../utils/mcp-remote-auth';
+import { normalizeRemoteWorkdir } from '../../shared/utils/remote-workdir';
 
 const ANSI_ESCAPE = String.fromCharCode(27);
 const ANSI_COLOR_CODE_RE = new RegExp(`${ANSI_ESCAPE}\\[[0-9;]*m`, 'g');
+const LEGACY_BUNDLED_ADHD_SKILL_SHA256 = '944ddb6a03cdbeff392d81f26f4486f3f20e23285c37bed2e50f1eb9c9b089ca';
 
 /**
  * Interface matching the Claude Agent SDK's SpawnedProcess
@@ -50,12 +59,51 @@ interface RemoteCommandProcessOptions {
   closeStdinOnEnd?: boolean;
   /** Persistent harness turns must never degrade to connection-owned SSH exec. */
   requireDetached?: boolean;
+  /** Stable harness identifier for recovery when `command` is a shell wrapper. */
+  recoveryCommand?: string;
+}
+
+/**
+ * Remove Claude SDK arguments that are only valid on the desktop host before
+ * launching the globally installed Claude CLI on an SSH host.
+ *
+ * `--mcp-config` is an option/value pair. Filtering only its JSON value (which
+ * commonly contains local node_modules paths) leaves a bare flag behind and
+ * makes the remote CLI consume the following option as its value, then exit.
+ * Remote MCP configuration is synchronized separately, so remove the pair
+ * atomically, including the `--mcp-config=...` spelling.
+ */
+export function filterRemoteClaudeArguments(args: string[]): string[] {
+  const filtered: string[] = [];
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+
+    if (arg === '--mcp-config') {
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith('--mcp-config=')) {
+      continue;
+    }
+
+    // The SDK may prepend its local CLI executable. The remote process uses
+    // the globally installed `claude` command instead.
+    if (arg.includes('claude-agent-sdk') || arg.includes('cli.js') || arg.includes('node_modules')) {
+      console.log('[SSH Service] Filtering out local CLI path from args:', arg);
+      continue;
+    }
+
+    filtered.push(arg);
+  }
+
+  return filtered;
 }
 
 // Bridge job commands that resumeRemoteTurn knows how to replay. Every harness
 // spawned through the detached bridge survives disconnects; recovery
 // additionally needs a stream parser for the command's stdout format.
-const RECOVERABLE_BRIDGE_COMMANDS = new Set(['claude', 'codex']);
+const RECOVERABLE_BRIDGE_COMMANDS = new Set(['claude', 'codex', 'cursor', 'gemini', 'opencode']);
 
 interface DetachedRemoteBridgeConfig {
   jobDir: string;
@@ -65,6 +113,7 @@ interface DetachedRemoteBridgeConfig {
   eofPath: string;
   pidPath: string;
   command: string;
+  recoveryCommand?: string;
   args: string[];
   cwd: string;
   env: Record<string, string>;
@@ -208,15 +257,31 @@ export class SSHService {
   }>();
   private remoteCodexSandboxDetections = new Map<string, Promise<{ supported: boolean; reason?: string }>>();
   private readonly REMOTE_CODEX_SANDBOX_TTL = 10 * 60 * 1000; // 10 minutes
+  private migratedLegacyOutputSkills = new Set<string>();
   private remoteGitHubCliAuthCache = new Map<string, { available: boolean; fetchedAt: number }>();
   private readonly REMOTE_GITHUB_AUTH_TTL = 10 * 60 * 1000;
   private remoteBridgeReady = new Map<string, Promise<RemoteBridgeInstall>>();
   private activeTunnels: Set<string> = new Set();
+  // A normal foreground result can leave the stream-json bridge alive for a
+  // short stdin/iterator unwind window. During that window the renderer must
+  // not mistake the already-delivered job for a detached turn that needs
+  // replay. The guard is installed synchronously before remote cleanup starts.
+  private completedTurnCleanupGuards = new Map<string, number>();
+  private readonly COMPLETED_TURN_CLEANUP_GUARD_MS = 30_000;
+
+  private hasCompletedTurnCleanupGuard(sessionId: string): boolean {
+    const expiresAt = this.completedTurnCleanupGuards.get(sessionId) || 0;
+    if (expiresAt <= Date.now()) {
+      this.completedTurnCleanupGuards.delete(sessionId);
+      return false;
+    }
+    return true;
+  }
 
   // MCP sync caches — avoid re-uploading when nothing has changed
-  private mcpAuthSyncCache = new Map<string, { lastSyncedAt: number; localMtime: number }>();
+  private mcpAuthSyncCache = new Map<string, { lastSyncedAt: number; localFingerprint: string }>();
   private readonly MCP_AUTH_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
-  private harnessMcpSyncCache = new Map<string, number>(); // host -> lastSyncedAt
+  private harnessMcpSyncCache = new Map<string, { lastSyncedAt: number; fingerprint: string }>();
   private readonly HARNESS_MCP_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
   private mcpConfigSyncInFlight = new Map<string, Promise<{ success: boolean; error?: string }>>();
   private remoteExtensionScanCache = new Map<string, {
@@ -243,6 +308,7 @@ export class SSHService {
   }
 
   private getRemoteWorkdirCdCommand(remoteWorkdir: string): string {
+    remoteWorkdir = normalizeRemoteWorkdir(remoteWorkdir) || '.';
     const quotedWorkdir = this.quoteForShell(remoteWorkdir);
     const displayWorkdir = this.quoteForShell(remoteWorkdir || '~');
     return [
@@ -282,6 +348,7 @@ export class SSHService {
   }
 
   private async assertRemoteWorkdirExists(sessionId: string, config: SSHConfig, remoteWorkdir?: string): Promise<void> {
+    remoteWorkdir = normalizeRemoteWorkdir(remoteWorkdir);
     if (!remoteWorkdir || remoteWorkdir === '.') return;
 
     const client = await this.getConnection(sessionId, config);
@@ -443,6 +510,16 @@ export class SSHService {
     }
   }
 
+  async downloadRemoteFile(
+    sessionId: string,
+    config: SSHConfig,
+    remotePath: string,
+    localPath: string,
+  ): Promise<void> {
+    const client = await this.getConnection(sessionId, config);
+    await this.downloadFile(client, this.stripPathLineSuffix(remotePath), localPath);
+  }
+
   /**
    * Write content to a remote file via SSH
    * Creates parent directories if they don't exist
@@ -499,6 +576,121 @@ export class SSHService {
     } catch (error) {
       throw new Error(`Failed to sync managed directory ${localDir}: ${(error as Error).message}`);
     }
+  }
+
+  async getRemoteParableSubscriptionStatus(
+    sessionId: string,
+    config: SSHConfig,
+  ): Promise<ParableSubscriptionStatus> {
+    const client = await this.getConnection(sessionId, config);
+    const remoteHome = (await this.execCommand(client, 'printf %s "$HOME"')).trim();
+    const configDir = `${remoteHome}/.config/parable`;
+    const configPath = `${configDir}/parable.toml`;
+    const manifestPath = `${configDir}/setup.json`;
+    const launcherPath = `${remoteHome}/.local/bin/parable`;
+    const emptyProviders = {
+      claude: { present: false, recordCount: 0 },
+      chatgpt: { present: false, recordCount: 0 },
+      xai: { present: false, recordCount: 0 },
+    };
+    const base: ParableSubscriptionStatus = {
+      configured: false,
+      ready: false,
+      runtimeInstalled: false,
+      configDir,
+      configPath,
+      launcherPath,
+      vendors: [],
+      providers: emptyProviders,
+    };
+    try {
+      const state = await this.execCommand(
+        client,
+        `test -x ${this.quoteForShell(launcherPath)} && test -f ${this.quoteForShell(manifestPath)} && test -f ${this.quoteForShell(configPath)} && echo ready || echo missing`,
+      );
+      if (state.trim().split('\n').pop() !== 'ready') return base;
+      const manifest = JSON.parse(await this.execCommand(
+        client,
+        `cat ${this.quoteForShell(manifestPath)}`,
+      )) as { vendors?: unknown };
+      const supported: ParableVendor[] = ['claude', 'chatgpt', 'xai'];
+      const vendors = Array.isArray(manifest.vendors)
+        ? manifest.vendors.filter((vendor): vendor is ParableVendor => (
+            typeof vendor === 'string' && supported.includes(vendor as ParableVendor)
+          ))
+        : [];
+      const auth = JSON.parse(await this.execCommand(
+        client,
+        `${this.quoteForShell(launcherPath)} auth status --json`,
+      )) as {
+        directoryModeValid?: boolean;
+        scanned?: boolean;
+        providers?: Partial<Record<ParableVendor, { present: boolean; recordCount: number }>>;
+        records?: { allModesValid?: boolean };
+      };
+      const providers = {
+        claude: { ...emptyProviders.claude, ...auth.providers?.claude },
+        chatgpt: { ...emptyProviders.chatgpt, ...auth.providers?.chatgpt },
+        xai: { ...emptyProviders.xai, ...auth.providers?.xai },
+      };
+      const configured = vendors.includes('claude');
+      const ready = Boolean(
+        configured
+        && auth.directoryModeValid
+        && auth.scanned
+        && auth.records?.allModesValid
+        && vendors.every((vendor) => providers[vendor].present),
+      );
+      return {
+        ...base,
+        configured,
+        ready,
+        runtimeInstalled: true,
+        vendors,
+        providers,
+      };
+    } catch (error) {
+      return {
+        ...base,
+        error: `Remote Parable status failed: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+  }
+
+  async syncLocalParableAuthToRemote(sessionId: string, config: SSHConfig): Promise<{ copied: number; host: string }> {
+    const localAuthDir = path.join(os.homedir(), '.cli-proxy-api');
+    const entries = fs.readdirSync(localAuthDir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith('.json'));
+    if (!entries.length) throw new Error('No local Parable credential records were found.');
+
+    const client = await this.getConnection(sessionId, config);
+    const remoteHome = (await this.execCommand(client, 'printf %s "$HOME"')).trim();
+    const remoteStatus = await this.getRemoteParableSubscriptionStatus(sessionId, config);
+    if (!remoteStatus.configured || !remoteStatus.runtimeInstalled) {
+      throw new Error('Set up Parable on the SSH host before copying credentials.');
+    }
+    const remoteAuthDir = `${remoteHome}/.cli-proxy-api`;
+    await this.execCommand(client, `mkdir -p ${this.quoteForShell(remoteAuthDir)} && chmod 700 ${this.quoteForShell(remoteAuthDir)}`);
+    let copied = 0;
+    for (const entry of entries) {
+      const localPath = path.join(localAuthDir, entry.name);
+      const stat = fs.lstatSync(localPath);
+      if (!stat.isFile() || stat.isSymbolicLink()) continue;
+      const remotePath = `${remoteAuthDir}/${entry.name}`;
+      const exists = (await this.execCommand(client, `test -e ${this.quoteForShell(remotePath)} && echo yes || echo no`)).trim().endsWith('yes');
+      if (exists) {
+        throw new Error(`Remote credential ${entry.name} already exists; refusing to overwrite it.`);
+      }
+      const temporary = `${remotePath}.claudette-${process.pid}.tmp`;
+      await this.uploadFile(client, localPath, temporary);
+      await this.execCommand(client, `chmod 600 ${this.quoteForShell(temporary)} && mv ${this.quoteForShell(temporary)} ${this.quoteForShell(remotePath)}`);
+      copied += 1;
+    }
+    const verified = await this.getRemoteParableSubscriptionStatus(sessionId, config);
+    if (!verified.providers.claude.present) {
+      throw new Error('Credentials were copied, but remote Parable did not recognize a Claude authorization record.');
+    }
+    return { copied, host: config.host };
   }
 
   /**
@@ -732,7 +924,7 @@ export class SSHService {
 
   /**
    * Best-effort cleanup for stale Build bridge jobs across active SSH connections.
-   * Kills orphaned bridge/tail/claude processes older than 6 hours.
+   * Removes recovered bridge jobs and abandoned inactive jobs older than 6 hours.
    */
   async killAllRemoteProcesses(): Promise<void> {
     for (const [sessionId, conn] of this.connections.entries()) {
@@ -744,7 +936,7 @@ export class SSHService {
         // exactly what the startup reattach probe needs to recover; deleting it
         // here loses the turn's output. A job is safe to clean only if:
         //   - It completed AND was marked recovered (output already replayed), OR
-        //   - Its directory is older than 6 hours (abandoned)
+        //   - Its process is inactive AND its directory is older than 6 hours
         await this.execCommand(conn.client,
           `if test -d ${this.quoteForShell(bridgeDir)}; then ` +
           `for jobdir in ${this.quoteForShell(bridgeDir)}/*/; do ` +
@@ -760,8 +952,9 @@ export class SSHService {
           'test -f "$jobdir/recovered.json" && recovered=1; ' +
           // Check if directory is older than 6 hours (abandoned)
           'find "$jobdir" -maxdepth 0 -mmin +360 2>/dev/null | grep -q . && stale=1; ' +
-          // Only kill + clean if (completed AND recovered) or stale
-          'if { [ "$completed" = "1" ] && [ "$recovered" = "1" ]; } || [ "$stale" = "1" ]; then ' +
+          // A long-running live agent is not stale. Age is only a cleanup signal
+          // after its process is gone.
+          'if { [ "$completed" = "1" ] && [ "$recovered" = "1" ]; } || { [ "$active" = "0" ] && [ "$stale" = "1" ]; }; then ' +
           'test -n "$pid" && kill "$pid" 2>/dev/null || true; ' +
           'test -n "$pid" && pkill -P "$pid" 2>/dev/null || true; ' +
           'rm -rf "$jobdir"; ' +
@@ -836,12 +1029,20 @@ export class SSHService {
   async cleanupDetachedBridgeProcessesForNewTurn(
     sessionId: string,
     config: SSHConfig,
-    options: { killActive?: boolean } = {}
+    options: { killActive?: boolean; completedTurn?: boolean } = {}
   ): Promise<void> {
+    if (options.completedTurn) {
+      this.completedTurnCleanupGuards.set(
+        sessionId,
+        Date.now() + this.COMPLETED_TURN_CLEANUP_GUARD_MS,
+      );
+    }
+    let cleanupSucceeded = false;
     try {
       const client = await this.getConnection(sessionId, config);
       const bridgeDir = this.getDetachedBridgeSessionDir(sessionId);
       const killActive = options.killActive ? '1' : '0';
+      const completedTurn = options.completedTurn ? '1' : '0';
       const recoveredPayload = JSON.stringify({
         recoveredAt: new Date().toISOString(),
         reason: options.killActive ? 'new_foreground_turn' : 'completed_process_reaped',
@@ -850,6 +1051,7 @@ export class SSHService {
       await this.execCommand(client,
         `bridge_dir=${this.quoteForShell(bridgeDir)}; ` +
         `kill_active=${this.quoteForShell(killActive)}; ` +
+        `completed_turn=${this.quoteForShell(completedTurn)}; ` +
         `recovered_payload=${this.quoteForShell(recoveredPayload)}; ` +
         'if test -d "$bridge_dir"; then ' +
         'for jobdir in "$bridge_dir"/*; do ' +
@@ -859,6 +1061,10 @@ export class SSHService {
         'completed=0; ' +
         'if test -f "$jobdir/exit.json"; then completed=1; ' +
         'elif test "$active" = "0" && test -f "$jobdir/stdout.log" && grep -q \'"type":"result"\' "$jobdir/stdout.log" 2>/dev/null; then completed=1; fi; ' +
+        // A completedTurn caller has already received a terminal SDK result
+        // and verified that no blocking Bash/Agent work remains. Only that
+        // explicit boundary may retire an active bridge containing a result.
+        'if test "$completed_turn" = "1" && test -f "$jobdir/stdout.log" && grep -q \'"type":"result"\' "$jobdir/stdout.log" 2>/dev/null; then completed=1; fi; ' +
         'should_kill=0; ' +
         'if test "$active" = "1" && test "$completed" = "1"; then should_kill=1; fi; ' +
         'if test "$active" = "1" && test "$kill_active" = "1"; then should_kill=1; fi; ' +
@@ -887,9 +1093,17 @@ export class SSHService {
         'fi; ' +
         'fi; true'
       );
+      cleanupSucceeded = true;
       console.log(`[SSH Service] Reaped detached bridge processes for ${sessionId} (killActive=${options.killActive ? 'yes' : 'no'})`);
     } catch (error) {
       console.warn(`[SSH Service] Failed to reap detached bridge processes for ${sessionId}:`, error);
+    } finally {
+      // On success the remote job is recovered/killed and no guard is needed.
+      // On failure retain the short TTL so a transient cleanup error cannot
+      // immediately replay the just-rendered answer as a new turn.
+      if (options.completedTurn && cleanupSucceeded) {
+        this.completedTurnCleanupGuards.delete(sessionId);
+      }
     }
   }
 
@@ -897,19 +1111,21 @@ export class SSHService {
     try {
       const client = await this.getConnection(sessionId, config);
       const legacyTmuxName = `grep-${sessionId.substring(0, 8)}`;
-      const jobs = await this.listDetachedBridgeJobs(sessionId, config);
-      if (jobs.some(job => job.active && !job.recovered && (!job.command || RECOVERABLE_BRIDGE_COMMANDS.has(job.command)))) {
-        return true;
-      }
-
+      const bridgeDir = this.getDetachedBridgeSessionDir(sessionId);
+      // Keep turn admission to one cheap SSH round trip. All supported remote
+      // harnesses now require the detached bridge, so scanning every process's
+      // /proc/<pid>/environ is both obsolete and extremely expensive on busy
+      // hosts. The tmux check retains compatibility with the pre-bridge runner.
       const output = await this.execCommand(client,
-        'active=0; ' +
-        this.buildSessionEnvProcessLoop(sessionId, [
-          'cmd="$(ps -p "$pid" -o args= 2>/dev/null || true)"',
-          'case "$cmd" in',
-          'claude|claude\\ *|*/claude|*/claude\\ *|*\\ claude|*\\ claude\\ *|*@anthropic-ai/claude-code*|*/claude-code/*|codex|codex\\ *|*/codex|*/codex\\ *|*\\ codex|*\\ codex\\ *|cursor-agent|cursor-agent\\ *|*/cursor-agent|*/cursor-agent\\ *|*\\ cursor-agent|*\\ cursor-agent\\ *|agent|agent\\ *|*/agent|*/agent\\ *|*\\ agent|*\\ agent\\ *) kill -0 "$pid" 2>/dev/null && { active=1; break; } ;;',
-          'esac',
-        ].join('\n')) + '; ' +
+        `bridge_dir=${this.quoteForShell(bridgeDir)}; active=0; ` +
+        'if test -d "$bridge_dir"; then ' +
+        'for jobdir in "$bridge_dir"/*; do ' +
+        'test -d "$jobdir" || continue; ' +
+        'test -f "$jobdir/recovered.json" && continue; ' +
+        'pid="$(cat "$jobdir/pid" 2>/dev/null || true)"; ' +
+        'if test -n "$pid" && kill -0 "$pid" 2>/dev/null; then active=1; break; fi; ' +
+        'done; ' +
+        'fi; ' +
         `if test "$active" = "0" && tmux has-session -t ${this.quoteForShell(legacyTmuxName)} 2>/dev/null; then active=1; fi; ` +
         'echo "$active"'
       );
@@ -971,7 +1187,8 @@ export class SSHService {
         'test -d "$jobdir" || continue; ' +
         'pidfile="$jobdir/pid"; log="$jobdir/stdout.log"; exitfile="$jobdir/exit.json"; recoveredfile="$jobdir/recovered.json"; ' +
         'pid="$(cat "$pidfile" 2>/dev/null || true)"; ' +
-        'cmdname="$(sed -n \'s/^[[:space:]]*"command"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p\' "$jobdir/config.json" 2>/dev/null | head -1)"; ' +
+        'cmdname="$(sed -n \'s/^[[:space:]]*"recoveryCommand"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p\' "$jobdir/config.json" 2>/dev/null | head -1)"; ' +
+        'test -n "$cmdname" || cmdname="$(sed -n \'s/^[[:space:]]*"command"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p\' "$jobdir/config.json" 2>/dev/null | head -1)"; ' +
         'test -n "$cmdname" || cmdname="$(sed -n \'s/^[[:space:]]*"command"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p\' "$jobdir/metadata.json" 2>/dev/null | head -1)"; ' +
         'active=0; test -n "$pid" && kill -0 "$pid" 2>/dev/null && active=1; ' +
         'hasexit=0; test -f "$exitfile" && hasexit=1; ' +
@@ -1022,6 +1239,9 @@ export class SSHService {
     config: SSHConfig,
     options: RecoverableRemoteProcessOptions = {}
   ): Promise<boolean> {
+    if (this.hasCompletedTurnCleanupGuard(sessionId)) {
+      return false;
+    }
     if (options.closeAfter) {
       const recoverabilityProbeSessionId = [
         sessionId,
@@ -1230,16 +1450,6 @@ git -C "$workdir" rev-parse --abbrev-ref HEAD 2>/dev/null || true
         this.connections.set(sessionId, { client, config });
         this.startHealthCheck(sessionId);
         console.log(`[SSH Service] Connected to ${config.host} for session ${sessionId}`);
-
-        // One-time cleanup of orphaned remote processes on first connection
-        if (!this.hasRunStartupCleanup) {
-          this.hasRunStartupCleanup = true;
-          setTimeout(() => {
-            this.killAllRemoteProcesses().catch(e =>
-              console.warn('[SSH Service] Startup cleanup failed:', e)
-            );
-          }, 5000);
-        }
 
         resolve();
       });
@@ -1624,6 +1834,50 @@ fi
     return detection;
   }
 
+  /**
+   * v0.5.83 briefly installed the default output contract as a globally
+   * discoverable Claude/Codex skill. Its "every message" trigger forces the
+   * harness to shell-read SKILL.md on every turn even though Build now supplies
+   * the complete contract once as native developer/system instructions.
+   * Disable only byte-for-byte copies of that legacy bundled file and preserve
+   * them beside the original path for recovery.
+   */
+  async disableLegacyBundledOutputSkills(sessionId: string, config: SSHConfig): Promise<string[]> {
+    const cacheKey = this.getRemoteCliCapabilitiesCacheKey(config);
+    if (this.migratedLegacyOutputSkills.has(cacheKey)) return [];
+
+    const client = await this.getConnection(sessionId, config);
+    const output = await this.execCommand(client, `
+legacy_hash='${LEGACY_BUNDLED_ADHD_SKILL_SHA256}'
+for skill_file in "$HOME/.codex/skills/i-have-adhd/SKILL.md" "$HOME/.claude/skills/i-have-adhd/SKILL.md"; do
+  test -f "$skill_file" || continue
+  if command -v sha256sum >/dev/null 2>&1; then
+    actual_hash="$(sha256sum "$skill_file" | awk '{print $1}')"
+  elif command -v shasum >/dev/null 2>&1; then
+    actual_hash="$(shasum -a 256 "$skill_file" | awk '{print $1}')"
+  else
+    continue
+  fi
+  test "$actual_hash" = "$legacy_hash" || continue
+  backup_path="${'${skill_file}'}.build-legacy-disabled-944ddb6a"
+  if test -e "$backup_path"; then
+    backup_path="${'${backup_path}'}-$(date +%s)"
+  fi
+  mv "$skill_file" "$backup_path"
+  printf 'disabled=%s\\n' "$skill_file"
+done
+`);
+    const disabled = output
+      .split('\n')
+      .filter((line) => line.startsWith('disabled='))
+      .map((line) => line.slice('disabled='.length));
+    this.migratedLegacyOutputSkills.add(cacheKey);
+    if (disabled.length > 0) {
+      console.log(`[SSH Service] Disabled legacy per-turn output skill copies: ${disabled.join(', ')}`);
+    }
+    return disabled;
+  }
+
   private async ensureDetachedRemoteBridge(sessionId: string, config: SSHConfig): Promise<RemoteBridgeInstall> {
     const key = this.getRemoteBridgeInstallKey(config);
     const existing = this.remoteBridgeReady.get(key);
@@ -1708,8 +1962,9 @@ fi
       eofPath: `${jobDir}/stdin.eof`,
       pidPath: `${jobDir}/pid`,
       command: options.command,
+      recoveryCommand: options.recoveryCommand,
       args: options.args,
-      cwd: options.cwd || '.',
+      cwd: normalizeRemoteWorkdir(options.cwd) || '.',
       env,
     };
   }
@@ -2367,6 +2622,7 @@ fi
       eofPath: job.eofPath,
       pidPath: job.pidPath,
       command: 'claude',
+      recoveryCommand: job.command,
       args: [],
       cwd: '.',
       env: {},
@@ -2784,7 +3040,7 @@ fi
       sessionId,
       safeSessionId: this.getSafeSessionId(sessionId),
       createdAt: new Date().toISOString(),
-      command: bridge.command,
+      command: bridge.recoveryCommand || bridge.command,
       args: bridge.args,
       cwd: bridge.cwd,
     }, null, 2));
@@ -2925,14 +3181,7 @@ fi
     // The SDK passes args like: ["/path/to/cli.js", "--output-format", "stream-json", "--verbose", ...]
     // The first arg may be the local path to the CLI file - we need to filter it out
     // because we'll use the globally installed 'claude' command on the remote machine
-    const filteredArgs = sdkOptions.args.filter(arg => {
-      // Filter out local paths to the CLI file
-      if (arg.includes('claude-agent-sdk') || arg.includes('cli.js') || arg.includes('node_modules')) {
-        console.log('[SSH Service] Filtering out local CLI path from args:', arg);
-        return false;
-      }
-      return true;
-    });
+    const filteredArgs = filterRemoteClaudeArguments(sdkOptions.args);
 
     console.log('[SSH Service] Config:', JSON.stringify(config, null, 2));
     console.log('[SSH Service] SDK args (original):', sdkOptions.args);
@@ -2949,6 +3198,33 @@ fi
       signal: sdkOptions.signal,
       closeStdinOnEnd: true,
       requireDetached: true,
+    });
+  }
+
+  createRemoteParableProcess(
+    sessionId: string,
+    config: SSHConfig,
+    sdkOptions: SDKSpawnOptions,
+    launcherPath: string,
+  ): SpawnedProcess {
+    const filteredEnv: Record<string, string | undefined> = filterRemoteClaudeEnvironment(sdkOptions.env);
+    filteredEnv.CLAUDETTE_SESSION_ID = this.getSafeSessionId(sessionId);
+    const claudeArgs = filterParableClaudeArguments(
+      filterRemoteClaudeArguments(sdkOptions.args),
+    );
+    console.log('[SSH Service] Creating Parable-wrapped remote Claude process:', {
+      launcherPath,
+      args: claudeArgs,
+    });
+    return this.createDetachedCommandProcess(sessionId, config, {
+      command: launcherPath,
+      args: ['--brain', 'auto', '--', ...claudeArgs],
+      cwd: config.remoteWorkdir,
+      env: filteredEnv,
+      signal: sdkOptions.signal,
+      closeStdinOnEnd: true,
+      requireDetached: true,
+      recoveryCommand: 'claude',
     });
   }
 
@@ -3021,7 +3297,6 @@ fi
   // Track which sessions are actively being used (streaming, sending messages).
   // Only these get health checks — idle connections are cleaned up on next use.
   private activeSessionIds = new Set<string>();
-  private hasRunStartupCleanup = false;
 
   markSessionActive(sessionId: string): void {
     this.activeSessionIds.add(sessionId);
@@ -3458,7 +3733,7 @@ fi
                   .filter(l => l.length > 0);
                 if (lines.length > 0) {
                   // Get the last line - should be the working directory path
-                  workingDirectory = lines[lines.length - 1];
+                  workingDirectory = normalizeRemoteWorkdir(lines[lines.length - 1]);
                   console.log('[SSH Service] Captured working directory from script:', workingDirectory);
                 }
               }
@@ -3502,6 +3777,14 @@ fi
         // Capture the working directory and output from the script
         workingDirectory = result.workingDirectory;
         setupOutput = result.output;
+      }
+
+      // One-time migrations belong to session setup, never the first model
+      // turn after each app launch.
+      try {
+        await this.disableLegacyBundledOutputSkills(sessionId, config);
+      } catch (error) {
+        console.warn('[SSH Service] Could not migrate legacy remote output skill copies:', error);
       }
 
       // 2. Sync settings if enabled
@@ -4433,9 +4716,9 @@ done
   private async syncBuildMcpServersInternal(client: Client, strict = false, bridgePorts?: Map<string, number>): Promise<void> {
     try {
       const { mcpService } = await import('./mcp.service');
-      const { servers, serverIds, removeServerIds } = bridgePorts && bridgePorts.size > 0
-        ? mcpService.getClaudeMcpSyncDataForSSH(bridgePorts)
-        : mcpService.getClaudeMcpSyncData();
+      const { servers, serverIds, removeServerIds } = mcpService.getClaudeMcpSyncDataForSSH(
+        bridgePorts ?? new Map<string, number>(),
+      );
 
       console.log('[SSH Service] Syncing Claude MCP servers to remote:', serverIds);
 
@@ -4491,6 +4774,7 @@ CONFIG_EOF`);
     const uploadDir = async (sourceDir: string, targetDir: string): Promise<void> => {
       await mkdirp(targetDir);
       const entries = await fsPromises.readdir(sourceDir, { withFileTypes: true });
+      const files: Array<{ localPath: string; remotePath: string }> = [];
 
       for (const entry of entries) {
         const localPath = path.join(sourceDir, entry.name);
@@ -4501,23 +4785,26 @@ CONFIG_EOF`);
           continue;
         }
 
-        if (!entry.isFile()) {
-          continue;
-        }
+        if (entry.isFile()) files.push({ localPath, remotePath });
+      }
 
+      // SFTP round-trip latency dominates these tiny OAuth cache files. Keep a
+      // bounded pipeline instead of serializing fastPut + chmod for every file.
+      const uploadFile = async ({ localPath, remotePath }: { localPath: string; remotePath: string }): Promise<void> => {
         const localStat = await fsPromises.stat(localPath);
         await new Promise<void>((resolve, reject) => {
           sftp.fastPut(localPath, remotePath, (err) => {
-            if (err) {
-              reject(err);
-              return;
-            }
+            if (err) return reject(err);
             sftp.chmod(remotePath, localStat.mode & 0o777, (chmodError) => {
               if (chmodError) reject(chmodError);
               else resolve();
             });
           });
         });
+      };
+      const concurrency = 8;
+      for (let index = 0; index < files.length; index += concurrency) {
+        await Promise.all(files.slice(index, index + concurrency).map(uploadFile));
       }
     };
 
@@ -4535,20 +4822,27 @@ CONFIG_EOF`);
 
     try {
       const localMcpAuth = path.join(os.homedir(), '.mcp-auth');
-      const localStats = await fsPromises.stat(localMcpAuth).catch(() => null);
-      if (!localStats?.isDirectory()) {
-        console.log('[SSH Service] No local ~/.mcp-auth directory, skipping MCP auth sync');
-        return;
-      }
+      const prepared = await ensurePinnedMcpRemoteAuthDirectory(localMcpAuth);
+      const activeVersion = MCP_REMOTE_AUTH_DIR_NAME;
+      const localActiveAuth = prepared.authDir;
+      const authFiles = (await fsPromises.readdir(localActiveAuth, { withFileTypes: true }))
+        .filter(entry => entry.isFile())
+        .map(entry => entry.name)
+        .sort();
+      const authFileStats = await Promise.all(authFiles.map(async fileName => {
+        const stat = await fsPromises.stat(path.join(localActiveAuth, fileName));
+        return `${fileName}:${stat.size}:${stat.mtimeMs}`;
+      }));
+      const localFingerprint = `${activeVersion}|${authFileStats.join('|')}`;
 
-      // Cache check: skip if we've recently synced and the local dir hasn't changed
-      const cacheKey = `${(client as any).config?.host || (client as any)._host || 'default'}`;
+      // Cache check: skip only when the nested auth state itself is unchanged.
+      const clientConfig = (client as any).config || {};
+      const cacheKey = `${clientConfig.username || 'unknown'}@${clientConfig.host || (client as any)._host || 'default'}`;
       const cached = this.mcpAuthSyncCache.get(cacheKey);
-      const localMtime = localStats.mtimeMs;
 
       if (cached &&
           Date.now() - cached.lastSyncedAt < this.MCP_AUTH_CACHE_TTL_MS &&
-          cached.localMtime === localMtime) {
+          cached.localFingerprint === localFingerprint) {
         console.log('[SSH Service] MCP auth tokens already synced (cached), skipping');
         return;
       }
@@ -4556,34 +4850,17 @@ CONFIG_EOF`);
       const remoteHome = (await this.execCommand(client, 'printf %s "$HOME"')).trim();
       const remoteMcpAuth = `${remoteHome || '~'}/.mcp-auth`;
 
-      console.log('[SSH Service] Syncing MCP auth tokens to remote via SFTP...');
-      await this.uploadDirectoryViaSftp(client, localMcpAuth, remoteMcpAuth);
+      // Every Build-managed harness uses the pinned mcp-remote package, so only
+      // the active version directory is required. Uploading years of stale
+      // auth versions made this take long enough for the agent to start first
+      // and open a duplicate OAuth flow.
+      const remoteActiveAuth = `${remoteMcpAuth}/${activeVersion}`;
+      console.log(`[SSH Service] Syncing MCP auth tokens to remote via SFTP (${activeVersion})...`);
+      await this.uploadDirectoryViaSftp(client, localActiveAuth, remoteActiveAuth);
       await this.execCommand(client, `chmod -R go-rwx ${this.quoteForShell(remoteMcpAuth)} 2>/dev/null || true`);
 
-      // mcp-remote stores tokens per-version (e.g., mcp-remote-0.1.29/).
-      // Local and remote may run different versions. Copy token files from
-      // the newest local version into ALL remote version folders so tokens
-      // are found regardless of which mcp-remote version the remote uses.
-      try {
-        await this.execCommand(client, `
-          cd ${this.quoteForShell(remoteMcpAuth)} && \
-          SRC=$(ls -d mcp-remote-* 2>/dev/null | sort -V | while read d; do \
-            ls "$d"/*_tokens.json >/dev/null 2>&1 && echo "$d"; \
-          done | tail -1) && \
-          if [ -n "$SRC" ]; then \
-            for DST in mcp-remote-*; do \
-              [ "$DST" = "$SRC" ] && continue; \
-              ls "$DST"/*_tokens.json >/dev/null 2>&1 && continue; \
-              cp "$SRC"/*_tokens.json "$SRC"/*_client_info.json "$SRC"/*_code_verifier.txt "$DST/" 2>/dev/null; \
-            done; \
-          fi
-        `);
-      } catch {
-        // Non-critical — tokens may already be in the right place
-      }
-
       console.log('[SSH Service] MCP auth tokens synced to remote');
-      this.mcpAuthSyncCache.set(cacheKey, { lastSyncedAt: Date.now(), localMtime });
+      this.mcpAuthSyncCache.set(cacheKey, { lastSyncedAt: Date.now(), localFingerprint });
     } catch (err) {
       console.warn('[SSH Service] Could not sync MCP auth tokens:', err);
       if (strict) throw err;
@@ -4604,18 +4881,22 @@ ${marker}`);
 
   private async syncHarnessMcpConfigsInternal(client: Client, strict = false, bridgePorts?: Map<string, number>): Promise<void> {
     try {
-      // Cache check: skip if we've recently synced to this host
-      const cacheKey = `${(client as any).config?.host || (client as any)._host || 'default'}`;
-      const lastSynced = this.harnessMcpSyncCache.get(cacheKey);
-      if (lastSynced && Date.now() - lastSynced < this.HARNESS_MCP_CACHE_TTL_MS) {
+      const { mcpService } = await import('./mcp.service');
+      const { servers, serverIds, removeServerIds } = mcpService.getHarnessMcpSyncDataForSSH(
+        bridgePorts ?? new Map<string, number>(),
+      );
+      const clientConfig = (client as any).config || {};
+      const cacheKey = `${clientConfig.username || 'unknown'}@${clientConfig.host || (client as any)._host || 'default'}`;
+      const fingerprint = JSON.stringify({ servers, removeServerIds });
+      const cached = this.harnessMcpSyncCache.get(cacheKey);
+      if (
+        cached
+        && Date.now() - cached.lastSyncedAt < this.HARNESS_MCP_CACHE_TTL_MS
+        && cached.fingerprint === fingerprint
+      ) {
         console.log('[SSH Service] Harness MCP configs already synced (cached), skipping');
         return;
       }
-
-      const { mcpService } = await import('./mcp.service');
-      const { servers, serverIds, removeServerIds } = bridgePorts && bridgePorts.size > 0
-        ? mcpService.getHarnessMcpSyncDataForSSH(bridgePorts)
-        : mcpService.getHarnessMcpSyncData();
 
       if (serverIds.length === 0 && removeServerIds.length === 0) {
         console.log('[SSH Service] No harness MCP configs to sync');
@@ -4659,7 +4940,7 @@ ${marker}`);
       await this.writeRemoteTextFile(client, opencodeBuildPath, opencodeJson);
 
       console.log('[SSH Service] Harness MCP configs synced to remote Cursor/Gemini/Codex/OpenCode:', serverIds);
-      this.harnessMcpSyncCache.set(cacheKey, Date.now());
+      this.harnessMcpSyncCache.set(cacheKey, { lastSyncedAt: Date.now(), fingerprint });
     } catch (err) {
       console.warn('[SSH Service] Could not sync harness MCP configs to remote:', err);
       if (strict) throw err;
@@ -4795,6 +5076,29 @@ SETTINGS_EOF`);
     }
   }
 
+  /**
+   * Put OAuth state on the SSH host before an MCP client is spawned. This is
+   * deliberately separate from full MCP config/bridge reconciliation so a
+   * resumed agent can start quickly without racing a browser auth prompt.
+   */
+  async syncMcpAuthToRemote(sessionId: string, config: SSHConfig): Promise<{ success: boolean; error?: string }> {
+    try {
+      const { mcpService: mcpSvc } = await import('./mcp.service');
+      // Routine SSH startup is non-interactive. Missing OAuth servers are
+      // omitted instead of opening another browser authorization flow.
+      await mcpSvc.prepareConfiguredRemoteAuth();
+      const client = await this.getConnection(sessionId, config);
+      await this.syncMcpAuthInternal(client, true);
+      return { success: true };
+    } catch (error) {
+      console.error('[SSH Service] Error syncing MCP auth to remote:', error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      };
+    }
+  }
+
   async syncMcpConfigsToRemote(sessionId: string, config: SSHConfig): Promise<{ success: boolean; error?: string }> {
     const syncKey = this.getMcpConfigSyncKey(config);
     const inFlight = this.mcpConfigSyncInFlight.get(syncKey);
@@ -4826,6 +5130,11 @@ SETTINGS_EOF`);
 
   private async syncMcpConfigsToRemoteInternal(sessionId: string, config: SSHConfig): Promise<{ success: boolean; error?: string }> {
     try {
+      // Discover OAuth cache locally before writing remote harness configs.
+      // Unknown or missing remote MCP auth is omitted without opening a local
+      // browser callback during an unrelated SSH session start.
+      const { mcpService: mcpSvc } = await import('./mcp.service');
+      await mcpSvc.prepareConfiguredRemoteAuth();
       const client = await this.getConnection(sessionId, config);
       console.log('[SSH Service] Syncing MCP configs to remote:', sessionId);
 
@@ -4833,7 +5142,6 @@ SETTINGS_EOF`);
       let bridgePorts: Map<string, number> | undefined;
       try {
         const { mcpStdioBridgeService } = await import('./mcp-stdio-bridge.service');
-        const { mcpService: mcpSvc } = await import('./mcp.service');
         const nativeStdio = mcpSvc.getNativeStdioServers();
         if (Object.keys(nativeStdio).length > 0) {
           bridgePorts = await mcpStdioBridgeService.startBridgesForSession(sessionId, nativeStdio);
@@ -4843,10 +5151,11 @@ SETTINGS_EOF`);
       }
 
       await this.syncBuildMcpServersInternal(client, true, bridgePorts);
-      void this.syncMcpAuthInternal(client, false).catch((error) => {
-        console.warn('[SSH Service] Background MCP auth token sync failed:', error);
-      });
-      console.log('[SSH Service] MCP auth token sync running in background');
+      // Authentication must be present before the caller starts its harness.
+      // Running this in the background caused every fresh mcp-remote process to
+      // open another Notion OAuth flow while the token was still uploading.
+      await this.syncMcpAuthInternal(client, true);
+      console.log('[SSH Service] MCP auth token sync completed before harness start');
       await this.syncHarnessMcpConfigsInternal(client, true, bridgePorts);
       await this.setupMcpReverseTunnelsForSession(sessionId, config, true);
 
@@ -4917,6 +5226,24 @@ SETTINGS_EOF`);
         resolve();
       });
     });
+  }
+
+  /** Stop one managed reverse tunnel without closing the shared SSH session. */
+  async teardownReverseTunnel(sessionId: string, remotePort: number): Promise<void> {
+    const tunnelKey = `${sessionId}:${remotePort}`;
+    const connection = this.connections.get(sessionId);
+    if (!connection) {
+      this.activeTunnels.delete(tunnelKey);
+      return;
+    }
+    await new Promise<void>((resolve) => {
+      connection.client.unforwardIn('127.0.0.1', remotePort, (error) => {
+        if (error) console.warn(`[SSH Service] Could not stop reverse tunnel ${remotePort}:`, error.message);
+        resolve();
+      });
+    });
+    this.activeTunnels.delete(tunnelKey);
+    console.log(`[SSH Service] Reverse tunnel stopped: remote:${remotePort}`);
   }
 }
 

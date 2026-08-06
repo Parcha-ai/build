@@ -2,6 +2,8 @@ import React from 'react';
 
 interface AutoRouteBadgeProps {
   tier: string;
+  categoryId?: string;
+  categoryLabel?: string;
   domain?: string;
   resolvedHarness?: string;
   modelLabel?: string;
@@ -10,6 +12,7 @@ interface AutoRouteBadgeProps {
 }
 
 const TIER_COLORS: Record<string, { bg: string; text: string; border: string }> = {
+  pr:     { bg: 'bg-violet-500/15', text: 'text-violet-400', border: 'border-violet-500/30' },
   spec:   { bg: 'bg-fuchsia-500/15', text: 'text-fuchsia-400', border: 'border-fuchsia-500/30' },
   plan:   { bg: 'bg-purple-500/15', text: 'text-purple-400', border: 'border-purple-500/30' },
   build:  { bg: 'bg-blue-500/15',   text: 'text-blue-400',   border: 'border-blue-500/30' },
@@ -69,11 +72,11 @@ function formatRouteTitle(tier: string, domain?: string, harness?: string, model
   return agent ? `Using ${agent}. Auto Build scope: ${scope}` : `Current turn scope: ${scope}`;
 }
 
-export const AutoRouteBadge: React.FC<AutoRouteBadgeProps> = ({ tier, domain, resolvedHarness, modelLabel, compact, planningGateAction }) => {
-  const displayTier = planningGateAction === 'start' ? 'spec' : tier;
+export const AutoRouteBadge: React.FC<AutoRouteBadgeProps> = ({ tier, categoryId, categoryLabel, domain, resolvedHarness, modelLabel, compact, planningGateAction }) => {
+  const displayTier = planningGateAction === 'start' ? 'spec' : categoryId || tier;
   const colors = TIER_COLORS[displayTier] || TIER_COLORS.build;
   const agentLabel = formatHarnessModelLabel(resolvedHarness, undefined, modelLabel);
-  const title = formatRouteTitle(displayTier, domain, resolvedHarness, modelLabel);
+  const title = formatRouteTitle(categoryLabel || displayTier, domain, resolvedHarness, modelLabel);
 
   if (compact) {
     return (
@@ -81,7 +84,7 @@ export const AutoRouteBadge: React.FC<AutoRouteBadgeProps> = ({ tier, domain, re
         className={`inline-flex min-w-0 max-w-[180px] items-center gap-1 px-1.5 py-0.5 text-[9px] font-mono uppercase tracking-wider ${colors.bg} ${colors.text} border ${colors.border} rounded`}
         title={title}
       >
-        <span className="font-bold">{displayTier === 'spec' ? 'SPEC' : 'AUTO'}</span>
+        <span className="font-bold">{displayTier === 'spec' ? 'SPEC' : displayTier === 'pr' ? 'PR' : 'AUTO'}</span>
         {agentLabel && <span className="min-w-0 truncate opacity-70 normal-case tracking-normal">{agentLabel}</span>}
       </span>
     );
@@ -92,7 +95,7 @@ export const AutoRouteBadge: React.FC<AutoRouteBadgeProps> = ({ tier, domain, re
       className={`inline-flex min-w-0 max-w-[220px] items-center gap-1.5 px-2 py-0.5 text-[10px] font-mono ${colors.bg} ${colors.text} border ${colors.border} rounded`}
       title={title}
     >
-      <span className="uppercase font-bold tracking-wider">{displayTier === 'spec' ? 'SPEC' : 'AUTO'}</span>
+      <span className="uppercase font-bold tracking-wider">{displayTier === 'spec' ? 'SPEC' : displayTier === 'pr' ? 'PR' : 'AUTO'}</span>
       {agentLabel && <span className="min-w-0 truncate opacity-70">{agentLabel}</span>}
     </span>
   );

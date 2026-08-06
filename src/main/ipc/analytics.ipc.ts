@@ -289,7 +289,7 @@ async function runRouterEval(options?: RouterEvalOptions) {
       ? estimateFlueControllerCost(evalCase.message, recentMessages)
       : 0;
     const caseHistoricalCost = evalCase.actualCostUsd ?? estimateCost(
-      evalCase.actualModel || 'claude-opus-4-7',
+      evalCase.actualModel || 'claude-opus-5',
       evalCase.inputTokens,
       evalCase.outputTokens,
       evalCase.cacheReadTokens,
@@ -387,7 +387,7 @@ async function runRouterEval(options?: RouterEvalOptions) {
   }
 
   const recommendedConfig = {
-    planModel: topModel(selectedByTier.plan, 'claude-opus-4-7'),
+    planModel: topModel(selectedByTier.plan, 'claude-opus-5'),
     buildModel: topModel(selectedByTier.build, 'codex:gpt-5.6-sol'),
     verifyModel: topModel(selectedByTier.verify, 'codex:gpt-5.6-sol'),
     refineModel: topModel(selectedByTier.refine, 'cursor:composer-2.5'),

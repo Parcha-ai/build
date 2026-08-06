@@ -73,22 +73,27 @@ const config: ForgeConfig = {
 
         // Recursively resolve and copy a package and all its production dependencies
         const copied = new Set<string>();
-        const copyWithDeps = async (pkgName: string): Promise<void> => {
+        const copyWithDeps = async (pkgName: string, parentSourcePath?: string): Promise<void> => {
           if (copied.has(pkgName)) return;
-          copied.add(pkgName);
 
-          const sourcePath = pkgName.startsWith('@')
-            ? path.join(__dirname, 'node_modules', ...pkgName.split('/'))
-            : path.join(__dirname, 'node_modules', pkgName);
+          const packagePathParts = pkgName.startsWith('@') ? pkgName.split('/') : [pkgName];
+          const sourceCandidates = [
+            ...(parentSourcePath
+              ? [path.join(parentSourcePath, 'node_modules', ...packagePathParts)]
+              : []),
+            path.join(__dirname, 'node_modules', ...packagePathParts),
+          ];
+          const sourcePath = sourceCandidates.find((candidate: string) => fs.existsSync(candidate));
           const destPath = pkgName.startsWith('@')
             ? path.join(nodeModulesPath, ...pkgName.split('/'))
             : path.join(nodeModulesPath, pkgName);
 
-          if (!fs.existsSync(sourcePath)) {
-            console.log(`[Packaging] Warning: ${pkgName} not found, skipping`);
+          if (!sourcePath) {
+            console.log(`[Packaging] Warning: ${pkgName} not found in ${sourceCandidates.join(', ')}, skipping`);
             return;
           }
 
+          copied.add(pkgName);
           await fs.ensureDir(path.dirname(destPath));
           await fs.copy(sourcePath, destPath);
           console.log(`[Packaging] Copied ${pkgName}`);
@@ -98,7 +103,7 @@ const config: ForgeConfig = {
           if (fs.existsSync(pkgJsonPath)) {
             const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, 'utf8'));
             for (const dep of Object.keys(pkgJson.dependencies || {})) {
-              await copyWithDeps(dep);
+              await copyWithDeps(dep, sourcePath);
             }
           }
         };
@@ -213,6 +218,12 @@ const config: ForgeConfig = {
             if (skipNotarization) {
               console.log('[Packaging] Skipping Apple notarization because GREP_SKIP_NOTARIZE=1');
             } else {
+              // stapler writes the compatibility ticket here. Some Electron
+              // bundles omit the file entirely, which makes stapling fail with
+              // "No such file or directory" even after Apple accepts the app.
+              // The file lives outside the signed resource seal and may be
+              // created after signing; stapler replaces it with the real ticket.
+              await fs.ensureFile(path.join(appPath, 'Contents', 'CodeResources'));
               console.log('[Packaging] Submitting for Apple notarization (this may take several minutes)...');
               await notarize({
                 appPath,
@@ -253,13 +264,11 @@ const config: ForgeConfig = {
               const lsregister = '/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister';
               const outRoot = path.join(__dirname, 'out');
               if (fs.existsSync(lsregister) && fs.existsSync(outRoot)) {
-                const currentOutDir = path.resolve(outputPath);
                 const entries = await fs.readdir(outRoot);
                 for (const entry of entries) {
                   if (!entry.startsWith('v')) continue;
                   const oldApp = path.join(outRoot, entry, 'Build-darwin-arm64', 'Build.app');
                   if (!fs.existsSync(oldApp)) continue;
-                  if (path.resolve(path.dirname(oldApp)) === currentOutDir) continue;
                   await execFileAsync(lsregister, ['-u', oldApp]).catch(() => undefined);
                 }
                 await execFileAsync(lsregister, ['-f', applicationsPath]).catch(() => undefined);

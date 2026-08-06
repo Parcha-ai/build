@@ -1,11 +1,26 @@
 import { create } from 'zustand';
 import { v4 as uuid } from 'uuid';
-import type { FocusTask, FocusSubtask } from '../../shared/types';
+import type { AppSettings, FocusTask, FocusSubtask, PomodoroState } from '../../shared/types';
+
+export interface PomodoroSlotPlan {
+  sessionId?: string;
+  external: boolean;
+  subtaskTitle: string;
+  durationMinutes: number;
+}
+
+const DEFAULT_POMODORO_STATE: PomodoroState = {
+  status: 'idle',
+  external: false,
+  durationSeconds: 25 * 60,
+  remainingSeconds: 25 * 60,
+};
 
 interface TaskState {
   tasks: FocusTask[];
   focusModeEnabled: boolean;
   activeTaskId: string | null;
+  pomodoroState: PomodoroState;
   isLoaded: boolean;
 
   loadTasks: () => Promise<void>;
@@ -19,6 +34,13 @@ interface TaskState {
   addSubtask: (taskId: string, title: string) => Promise<void>;
   toggleSubtask: (taskId: string, subtaskId: string) => Promise<void>;
   deleteSubtask: (taskId: string, subtaskId: string) => Promise<void>;
+  startPomodoro: (taskId: string, plan: PomodoroSlotPlan) => Promise<void>;
+  restartPomodoro: () => Promise<void>;
+  pausePomodoro: () => Promise<void>;
+  resumePomodoro: () => Promise<void>;
+  stopPomodoro: () => Promise<void>;
+  finishPomodoroSubtask: () => Promise<string | null>;
+  syncPomodoroState: (state: PomodoroState) => void;
 }
 
 const persistTasks = async (tasks: FocusTask[], extras?: Record<string, unknown>) => {
@@ -32,14 +54,20 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   tasks: [],
   focusModeEnabled: false,
   activeTaskId: null,
+  pomodoroState: DEFAULT_POMODORO_STATE,
   isLoaded: false,
 
   loadTasks: async () => {
-    const settings = await window.electronAPI.settings.get();
+    const [settings, pomodoroState] = await Promise.all([
+      window.electronAPI.settings.get(),
+      window.electronAPI.pomodoro.getState(),
+    ]);
+    const appSettings = settings as AppSettings;
     set({
-      tasks: (settings as any).focusTasks || [],
-      focusModeEnabled: (settings as any).focusModeEnabled || false,
-      activeTaskId: (settings as any).focusModeActiveTaskId || null,
+      tasks: appSettings.focusTasks || [],
+      focusModeEnabled: appSettings.focusModeEnabled || false,
+      activeTaskId: appSettings.focusModeActiveTaskId || null,
+      pomodoroState,
       isLoaded: true,
     });
   },
@@ -65,6 +93,9 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   },
 
   deleteTask: async (id) => {
+    if (get().pomodoroState.taskId === id && get().pomodoroState.status !== 'idle') {
+      await get().stopPomodoro();
+    }
     const tasks = get().tasks.filter(t => t.id !== id);
     // Recompute order
     tasks.forEach((t, i) => t.order = i);
@@ -118,6 +149,9 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   },
 
   markTaskDone: async (id) => {
+    if (get().pomodoroState.taskId === id && get().pomodoroState.status !== 'idle') {
+      await get().stopPomodoro();
+    }
     const { tasks, focusModeEnabled } = get();
     const updated = tasks.map(t =>
       t.id === id ? { ...t, status: 'done' as const, completedAt: new Date().toISOString() } : t
@@ -126,7 +160,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     // Find next pending task with a session
     let nextActiveId: string | null = null;
     if (focusModeEnabled) {
-      const next = updated.find(t => t.status === 'pending' && t.sessionId);
+      const next = updated.find(t => t.status === 'pending' && (t.sessionId || t.pomodoroExternal));
       if (next) {
         nextActiveId = next.id;
         const withNext = updated.map(t =>
@@ -177,5 +211,111 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     });
     set({ tasks });
     await persistTasks(tasks);
+  },
+
+  startPomodoro: async (taskId, plan) => {
+    const task = get().tasks.find(candidate => candidate.id === taskId);
+    if (!task) throw new Error('Task not found');
+    if (!plan.external && !plan.sessionId) throw new Error('Choose a Build session or Outside Build');
+    const subtaskTitle = plan.subtaskTitle.trim();
+    if (!subtaskTitle) throw new Error('Describe the one subtask for this focus slot');
+
+    const subtask: FocusSubtask = { id: uuid(), title: subtaskTitle, done: false };
+    const tasks = get().tasks.map(candidate => {
+      if (candidate.id === taskId) {
+        return {
+          ...candidate,
+          status: 'active' as const,
+          sessionId: plan.external ? undefined : plan.sessionId,
+          pomodoroExternal: plan.external,
+          subtasks: [...(candidate.subtasks || []), subtask],
+        };
+      }
+      return candidate.status === 'active'
+        ? { ...candidate, status: 'pending' as const }
+        : candidate;
+    });
+
+    set({ tasks, focusModeEnabled: true, activeTaskId: taskId });
+    await persistTasks(tasks, { focusModeEnabled: true, focusModeActiveTaskId: taskId });
+    const pomodoroState = await window.electronAPI.pomodoro.start({
+      taskId,
+      taskTitle: task.title,
+      subtaskId: subtask.id,
+      subtaskTitle,
+      sessionId: plan.external ? undefined : plan.sessionId,
+      external: plan.external,
+      durationMinutes: plan.durationMinutes,
+    });
+    set({ pomodoroState });
+
+    if (!plan.external && plan.sessionId) {
+      const { useSessionStore } = await import('./session.store');
+      await useSessionStore.getState().setActiveSession(plan.sessionId);
+    }
+  },
+
+  restartPomodoro: async () => {
+    const current = get().pomodoroState;
+    if (!current.taskId || !current.taskTitle || !current.subtaskId || !current.subtaskTitle) return;
+    const pomodoroState = await window.electronAPI.pomodoro.start({
+      taskId: current.taskId,
+      taskTitle: current.taskTitle,
+      subtaskId: current.subtaskId,
+      subtaskTitle: current.subtaskTitle,
+      sessionId: current.sessionId,
+      external: current.external,
+      durationMinutes: Math.max(1, Math.round(current.durationSeconds / 60)),
+    });
+    set({ pomodoroState });
+    if (current.sessionId) {
+      const { useSessionStore } = await import('./session.store');
+      await useSessionStore.getState().setActiveSession(current.sessionId);
+    }
+  },
+
+  pausePomodoro: async () => {
+    set({ pomodoroState: await window.electronAPI.pomodoro.pause() });
+  },
+
+  resumePomodoro: async () => {
+    set({ pomodoroState: await window.electronAPI.pomodoro.resume() });
+  },
+
+  stopPomodoro: async () => {
+    const pomodoroState = await window.electronAPI.pomodoro.stop();
+    const tasks = get().tasks.map(task => task.status === 'active'
+      ? { ...task, status: 'pending' as const }
+      : task);
+    set({ tasks, pomodoroState, focusModeEnabled: false, activeTaskId: null });
+    await persistTasks(tasks, { focusModeEnabled: false, focusModeActiveTaskId: undefined });
+  },
+
+  finishPomodoroSubtask: async () => {
+    const current = get().pomodoroState;
+    if (!current.taskId || !current.subtaskId) return null;
+    const tasks = get().tasks.map(task => task.id !== current.taskId ? task : {
+      ...task,
+      subtasks: (task.subtasks || []).map(subtask => subtask.id === current.subtaskId
+        ? { ...subtask, done: true }
+        : subtask),
+    });
+    set({ tasks });
+    await persistTasks(tasks);
+    await get().stopPomodoro();
+    return current.taskId;
+  },
+
+  syncPomodoroState: (pomodoroState) => {
+    const previous = get().pomodoroState;
+    if (pomodoroState.status === 'idle' && previous.status !== 'idle') {
+      const tasks = get().tasks.map(task => task.status === 'active'
+        ? { ...task, status: 'pending' as const }
+        : task);
+      set({ tasks, pomodoroState, focusModeEnabled: false, activeTaskId: null });
+      void persistTasks(tasks, { focusModeEnabled: false, focusModeActiveTaskId: undefined });
+      return;
+    }
+    set({ pomodoroState });
   },
 }));

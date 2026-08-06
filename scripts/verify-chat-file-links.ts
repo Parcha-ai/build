@@ -1,0 +1,44 @@
+import assert from 'assert';
+import fs from 'fs';
+import path from 'path';
+import { chatFilePathFromHref, classifyChatLink } from '../src/shared/utils/chat-links';
+
+assert.equal(classifyChatLink('grep-custom-ai-agents-launch-remotion.mp4', 'Launch video'), 'local-artifact');
+assert.equal(classifyChatLink('contact%20sheet.png', 'Contact sheet'), 'local-editor');
+assert.equal(classifyChatLink('./src/main/index.ts:42', 'index.ts'), 'local-editor');
+assert.equal(classifyChatLink('/tmp/report.pdf', 'Report'), 'local-artifact');
+assert.equal(classifyChatLink('https://example.com/demo.mp4', 'Demo'), 'external');
+assert.equal(classifyChatLink('#verification', 'Verification'), 'anchor');
+assert.equal(chatFilePathFromHref('file:///tmp/poster%20frame.png'), '/tmp/poster frame.png');
+
+const root = path.resolve(__dirname, '..');
+const chatMarkdownLink = fs.readFileSync(path.join(root, 'src/renderer/components/chat/ChatMarkdownLink.tsx'), 'utf8');
+const messageBubble = fs.readFileSync(path.join(root, 'src/renderer/components/chat/MessageBubble.tsx'), 'utf8');
+const messageList = fs.readFileSync(path.join(root, 'src/renderer/components/chat/MessageList.tsx'), 'utf8');
+const inAppBrowserLink = fs.readFileSync(path.join(root, 'src/renderer/utils/open-link-in-browser.ts'), 'utf8');
+const markdownResponsePanel = fs.readFileSync(path.join(root, 'src/renderer/components/preview/MarkdownResponsePanel.tsx'), 'utf8');
+const planPanel = fs.readFileSync(path.join(root, 'src/renderer/components/plan/PlanPanel.tsx'), 'utf8');
+const mainProcess = fs.readFileSync(path.join(root, 'src/main/index.ts'), 'utf8');
+const fsIpc = fs.readFileSync(path.join(root, 'src/main/ipc/fs.ipc.ts'), 'utf8');
+const sshService = fs.readFileSync(path.join(root, 'src/main/services/ssh.service.ts'), 'utf8');
+assert.match(chatMarkdownLink, /window\.electronAPI\.fs\.openPath\(href, sessionId\)/);
+assert.match(chatMarkdownLink, /classifyChatLink\(href, linkText\)/);
+assert.match(chatMarkdownLink, /openLinkInAppBrowser\(href, sessionId\)/);
+assert.match(chatMarkdownLink, /event\.stopPropagation\(\)/);
+assert.match(messageBubble, /ChatMarkdownLink/);
+assert.match(messageList, /ChatMarkdownLink/);
+assert.match(inAppBrowserLink, /ui\.enableSessionBrowser\(session\.id\)/);
+assert.match(inAppBrowserLink, /ui\.createBrowserTab\(session\.id, partitionId, url/);
+assert.match(inAppBrowserLink, /window\.electronAPI\.browser\.navigateTo\(session\.id, url\)/);
+assert.match(markdownResponsePanel, /<ChatMarkdownLink href=\{href\}/);
+assert.match(planPanel, /<ChatMarkdownLink href=\{href\}/);
+assert.match(mainProcess, /webContents\.on\('will-navigate'/);
+assert.match(mainProcess, /Blocked top-level renderer navigation/);
+assert.match(mainProcess, /IPC_CHANNELS\.BROWSER_OPEN_PANEL, \{ url: targetUrl \}/);
+assert.match(fsIpc, /path\.resolve\(worktreePath, normalized\)/);
+assert.match(fsIpc, /shell\.openPath\(resolvedPath\)/);
+assert.match(fsIpc, /sshService\.downloadRemoteFile/);
+assert.match(fsIpc, /'claudette-artifacts'/);
+assert.match(sshService, /async downloadRemoteFile\(/);
+
+console.log('Chat file-link verification passed');

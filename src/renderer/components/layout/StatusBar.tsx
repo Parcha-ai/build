@@ -3,6 +3,8 @@ import { isSessionNotFoundError, useSessionStore } from '../../stores/session.st
 import { useAuthStore } from '../../stores/auth.store';
 import { ChevronDown, Check } from 'lucide-react';
 import CostBadge from '../analytics/CostBadge';
+import { MicrophoneButton } from '../chat/MicrophoneButton';
+import { VoiceModeErrorBoundary } from '../chat/VoiceModeErrorBoundary';
 import type { Branch } from '../../../shared/types';
 
 // Dev instance name from environment variable (set by scripts/dev.sh, passed via preload)
@@ -293,6 +295,11 @@ export default function StatusBar() {
 
       {/* Right section */}
       <div className="flex items-center gap-3">
+        {/* Singleton transport controller; its visible control lives in the active composer. */}
+        <VoiceModeErrorBoundary>
+          <MicrophoneButton />
+        </VoiceModeErrorBoundary>
+
         {activeSession && (
           <>
             <CostBadge />

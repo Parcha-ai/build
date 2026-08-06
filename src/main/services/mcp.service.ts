@@ -11,6 +11,11 @@ import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import { terminateProcessTree } from '../utils/process-tree';
+import {
+  MCP_REMOTE_PACKAGE,
+  ensurePinnedMcpRemoteAuthDirectory,
+  hasCompletedMcpRemoteAuth,
+} from '../utils/mcp-remote-auth';
 import type {
   MCPServerInfo,
   MarketplaceMCPServer,
@@ -21,12 +26,9 @@ import type {
 
 // MCP Registry API endpoint
 const MCP_REGISTRY_API = 'https://registry.modelcontextprotocol.io/v0/servers';
-const MCP_REMOTE_PACKAGE = 'mcp-remote@0.1.38';
 const LINEAR_LEGACY_SSE_URL = 'https://mcp.linear.app/sse';
 const LINEAR_CURRENT_MCP_URL = 'https://mcp.linear.app/mcp';
 const OPEN_DESIGN_MCP_SERVER_ID = 'open-design';
-const OPEN_DESIGN_DEFAULT_DAEMON_URL = 'http://127.0.0.1:7456';
-const OPEN_DESIGN_INSTALL_INFO_TIMEOUT_MS = 2_000;
 
 // Cache for marketplace servers (refresh every 5 minutes)
 let marketplaceCache: MarketplaceMCPServer[] | null = null;
@@ -73,12 +75,6 @@ interface LocalhostMcpPort {
   serverId: string;
   port: number;
   url: string;
-}
-
-interface OpenDesignMcpInstallInfo {
-  command?: unknown;
-  args?: unknown;
-  env?: unknown;
 }
 
 export interface MCPRemoteAuthPrewarmEvent {
@@ -330,59 +326,6 @@ function normalizeStoredMcpServerConfig(config: MCPServerConfig): MCPServerConfi
   return normalized;
 }
 
-function buildOpenDesignMcpConfig(raw: OpenDesignMcpInstallInfo): MCPServerConfig | null {
-  if (typeof raw.command !== 'string' || !raw.command.trim()) return null;
-  if (!Array.isArray(raw.args) || !raw.args.every((arg): arg is string => typeof arg === 'string')) return null;
-
-  const config: MCPServerConfig = {
-    type: 'stdio',
-    command: raw.command,
-    args: raw.args,
-  };
-  const env = sanitizeStringMap(raw.env);
-  if (env) config.env = env;
-  return config;
-}
-
-async function fetchOpenDesignMcpInstallInfo(daemonUrl: string): Promise<MCPServerConfig | null> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), OPEN_DESIGN_INSTALL_INFO_TIMEOUT_MS);
-  try {
-    const base = daemonUrl.replace(/\/$/, '');
-    const response = await fetch(`${base}/api/mcp/install-info`, {
-      signal: controller.signal,
-      headers: { Accept: 'application/json' },
-    });
-    if (!response.ok) return null;
-    return buildOpenDesignMcpConfig(await response.json() as OpenDesignMcpInstallInfo);
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-function shouldReplaceOpenDesignMcpConfig(existing: MCPServerConfig, candidate: MCPServerConfig): boolean {
-  if (configsEqual(existing, candidate)) return false;
-
-  const existingArgs = existing.args || [];
-  const existingEnv = sanitizeStringMap(existing.env);
-  const existingValues = [
-    existing.url,
-    existing.command,
-    existingEnv?.OD_DATA_DIR,
-    existingEnv?.OD_SIDECAR_IPC_PATH,
-    ...existingArgs,
-  ].filter((value): value is string => typeof value === 'string');
-  const existingLooksLikeOpenDesign = existingValues.some((value) =>
-    value.includes('open-design') ||
-    value.includes('Open Design.app') ||
-    value.includes(OPEN_DESIGN_DEFAULT_DAEMON_URL)
-  );
-
-  return existingLooksLikeOpenDesign;
-}
-
 function configsEqual(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }
@@ -594,7 +537,9 @@ interface MCPRegistryResponse {
 }
 
 class MCPService {
-  private authPrewarmInFlight = new Set<string>();
+  private authPrewarmInFlight = new Map<string, Promise<MCPRemoteAuthPrewarmEvent>>();
+  private remoteAuthReadiness = new Map<string, boolean>();
+  private remoteAuthLastAttempt = new Map<string, MCPRemoteAuthPrewarmEvent>();
   private remoteAuthPrewarmListeners = new Set<(event: MCPRemoteAuthPrewarmEvent) => void>();
 
   onRemoteAuthPrewarmFinished(listener: (event: MCPRemoteAuthPrewarmEvent) => void): () => void {
@@ -612,77 +557,157 @@ class MCPService {
     }
   }
 
-  private prewarmMcpRemoteAuth(serverId: string, config: MCPServerConfig): void {
+  private prewarmMcpRemoteAuth(serverId: string, config: MCPServerConfig): Promise<MCPRemoteAuthPrewarmEvent | null> {
     const wrapped = normalizeMcpServerForClaude(config, {}, serverId);
     const remoteUrl = getMcpRemoteUrl(wrapped);
 
-    if (!remoteUrl || wrapped.command !== 'npx' || !wrapped.args?.some(isMcpRemotePackageArg)) {
-      return;
+    if (!remoteUrl?.startsWith('https://') || wrapped.command !== 'npx' || !wrapped.args?.some(isMcpRemotePackageArg)) {
+      return Promise.resolve(null);
     }
 
     const prewarmKey = `${serverId}:${remoteUrl}`;
-    if (this.authPrewarmInFlight.has(prewarmKey)) {
-      return;
+    const inFlight = this.authPrewarmInFlight.get(prewarmKey);
+    if (inFlight) return inFlight;
+
+    const lastAttempt = this.remoteAuthLastAttempt.get(prewarmKey);
+    // Automatic auth is deliberately one-shot for this app process. Retrying
+    // at every harness start is exactly what turns a dismissed or incomplete
+    // OAuth flow into an endless series of browser tabs. A restart or config
+    // URL change provides an intentional retry boundary.
+    if (lastAttempt) {
+      return Promise.resolve(lastAttempt);
     }
 
-    this.authPrewarmInFlight.add(prewarmKey);
-    const args = [...(wrapped.args || [])];
-    if (!args.includes('--auth-timeout')) {
-      args.push('--auth-timeout', '180');
-    }
-
-    const child = spawn('npx', args, {
-      detached: process.platform !== 'win32',
-      env: {
-        ...process.env,
-        ...(wrapped.env || {}),
-      },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-
-    let settled = false;
-    let childExited = false;
-    const finish = (reason: string) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      this.authPrewarmInFlight.delete(prewarmKey);
-      if (!childExited) {
-        terminateProcessTree(child, 1000, true);
+    const promise = (async (): Promise<MCPRemoteAuthPrewarmEvent> => {
+      const prepared = await ensurePinnedMcpRemoteAuthDirectory();
+      if (prepared.migratedFiles > 0) {
+        console.log(`[MCP Service] Migrated ${prepared.migratedFiles} completed OAuth cache files into the pinned mcp-remote directory`);
       }
-      console.log(`[MCP Service] Remote MCP auth prewarm finished for ${serverId}: ${reason}`);
-      this.emitRemoteAuthPrewarmFinished({
+      const args = [...(wrapped.args || [])];
+      if (!args.includes('--auth-timeout')) args.push('--auth-timeout', '180');
+
+      return new Promise<MCPRemoteAuthPrewarmEvent>((resolve) => {
+        const child = spawn('npx', args, {
+          detached: process.platform !== 'win32',
+          env: {
+            ...process.env,
+            ...(wrapped.env || {}),
+          },
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+
+        let settled = false;
+        let childExited = false;
+        const finish = (reason: string) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeout);
+          if (!childExited) terminateProcessTree(child, 1000, true);
+          const event = {
+            serverId,
+            remoteUrl,
+            reason,
+            authenticated: reason === 'authenticated',
+          };
+          this.remoteAuthReadiness.set(serverId, event.authenticated);
+          this.remoteAuthLastAttempt.set(prewarmKey, event);
+          console.log(`[MCP Service] Remote MCP auth prewarm finished for ${serverId}: ${reason}`);
+          this.emitRemoteAuthPrewarmFinished(event);
+          resolve(event);
+        };
+
+        const timeout = setTimeout(() => finish('timeout'), getMcpRemotePrewarmTimeoutMs(args));
+        const handleOutput = (chunk: Buffer) => {
+          const text = chunk.toString();
+          if (
+            text.includes('Proxy established successfully')
+            || text.includes('Local STDIO server running')
+            || text.includes('Authentication completed')
+          ) {
+            finish('authenticated');
+          }
+        };
+
+        child.stdout?.on('data', handleOutput);
+        child.stderr?.on('data', handleOutput);
+        child.on('error', (error) => {
+          console.warn(`[MCP Service] Remote MCP auth prewarm failed for ${serverId}:`, error.message);
+          finish('error');
+        });
+        child.on('exit', (code, signal) => {
+          childExited = true;
+          finish(`exit ${code ?? signal ?? 'unknown'}`);
+        });
+
+        console.log(`[MCP Service] Started remote MCP auth prewarm for ${serverId}`);
+      });
+    })().catch((error): MCPRemoteAuthPrewarmEvent => {
+      const event = {
         serverId,
         remoteUrl,
-        reason,
-        authenticated: reason === 'authenticated',
-      });
-    };
+        reason: `error: ${error instanceof Error ? error.message : String(error)}`,
+        authenticated: false,
+      };
+      this.remoteAuthReadiness.set(serverId, false);
+      this.remoteAuthLastAttempt.set(prewarmKey, event);
+      console.warn(`[MCP Service] Could not prepare remote MCP auth for ${serverId}:`, error);
+      this.emitRemoteAuthPrewarmFinished(event);
+      return event;
+    });
+    this.authPrewarmInFlight.set(prewarmKey, promise);
+    void promise.finally(() => {
+      if (this.authPrewarmInFlight.get(prewarmKey) === promise) this.authPrewarmInFlight.delete(prewarmKey);
+    });
+    return promise;
+  }
 
-    const timeout = setTimeout(() => finish('timeout'), getMcpRemotePrewarmTimeoutMs(args));
-    const handleOutput = (chunk: Buffer) => {
-      const text = chunk.toString();
-      if (
-        text.includes('Proxy established successfully') ||
-        text.includes('Local STDIO server running') ||
-        text.includes('Authentication completed')
-      ) {
-        finish('authenticated');
+  async ensureConfiguredRemoteAuth(): Promise<Record<string, boolean>> {
+    const configs = this.getStoredMcpServersConfig();
+    const results = await Promise.all(Object.entries(configs).map(async ([serverId, config]) => {
+      const event = await this.prewarmMcpRemoteAuth(serverId, config);
+      return event ? [serverId, event.authenticated] as const : null;
+    }));
+    return Object.fromEntries(results.filter((result): result is readonly [string, boolean] => result !== null));
+  }
+
+  /**
+   * Discover completed desktop OAuth state without starting mcp-remote.
+   * Startup and routine harness sync must never open a browser. Interactive
+   * OAuth remains confined to an explicit server install/reconnect action.
+   */
+  async prepareConfiguredRemoteAuth(): Promise<Record<string, boolean>> {
+    await ensurePinnedMcpRemoteAuthDirectory();
+    const configs = this.getStoredMcpServersConfig();
+    const results = await Promise.all(Object.entries(configs).map(async ([serverId, config]) => {
+      const wrapped = normalizeMcpServerForClaude(config, {}, serverId);
+      const remoteUrl = getMcpRemoteUrl(wrapped);
+      if (!remoteUrl?.startsWith('https://') || wrapped.command !== 'npx' || !wrapped.args?.some(isMcpRemotePackageArg)) {
+        return null;
       }
-    };
+      const authenticated = await hasCompletedMcpRemoteAuth(remoteUrl);
+      this.remoteAuthReadiness.set(serverId, authenticated);
+      return [serverId, authenticated] as const;
+    }));
+    const readiness = Object.fromEntries(results.filter((result): result is readonly [string, boolean] => result !== null));
+    console.log('[MCP Service] Prepared remote MCP auth from cache without browser OAuth:', readiness);
+    return readiness;
+  }
 
-    child.stdout?.on('data', handleOutput);
-    child.stderr?.on('data', handleOutput);
-    child.on('error', (error) => {
-      console.warn(`[MCP Service] Remote MCP auth prewarm failed for ${serverId}:`, error.message);
-      finish('error');
-    });
-    child.on('exit', (code, signal) => {
-      childExited = true;
-      finish(`exit ${code ?? signal ?? 'unknown'}`);
-    });
-
-    console.log(`[MCP Service] Started remote MCP auth prewarm for ${serverId}`);
+  getUnavailableRemoteAuthServerIds(): Set<string> {
+    const unavailable = new Set<string>();
+    for (const [serverId, config] of Object.entries(this.getStoredMcpServersConfig())) {
+      const wrapped = normalizeMcpServerForClaude(config, {}, serverId);
+      const remoteUrl = getMcpRemoteUrl(wrapped);
+      const requiresDesktopAuthCheck = Boolean(
+        remoteUrl?.startsWith('https://')
+        && wrapped.command === 'npx'
+        && wrapped.args?.some(isMcpRemotePackageArg),
+      );
+      if (requiresDesktopAuthCheck && this.remoteAuthReadiness.get(serverId) !== true) {
+        unavailable.add(serverId);
+      }
+    }
+    return unavailable;
   }
 
   /**
@@ -746,8 +771,10 @@ class MCPService {
   getClaudeMcpServersConfig(options: ClaudeMcpOptions = {}): Record<string, MCPServerConfig> {
     const configs = this.getUserMcpServersConfig();
     const normalized: Record<string, MCPServerConfig> = {};
+    const unavailableAuth = this.getUnavailableRemoteAuthServerIds();
 
     for (const [name, config] of Object.entries(configs)) {
+      if (unavailableAuth.has(name)) continue;
       normalized[name] = normalizeMcpServerForClaude(config, options, name);
     }
 
@@ -768,8 +795,10 @@ class MCPService {
   getHarnessMcpServersConfig(): Record<string, MCPServerConfig> {
     const configs = this.getUserMcpServersConfig();
     const sanitized: Record<string, MCPServerConfig> = {};
+    const unavailableAuth = this.getUnavailableRemoteAuthServerIds();
 
     for (const [name, config] of Object.entries(configs)) {
+      if (unavailableAuth.has(name)) continue;
       const harnessConfig = sanitizeHarnessConfig(config, name);
       if (harnessConfig) {
         sanitized[name] = harnessConfig;
@@ -839,8 +868,10 @@ class MCPService {
   ): Record<string, MCPServerConfig> {
     const configs = this.getUserMcpServersConfig();
     const normalized: Record<string, MCPServerConfig> = {};
+    const unavailableAuth = this.getUnavailableRemoteAuthServerIds();
 
     for (const [name, config] of Object.entries(configs)) {
+      if (unavailableAuth.has(name)) continue;
       if (bridgePorts.has(name)) {
         // Replace native stdio with HTTP pointing at the bridge
         normalized[name] = {
@@ -853,6 +884,11 @@ class MCPService {
         if (config.tools) {
           normalized[name].tools = config.tools.map((tool) => ({ ...tool }));
         }
+      } else if (isNativeStdioServer(config)) {
+        // A native desktop command cannot run on the SSH host. If its local
+        // bridge failed to start, omit it for this sync instead of copying the
+        // unusable command and making every remote harness retry it.
+        continue;
       } else {
         normalized[name] = normalizeMcpServerForClaude(config, options, name);
       }
@@ -870,8 +906,10 @@ class MCPService {
   ): { servers: Record<string, MCPServerConfig>; serverIds: string[]; removeServerIds: string[] } {
     const configs = this.getUserMcpServersConfig();
     const servers: Record<string, MCPServerConfig> = {};
+    const unavailableAuth = this.getUnavailableRemoteAuthServerIds();
 
     for (const [name, config] of Object.entries(configs)) {
+      if (unavailableAuth.has(name)) continue;
       if (bridgePorts.has(name)) {
         servers[name] = {
           type: 'http',
@@ -883,6 +921,8 @@ class MCPService {
         if (config.tools) {
           servers[name].tools = config.tools.map((tool) => ({ ...tool }));
         }
+      } else if (isNativeStdioServer(config)) {
+        continue;
       } else {
         const harnessConfig = sanitizeHarnessConfig(config, name);
         if (harnessConfig) {
@@ -1051,8 +1091,8 @@ class MCPService {
     );
   }
 
-  async syncLocalHarnessConfigs(openDesignDaemonUrl = OPEN_DESIGN_DEFAULT_DAEMON_URL): Promise<HarnessMcpSyncResult> {
-    await this.ensureOpenDesignMcpServer(openDesignDaemonUrl);
+  async syncLocalHarnessConfigs(): Promise<HarnessMcpSyncResult> {
+    await this.prepareConfiguredRemoteAuth();
 
     const { servers, serverIds, removeServerIds } = this.getHarnessMcpSyncData();
     const removeServerIdSet = new Set(removeServerIds);
@@ -1060,8 +1100,11 @@ class MCPService {
     const result: HarnessMcpSyncResult = { errors: {} };
 
     try {
-      await this.mergeMcpJsonFile(path.join(homeDir, '.cursor', 'mcp.json'), servers, removeServerIdSet);
-      result.cursor = 'synced';
+      // Cursor Desktop eagerly starts every global MCP and retries failed ones
+      // forever. Build already injects this same config into each Cursor SDK
+      // session, so global entries only create duplicate OAuth processes.
+      await this.mergeMcpJsonFile(path.join(homeDir, '.cursor', 'mcp.json'), {}, removeServerIdSet);
+      result.cursor = 'managed globals removed; injected per Build session';
     } catch (error) {
       result.errors.cursor = error instanceof Error ? error.message : String(error);
     }
@@ -1102,44 +1145,21 @@ class MCPService {
   }
 
   /**
-   * OpenDesign is a built-in Build surface, but the agent-facing MCP bridge is
-   * stored as a normal custom MCP server so all harnesses can consume it. If
-   * that store entry gets lost or points at an old daemon, repair it from the
-   * same Open Design daemon URL that Build's design service is using.
+   * Retire the legacy registry entry that exposed Build's design backend as a
+   * normal MCP. DesignMode is now an app capability, so this ID must stay in
+   * the removal set long enough to clean it out of every managed harness.
    */
-  async ensureOpenDesignMcpServer(daemonUrl = OPEN_DESIGN_DEFAULT_DAEMON_URL): Promise<boolean> {
-    const existing = this.getUserMcpServersConfig()[OPEN_DESIGN_MCP_SERVER_ID];
-    const config = await fetchOpenDesignMcpInstallInfo(daemonUrl);
-
-    if (existing?.command || existing?.url) {
-      if (!config || !shouldReplaceOpenDesignMcpConfig(existing, config)) {
-        this.markHarnessServerInstalled(OPEN_DESIGN_MCP_SERVER_ID);
-        return false;
-      }
-
-      const result = await this.installServerRaw(OPEN_DESIGN_MCP_SERVER_ID, config);
-      if (result.success) {
-        console.log('[MCP Service] Updated OpenDesign MCP server from Build design daemon install-info');
-        return true;
-      }
-
-      console.warn('[MCP Service] Failed to update stale OpenDesign MCP server:', result.error);
-      this.markHarnessServerInstalled(OPEN_DESIGN_MCP_SERVER_ID);
-      return false;
+  async removeLegacyOpenDesignMcpServer(): Promise<boolean> {
+    const configured = Boolean(this.getUserMcpServersConfig()[OPEN_DESIGN_MCP_SERVER_ID]);
+    const managed = this.getHarnessManagedServerIds().includes(OPEN_DESIGN_MCP_SERVER_ID);
+    const result = await this.uninstallServer(OPEN_DESIGN_MCP_SERVER_ID);
+    if (!result.success) {
+      throw new Error(result.error || 'Could not retire the legacy open-design MCP');
     }
-
-    if (!config) {
-      return false;
+    if (configured || managed) {
+      console.log('[MCP Service] Retired legacy open-design MCP; DesignMode remains available as an app action');
     }
-
-    const result = await this.installServerRaw(OPEN_DESIGN_MCP_SERVER_ID, config);
-    if (result.success) {
-      console.log('[MCP Service] Restored OpenDesign MCP server from Build design daemon install-info');
-      return true;
-    }
-
-    console.warn('[MCP Service] Failed to restore OpenDesign MCP server:', result.error);
-    return false;
+    return configured || managed;
   }
 
   /**
@@ -1151,8 +1171,8 @@ class MCPService {
     // Add built-in servers
     const builtInServers: MCPServerInfo[] = [
       {
-        id: 'claudette-browser',
-        name: 'Claudette Browser',
+        id: 'build-browser',
+        name: 'Build Browser',
         description: 'Built-in browser automation tools (snapshot, navigate, act)',
         version: '2.0.0',
         status: 'active',
@@ -1165,13 +1185,13 @@ class MCPService {
       },
       {
         id: 'claudette-design',
-        name: 'Claudette Design',
-        description: 'Built-in Open Design handoff tool for visual design sessions',
+        name: 'Design Mode',
+        description: 'Built-in DesignMode app action for visual design sessions',
         version: '1.0.0',
         status: 'active',
         type: 'sdk',
         tools: [
-          { name: 'DesignMode', description: 'Hand off a visual design brief to the embedded Open Design workspace' },
+          { name: 'DesignMode', description: 'Start DesignMode with a visual brief for this session' },
         ],
       },
     ];

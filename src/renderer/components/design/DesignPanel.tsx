@@ -54,7 +54,7 @@ export default function DesignPanel({ sessionId, chromeless }: DesignPanelProps)
       <div className="h-10 flex items-center justify-between px-3 border-b border-claude-border bg-claude-surface">
         <div className="flex items-center gap-2 min-w-0">
           <span className="text-pink-400 flex-shrink-0"><OpenDesignIcon size={15} /></span>
-          <span className="text-sm font-medium truncate">Design</span>
+          <span className="text-sm font-medium truncate">Design Mode</span>
           {panel?.workspaceDir && (
             <span className="text-[10px] font-mono text-claude-text-secondary truncate" title={panel.workspaceDir}>
               {panel.workspaceDir.split('/').slice(-2).join('/')}
@@ -104,7 +104,7 @@ export default function DesignPanel({ sessionId, chromeless }: DesignPanelProps)
         <div className="flex-1 flex flex-col items-center justify-center gap-3 text-claude-text-secondary px-6 text-center">
           <span className="text-pink-400/60"><OpenDesignIcon size={28} /></span>
           <p className="text-sm max-w-sm">
-            Design mode embeds an Open Design canvas here. Ask the agent to design something, or start a design
+            Design Mode opens a live design canvas here. Ask the agent to design something, or start a design
             workspace for this session now.
           </p>
           <button
@@ -113,7 +113,7 @@ export default function DesignPanel({ sessionId, chromeless }: DesignPanelProps)
             className="px-3 py-1.5 rounded bg-claude-surface border border-claude-border text-sm text-claude-text hover:bg-claude-bg disabled:opacity-50 flex items-center gap-2"
           >
             {isActivating && <Loader2 size={14} className="animate-spin" />}
-            {isActivating ? 'Starting Open Design…' : 'Start design workspace'}
+            {isActivating ? 'Starting Design Mode…' : 'Start design workspace'}
           </button>
           {activationError && (
             <p className="text-xs text-red-400 max-w-sm break-words">{activationError}</p>

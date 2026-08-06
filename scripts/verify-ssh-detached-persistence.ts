@@ -18,7 +18,10 @@ assert.match(sshService, /Detached bridge did not become ready; reinstalling onc
 assert.match(sshService, /launcher\.log/);
 assert.match(sshService, /chmod 600/);
 assert.match(sshService, /RECOVERABLE_BRIDGE_COMMANDS\.has\(job\.command\)/);
-assert.match(sshService, /claude-code.*\|codex\|/);
+const activeProbe = sshService.match(/async hasActiveRemoteProcess\([\s\S]*?\n {2}\}/)?.[0] || '';
+assert.match(activeProbe, /test -f "\$jobdir\/recovered\.json" && continue/);
+assert.match(activeProbe, /kill -0 "\$pid"/);
+assert.doesNotMatch(activeProbe, /buildSessionEnvProcessLoop/, 'normal admission must rely on detached bridge ownership, not a full process scan');
 assert.match(sshService, /metadata\.json/);
 assert.match(codexService, /command: 'codex',[\s\S]{0,260}requireDetached: true/);
 assert.match(sshService, /command: 'claude',[\s\S]{0,300}requireDetached: true/);

@@ -1040,10 +1040,19 @@ Only return the title, nothing else.`
     // Resolve the SDK session ID for the parent — this is what the SDK knows
     // the session as (may differ from our internal parentSessionId).
     const rawMappedParentSdkSessionId = this.store.get(`sdkSessionMappings.${parentSessionId}`) as string | undefined;
+    // A Build session id and a Claude SDK conversation id are both UUIDs, so
+    // syntax validation cannot tell them apart. Remote sessions must only
+    // trust ids that were explicitly recorded by the SDK. Falling back to the
+    // Build id here poisons the child with --resume=<build-tab-id>; the error
+    // then remains dormant while another harness (for example Codex) handles
+    // the child's early turns.
+    const rawParentSdkSessionId = rawMappedParentSdkSessionId === 'new'
+      ? undefined
+      : rawMappedParentSdkSessionId
+        || parentSession.sdkSessionId
+        || (parentSession.sshConfig ? undefined : parentSessionId);
     const parentSdkSessionId = normalizeClaudeSdkSessionId(
-      rawMappedParentSdkSessionId === 'new'
-        ? undefined
-        : rawMappedParentSdkSessionId || parentSession.sdkSessionId || parentSessionId
+      rawParentSdkSessionId
     );
 
     let forkedSessionId: string;

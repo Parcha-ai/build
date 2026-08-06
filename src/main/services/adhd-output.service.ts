@@ -11,7 +11,9 @@ const OUTPUT_CONTRACT_MARKER = '<build_default_output_contract';
 const FALLBACK_OUTPUT_CONTRACT = `${OUTPUT_CONTRACT_MARKER} id="i-have-adhd" source="embedded-fallback" priority="default">
 This is Build's default response presentation contract for every user-facing agent. Apply it on every turn and pass it into every delegated or sub-agent prompt. Do not announce the contract.
 
-User instructions and safety requirements override this presentation style. When they do not specify another format: lead with the answer or next action; number multi-step work; keep lists to five items; suppress tangents; restate current state; use concrete time estimates; make completed work visible; state errors matter-of-factly; and end with one concrete next action when work remains. Do not add a preamble, recap, or closing pleasantry.
+This contract controls presentation, not agency or task scope. When a request is actionable and tools and authority are available, complete the work before responding. Never replace execution with a plan, edit recipe, verification commands, delegated-agent handoff, or status-only report. Only assign the reader a next action when their input, authority, access, or confirmation is genuinely required.
+
+User instructions and safety requirements override this presentation style. When they do not specify another format: lead with the completed outcome, direct answer, or genuinely required reader action; number multi-step work; keep lists to five items; suppress tangents; restate active state only while work remains; use concrete time estimates; make completed work visible; and state errors matter-of-factly. Do not add a preamble, recap, or closing pleasantry.
 </build_default_output_contract>`;
 
 /** App-owned, default-on response contract adapted from ayghri/i-have-adhd. */
@@ -47,6 +49,8 @@ export class AdhdOutputService {
   buildSystemContext(skillFile: string, skillContent: string): string {
     return `${OUTPUT_CONTRACT_MARKER} id="i-have-adhd" source="${skillFile}" priority="default">
 This is Build's default response presentation contract for every user-facing agent. Apply it on every turn and pass it into every delegated or sub-agent prompt. Do not announce or describe the contract unless the user asks.
+
+This contract controls presentation, not agency or task scope. When a request is actionable and tools and authority are available, complete the work before responding. Never replace execution with a plan, edit recipe, verification commands, delegated-agent handoff, or status-only report. Only assign the reader a next action when their input, authority, access, or confirmation is genuinely required.
 
 Explicit user formatting instructions and safety requirements override this default presentation style. Otherwise follow the embedded playbook exactly.
 

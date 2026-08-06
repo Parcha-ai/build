@@ -3,7 +3,10 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as readline from 'readline';
 import { PassThrough } from 'stream';
-import { CodexAppServerConnection } from '../src/main/services/codex-app-server-connection';
+import {
+  CodexAppServerConnection,
+  getCodexAppServerMessageTurnId,
+} from '../src/main/services/codex-app-server-connection';
 import { getHarnessCapabilities } from '../src/main/services/harness-capabilities';
 import { messageQueueService } from '../src/main/services/message-queue.service';
 import { filterRemoteCodexEnvironment } from '../src/main/utils/remote-codex-env';
@@ -44,6 +47,24 @@ async function verifyProtocolAcknowledgement(): Promise<void> {
   connection.endInput();
   connection.dispose();
   reader.close();
+}
+
+function verifyDelegatedTurnCorrelation(): void {
+  assert.strictEqual(getCodexAppServerMessageTurnId({
+    method: 'item/completed',
+    params: {
+      turnId: 'child-turn',
+      item: { type: 'agentMessage', text: 'sent to lead' },
+    },
+  }), 'child-turn');
+  assert.strictEqual(getCodexAppServerMessageTurnId({
+    method: 'turn/completed',
+    params: { turn: { id: 'child-turn', status: 'completed' } },
+  }), 'child-turn');
+  assert.strictEqual(getCodexAppServerMessageTurnId({
+    method: 'thread/started',
+    params: { thread: { id: 'thread-1' } },
+  }), undefined);
 }
 
 async function verifyCodexQueueDrainsDuringStreaming(): Promise<void> {
@@ -91,6 +112,17 @@ function verifyWiringAndCopy(): void {
   assert.ok(!queuePanel.includes('queue.length === 0 || (isProcessingQueue && isStreaming)'));
   assert.ok(codexService.includes("if (event.type === 'error') {\n          pendingAppServerError"));
   assert.ok(codexService.includes('terminalFailure: true'));
+  assert.ok(codexService.includes('getCodexAppServerMessageTurnId(message)'));
+  assert.ok(codexService.includes("Ignoring non-root ${message.method || 'notification'}"));
+  assert.ok(codexService.includes('notificationTurnId !== activeState.turnId'));
+  assert.ok(!codexService.includes('activeState.turnId = notificationTurnId'));
+  assert.ok(codexService.includes("case 'item/agentMessage/delta':"));
+  assert.ok(codexService.includes("event.item.phase === 'final_answer' ? 'text_delta' : 'thinking_delta'"));
+  assert.ok(codexService.includes('streamedAgentMessageIds.has(event.item.id)'));
+  assert.ok(codexService.includes("content: nativeThread?.resumeThreadId ? 'Resuming Codex thread…\\n' : 'Starting Codex thread…\\n'"));
+  assert.ok(codexService.includes('/app-server (?:output|connection) closed|app-server is not writable/i'));
+  assert.ok(codexService.includes('CODEX_DEVELOPER_INSTRUCTIONS_VERSION = 2'));
+  assert.ok(codexService.includes('Retired pre-v${this.CODEX_DEVELOPER_INSTRUCTIONS_VERSION} native thread'));
   assert.ok(claudeIpc.includes('completedSession?.sshConfig && !terminalProviderFailure'));
   assert.ok(claudeIpc.includes("'terminal provider failure'"));
 }
@@ -125,6 +157,7 @@ function verifyRemoteCodexEnvironmentIsolation(): void {
 
 async function main(): Promise<void> {
   await verifyProtocolAcknowledgement();
+  verifyDelegatedTurnCorrelation();
   await verifyCodexQueueDrainsDuringStreaming();
   verifyWiringAndCopy();
   verifyRemoteCodexEnvironmentIsolation();

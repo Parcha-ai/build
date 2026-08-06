@@ -230,6 +230,8 @@ export interface GoalOrchestration {
 
 export interface RoutingDecision {
   tier: TaskTier;
+  categoryId?: string;
+  categoryLabel?: string;
   domain?: TaskDomain;
   resolvedModel: string;
   resolvedHarness?: Harness;
@@ -262,31 +264,37 @@ export interface AutoRouterConfig {
   enabled: boolean;
   prePlanEnabled: boolean;
   prePlanModel: string;
+  prModel: string;
   planModel: string;
   buildModel: string;
   verifyModel: string;
   refineModel: string;
   fallbackModel: string;
+  prEffort?: string;
   planEffort?: string;
   buildEffort?: string;
   verifyEffort?: string;
   refineEffort?: string;
   fallbackEffort?: string;
+  prSpeed?: MetaHarnessSpeed;
   planSpeed?: MetaHarnessSpeed;
   buildSpeed?: MetaHarnessSpeed;
   verifySpeed?: MetaHarnessSpeed;
   refineSpeed?: MetaHarnessSpeed;
   fallbackSpeed?: MetaHarnessSpeed;
+  prWorkflow?: MetaWorkflowMode;
   planWorkflow?: MetaWorkflowMode;
   buildWorkflow?: MetaWorkflowMode;
   verifyWorkflow?: MetaWorkflowMode;
   refineWorkflow?: MetaWorkflowMode;
   fallbackWorkflow?: MetaWorkflowMode;
+  prBudgetUsd?: number;
   planBudgetUsd?: number;
   buildBudgetUsd?: number;
   verifyBudgetUsd?: number;
   refineBudgetUsd?: number;
   fallbackBudgetUsd?: number;
+  prVerification?: MetaVerificationMode;
   planVerification?: MetaVerificationMode;
   buildVerification?: MetaVerificationMode;
   verifyVerification?: MetaVerificationMode;
@@ -340,6 +348,38 @@ export interface ParableConfig {
   repoNotes?: string;
   executors: ParableExecutorConfig[];
   checks: ParableCheckConfig[];
+}
+
+export type ParableVendor = 'claude' | 'chatgpt' | 'xai';
+
+export interface ParableProviderAuthStatus {
+  present: boolean;
+  recordCount: number;
+}
+
+export interface ParableSubscriptionStatus {
+  configured: boolean;
+  ready: boolean;
+  runtimeInstalled: boolean;
+  runtimeVersion?: string;
+  configDir: string;
+  configPath: string;
+  launcherPath: string;
+  vendors: ParableVendor[];
+  providers: Record<ParableVendor, ParableProviderAuthStatus>;
+  error?: string;
+}
+
+export type ParableAuthPhase = 'idle' | 'starting' | 'waiting' | 'complete' | 'error' | 'cancelled';
+
+export interface ParableAuthRunState {
+  running: boolean;
+  output: string;
+  exitCode?: number;
+  vendor?: ParableVendor;
+  phase?: ParableAuthPhase;
+  authorizationUrl?: string;
+  userCode?: string;
 }
 
 export interface SessionPhase {
@@ -504,6 +544,22 @@ export interface BrowserChatInsertPayload {
   };
 }
 
+export interface ArcBrowserProfile {
+  id: string;
+  name: string;
+  isDefault: boolean;
+  cookieCount: number;
+}
+
+export interface ArcCookieImportResult {
+  profileId: string;
+  profileName: string;
+  imported: number;
+  skipped: number;
+  failed: number;
+  importedAt: string;
+}
+
 export interface ContainerStats {
   cpuPercent: number;
   memoryUsage: number;
@@ -521,12 +577,47 @@ export interface FocusTask {
   createdAt: string;
   completedAt?: string;
   subtasks?: FocusSubtask[];
+  /** Explicitly allows Pomodoro focus without navigating to a Build session. */
+  pomodoroExternal?: boolean;
 }
 
 export interface FocusSubtask {
   id: string;
   title: string;
   done: boolean;
+}
+
+export type PomodoroStatus = 'idle' | 'running' | 'paused' | 'completed';
+
+export interface PomodoroState {
+  status: PomodoroStatus;
+  taskId?: string;
+  taskTitle?: string;
+  subtaskId?: string;
+  subtaskTitle?: string;
+  sessionId?: string;
+  external: boolean;
+  durationSeconds: number;
+  remainingSeconds: number;
+  startedAt?: number;
+  endsAt?: number;
+  completedAt?: number;
+}
+
+export interface PomodoroStartRequest {
+  taskId: string;
+  taskTitle: string;
+  subtaskId: string;
+  subtaskTitle: string;
+  sessionId?: string;
+  external?: boolean;
+  durationMinutes?: number;
+}
+
+export interface PomodoroUIRequest {
+  action: 'start-first' | 'open-active';
+  taskId?: string;
+  sessionId?: string;
 }
 
 export interface AppSettings {
@@ -841,3 +932,4 @@ export interface DownloadSessionConfig {
 
 // Export audio types
 export * from './audio';
+export * from './realtime-voice';

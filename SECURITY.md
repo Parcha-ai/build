@@ -23,4 +23,4 @@ Third-party dependencies are managed via npm and are outside the direct scope of
 
 ## API Keys
 
-Build stores API keys locally via `electron-store`. Keys are never transmitted to any server other than the respective API provider (Anthropic, OpenAI, ElevenLabs). No telemetry or analytics are collected.
+Build stores API keys locally via `electron-store`. Keys are never transmitted to any server other than the respective API provider (Anthropic or OpenAI). The Realtime WebRTC transport receives only a short-lived client secret, not the stored OpenAI API key. No telemetry or analytics are collected.

@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useMemo, memo } from 'react';
+import React, { useEffect, useLayoutEffect, useState, useMemo, memo } from 'react';
 import { useAuthStore } from './stores/auth.store';
 import { useSessionStore } from './stores/session.store';
 import { useUIStore } from './stores/ui.store';
@@ -21,6 +21,7 @@ import BedtimeTaskReviewModal from './components/tasks/BedtimeTaskReviewModal';
 import { Terminal, Globe, PanelRight, Settings, PanelLeftClose, Monitor, AlertTriangle, Package, FileText, FileCode, ClipboardList, GitBranch, Plus } from 'lucide-react';
 import OpenDesignIcon from './components/design/OpenDesignIcon';
 import { getBrowserPartitionId } from '../shared/utils/browser-partition';
+import { openLinkInAppBrowser } from './utils/open-link-in-browser';
 import BrowserSessionTab from './components/preview/BrowserSessionTab';
 import BrowserPreviewBoundary from './components/preview/BrowserPreviewBoundary';
 import type { BrowserChatInsertPayload } from '../shared/types';
@@ -298,9 +299,19 @@ function ElectronApp() {
   const cycleSplitRatio = useUIStore((s) => s.cycleSplitRatio);
   const openSettings = useUIStore((s) => s.openSettings);
   const hasApiKey = useUIStore((s) => s.hasApiKey);
+  const setActivePanelSession = useUIStore((s) => s.setActivePanelSession);
   const isEditorOpen = useEditorStore((s) => s.isEditorOpen);
   const openEditor = useEditorStore((s) => s.openEditor);
   const closeEditor = useEditorStore((s) => s.closeEditor);
+  const setActiveEditorSession = useEditorStore((s) => s.setActiveSession);
+
+  // Panel layout and editor tabs belong to the exact conversation session.
+  // Hydrate before paint so switching sessions never flashes or inherits the
+  // previous session's right-side workspace.
+  useLayoutEffect(() => {
+    setActivePanelSession(activeSessionId);
+    setActiveEditorSession(activeSessionId);
+  }, [activeSessionId, setActiveEditorSession, setActivePanelSession]);
 
   // Toggle editor panel
   const toggleEditorPanel = () => {
@@ -559,6 +570,15 @@ function ElectronApp() {
     const handleKeyDown = (e: KeyboardEvent) => {
       const primaryModifierPressed = e[PRIMARY_MODIFIER_KEY];
 
+      // Cmd+Shift+Y: Toggle app-level voice mode. The main-process bridge
+      // handles packaged builds and embedded browser focus; this path keeps
+      // the shortcut working in the renderer-only development environment.
+      if (primaryModifierPressed && e.shiftKey && !e.altKey && e.code === 'KeyY') {
+        e.preventDefault();
+        if (!e.repeat) window.dispatchEvent(new CustomEvent('grep-voice-toggle'));
+        return;
+      }
+
       // Cmd+Shift+G: Toggle Command Center
       if (primaryModifierPressed && e.shiftKey && e.key === 'g') {
         e.preventDefault();
@@ -597,6 +617,9 @@ function ElectronApp() {
   useEffect(() => {
     const unsubscribe = window.electronAPI.app.onShortcutTriggered(({ action }) => {
       switch (action) {
+        case 'toggle-voice-mode':
+          window.dispatchEvent(new CustomEvent('grep-voice-toggle'));
+          return;
         case 'toggle-command-center':
           useUIStore.getState().toggleCommandCenter();
           return;
@@ -736,7 +759,12 @@ function ElectronApp() {
 
   // Open browser panel when requested by main process (for Stagehand initialization)
   useEffect(() => {
-    const unsubscribe = window.electronAPI.browser.onBrowserOpenPanel((data: { sessionId: string }) => {
+    const unsubscribe = window.electronAPI.browser.onBrowserOpenPanel((data: { sessionId?: string; url?: string }) => {
+      if (data.url) {
+        void openLinkInAppBrowser(data.url, data.sessionId);
+        return;
+      }
+      if (!data.sessionId) return;
       console.log('[App] Browser panel open requested for session:', data.sessionId);
       const uiState = useUIStore.getState();
       const sessionState = useSessionStore.getState();
@@ -1046,6 +1074,7 @@ function BrowserOnlyApp() {
   const activeBrowserOwnerSession = activeBrowserTab
     ? sessions.find((session) => session.id === activeBrowserTab.ownerSessionId) || null
     : null;
+  const activeBrowserRuntimeSession = fallbackOwner || activeBrowserOwnerSession;
 
   useEffect(() => {
     if (!ready || !fallbackOwner) return;
@@ -1060,7 +1089,7 @@ function BrowserOnlyApp() {
     }
   }, [activeBrowserTabId, browserTabsForPartition, createBrowserTab, fallbackOwner, ready, sessions, setActiveBrowserTab]);
 
-  if (!ready || !activeBrowserTab || !activeBrowserOwnerSession) {
+  if (!ready || !activeBrowserTab || !activeBrowserRuntimeSession) {
     return (
       <div className="h-screen w-screen flex items-center justify-center bg-claude-bg">
         <p className="text-claude-text-secondary font-mono text-sm">Loading browser...</p>
@@ -1118,7 +1147,7 @@ function BrowserOnlyApp() {
           >
             <BrowserPreviewBoundary tabId={activeBrowserTab.id}>
               <BrowserPreview
-                session={activeBrowserOwnerSession}
+                session={activeBrowserRuntimeSession}
                 isVisible={true}
                 partitionId={activeBrowserTab.partitionId}
                 browserTabId={activeBrowserTab.id}

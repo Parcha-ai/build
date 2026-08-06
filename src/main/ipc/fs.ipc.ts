@@ -1,10 +1,13 @@
-import { IpcMain } from 'electron';
+import { IpcMain, shell } from 'electron';
 import { IPC_CHANNELS } from '../../shared/constants/channels';
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import * as os from 'os';
 import { spawn } from 'child_process';
+import { createHash } from 'crypto';
 import { sessionService } from './session.ipc';
 import { sshService } from '../services/ssh.service';
+import { chatFilePathFromHref } from '../../shared/utils/chat-links';
 
 const FS_DEBUG = process.env.GREP_DEBUG_FS === '1';
 function debugFs(...args: unknown[]): void {
@@ -17,6 +20,12 @@ function stripPathLineSuffix(filePath: string): string {
   const basePath = match[1];
   if (!basePath.includes('/') && !basePath.includes('\\')) return filePath;
   return basePath;
+}
+
+function resolveFilePathForSession(filePath: string, worktreePath?: string): string {
+  const normalized = stripPathLineSuffix(chatFilePathFromHref(filePath));
+  if (!worktreePath || path.isAbsolute(normalized)) return normalized;
+  return path.resolve(worktreePath, normalized);
 }
 
 export interface FileEntry {
@@ -205,11 +214,10 @@ export function registerFsHandlers(ipcMain: IpcMain): void {
   // Read file content - supports both local and SSH sessions
   ipcMain.handle(IPC_CHANNELS.FS_READ_FILE, async (_event, filePath: string, sessionId?: string) => {
     debugFs('[FS] FS_READ_FILE called, filePath:', filePath, 'sessionId:', sessionId);
-    const normalizedFilePath = stripPathLineSuffix(filePath);
     try {
-      // If sessionId provided, check if it's an SSH session
+      const session = sessionId ? await sessionService.getSession(sessionId) : undefined;
+      const normalizedFilePath = resolveFilePathForSession(filePath, session?.worktreePath);
       if (sessionId) {
-        const session = await sessionService.getSession(sessionId);
         debugFs('[FS] Session found:', !!session, 'has sshConfig:', !!session?.sshConfig);
         if (session?.sshConfig) {
           debugFs('[FS] Reading file from SSH session:', normalizedFilePath);
@@ -238,14 +246,42 @@ export function registerFsHandlers(ipcMain: IpcMain): void {
     }
   });
 
+  // Open generated artifacts in the host OS. Resolve relative Markdown links
+  // against the session worktree instead of Electron's process cwd.
+  ipcMain.handle(IPC_CHANNELS.FS_OPEN_PATH, async (_event, filePath: string, sessionId?: string) => {
+    try {
+      const session = sessionId ? await sessionService.getSession(sessionId) : undefined;
+      const resolvedPath = resolveFilePathForSession(filePath, session?.worktreePath);
+      if (session?.sshConfig) {
+        const fingerprint = createHash('sha256')
+          .update(`${session.id}\0${resolvedPath}`)
+          .digest('hex')
+          .slice(0, 16);
+        const safeSessionId = session.id.replace(/[^a-zA-Z0-9._-]/g, '_');
+        const safeName = path.basename(resolvedPath).replace(/[^a-zA-Z0-9._-]/g, '_') || 'artifact';
+        const localPath = path.join(os.tmpdir(), 'claudette-artifacts', safeSessionId, `${fingerprint}-${safeName}`);
+        await sshService.downloadRemoteFile(session.id, session.sshConfig, resolvedPath, localPath);
+        const error = await shell.openPath(localPath);
+        return error
+          ? { success: false, path: localPath, error }
+          : { success: true, path: localPath };
+      }
+      const error = await shell.openPath(resolvedPath);
+      return error
+        ? { success: false, path: resolvedPath, error }
+        : { success: true, path: resolvedPath };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
   // Write file content (creates parent directories if needed) - supports SSH sessions via sessionId
   ipcMain.handle(IPC_CHANNELS.FS_WRITE_FILE, async (_event, filePath: string, content: string, sessionId?: string) => {
     debugFs('[FS] FS_WRITE_FILE called, filePath:', filePath, 'sessionId:', sessionId);
-    const normalizedFilePath = stripPathLineSuffix(filePath);
     try {
-      // If sessionId provided, check if it's an SSH session
+      const session = sessionId ? await sessionService.getSession(sessionId) : undefined;
+      const normalizedFilePath = resolveFilePathForSession(filePath, session?.worktreePath);
       if (sessionId) {
-        const session = await sessionService.getSession(sessionId);
         debugFs('[FS] Session found:', !!session, 'has sshConfig:', !!session?.sshConfig);
         if (session?.sshConfig) {
           debugFs('[FS] Writing file to remote SSH session:', normalizedFilePath);
@@ -258,7 +294,6 @@ export function registerFsHandlers(ipcMain: IpcMain): void {
       // Local file write — validate path is within session's worktree
       const resolvedPath = path.resolve(normalizedFilePath);
       if (sessionId) {
-        const session = await sessionService.getSession(sessionId);
         if (session?.worktreePath) {
           const resolvedWorktree = path.resolve(session.worktreePath);
           if (!resolvedPath.startsWith(resolvedWorktree + path.sep) && resolvedPath !== resolvedWorktree) {

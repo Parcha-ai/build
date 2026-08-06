@@ -4,6 +4,7 @@ import path from 'path';
 
 const root = path.resolve(__dirname, '..');
 const service = fs.readFileSync(path.join(root, 'src/main/services/claude.service.ts'), 'utf8');
+const codexService = fs.readFileSync(path.join(root, 'src/main/services/codex.service.ts'), 'utf8');
 const sessionStore = fs.readFileSync(path.join(root, 'src/renderer/stores/session.store.ts'), 'utf8');
 
 assert.match(
@@ -80,6 +81,11 @@ assert.match(
 );
 assert.match(
   restoreBlock,
+  /this\.retireNativePlanningContinuations\(sessionId, 'direct model selected after Auto Build plan'\)/,
+  'direct-model plan restore must retire native threads that still contain the Plan instruction',
+);
+assert.match(
+  restoreBlock,
   /const shouldRestoreAutoBuildPlanMode = storedPlanMode === 'plan' \|\| effectivePermissionMode === 'plan'/,
   'direct-model plan restore must only rewrite permission mode when plan leaked into stored or effective mode',
 );
@@ -122,6 +128,21 @@ assert.match(
   service,
   /setSessionPermissionMode\(sessionId: string, mode: string\): void \{[\s\S]*?this\.autoBuildForcedPlanSessions\.delete\(sessionId\);[\s\S]*?this\.clearPersistedAutoBuildForcedPlanMode\(sessionId\);/,
   'user-driven permission changes must clear Auto Build-forced plan markers',
+);
+assert.match(
+  service,
+  /if \(mode !== 'plan' && \(currentMode === 'plan' \|\| hasAutoBuildPlanMarker\)\) \{\s*this\.retireNativePlanningContinuations\(sessionId, 'permission mode left Plan'\);/,
+  'leaving Plan from the permission control must retire native planning continuations',
+);
+assert.match(
+  service,
+  /private retireNativePlanningContinuations\(sessionId: string, reason: string\): void \{[\s\S]*?this\.clearSdkSessionId\(sessionId\);[\s\S]*?codexService\.clearThreadId\(sessionId\);/,
+  'retiring Plan must clear both Claude and Codex native continuation handles',
+);
+assert.match(
+  codexService,
+  /preparedNativeThread\?\.resumeThreadId && permissionMode !== 'plan'[\s\S]*?The current turn is not in PLAN mode\.[\s\S]*?Any earlier instruction to remain in PLAN mode or return only a plan no longer applies\./,
+  'resumed Codex threads must explicitly supersede stale Plan instructions from older releases',
 );
 
 assert.match(

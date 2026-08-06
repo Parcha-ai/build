@@ -5,8 +5,8 @@ import * as fs from 'fs';
 import * as os from 'os';
 import { terminateProcessTree } from '../utils/process-tree';
 import type { ChatMessage, SSHConfig } from '../../shared/types';
-import { mcpService } from './mcp.service';
 import { sshService } from './ssh.service';
+import type { SpawnedProcess } from './ssh.service';
 import { findUsableLocalExecutable } from '../utils/local-executable';
 import { prependPolicyPreamble, type HarnessPolicyTranslation } from './harness-policy.service';
 
@@ -253,28 +253,6 @@ function remotePathForShell(value: string): string {
   return !value || value === '~' ? '$HOME' : quoteForRemoteShell(value);
 }
 
-function buildSshTarget(sshConfig: SSHConfig): string {
-  return sshConfig.username ? `${sshConfig.username}@${sshConfig.host}` : sshConfig.host;
-}
-
-function buildSshArgs(sshConfig: SSHConfig, remoteCommand: string): string[] {
-  const args = [
-    '-o', 'StrictHostKeyChecking=no',
-    '-o', 'BatchMode=yes',
-    '-o', 'ControlMaster=no',
-    '-o', 'ControlPersist=no',
-    '-S', 'none',
-  ];
-  if (sshConfig.port) {
-    args.push('-p', String(sshConfig.port));
-  }
-  if (sshConfig.privateKeyPath) {
-    args.push('-i', sshConfig.privateKeyPath);
-  }
-  args.push(buildSshTarget(sshConfig), remoteCommand);
-  return args;
-}
-
 function getRemotePathPrefix(): string {
   return [
     'export PATH="$HOME/.local/bin:$HOME/.gemini/bin:$HOME/.npm-global/bin:$HOME/.bun/bin:$HOME/bin:$PATH"',
@@ -283,7 +261,11 @@ function getRemotePathPrefix(): string {
 }
 
 class GeminiService {
-  private activeProcesses: Map<string, { process: ChildProcess; abortController: AbortController }> = new Map();
+  private activeProcesses: Map<string, {
+    process: ChildProcess | SpawnedProcess;
+    abortController: AbortController;
+    remote: boolean;
+  }> = new Map();
   private geminiBinaryPath: string | null = null;
   private nodeBinaryPath: string | null = null;
   private lastAssistantTextBySession = new Map<string, string>();
@@ -421,20 +403,6 @@ class GeminiService {
       return;
     }
 
-    if (sshConfig) {
-      const syncResult = await sshService.syncMcpConfigsToRemote(sessionId, sshConfig);
-      if (!syncResult.success) {
-        yield { type: 'error', error: `Failed to sync MCP config to remote: ${syncResult.error}` };
-        return;
-      }
-    } else {
-      const syncResult = await mcpService.syncLocalHarnessConfigs();
-      if (Object.keys(syncResult.errors).length > 0) {
-        yield { type: 'error', error: `Failed to sync local MCP config: ${JSON.stringify(syncResult.errors)}` };
-        return;
-      }
-    }
-
     let geminiScript = '';
     let nodeBin = '';
     if (!sshConfig) {
@@ -460,7 +428,7 @@ class GeminiService {
       },
     };
 
-    let child: ChildProcess;
+    let child: ChildProcess | SpawnedProcess;
     this.cancel(sessionId);
     const abortController = new AbortController();
 
@@ -480,20 +448,28 @@ class GeminiService {
         const remoteCommand = [
           `cd ${remotePathForShell(remoteDir)}`,
           getRemotePathPrefix(),
-          `export GEMINI_API_KEY=${quoteForRemoteShell(apiKey)}`,
-          `export GOOGLE_API_KEY=${quoteForRemoteShell(apiKey)}`,
-          ...Object.entries(policy?.env || {}).map(([key, value]) => `export ${key}=${quoteForRemoteShell(value)}`),
           'export GEMINI_CLI_TRUST_WORKSPACE=true',
           'gemini_bin="$(command -v gemini)" || { echo "Gemini CLI not found on remote. Install it with: npm install -g @google/gemini-cli" >&2; exit 127; }',
           `"$gemini_bin" ${remoteArgs.join(' ')}`,
         ].join(' && ');
 
         console.log(`[Gemini Service] SSH exec on ${sshConfig.host}: gemini -p <stdin:${effectiveMessage.length} chars> --model ${geminiModel}`);
-        child = spawn('ssh', buildSshArgs(sshConfig, remoteCommand), {
+        child = sshService.createDetachedCommandProcess(sessionId, sshConfig, {
+          command: 'bash',
+          recoveryCommand: 'gemini',
+          args: ['-lc', remoteCommand],
+          cwd: remoteDir,
+          env: {
+            GEMINI_API_KEY: apiKey,
+            GOOGLE_API_KEY: apiKey,
+            GEMINI_CLI_TRUST_WORKSPACE: 'true',
+            ...(policy?.env || {}),
+          },
           signal: abortController.signal,
-          detached: process.platform !== 'win32',
+          closeStdinOnEnd: true,
+          requireDetached: true,
         });
-        child.stdin?.end(effectiveMessage);
+        child.stdin.end(effectiveMessage);
       } else {
         // Run via `node <gemini-script>` directly — avoids shell: true which
         // corrupts arguments containing shell metacharacters ($, backticks, quotes).
@@ -534,7 +510,7 @@ class GeminiService {
       }
     });
 
-    this.activeProcesses.set(sessionId, { process: child, abortController });
+    this.activeProcesses.set(sessionId, { process: child, abortController, remote: Boolean(sshConfig) });
 
     const exitPromise = new Promise<number | null>((resolve) => {
       let settled = false;
@@ -543,13 +519,13 @@ class GeminiService {
         settled = true;
         resolve(code);
       };
-      child.once('close', (code) => settle(code));
+      child.once('exit', (code) => settle(code));
       if (child.exitCode !== null) settle(child.exitCode);
     });
 
     // Capture stderr for diagnostics
     let stderrOutput = '';
-    if (child.stderr) {
+    if ('stderr' in child && child.stderr) {
       child.stderr.on('data', (data: Buffer) => {
         const text = data.toString();
         stderrOutput += text;
@@ -624,6 +600,50 @@ class GeminiService {
     yield { type: 'message_complete' };
   }
 
+  /** Replay a Gemini stream-json log from a detached SSH turn. */
+  async *replayDetachedAsChat(
+    sessionId: string,
+    detachedProcess: SpawnedProcess,
+    model?: string,
+  ): AsyncGenerator<GeminiStreamEvent> {
+    this.lastAssistantTextBySession.delete(sessionId);
+    yield {
+      type: 'system',
+      systemInfo: {
+        tools: ['Bash', 'Edit', 'Read', 'Write', 'Glob', 'Grep'],
+        model: model?.replace('gemini:', '') || 'gemini',
+      },
+    };
+
+    const rl = readline.createInterface({ input: detachedProcess.stdout });
+    let eventCount = 0;
+    let lastDiagnostic = '';
+    try {
+      for await (const line of rl) {
+        if (!line.trim()) continue;
+        try {
+          const event = JSON.parse(line) as GeminiJsonEvent;
+          eventCount += 1;
+          const translated = this.translateEvent(sessionId, event);
+          if (!translated || translated.type === 'system') continue;
+          yield translated;
+          if (translated.type === 'message_complete' || translated.type === 'error') return;
+        } catch {
+          lastDiagnostic = line.trim();
+        }
+      }
+    } finally {
+      rl.close();
+      this.lastAssistantTextBySession.delete(sessionId);
+    }
+
+    if (eventCount === 0 && lastDiagnostic) {
+      yield { type: 'error', error: lastDiagnostic };
+      return;
+    }
+    yield { type: 'message_complete' };
+  }
+
   /**
    * Cancel an active Gemini run for a session.
    */
@@ -631,7 +651,8 @@ class GeminiService {
     const active = this.activeProcesses.get(sessionId);
     if (active) {
       console.log(`[Gemini Service] Cancelling run for ${sessionId}`);
-      terminateProcessTree(active.process, 1000, true);
+      if (active.remote) active.process.kill('SIGTERM');
+      else terminateProcessTree(active.process as ChildProcess, 1000, true);
       active.abortController.abort();
       this.activeProcesses.delete(sessionId);
     }
@@ -643,8 +664,10 @@ class GeminiService {
   disposeAll(): void {
     for (const [id, active] of this.activeProcesses) {
       try {
-        terminateProcessTree(active.process, 1000, true);
-        active.abortController.abort();
+        if (!active.remote) {
+          terminateProcessTree(active.process as ChildProcess, 1000, true);
+          active.abortController.abort();
+        }
       } catch {
         // best-effort
       }

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, protocol, session, net, Menu, systemPreferences } from 'electron';
+import { app, BrowserWindow, ipcMain, protocol, session, net, Menu, shell, systemPreferences } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
 import { pathToFileURL } from 'url';
@@ -74,6 +74,7 @@ if (missingPaths.length > 0) {
   console.log('[Electron] Added missing PATH entries:', missingPaths);
 }
 import { registerAuthHandlers } from './ipc/auth.ipc';
+import { registerParableHandlers } from './ipc/parable.ipc';
 import { registerSessionHandlers } from './ipc/session.ipc';
 import { registerGitHandlers } from './ipc/git.ipc';
 import { registerTerminalHandlers } from './ipc/terminal.ipc';
@@ -97,13 +98,15 @@ import { registerDesignHandlers } from './ipc/design.ipc';
 import { registerOpenClawHandlers } from './ipc/openclaw.ipc';
 import { registerAnalyticsHandlers } from './ipc/analytics.ipc';
 import { registerQueueHandlers } from './ipc/queue.ipc';
+import { registerPomodoroHandlers } from './ipc/pomodoro.ipc';
 import { getGStackModes, isGStackInstalled, installGStack, upgradeGStack } from './services/gstack.service';
-import { mcpService } from './services/mcp.service';
+import { designService } from './services/design.service';
 import { IPC_CHANNELS } from '../shared/constants/channels';
 import { cdpProxyService } from './services/cdp-proxy.service';
 import { powerService } from './services/power.service';
 import { maybeRunRendererCdpScript } from './services/renderer-cdp.service';
 import { updateService } from './services/update.service';
+import { pomodoroService } from './services/pomodoro.service';
 
 // Global error handlers to prevent crashes from broken pipes and other uncaught errors
 process.on('uncaughtException', (error: Error) => {
@@ -254,6 +257,51 @@ if (process.env.GREP_DISABLE_SINGLE_INSTANCE !== '1') {
   }
 }
 
+function isRendererEntryUrl(targetUrl: string): boolean {
+  try {
+    const target = new URL(targetUrl);
+    const entry = new URL(MAIN_WINDOW_WEBPACK_ENTRY);
+    if (target.protocol !== entry.protocol) return false;
+    if (entry.protocol === 'file:') return target.pathname === entry.pathname;
+    return target.origin === entry.origin && target.pathname === entry.pathname;
+  } catch {
+    return false;
+  }
+}
+
+function routeMainRendererLink(win: BrowserWindow, targetUrl: string): void {
+  if (/^https?:\/\//i.test(targetUrl)) {
+    win.webContents.send(IPC_CHANNELS.BROWSER_OPEN_PANEL, { url: targetUrl });
+    return;
+  }
+  if (/^(?:mailto|tel):/i.test(targetUrl)) {
+    void shell.openExternal(targetUrl);
+  }
+}
+
+/** Never let an ordinary link replace Build's renderer. */
+function installMainRendererNavigationGuard(win: BrowserWindow): void {
+  win.webContents.on('will-navigate', (event, targetUrl) => {
+    if (isRendererEntryUrl(targetUrl)) return;
+    event.preventDefault();
+    console.warn('[Main] Blocked top-level renderer navigation:', targetUrl);
+    routeMainRendererLink(win, targetUrl);
+  });
+
+  win.webContents.on('will-redirect', (event, targetUrl) => {
+    if (isRendererEntryUrl(targetUrl)) return;
+    event.preventDefault();
+    console.warn('[Main] Blocked top-level renderer redirect:', targetUrl);
+    routeMainRendererLink(win, targetUrl);
+  });
+
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    console.log('[Main] Routing renderer window-open request to inline browser:', url);
+    routeMainRendererLink(win, url);
+    return { action: 'deny' };
+  });
+}
+
 const createWindow = (): void => {
   // Create the browser window.
   mainWindow = new BrowserWindow({
@@ -282,6 +330,7 @@ const createWindow = (): void => {
   // This ensures Claude service can send permission requests at any time
   claudeService.setMainWindow(mainWindow);
   console.log('[Main] Main window reference set for Claude service');
+  installMainRendererNavigationGuard(mainWindow);
 
   const sendAppShortcutToFocusedWindow = (action: string) => {
     const target = BrowserWindow.getFocusedWindow() || mainWindow;
@@ -318,6 +367,12 @@ const createWindow = (): void => {
           accelerator: 'CommandOrControl+N',
           click: () => sendAppShortcutToFocusedWindow('new-session'),
         },
+        { type: 'separator' },
+        {
+          label: 'Start Pomodoro',
+          accelerator: 'CommandOrControl+P',
+          click: () => pomodoroService.show(),
+        },
       ],
     },
     {
@@ -335,6 +390,12 @@ const createWindow = (): void => {
     {
       label: 'View',
       submenu: [
+        {
+          label: 'Toggle Voice Mode',
+          accelerator: 'CommandOrControl+Shift+Y',
+          click: () => sendAppShortcutToFocusedWindow('toggle-voice-mode'),
+        },
+        { type: 'separator' },
         // Removed 'reload' and 'forceReload' - we handle CMD+R ourselves
         { role: 'toggleDevTools' },
         { type: 'separator' },
@@ -423,12 +484,20 @@ const createWindow = (): void => {
 
     let action: string | null = null;
 
-    if (input.shift && key === 'n') {
+    if (input.shift && key === 'y') {
+      if (input.isAutoRepeat) return;
+      action = 'toggle-voice-mode';
+    } else if (input.shift && key === 'n') {
       event.preventDefault();
       createNewWindow();
       return;
     } else if (!input.shift && key === 'n') {
       action = 'new-session';
+    } else if (!input.shift && key === 'p') {
+      if (input.isAutoRepeat) return;
+      event.preventDefault();
+      pomodoroService.show();
+      return;
     } else if (!input.shift && key === 'r') {
       action = 'browser-refresh';
     } else if (input.shift && key === 'g') {
@@ -472,7 +541,7 @@ const createWindow = (): void => {
           "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: monaco-asset:",
           "script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: data: monaco-asset:",
           "style-src 'self' 'unsafe-inline' monaco-asset: https://fonts.googleapis.com",
-          "connect-src 'self' https://api.anthropic.com https://api.github.com https://api.elevenlabs.io https://*.elevenlabs.io https://api.openai.com wss://*.livekit.cloud wss://*.elevenlabs.io ws://localhost:* wss://localhost:* http://localhost:* https://localhost:* monaco-asset:",
+          "connect-src 'self' https://api.anthropic.com https://api.github.com https://api.openai.com ws://localhost:* wss://localhost:* http://localhost:* https://localhost:* monaco-asset:",
           "img-src 'self' data: https: blob:",
           "font-src 'self' data: monaco-asset: https://fonts.gstatic.com",
           "worker-src 'self' blob: data: monaco-asset:",
@@ -544,9 +613,21 @@ const createWindow = (): void => {
     webviewContents.on('before-input-event', (evt, input) => {
       const k = (input.key || '').toLowerCase();
       const primaryModifier = isMac ? input.meta : input.control;
+      if (input.type === 'keyDown' && primaryModifier && input.shift && !input.alt && k === 'y') {
+        if (input.isAutoRepeat) return;
+        evt.preventDefault();
+        sendShortcutToRenderer('toggle-voice-mode');
+        return;
+      }
       if (input.type === 'keyDown' && primaryModifier && input.shift && !input.alt && k === 'n') {
         evt.preventDefault();
         createNewWindow();
+        return;
+      }
+      if (input.type === 'keyDown' && primaryModifier && !input.shift && !input.alt && k === 'p') {
+        if (input.isAutoRepeat) return;
+        evt.preventDefault();
+        pomodoroService.show();
         return;
       }
       if (input.type === 'keyDown' && input.control && k === 'tab') {
@@ -580,23 +661,6 @@ const createWindow = (): void => {
       }
       return { action: 'deny' };
     });
-  });
-
-  // Handle new windows from main window (fallback)
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    console.log('[Main] Window open requested:', url);
-    // Allow OAuth popups
-    if (url.includes('google.com') || url.includes('accounts.google') || url.includes('auth')) {
-      return {
-        action: 'allow',
-        overrideBrowserWindowOptions: {
-          webPreferences: {
-            partition: 'persist:browser'
-          }
-        }
-      };
-    }
-    return { action: 'deny' };
   });
 
   // Open DevTools for debugging (disabled for production builds)
@@ -644,6 +708,7 @@ function createNewWindow(): void {
 
   (win as any).__preloadPath = MAIN_WINDOW_PRELOAD_WEBPACK_ENTRY;
   allWindows.add(win);
+  installMainRendererNavigationGuard(win);
 
   win.webContents.once('did-finish-load', () => {
     void maybeRunRendererCdpScript(win);
@@ -677,12 +742,20 @@ function createNewWindow(): void {
     if (!primaryModifier || input.alt) return;
 
     let action: string | null = null;
-    if (input.shift && key === 'n') {
+    if (input.shift && key === 'y') {
+      if (input.isAutoRepeat) return;
+      action = 'toggle-voice-mode';
+    } else if (input.shift && key === 'n') {
       event.preventDefault();
       createNewWindow();
       return;
     } else if (!input.shift && key === 'n') {
       action = 'new-session';
+    } else if (!input.shift && key === 'p') {
+      if (input.isAutoRepeat) return;
+      event.preventDefault();
+      pomodoroService.show();
+      return;
     } else if (!input.shift && key === 'r') {
       action = 'browser-refresh';
     } else if (input.shift && key === 'g') {
@@ -735,9 +808,21 @@ function createNewWindow(): void {
     webviewContents.on('before-input-event', (evt, input) => {
       const k = (input.key || '').toLowerCase();
       const primaryModifier = isMac ? input.meta : input.control;
+      if (input.type === 'keyDown' && primaryModifier && input.shift && !input.alt && k === 'y') {
+        if (input.isAutoRepeat) return;
+        evt.preventDefault();
+        sendShortcutToRenderer('toggle-voice-mode');
+        return;
+      }
       if (input.type === 'keyDown' && primaryModifier && input.shift && !input.alt && k === 'n') {
         evt.preventDefault();
         createNewWindow();
+        return;
+      }
+      if (input.type === 'keyDown' && primaryModifier && !input.shift && !input.alt && k === 'p') {
+        if (input.isAutoRepeat) return;
+        evt.preventDefault();
+        pomodoroService.show();
         return;
       }
       if (input.type === 'keyDown' && input.control && k === 'tab') {
@@ -768,21 +853,6 @@ function createNewWindow(): void {
       }
       return { action: 'deny' };
     });
-  });
-
-  win.webContents.setWindowOpenHandler(({ url }) => {
-    console.log('[Main] Window open requested:', url);
-    if (url.includes('google.com') || url.includes('accounts.google') || url.includes('auth')) {
-      return {
-        action: 'allow',
-        overrideBrowserWindowOptions: {
-          webPreferences: {
-            partition: 'persist:browser'
-          }
-        }
-      };
-    }
-    return { action: 'deny' };
   });
 
   win.webContents.on('console-message', (_e, level, message) => {
@@ -849,6 +919,7 @@ app.whenReady().then(() => {
 // Register IPC handlers
 function registerIPCHandlers(): void {
   registerAuthHandlers(ipcMain);
+  registerParableHandlers(ipcMain);
   registerSessionHandlers(ipcMain);
   registerGitHandlers(ipcMain);
   registerTerminalHandlers(ipcMain);
@@ -872,6 +943,7 @@ function registerIPCHandlers(): void {
   registerOpenClawHandlers(ipcMain);
   registerAnalyticsHandlers(ipcMain);
   registerQueueHandlers(ipcMain);
+  registerPomodoroHandlers(ipcMain);
 
   // Wakeup scheduler — fires timers for ScheduleWakeup/CronCreate and sends
   // the prompt back to the renderer so it flows through the normal sendMessage path.
@@ -961,6 +1033,7 @@ app.on('ready', async () => {
   migrateFromGrepBuild();
   registerIPCHandlers();
   powerService.init();
+  pomodoroService.initialize(() => createWindow());
   // On wake from sleep, tell renderers to reattach to any SSH remote turns
   // that kept running while the connection was down.
   powerService.onSystemResume(() => {
@@ -968,15 +1041,6 @@ app.on('ready', async () => {
       win.webContents.send(IPC_CHANNELS.SSH_SYSTEM_RESUMED);
     }
   });
-  mcpService.ensureOpenDesignMcpServer()
-    .catch((error) => {
-      console.warn('[Main] Failed to restore OpenDesign MCP server on startup:', error);
-    })
-    .finally(() => {
-      mcpService.syncLocalHarnessConfigs().catch((error) => {
-        console.warn('[Main] Failed to sync local MCP harness configs on startup:', error);
-      });
-    });
   createWindow();
   scheduleBrowserPartitionCleanup();
 
@@ -1004,15 +1068,13 @@ app.on('will-quit', () => {
   const { SessionMessageCacheStore } = require('./session-message-cache-store');
   SessionMessageCacheStore.flushAll();
 
-  // Do not kill SSH remote Claude jobs here. They are launched through the
-  // detached bridge specifically so in-flight remote work survives app quits,
-  // laptop sleep, and transient network drops. Explicit session deletion/cancel
-  // still performs targeted remote cleanup.
+  // Do not kill remote harness jobs here. Claude, Codex, Cursor, Gemini, and
+  // OpenCode all use the detached bridge so in-flight SSH work survives app
+  // quits, laptop sleep, and transient network drops. Explicit session
+  // deletion/cancel still performs targeted remote cleanup.
   powerService.dispose();
 
   // Stop the Open Design daemon if we spawned it (adopted daemons are left alone)
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const { designService } = require('./services/design.service');
   designService.shutdown();
 
   // Clean up wakeup timers
@@ -1024,11 +1086,12 @@ app.on('will-quit', () => {
 
   // Clean up update checker
   updateService.stop();
+  pomodoroService.dispose();
 });
 
 // Quit when all windows are closed, except on macOS.
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
+  if (process.platform !== 'darwin' && !pomodoroService.isActive()) {
     app.quit();
   }
 });

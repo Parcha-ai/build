@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Loader2 } from 'lucide-react';
+import { FileCode, Image, Loader2, Target } from 'lucide-react';
 import MessageBubble from './MessageBubble';
 import HtmlArtifactLink from './HtmlArtifactLink';
 import ToolCallCard from './ToolCallCard';
@@ -13,12 +13,83 @@ import { GSTACK_MODE_META } from '../../../shared/types';
 import { isTranscriptVisibleToolCall } from '../../../shared/utils/tool-call-transformer';
 import type { StreamEvent } from '../../stores/session.store';
 import { extractHtml, isHtmlResponse } from '../../utils/htmlDetector';
+import ChatMarkdownLink from './ChatMarkdownLink';
 
 interface QueuedMessage {
   id: string;
   message: string;
   attachments?: unknown[];
   timestamp: number;
+}
+
+interface QueuedAttachment {
+  type?: string;
+  name: string;
+  content?: string;
+  screenshot?: string;
+}
+
+function queuedAttachment(value: unknown): QueuedAttachment | null {
+  if (!value || typeof value !== 'object') return null;
+  const candidate = value as Record<string, unknown>;
+  if (typeof candidate.name !== 'string' || !candidate.name.trim()) return null;
+  return {
+    type: typeof candidate.type === 'string' ? candidate.type : undefined,
+    name: candidate.name,
+    content: typeof candidate.content === 'string' ? candidate.content : undefined,
+    screenshot: typeof candidate.screenshot === 'string' ? candidate.screenshot : undefined,
+  };
+}
+
+function attachmentImageSource(attachment: QueuedAttachment): string | null {
+  const imageData = attachment.type === 'image'
+    ? attachment.content
+    : attachment.type === 'dom_element'
+      ? attachment.screenshot
+      : undefined;
+  if (!imageData) return null;
+  return imageData.startsWith('data:') ? imageData : `data:image/png;base64,${imageData}`;
+}
+
+function QueuedAttachmentChips({ attachments }: { attachments?: unknown[] }) {
+  const visibleAttachments = (attachments || [])
+    .map(queuedAttachment)
+    .filter((attachment): attachment is QueuedAttachment => Boolean(attachment));
+  if (visibleAttachments.length === 0) return null;
+
+  return (
+    <div className="mt-2 flex flex-wrap gap-1.5" data-testid="queued-attachment-chips">
+      {visibleAttachments.map((attachment, index) => {
+        const imageSource = attachmentImageSource(attachment);
+        const Icon = attachment.type === 'dom_element'
+          ? Target
+          : attachment.type === 'image'
+            ? Image
+            : FileCode;
+        return (
+          <div
+            key={`${attachment.name}-${index}`}
+            className="flex max-w-[240px] items-center gap-1.5 overflow-hidden border border-amber-500/30 bg-amber-500/10 pr-2 text-[10px] text-claude-text"
+            title={attachment.name}
+          >
+            {imageSource ? (
+              <img
+                src={imageSource}
+                alt=""
+                className="h-8 w-10 shrink-0 border-r border-amber-500/20 bg-black/20 object-cover"
+              />
+            ) : (
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center border-r border-amber-500/20">
+                <Icon size={12} className={attachment.type === 'dom_element' ? 'text-blue-400' : 'text-amber-300'} />
+              </span>
+            )}
+            <Icon size={10} className="shrink-0 text-amber-300" />
+            <span className="truncate font-mono">{attachment.name}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 interface MessageListProps {
@@ -233,19 +304,24 @@ export default function MessageList({
 
   return (
     <div className="p-4 space-y-4 min-w-0">
-      {sortedMessages.map((message, index) => (
-        <MessageBubble
-          key={message.id}
-          sessionId={effectiveSessionId}
-          message={message}
-          isStreaming={false}
-          isLatestMessage={!hasStreamingContent && index === sortedMessages.length - 1}
-          isOldMessage={index < sortedMessages.length - 10}
-          isLatestUserMessage={message.role === 'user' && index === lastUserMessageIndex}
-          renderHtmlResponse={renderHtmlResponse}
-          onRewind={handleRewind}
-        />
-      ))}
+      {sortedMessages.map((message, index) => {
+        const isLatestMessage = !hasStreamingContent && index === sortedMessages.length - 1;
+        return (
+          <MessageBubble
+            // Remount the one message crossing the live/history boundary so its
+            // tool-card mount state is released rather than retained indefinitely.
+            key={`${message.id}:${isLatestMessage ? 'latest' : 'history'}`}
+            sessionId={effectiveSessionId}
+            message={message}
+            isStreaming={false}
+            isLatestMessage={isLatestMessage}
+            isOldMessage={index < sortedMessages.length - 10}
+            isLatestUserMessage={message.role === 'user' && index === lastUserMessageIndex}
+            renderHtmlResponse={renderHtmlResponse}
+            onRewind={handleRewind}
+          />
+        );
+      })}
 
       {/* Streaming events in chronological order (excluding thinking - shown separately).
           Render whenever events exist, not just when isStreaming — prevents content from
@@ -357,6 +433,9 @@ export default function MessageList({
                           h1({ children }) { return <h1 className="text-lg font-bold mt-3 mb-1">{children}</h1>; },
                           h2({ children }) { return <h2 className="text-base font-bold mt-2 mb-1">{children}</h2>; },
                           h3({ children }) { return <h3 className="text-sm font-bold mt-2 mb-1">{children}</h3>; },
+                          a({ href, children }) {
+                            return <ChatMarkdownLink href={href} sessionId={effectiveSessionId}>{children}</ChatMarkdownLink>;
+                          },
                           strong({ children }) { return <strong className="font-bold text-claude-text">{children}</strong>; },
                           em({ children }) { return <em className="italic">{children}</em>; },
                           table({ children }) {
@@ -412,11 +491,7 @@ export default function MessageList({
                     ? `${queuedMsg.message.slice(0, 200)}...`
                     : queuedMsg.message}
                 </p>
-                {queuedMsg.attachments && queuedMsg.attachments.length > 0 && (
-                  <div className="mt-1 text-[10px] text-claude-text-secondary">
-                    + {queuedMsg.attachments.length} attachment{queuedMsg.attachments.length > 1 ? 's' : ''}
-                  </div>
-                )}
+                <QueuedAttachmentChips attachments={queuedMsg.attachments} />
               </div>
             </div>
           ))}
@@ -432,7 +507,7 @@ export default function MessageList({
         if (modeMeta) {
           return (
             <div className="flex items-center gap-2 text-claude-text-secondary">
-              <div className="flex gap-0.5">
+              <div className="live-thinking-cluster flex gap-0.5">
                 <div className="live-thinking-indicator w-2 h-2" style={{ backgroundColor: modeMeta.color, animation: 'pulse-square 1.2s ease-in-out infinite 0s' }} />
                 <div className="live-thinking-indicator w-2 h-2" style={{ backgroundColor: modeMeta.color, animation: 'pulse-square 1.2s ease-in-out infinite 0.4s' }} />
                 <div className="live-thinking-indicator w-2 h-2" style={{ backgroundColor: modeMeta.color, animation: 'pulse-square 1.2s ease-in-out infinite 0.8s' }} />
@@ -444,7 +519,7 @@ export default function MessageList({
 
         return (
           <div className="flex items-center gap-2 text-claude-text-secondary">
-            <div className="flex gap-0.5">
+            <div className="live-thinking-cluster flex gap-0.5">
               <div className="live-thinking-indicator w-2 h-2 bg-claude-accent" style={{ animation: 'pulse-square 1.2s ease-in-out infinite 0s' }} />
               <div className="live-thinking-indicator w-2 h-2 bg-claude-accent" style={{ animation: 'pulse-square 1.2s ease-in-out infinite 0.4s' }} />
               <div className="live-thinking-indicator w-2 h-2 bg-claude-accent" style={{ animation: 'pulse-square 1.2s ease-in-out infinite 0.8s' }} />

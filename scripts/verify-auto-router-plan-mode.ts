@@ -22,6 +22,10 @@ assertContains(
   'A Build/Verify/Refine route must clear Auto Build forced-plan markers instead of carrying plan state forward',
 );
 assertContains(
+  /if \(hadForcedPlanMarker\) \{\s*this\.retireNativePlanningContinuations\([\s\S]*?`Auto Build advanced from Plan to \$\{routingDecision\.tier\}`/s,
+  'A Build/Verify/Refine route must start outside any native thread that still contains the Plan instruction',
+);
+assertContains(
   /codexService\.streamAsChat\([^;]*autoBuildLeadPermissionMode(?:,|\))/s,
   'Codex lead execution must receive the Auto Build lead permission mode',
 );

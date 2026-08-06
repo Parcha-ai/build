@@ -23,7 +23,7 @@ interface TTSState {
   error: string | null;
 }
 
-// Per-session voice mode state (ElevenLabs Conversational AI)
+// Per-session OpenAI Realtime voice state
 export interface VoiceModeState {
   isConnected: boolean;
   isConnecting: boolean;
@@ -42,7 +42,7 @@ interface AudioState {
   // Per-message TTS state
   ttsStates: Record<string, TTSState>;
 
-  // Per-session voice mode state (ElevenLabs)
+  // Per-session Realtime voice state
   voiceModeStates: Record<string, VoiceModeState>;
 
   // Audio mode - per session (tracks if last input was via voice)
@@ -226,15 +226,19 @@ export const useAudioStore = create<AudioState>((set, get) => ({
     },
   })),
 
-  setVoiceModeAudioLevel: (sessionId, level) => set((state) => ({
-    voiceModeStates: {
-      ...state.voiceModeStates,
-      [sessionId]: {
-        ...(state.voiceModeStates[sessionId] || defaultVoiceModeState),
-        audioLevel: level,
+  setVoiceModeAudioLevel: (sessionId, level) => set((state) => {
+    const previous = state.voiceModeStates[sessionId]?.audioLevel || 0;
+    if (Math.abs(previous - level) < 0.03) return state;
+    return {
+      voiceModeStates: {
+        ...state.voiceModeStates,
+        [sessionId]: {
+          ...(state.voiceModeStates[sessionId] || defaultVoiceModeState),
+          audioLevel: level,
+        },
       },
-    },
-  })),
+    };
+  }),
 
   setVoiceModeTranscript: (sessionId, transcript) => set((state) => ({
     voiceModeStates: {
@@ -297,9 +301,9 @@ export const useAudioStore = create<AudioState>((set, get) => ({
       hasVoiceSettings: !!settings?.voiceSettings,
     });
 
-    // Skip if ElevenLabs voice mode is connected - it handles its own audio output
+    // Skip if Realtime voice mode is connected; that session owns audio output.
     if (voiceModeStates[sessionId]?.isConnected) {
-      console.log('[TTS] Skipping: ElevenLabs voice mode is connected, it will handle audio');
+      console.log('[TTS] Skipping: Realtime voice mode is connected');
       return;
     }
 
@@ -323,7 +327,7 @@ export const useAudioStore = create<AudioState>((set, get) => ({
         text,
         messageId,
         voiceId: settings.voiceSettings.voiceId,
-        modelId: 'eleven_turbo_v2_5',
+        modelId: 'gpt-4o-mini-tts',
       });
 
       console.log('[TTS] streamTTS response:', response);

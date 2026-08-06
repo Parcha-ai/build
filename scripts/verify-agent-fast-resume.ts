@@ -23,10 +23,10 @@ assert.match(
   /Reusing native thread developer instructions/,
   'resumed native Codex turns must reuse their seeded instruction layer',
 );
-assert.match(
+assert.doesNotMatch(
   codexService,
-  /if \(nativeThread\?\.persistThread\) \{[\s\S]*?void sshService\.syncMcpConfigsToRemote/,
-  'persistent native Codex turns must schedule remote MCP sync without awaiting it',
+  /sshService\.syncMcp(?:Auth|Configs)ToRemote|sshService\.scheduleMcpConfigsToRemote/,
+  'Codex turn startup must never trigger MCP synchronization',
 );
 assert.match(
   codexService,

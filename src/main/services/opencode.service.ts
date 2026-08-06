@@ -6,6 +6,7 @@ import type { ChatMessage, SSHConfig } from '../../shared/types';
 import { terminateProcessTree } from '../utils/process-tree';
 import { mcpService } from './mcp.service';
 import { sshService } from './ssh.service';
+import type { SpawnedProcess } from './ssh.service';
 import { findUsableLocalExecutable } from '../utils/local-executable';
 import { prependPolicyPreamble, type HarnessPolicyTranslation } from './harness-policy.service';
 
@@ -162,30 +163,12 @@ function getRemotePathPrefix(): string {
   ].join(' && ');
 }
 
-function buildSshTarget(sshConfig: SSHConfig): string {
-  return sshConfig.username ? `${sshConfig.username}@${sshConfig.host}` : sshConfig.host;
-}
-
-function buildSshArgs(sshConfig: SSHConfig, remoteCommand: string): string[] {
-  const args = [
-    '-o', 'StrictHostKeyChecking=no',
-    '-o', 'BatchMode=yes',
-    '-o', 'ControlMaster=no',
-    '-o', 'ControlPersist=no',
-    '-S', 'none',
-  ];
-  if (sshConfig.port) {
-    args.push('-p', String(sshConfig.port));
-  }
-  if (sshConfig.privateKeyPath) {
-    args.push('-i', sshConfig.privateKeyPath);
-  }
-  args.push(buildSshTarget(sshConfig), remoteCommand);
-  return args;
-}
-
 class OpenCodeService {
-  private activeProcesses: Map<string, { process: ChildProcess; abortController: AbortController }> = new Map();
+  private activeProcesses: Map<string, {
+    process: ChildProcess | SpawnedProcess;
+    abortController: AbortController;
+    remote: boolean;
+  }> = new Map();
   private openCodeCommand: OpenCodeCommand | null = null;
   private lastAssistantTextBySession = new Map<string, string>();
 
@@ -271,7 +254,7 @@ class OpenCodeService {
     });
   }
 
-  private buildSshSpawn(message: string, remoteDir: string, opencodeModel: string, sshConfig: SSHConfig, permissionMode?: string, policy?: HarnessPolicyTranslation) {
+  private buildSshSpawn(sessionId: string, message: string, remoteDir: string, opencodeModel: string, sshConfig: SSHConfig, permissionMode?: string, policy?: HarnessPolicyTranslation) {
     const apiKey = this.getApiKey() || '';
     const effectiveMessage = prependPolicyPreamble(message, policy?.promptPreamble);
     const permissionConfig = buildPermissionConfig(permissionMode);
@@ -281,9 +264,6 @@ class OpenCodeService {
     const command = [
       `cd ${remotePathForShell(remoteDir)}`,
       getRemotePathPrefix(),
-      apiKey ? `export DEEPSEEK_API_KEY=${quoteForRemoteShell(apiKey)}` : '',
-      ...Object.entries(policy?.env || {}).map(([key, value]) => `export ${key}=${quoteForRemoteShell(value)}`),
-      `export OPENCODE_PERMISSION=${quoteForRemoteShell(permissionConfig)}`,
       'export OPENCODE_CLIENT=build-autobuild',
       'export OPENCODE_CONFIG="$HOME/.config/opencode/build-mcp.json"',
       'export OPENCODE_DISABLE_AUTOUPDATE=true',
@@ -298,11 +278,26 @@ class OpenCodeService {
     ].filter(Boolean).join(' && ');
 
     const abortController = new AbortController();
-    const child = spawn('ssh', buildSshArgs(sshConfig, command), {
+    const child = sshService.createDetachedCommandProcess(sessionId, sshConfig, {
+      command: 'bash',
+      recoveryCommand: 'opencode',
+      args: ['-lc', command],
+      cwd: remoteDir,
+      env: {
+        ...(apiKey ? { DEEPSEEK_API_KEY: apiKey } : {}),
+        ...(policy?.env || {}),
+        OPENCODE_PERMISSION: permissionConfig,
+        OPENCODE_CLIENT: 'build-autobuild',
+        OPENCODE_CONFIG: '$HOME/.config/opencode/build-mcp.json',
+        OPENCODE_DISABLE_AUTOUPDATE: 'true',
+        OPENCODE_DISABLE_TERMINAL_TITLE: 'true',
+        OPENCODE_ENABLE_EXPERIMENTAL_MODELS: 'true',
+      },
       signal: abortController.signal,
-      detached: process.platform !== 'win32',
+      closeStdinOnEnd: true,
+      requireDetached: true,
     });
-    child.stdin?.end(effectiveMessage);
+    child.stdin.end(effectiveMessage);
 
     return { child, abortController };
   }
@@ -322,20 +317,6 @@ class OpenCodeService {
       return;
     }
 
-    if (sshConfig) {
-      const syncResult = await sshService.syncMcpConfigsToRemote(sessionId, sshConfig);
-      if (!syncResult.success) {
-        yield { type: 'error', error: `Failed to sync MCP config to remote: ${syncResult.error}` };
-        return;
-      }
-    } else {
-      const syncResult = await mcpService.syncLocalHarnessConfigs();
-      if (Object.keys(syncResult.errors).length > 0) {
-        yield { type: 'error', error: `Failed to sync local MCP config: ${JSON.stringify(syncResult.errors)}` };
-        return;
-      }
-    }
-
     const opencodeModel = resolveOpenCodeModel(model);
     yield {
       type: 'system',
@@ -347,11 +328,11 @@ class OpenCodeService {
 
     this.cancel(sessionId);
 
-    let child: ChildProcess;
+    let child: ChildProcess | SpawnedProcess;
     let abortController: AbortController;
     try {
       if (sshConfig) {
-        const sshSpawn = this.buildSshSpawn(message, workDir, opencodeModel, sshConfig, permissionMode, policy);
+        const sshSpawn = this.buildSshSpawn(sessionId, message, workDir, opencodeModel, sshConfig, permissionMode, policy);
         child = sshSpawn.child;
         abortController = sshSpawn.abortController;
       } else {
@@ -364,7 +345,7 @@ class OpenCodeService {
       return;
     }
 
-    this.activeProcesses.set(sessionId, { process: child, abortController });
+    this.activeProcesses.set(sessionId, { process: child, abortController, remote: Boolean(sshConfig) });
     this.lastAssistantTextBySession.delete(sessionId);
 
     const exitPromise = new Promise<number | null>((resolve) => {
@@ -374,16 +355,18 @@ class OpenCodeService {
         settled = true;
         resolve(code);
       };
-      child.once('close', (code) => settle(code));
+      child.once('exit', (code) => settle(code));
       if (child.exitCode !== null) settle(child.exitCode);
     });
 
     let stderrOutput = '';
-    child.stderr?.on('data', (data: Buffer) => {
-      const text = data.toString();
-      stderrOutput += text;
-      console.log('[OpenCode Service] stderr:', text.substring(0, 200));
-    });
+    if ('stderr' in child && child.stderr) {
+      child.stderr.on('data', (data: Buffer) => {
+        const text = data.toString();
+        stderrOutput += text;
+        console.log('[OpenCode Service] stderr:', text.substring(0, 200));
+      });
+    }
 
     if (!child.stdout) {
       this.activeProcesses.delete(sessionId);
@@ -447,10 +430,67 @@ class OpenCodeService {
     };
   }
 
+  /** Replay OpenCode JSON output from a detached SSH bridge job. */
+  async *replayDetachedAsChat(
+    sessionId: string,
+    detachedProcess: SpawnedProcess,
+    model?: string,
+  ): AsyncGenerator<OpenCodeStreamEvent> {
+    this.lastAssistantTextBySession.delete(sessionId);
+    yield {
+      type: 'system',
+      systemInfo: {
+        tools: ['Bash', 'Edit', 'Read', 'Write', 'Glob', 'Grep'],
+        model: model?.replace('opencode:', '') || 'opencode',
+      },
+    };
+
+    const rl = readline.createInterface({ input: detachedProcess.stdout });
+    let emitted = false;
+    try {
+      for await (const line of rl) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        const jsonLine = trimmed.startsWith('data:') ? trimmed.slice(5).trim() : trimmed;
+        try {
+          const translated = this.translateJsonEvent(sessionId, JSON.parse(jsonLine) as Record<string, unknown>);
+          if (!translated) continue;
+          emitted = true;
+          yield translated;
+          if (translated.type === 'error') return;
+        } catch {
+          // The bridge merges stderr into its log. Do not render diagnostics as
+          // assistant prose during replay; a successful run is represented by
+          // its structured output and terminal process state.
+        }
+      }
+    } finally {
+      rl.close();
+    }
+
+    const finalText = this.lastAssistantTextBySession.get(sessionId) || '';
+    this.lastAssistantTextBySession.delete(sessionId);
+    if (!emitted && detachedProcess.exitCode && detachedProcess.exitCode !== 0) {
+      yield { type: 'error', error: `OpenCode exited with code ${detachedProcess.exitCode}` };
+      return;
+    }
+    yield {
+      type: 'message_complete',
+      message: finalText.trim() ? {
+        id: `opencode-recovered-result-${Date.now()}`,
+        role: 'assistant',
+        content: finalText,
+        timestamp: new Date(),
+        harness: 'opencode',
+      } : undefined,
+    };
+  }
+
   cancel(sessionId: string): void {
     const active = this.activeProcesses.get(sessionId);
     if (!active) return;
-    terminateProcessTree(active.process, 1000, true);
+    if (active.remote) active.process.kill('SIGTERM');
+    else terminateProcessTree(active.process as ChildProcess, 1000, true);
     active.abortController.abort();
     this.activeProcesses.delete(sessionId);
   }

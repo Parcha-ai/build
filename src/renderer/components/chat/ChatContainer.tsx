@@ -578,7 +578,7 @@ export default function ChatContainer({ session, onClosePane }: ChatContainerPro
           }
           setTimeout(() => { isProgrammaticScroll.current = false; }, streaming ? 30 : 500);
           scrollTimerRef.current = null;
-        }, streaming ? 30 : 100);
+        }, streaming ? (reduceContinuousMotion ? 120 : 50) : 100);
       }
       setHasNewContent(false);
     } else {
@@ -588,7 +588,7 @@ export default function ChatContainer({ session, onClosePane }: ChatContainerPro
       }
     }
     lastMessageCountRef.current = sessionMessages.length;
-  }, [sessionMessages, streamContent, thinkingContent, isAtBottom, isSessionStreaming]);
+  }, [sessionMessages, streamContent, thinkingContent, isAtBottom, isSessionStreaming, reduceContinuousMotion]);
 
   // Scroll to bottom function for FAB
   const scrollToBottom = useCallback(() => {

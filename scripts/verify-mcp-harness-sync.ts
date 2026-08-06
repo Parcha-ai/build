@@ -103,6 +103,11 @@ async function main(): Promise<void> {
     managedServerIds: ['linear', 'removed-by-build'],
     removedServerIds: ['removed-by-build'],
   });
+  // This verifier supplies a completed bearer credential directly; mark the
+  // mocked remote-auth cache ready so transport-shape assertions are isolated
+  // from the developer machine's real ~/.mcp-auth contents.
+  (mcpService as unknown as { remoteAuthReadiness: Map<string, boolean> })
+    .remoteAuthReadiness.set('linear', true);
 
   const nativeLinear = normalizeMcpServerForClaude(
     { type: 'sse', url: 'https://mcp.linear.app/sse' },
@@ -110,7 +115,7 @@ async function main(): Promise<void> {
     'linear',
   );
   assert.equal(nativeLinear.type, 'sse');
-  assert.equal(nativeLinear.url, 'https://mcp.linear.app/sse');
+  assert.equal(nativeLinear.url, 'https://mcp.linear.app/mcp');
 
   const claudeSync = mcpService.getClaudeMcpSyncData();
   assert.deepEqual(claudeSync.serverIds.sort(), ['LocalWrapped', 'LocalWrappedMissingAllow', 'Paper', 'linear', 'shell'].sort());
@@ -118,7 +123,7 @@ async function main(): Promise<void> {
 
   const linearClaude = claudeSync.servers.linear;
   assert.equal(linearClaude.command, 'npx');
-  assert.deepEqual(linearClaude.args?.slice(0, 3), ['-y', 'mcp-remote@0.1.38', 'https://mcp.linear.app/sse']);
+  assert.deepEqual(linearClaude.args?.slice(0, 3), ['-y', 'mcp-remote@0.1.38', 'https://mcp.linear.app/mcp']);
   assert.ok(linearClaude.args?.includes('--header'));
   assert.ok(linearClaude.args?.includes('Authorization: ${BUILD_MCP_LINEAR_AUTHORIZATION}'));
   assert.equal(linearClaude.env?.BUILD_MCP_LINEAR_AUTHORIZATION, 'Bearer linear-token');
@@ -149,6 +154,15 @@ async function main(): Promise<void> {
     args: ['server.js'],
     env: { SHELL_TOKEN: 'abc' },
   });
+
+  const activeServers = await mcpService.getActiveServers();
+  assert.equal(activeServers.find(server => server.id === 'build-browser')?.name, 'Build Browser');
+  assert.equal(activeServers.find(server => server.id === 'claudette-design')?.name, 'Design Mode');
+  assert.ok(!activeServers.some(server => server.name.startsWith('Claudette ')));
+  assert.deepEqual(
+    activeServers.filter(server => server.id.startsWith('claudette-')).map(server => server.id),
+    ['claudette-design'],
+  );
 
   const mergedClaude = JSON.parse(mcpService.buildMergedMcpJson(JSON.stringify({
     otherSetting: true,
@@ -223,12 +237,56 @@ command = "old"
   assert.deepEqual(cursorSdkServers.linear, {
     type: 'stdio',
     command: 'npx',
-    args: ['-y', 'mcp-remote@0.1.38', 'https://mcp.linear.app/sse', '--header', 'Authorization: ${BUILD_MCP_LINEAR_AUTHORIZATION}'],
+    args: ['-y', 'mcp-remote@0.1.38', 'https://mcp.linear.app/mcp', '--header', 'Authorization: ${BUILD_MCP_LINEAR_AUTHORIZATION}'],
     env: { BUILD_MCP_LINEAR_AUTHORIZATION: 'Bearer linear-token' },
   });
 
+  Object.assign(store('claudette-mcp-servers'), {
+    'open-design': {
+      type: 'stdio',
+      command: 'node',
+      args: ['/legacy/open-design/cli.js', 'mcp'],
+    },
+  });
+  Object.assign(store('claudette-mcp-harness-sync'), {
+    managedServerIds: ['linear', 'open-design', 'removed-by-build'],
+  });
+  assert.equal(await mcpService.removeLegacyOpenDesignMcpServer(), true);
+  assert.equal(store('claudette-mcp-servers')['open-design'], undefined);
+  assert.ok((store('claudette-mcp-harness-sync').removedServerIds as string[]).includes('open-design'));
+
   const cursorCliSource = fs.readFileSync(path.join(__dirname, '../src/main/services/cursor-cli.service.ts'), 'utf8');
   assert.ok(cursorCliSource.includes("'--approve-mcps'"), 'Cursor CLI launches should auto-approve synced MCPs');
+
+  const mcpIpcSource = fs.readFileSync(path.join(__dirname, '../src/main/ipc/mcp.ipc.ts'), 'utf8');
+  const retireLegacyIndex = mcpIpcSource.indexOf('mcpService.removeLegacyOpenDesignMcpServer()');
+  const authPreparationIndex = mcpIpcSource.indexOf('.then(() => mcpService.prepareConfiguredRemoteAuth())');
+  const localHarnessSyncIndex = mcpIpcSource.indexOf('.then(() => syncHarnessesAndSshSessions())');
+  assert.ok(retireLegacyIndex >= 0, 'Build startup should retire the legacy open-design MCP');
+  assert.ok(
+    authPreparationIndex > retireLegacyIndex && localHarnessSyncIndex > authPreparationIndex,
+    'Build startup should remove the legacy design MCP before auth preparation and the single harness sync',
+  );
+  assert.ok(!mcpIpcSource.includes('ensureOpenDesignMcpServer'), 'Build must not silently restore an uninstalled open-design MCP');
+
+  const claudeSource = fs.readFileSync(path.join(__dirname, '../src/main/services/claude.service.ts'), 'utf8');
+  assert.ok(
+    !claudeSource.includes('const designDaemon = await designService.ensureDaemon()'),
+    'Claude turns must not rerun Open Design MCP setup',
+  );
+  assert.ok(
+    !claudeSource.includes('syncLocalHarnessConfigs(workspace.daemonUrl)'),
+    'DesignMode activation must not mutate global harness MCP configuration',
+  );
+  assert.ok(
+    claudeSource.includes("disallowedTools: ['DesignSync']"),
+    'Claude must not substitute DesignSync for Build\'s DesignMode capability',
+  );
+  assert.ok(
+    !claudeSource.includes('sshService.scheduleMcpConfigsToRemote(sessionId, session.sshConfig)')
+      && !claudeSource.includes('const mcpSyncResult = await sshService.syncMcpConfigsToRemote(sessionId, session.sshConfig)'),
+    'SSH Claude turns must not trigger MCP bridge/config synchronization',
+  );
 
   console.log('mcp harness sync verifier passed');
 }
