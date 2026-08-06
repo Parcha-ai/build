@@ -3,7 +3,7 @@
 const http = require('http');
 
 function parseArgs(argv) {
-  const args = { branch: 'main', port: 9223, repoPath: '', timeoutMs: 300000 };
+  const args = { branch: 'main', port: 9223, repoPath: '', timeoutMs: 300000, implicitQueuedTarget: false };
   for (let index = 2; index < argv.length; index++) {
     const arg = argv[index];
     if (arg.startsWith('--branch=')) args.branch = arg.slice('--branch='.length);
@@ -14,6 +14,7 @@ function parseArgs(argv) {
     else if (arg === '--repo-path') args.repoPath = argv[++index];
     else if (arg.startsWith('--timeout-ms=')) args.timeoutMs = Number(arg.slice('--timeout-ms='.length));
     else if (arg === '--timeout-ms') args.timeoutMs = Number(argv[++index]);
+    else if (arg === '--implicit-queued-target') args.implicitQueuedTarget = true;
   }
   if (!args.repoPath) throw new Error('--repo-path is required');
   return args;
@@ -98,6 +99,9 @@ async function main() {
     target: `The lilac sparrow said target ${runId}.`,
     sibling: `The lilac sparrow said sibling ${runId}.`,
   };
+  const activeModel = args.implicitQueuedTarget
+    ? 'claude-haiku-4-5-20251001'
+    : 'codex:gpt-5.5';
   const state = `window.__GREP_TEST__.useSessionStore.getState()`;
   let originalSessionId;
   let sessionId;
@@ -119,7 +123,7 @@ async function main() {
     await waitFor('base turn start', () => evaluate(send, `Boolean(${state}.isStreaming[${id}])`), 15000);
     await waitFor('base turn completion', () => evaluate(send, `!${state}.isStreaming[${id}]`));
 
-    await evaluate(send, `(() => { const s = ${state}; s.setSelectedModel(${id}, 'codex:gpt-5.5', 'api'); void s.sendMessage(${id}, ${JSON.stringify(`Use the shell to run sleep 30. After it finishes, reply with this exact phrase: ${phrases.active}`)}, []); return true; })()`);
+    await evaluate(send, `(() => { const s = ${state}; s.setSelectedModel(${id}, ${JSON.stringify(activeModel)}, 'api'); void s.sendMessage(${id}, ${JSON.stringify(`Use the shell to run sleep 30. After it finishes, reply with this exact phrase: ${phrases.active}`)}, []); return true; })()`);
     await waitFor('parent turn start', () => evaluate(send, `Promise.all([Promise.resolve(Boolean(${state}.isStreaming[${id}])), window.electronAPI.claude.hasActiveQuery(${id}).catch(() => false)]).then(([renderer, backend]) => renderer || backend)`), 15000);
     await new Promise((resolve) => setTimeout(resolve, 1200));
 
@@ -127,15 +131,46 @@ async function main() {
     // activity yet. Clear that one early-follow-up marker so this smoke can
     // deterministically construct the queued state that the Stack button uses.
     await evaluate(send, `(() => { const hook = window.__GREP_TEST__.useSessionStore; hook.setState((s) => ({ activeUserPrompt: { ...s.activeUserPrompt, [${id}]: null } })); return true; })()`);
-    await evaluate(send, `${state}.sendMessage(${id}, ${JSON.stringify(`Do not use tools. Reply with this exact phrase and nothing else: ${phrases.target}`)}, []).then(() => true)`);
-    await evaluate(send, `${state}.sendMessage(${id}, ${JSON.stringify(`Do not use tools. Reply with this exact phrase and nothing else: ${phrases.sibling}`)}, []).then(() => true)`);
+    const targetPrompt = `Do not use tools. Reply with this exact phrase and nothing else: ${phrases.target}`;
+    const siblingPrompt = `Do not use tools. Reply with this exact phrase and nothing else: ${phrases.sibling}`;
+    if (args.implicitQueuedTarget) {
+      // Hold a deterministic queue before invoking the keyboard/no-id Fast
+      // Stack path. Codex can normally steer queued prompts into an active
+      // turn immediately, which would make this race impossible to exercise.
+      await evaluate(send, `(async () => {
+        const hook = window.__GREP_TEST__.useSessionStore;
+        const target = { id: 'implicit-target-${runId}', message: ${JSON.stringify(targetPrompt)}, attachments: [], timestamp: Date.now(), suppressUserMessage: false };
+        const sibling = { id: 'implicit-sibling-${runId}', message: ${JSON.stringify(siblingPrompt)}, attachments: [], timestamp: Date.now() + 1, suppressUserMessage: false };
+        await window.electronAPI.queue.beginFastStack(${id});
+        await window.electronAPI.queue.enqueue(${id}, target.message, [], { id: target.id, model: ${JSON.stringify(activeModel)} });
+        await window.electronAPI.queue.enqueue(${id}, sibling.message, [], { id: sibling.id, model: ${JSON.stringify(activeModel)} });
+        hook.setState((s) => ({
+          messageQueue: { ...s.messageQueue, [${id}]: [target, sibling] },
+          messages: {
+            ...s.messages,
+            [${id}]: [
+              ...(s.messages[${id}] || []),
+              { id: target.id, role: 'user', content: target.message, timestamp: new Date(target.timestamp), harness: 'codex' },
+              { id: sibling.id, role: 'user', content: sibling.message, timestamp: new Date(sibling.timestamp), harness: 'codex' },
+            ],
+          },
+        }));
+        return true;
+      })()`);
+    } else {
+      await evaluate(send, `${state}.sendMessage(${id}, ${JSON.stringify(targetPrompt)}, []).then(() => true)`);
+      await evaluate(send, `${state}.sendMessage(${id}, ${JSON.stringify(siblingPrompt)}, []).then(() => true)`);
+    }
     const queue = await waitFor('two queued prompts', () => evaluate(send, `(() => { const q = ${state}.messageQueue[${id}] || []; return q.length >= 2 ? q : null; })()`), 15000);
     const sessionCountBefore = await evaluate(send, `${state}.sessions.length`);
     const stackButtonVisible = await evaluate(send, `(document.body.innerText || '').toUpperCase().includes('STACK')`);
     const target = queue.find((item) => item.message.includes(phrases.target));
     if (!target) throw new Error('Target queued prompt not found');
 
-    await evaluate(send, `(() => { const s = ${state}; void s.fastStack(${id}, ${JSON.stringify(target.message)}, ${JSON.stringify(target.attachments || [])}, ${JSON.stringify(target.id)}, ${Boolean(target.suppressUserMessage)}); return true; })()`);
+    const fastStackInvocation = args.implicitQueuedTarget
+      ? `void s.fastStack(${id}, ${JSON.stringify(target.message)}, ${JSON.stringify(target.attachments || [])})`
+      : `void s.fastStack(${id}, ${JSON.stringify(target.message)}, ${JSON.stringify(target.attachments || [])}, ${JSON.stringify(target.id)}, ${Boolean(target.suppressUserMessage)})`;
+    await evaluate(send, `(() => { const s = ${state}; ${fastStackInvocation}; return true; })()`);
     await waitFor('in-place fork metadata', () => evaluate(send, `window.electronAPI.sessions.get(${id}).then((session) => (session?.fastStackCount || 0) >= 1 ? session : null)`), 30000);
     await waitFor('target assistant output', () => evaluate(send, `(${state}.messages[${id}] || []).some((message) => message.role === 'assistant' && (message.content || '').includes(${JSON.stringify(phrases.target)}))`));
     const queueAfterTarget = await evaluate(send, `(${state}.messageQueue[${id}] || []).map((item) => ({ id: item.id, message: item.message }))`);
@@ -153,6 +188,7 @@ async function main() {
     const siblingUserCount = final.messages.filter((message) => message.role === 'user' && message.content.includes(phrases.sibling)).length;
     const result = {
       runId,
+      implicitQueuedTarget: args.implicitQueuedTarget,
       sessionId,
       originalSessionId,
       ...phrases,

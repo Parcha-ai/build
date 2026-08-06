@@ -139,6 +139,137 @@ const getPersistedMobileBrowserHeight = (): number => {
   return DEFAULT_MOBILE_BROWSER_HEIGHT;
 };
 
+export interface SessionPanelState {
+  isTerminalPanelOpen: boolean;
+  terminalHeight: number;
+  isBrowserPanelOpen: boolean;
+  isGitPanelOpen: boolean;
+  isExtensionsPanelOpen: boolean;
+  isDesignPanelOpen: boolean;
+  isPlanPanelOpen: boolean;
+  isHtmlPanelOpen: boolean;
+  isMarkdownPanelOpen: boolean;
+  isHistoryPanelOpen: boolean;
+  isAnalyticsPanelOpen: boolean;
+  splitRatio: SplitRatio;
+  panelSplitPercent: number | null;
+  viewportMode: ViewportMode;
+  mobileBrowserHeight: number;
+}
+
+const SESSION_PANEL_STATES_KEY = 'grep-session-panel-states-v1';
+
+function defaultSessionPanelState(): SessionPanelState {
+  return {
+    isTerminalPanelOpen: false,
+    terminalHeight: 0,
+    isBrowserPanelOpen: false,
+    isGitPanelOpen: false,
+    isExtensionsPanelOpen: false,
+    isDesignPanelOpen: false,
+    isPlanPanelOpen: false,
+    isHtmlPanelOpen: false,
+    isMarkdownPanelOpen: false,
+    isHistoryPanelOpen: false,
+    isAnalyticsPanelOpen: false,
+    splitRatio: 'equal',
+    panelSplitPercent: null,
+    viewportMode: 'desktop',
+    mobileBrowserHeight: getPersistedMobileBrowserHeight(),
+  };
+}
+
+function normalizeSessionPanelState(value: unknown): SessionPanelState {
+  const defaults = defaultSessionPanelState();
+  if (!value || typeof value !== 'object') return defaults;
+  const candidate = value as Partial<SessionPanelState>;
+  const splitRatio = candidate.splitRatio === 'main-focus' || candidate.splitRatio === 'side-focus'
+    ? candidate.splitRatio
+    : 'equal';
+  const viewportMode = candidate.viewportMode === 'mobile' ? 'mobile' : 'desktop';
+  const panelSplitPercent = typeof candidate.panelSplitPercent === 'number' && Number.isFinite(candidate.panelSplitPercent)
+    ? Math.max(20, Math.min(80, candidate.panelSplitPercent))
+    : null;
+  const mobileBrowserHeight = typeof candidate.mobileBrowserHeight === 'number' && Number.isFinite(candidate.mobileBrowserHeight)
+    ? Math.max(400, Math.min(900, candidate.mobileBrowserHeight))
+    : defaults.mobileBrowserHeight;
+  const terminalHeight = typeof candidate.terminalHeight === 'number' && Number.isFinite(candidate.terminalHeight)
+    ? Math.max(0, Math.min(600, candidate.terminalHeight))
+    : defaults.terminalHeight;
+  return {
+    ...defaults,
+    ...Object.fromEntries(
+      Object.keys(defaults)
+        .filter((key) => key.startsWith('is') && typeof candidate[key as keyof SessionPanelState] === 'boolean')
+        .map((key) => [key, candidate[key as keyof SessionPanelState]]),
+    ),
+    splitRatio,
+    panelSplitPercent,
+    viewportMode,
+    mobileBrowserHeight,
+    terminalHeight,
+  };
+}
+
+function loadSessionPanelStates(): Record<string, SessionPanelState> {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(SESSION_PANEL_STATES_KEY) || '{}') as Record<string, unknown>;
+    return Object.fromEntries(
+      Object.entries(parsed)
+        .filter(([sessionId]) => typeof sessionId === 'string' && sessionId.length > 0)
+        .map(([sessionId, value]) => [sessionId, normalizeSessionPanelState(value)]),
+    );
+  } catch {
+    return {};
+  }
+}
+
+function persistSessionPanelStates(states: Record<string, SessionPanelState>): void {
+  try {
+    localStorage.setItem(SESSION_PANEL_STATES_KEY, JSON.stringify(states));
+  } catch { /* ignore storage failures */ }
+}
+
+function selectSessionPanelState(state: UIState): SessionPanelState {
+  return {
+    isTerminalPanelOpen: state.isTerminalPanelOpen,
+    terminalHeight: state.terminalHeight,
+    isBrowserPanelOpen: state.isBrowserPanelOpen,
+    isGitPanelOpen: state.isGitPanelOpen,
+    isExtensionsPanelOpen: state.isExtensionsPanelOpen,
+    isDesignPanelOpen: state.isDesignPanelOpen,
+    isPlanPanelOpen: state.isPlanPanelOpen,
+    isHtmlPanelOpen: state.isHtmlPanelOpen,
+    isMarkdownPanelOpen: state.isMarkdownPanelOpen,
+    isHistoryPanelOpen: state.isHistoryPanelOpen,
+    isAnalyticsPanelOpen: state.isAnalyticsPanelOpen,
+    splitRatio: state.splitRatio,
+    panelSplitPercent: state.panelSplitPercent,
+    viewportMode: state.viewportMode,
+    mobileBrowserHeight: state.mobileBrowserHeight,
+  };
+}
+
+function patchSessionPanelState(
+  state: UIState,
+  sessionId: string | null,
+  patch: Partial<SessionPanelState>,
+): Partial<UIState> {
+  if (!sessionId) return patch;
+  const sessionPanelStates = {
+    ...state.sessionPanelStates,
+    [sessionId]: {
+      ...(state.sessionPanelStates[sessionId] || defaultSessionPanelState()),
+      ...patch,
+    },
+  };
+  persistSessionPanelStates(sessionPanelStates);
+  return {
+    sessionPanelStates,
+    ...(state.activePanelSessionId === sessionId ? patch : {}),
+  };
+}
+
 interface UIState {
   isSidebarOpen: boolean;
   sidebarWidth: number;
@@ -160,6 +291,7 @@ interface UIState {
   hasApiKey: boolean | null; // null = not checked yet, false = missing, true = present
   selectedElement: unknown | null;
   splitRatio: SplitRatio;
+  panelSplitPercent: number | null;
   viewportMode: ViewportMode;
   mobileBrowserHeight: number; // Height of mobile browser frame, persisted
 
@@ -203,6 +335,8 @@ interface UIState {
   sessionDesignPanels: Record<string, { url: string; workspaceDir: string }>;
   // Sessions where the design session has fully taken over the view (no dual chat)
   sessionDesignTakeover: Record<string, boolean>;
+  activePanelSessionId: string | null;
+  sessionPanelStates: Record<string, SessionPanelState>;
 
   toggleSidebar: () => void;
   setSidebarWidth: (width: number) => void;
@@ -212,7 +346,7 @@ interface UIState {
   toggleGitPanel: () => void;
   toggleExtensionsPanel: () => void;
   togglePlanPanel: () => void;
-  showPlanPanel: () => void;
+  showPlanPanel: (sessionId?: string) => void;
   toggleHtmlPanel: () => void;
   showHtmlPanel: () => void;
   toggleMarkdownPanel: () => void;
@@ -224,10 +358,12 @@ interface UIState {
   toggleDesignPanel: () => void;
   showDesignPanel: (sessionId: string, panel: { url: string; workspaceDir: string }, takeover?: boolean) => void;
   setDesignTakeover: (sessionId: string, active: boolean) => void;
+  prepareSessionForEditor: (sessionId?: string) => void;
   setInspectorActive: (active: boolean) => void;
   setSelectedElement: (element: unknown | null) => void;
   cycleSplitRatio: () => void;
   setSplitRatio: (ratio: SplitRatio) => void;
+  setPanelSplitPercent: (percent: number | null) => void;
   toggleViewportMode: () => void;
   setViewportMode: (mode: ViewportMode) => void;
   setMobileBrowserHeight: (height: number) => void;
@@ -259,6 +395,8 @@ interface UIState {
   updateBrowserTabUrl: (tabId: string, url: string) => void;
   closeBrowserTab: (tabId: string) => void;
   setSessionSplitPane: (groupId: string, sessionId: string | null) => void;
+  setActivePanelSession: (sessionId: string | null) => void;
+  clearSessionPanelState: (sessionId: string) => void;
 }
 
 export const useUIStore = create<UIState>((set, get) => ({
@@ -281,6 +419,7 @@ export const useUIStore = create<UIState>((set, get) => ({
   hasApiKey: null,
   selectedElement: null,
   splitRatio: 'equal',
+  panelSplitPercent: null,
   viewportMode: 'desktop',
   mobileBrowserHeight: getPersistedMobileBrowserHeight(),
 
@@ -331,6 +470,8 @@ export const useUIStore = create<UIState>((set, get) => ({
   sessionEditingText: {},
   sessionDesignPanels: {},
   sessionDesignTakeover: {},
+  activePanelSessionId: null,
+  sessionPanelStates: loadSessionPanelStates(),
   sessionHtmlArtifacts: {},
   sessionMarkdownPanels: {},
   sessionPlanContent: (() => {
@@ -389,11 +530,22 @@ export const useUIStore = create<UIState>((set, get) => ({
       });
     }
   },
-  showPlanPanel: () => {
-    set({ isPlanPanelOpen: true, isBrowserPanelOpen: false, isExtensionsPanelOpen: false, isDesignPanelOpen: false, isHtmlPanelOpen: false, isHistoryPanelOpen: false, isMarkdownPanelOpen: false });
+  showPlanPanel: (sessionId) => {
+    const state = get();
+    set(patchSessionPanelState(state, sessionId || state.activePanelSessionId, {
+      isPlanPanelOpen: true,
+      isBrowserPanelOpen: false,
+      isExtensionsPanelOpen: false,
+      isDesignPanelOpen: false,
+      isHtmlPanelOpen: false,
+      isHistoryPanelOpen: false,
+      isMarkdownPanelOpen: false,
+    }));
     // Also close editor when showing plan (dynamic import to avoid circular dependency)
     import('./editor.store').then(({ useEditorStore }) => {
-      useEditorStore.getState().closeEditor();
+      const targetSessionId = sessionId || get().activePanelSessionId;
+      if (targetSessionId) useEditorStore.getState().closeEditorForSession(targetSessionId);
+      else useEditorStore.getState().closeEditor();
     });
   },
   toggleHtmlPanel: () => {
@@ -434,19 +586,22 @@ export const useUIStore = create<UIState>((set, get) => ({
   },
   setMarkdownPanel: (sessionId, panel) => {
     set((state) => ({
+      ...patchSessionPanelState(state, sessionId, {
+        isMarkdownPanelOpen: true,
+        isBrowserPanelOpen: false,
+        isExtensionsPanelOpen: false,
+        isDesignPanelOpen: false,
+        isPlanPanelOpen: false,
+        isHtmlPanelOpen: false,
+        isHistoryPanelOpen: false,
+      }),
       sessionMarkdownPanels: {
         ...state.sessionMarkdownPanels,
         [sessionId]: { ...panel, updatedAt: Date.now() },
       },
-      isMarkdownPanelOpen: true,
-      isBrowserPanelOpen: false,
-      isExtensionsPanelOpen: false, isDesignPanelOpen: false,
-      isPlanPanelOpen: false,
-      isHtmlPanelOpen: false,
-      isHistoryPanelOpen: false,
     }));
     import('./editor.store').then(({ useEditorStore }) => {
-      useEditorStore.getState().closeEditor();
+      useEditorStore.getState().closeEditorForSession(sessionId);
     });
   },
   clearMarkdownPanel: (sessionId) => set((state) => {
@@ -495,47 +650,60 @@ export const useUIStore = create<UIState>((set, get) => ({
   },
   showDesignPanel: (sessionId, panel, takeover) => {
     set((state) => ({
+      ...patchSessionPanelState(state, sessionId, {
+        isDesignPanelOpen: true,
+        isBrowserPanelOpen: false,
+        isExtensionsPanelOpen: false,
+        isPlanPanelOpen: false,
+        isHtmlPanelOpen: false,
+        isMarkdownPanelOpen: false,
+        isHistoryPanelOpen: false,
+        isAnalyticsPanelOpen: false,
+      }),
       sessionDesignPanels: { ...state.sessionDesignPanels, [sessionId]: panel },
       ...(takeover !== undefined
         ? { sessionDesignTakeover: { ...state.sessionDesignTakeover, [sessionId]: takeover } }
         : {}),
-      isDesignPanelOpen: true,
+    }));
+    import('./editor.store').then(({ useEditorStore }) => {
+      useEditorStore.getState().closeEditorForSession(sessionId);
+    });
+  },
+  setDesignTakeover: (sessionId, active) => set((state) => ({
+    ...(!active ? patchSessionPanelState(state, sessionId, { isDesignPanelOpen: false }) : {}),
+    sessionDesignTakeover: { ...state.sessionDesignTakeover, [sessionId]: active },
+  })),
+  prepareSessionForEditor: (sessionId) => {
+    const state = get();
+    set(patchSessionPanelState(state, sessionId || state.activePanelSessionId, {
       isBrowserPanelOpen: false,
       isExtensionsPanelOpen: false,
       isPlanPanelOpen: false,
       isHtmlPanelOpen: false,
       isMarkdownPanelOpen: false,
+      isDesignPanelOpen: false,
       isHistoryPanelOpen: false,
       isAnalyticsPanelOpen: false,
     }));
-    import('./editor.store').then(({ useEditorStore }) => {
-      useEditorStore.getState().closeEditor();
-    });
   },
-  setDesignTakeover: (sessionId, active) => set((state) => ({
-    sessionDesignTakeover: { ...state.sessionDesignTakeover, [sessionId]: active },
-    ...(active ? {} : { isDesignPanelOpen: false }),
-  })),
   setInspectorActive: (active) => set({ isInspectorActive: active }),
   setSelectedElement: (element) => set({ selectedElement: element }),
   cycleSplitRatio: () => set((state) => {
     const order: SplitRatio[] = ['equal', 'main-focus', 'side-focus'];
     const currentIndex = order.indexOf(state.splitRatio);
     const nextIndex = (currentIndex + 1) % order.length;
-    return { splitRatio: order[nextIndex] };
+    return { splitRatio: order[nextIndex], panelSplitPercent: null };
   }),
-  setSplitRatio: (ratio) => set({ splitRatio: ratio }),
+  setSplitRatio: (ratio) => set({ splitRatio: ratio, panelSplitPercent: null }),
+  setPanelSplitPercent: (percent) => set({
+    panelSplitPercent: typeof percent === 'number' ? Math.max(20, Math.min(80, percent)) : null,
+  }),
   toggleViewportMode: () => set((state) => ({
     viewportMode: state.viewportMode === 'desktop' ? 'mobile' : 'desktop',
   })),
   setViewportMode: (mode) => set({ viewportMode: mode }),
   setMobileBrowserHeight: (height) => {
     const clampedHeight = Math.max(400, Math.min(900, height));
-    try {
-      localStorage.setItem('grep-mobile-browser-height', String(clampedHeight));
-    } catch (e) {
-      // Ignore localStorage errors
-    }
     set({ mobileBrowserHeight: clampedHeight });
   },
   openSettings: (tab?: unknown) => set({
@@ -559,28 +727,26 @@ export const useUIStore = create<UIState>((set, get) => ({
   closeOnboarding: () => set({ isOnboardingOpen: false }),
 
   // Plan content methods
-  setPlanContent: (sessionId: string, content: string) => set((state) => ({
-    sessionPlanContent: { ...state.sessionPlanContent, [sessionId]: content },
-    isPlanPanelOpen: true,
-    isHtmlPanelOpen: false,
-    isMarkdownPanelOpen: false,
-  })),
+  setPlanContent: (sessionId: string, content: string) => {
+    set((state) => ({
+      ...patchSessionPanelState(state, sessionId, {
+        isPlanPanelOpen: true,
+        isHtmlPanelOpen: false,
+        isMarkdownPanelOpen: false,
+      }),
+      sessionPlanContent: { ...state.sessionPlanContent, [sessionId]: content },
+    }));
+    import('./editor.store').then(({ useEditorStore }) => {
+      useEditorStore.getState().closeEditorForSession(sessionId);
+    });
+  },
   clearPlanContent: (sessionId: string) => set((state) => {
     const newContent = { ...state.sessionPlanContent };
     delete newContent[sessionId];
     return { sessionPlanContent: newContent };
   }),
   setHtmlArtifact: (sessionId, artifact) => {
-    let shouldCloseEditor = false;
     set((state) => ({
-      ...(() => {
-        shouldCloseEditor = !state.isHtmlPanelOpen
-          || state.isBrowserPanelOpen
-          || state.isExtensionsPanelOpen
-          || state.isPlanPanelOpen
-          || state.isHistoryPanelOpen;
-        return {};
-      })(),
       sessionHtmlArtifacts: {
         ...state.sessionHtmlArtifacts,
         [sessionId]: {
@@ -588,18 +754,19 @@ export const useUIStore = create<UIState>((set, get) => ({
           updatedAt: artifact.updatedAt || Date.now(),
         },
       },
-      isHtmlPanelOpen: true,
-      isBrowserPanelOpen: false,
-      isExtensionsPanelOpen: false, isDesignPanelOpen: false,
-      isPlanPanelOpen: false,
-      isHistoryPanelOpen: false,
-      isMarkdownPanelOpen: false,
+      ...patchSessionPanelState(state, sessionId, {
+        isHtmlPanelOpen: true,
+        isBrowserPanelOpen: false,
+        isExtensionsPanelOpen: false,
+        isDesignPanelOpen: false,
+        isPlanPanelOpen: false,
+        isHistoryPanelOpen: false,
+        isMarkdownPanelOpen: false,
+      }),
     }));
-    if (shouldCloseEditor) {
-      import('./editor.store').then(({ useEditorStore }) => {
-        useEditorStore.getState().closeEditor();
-      });
-    }
+    import('./editor.store').then(({ useEditorStore }) => {
+      useEditorStore.getState().closeEditorForSession(sessionId);
+    });
   },
   clearHtmlArtifact: (sessionId) => set((state) => {
     const artifacts = { ...state.sessionHtmlArtifacts };
@@ -661,20 +828,29 @@ export const useUIStore = create<UIState>((set, get) => ({
   },
 
   // Multi-session browser methods
-  enableSessionBrowser: (sessionId: string) => set((state) => ({
-    sessionBrowsersEnabled: { ...state.sessionBrowsersEnabled, [sessionId]: true },
-    // Also open the browser panel if not already open
-    isBrowserPanelOpen: true,
-  })),
+  enableSessionBrowser: (sessionId: string) => {
+    set((state) => ({
+      ...patchSessionPanelState(state, sessionId, {
+        isBrowserPanelOpen: true,
+        isExtensionsPanelOpen: false,
+        isDesignPanelOpen: false,
+        isPlanPanelOpen: false,
+        isHtmlPanelOpen: false,
+        isHistoryPanelOpen: false,
+      }),
+      sessionBrowsersEnabled: { ...state.sessionBrowsersEnabled, [sessionId]: true },
+    }));
+    import('./editor.store').then(({ useEditorStore }) => {
+      useEditorStore.getState().closeEditorForSession(sessionId);
+    });
+  },
 
   disableSessionBrowser: (sessionId: string) => set((state) => {
     const newEnabled = { ...state.sessionBrowsersEnabled };
     delete newEnabled[sessionId];
-    // Close browser panel if no sessions have browsers enabled
-    const hasAnyBrowsers = Object.values(newEnabled).some(v => v);
     return {
+      ...patchSessionPanelState(state, sessionId, { isBrowserPanelOpen: false }),
       sessionBrowsersEnabled: newEnabled,
-      isBrowserPanelOpen: hasAnyBrowsers ? state.isBrowserPanelOpen : false,
     };
   }),
 
@@ -724,6 +900,9 @@ export const useUIStore = create<UIState>((set, get) => ({
       ? state.activeBrowserTabId
       : browserTabs[0]?.id || null;
     persistBrowserWorkspace(browserTabs, activeBrowserTabId, activeBrowserTabIdsByPartition);
+    const sessionPanelStates = { ...state.sessionPanelStates };
+    delete sessionPanelStates[sessionId];
+    persistSessionPanelStates(sessionPanelStates);
     return {
       sessionBrowsersEnabled: newEnabled,
       sessionInspectorActive: newInspectorActive,
@@ -733,6 +912,10 @@ export const useUIStore = create<UIState>((set, get) => ({
       browserTabs,
       activeBrowserTabId,
       activeBrowserTabIdsByPartition,
+      sessionPanelStates,
+      ...(state.activePanelSessionId === sessionId
+        ? { activePanelSessionId: null, ...defaultSessionPanelState() }
+        : {}),
     };
   }),
 
@@ -757,11 +940,21 @@ export const useUIStore = create<UIState>((set, get) => ({
       [partitionId]: id,
     };
     persistBrowserWorkspace(tabs, id, activeBrowserTabIdsByPartition);
-    set({
+    set((current) => ({
+      ...patchSessionPanelState(current, ownerSessionId, {
+        isBrowserPanelOpen: true,
+        isExtensionsPanelOpen: false,
+        isDesignPanelOpen: false,
+        isPlanPanelOpen: false,
+        isHtmlPanelOpen: false,
+        isHistoryPanelOpen: false,
+      }),
       browserTabs: tabs,
       activeBrowserTabId: id,
       activeBrowserTabIdsByPartition,
-      isBrowserPanelOpen: true,
+    }));
+    import('./editor.store').then(({ useEditorStore }) => {
+      useEditorStore.getState().closeEditorForSession(ownerSessionId);
     });
     return id;
   },
@@ -820,4 +1013,48 @@ export const useUIStore = create<UIState>((set, get) => ({
     persistSessionSplitPanes(sessionSplitPaneIds);
     return { sessionSplitPaneIds };
   }),
+
+  setActivePanelSession: (sessionId) => set((state) => ({
+    activePanelSessionId: sessionId,
+    ...(sessionId
+      ? state.sessionPanelStates[sessionId] || defaultSessionPanelState()
+      : defaultSessionPanelState()),
+  })),
+
+  clearSessionPanelState: (sessionId) => set((state) => {
+    const sessionPanelStates = { ...state.sessionPanelStates };
+    delete sessionPanelStates[sessionId];
+    persistSessionPanelStates(sessionPanelStates);
+    return {
+      sessionPanelStates,
+      ...(state.activePanelSessionId === sessionId
+        ? { activePanelSessionId: null, ...defaultSessionPanelState() }
+        : {}),
+    };
+  }),
 }));
+
+// Keep the legacy top-level selectors as a projection of the active session so
+// existing components stay simple. Every projection change is immediately
+// copied into that session's durable workspace snapshot.
+let syncingSessionPanelProjection = false;
+useUIStore.subscribe((state, previousState) => {
+  if (syncingSessionPanelProjection || !state.activePanelSessionId) return;
+  const currentPanelState = selectSessionPanelState(state);
+  const previousPanelState = selectSessionPanelState(previousState);
+  if (
+    state.activePanelSessionId === previousState.activePanelSessionId
+    && JSON.stringify(currentPanelState) === JSON.stringify(previousPanelState)
+  ) return;
+  const storedPanelState = state.sessionPanelStates[state.activePanelSessionId];
+  if (storedPanelState && JSON.stringify(storedPanelState) === JSON.stringify(currentPanelState)) return;
+
+  const sessionPanelStates = {
+    ...state.sessionPanelStates,
+    [state.activePanelSessionId]: currentPanelState,
+  };
+  persistSessionPanelStates(sessionPanelStates);
+  syncingSessionPanelProjection = true;
+  useUIStore.setState({ sessionPanelStates });
+  syncingSessionPanelProjection = false;
+});

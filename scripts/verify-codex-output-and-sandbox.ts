@@ -43,6 +43,11 @@ assert.match(
   /REMOTE_CODEX_SANDBOX_TTL/,
   'Remote sandbox capability must be cached',
 );
+assert.match(
+  claudeService,
+  /Auto Build.*route cannot use sandboxed Codex on SSH[\s\S]*?falling back to/,
+  'Auto Build must route away from sandboxed Codex when the SSH host cannot run Bubblewrap',
+);
 
 const messageBuffer = new CodexAgentMessageBuffer();
 assert.equal(messageBuffer.accept('first progress update'), undefined);

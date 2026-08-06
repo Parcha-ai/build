@@ -95,7 +95,7 @@ assert.match(
 );
 assert.match(
   harnessPolicy,
-  /fable-5\|opus-4-/,
+  /fable-5\|opus-\(\?:5\|4-/,
   'Claude harness policy must enable adaptive thinking for Fable 5',
 );
 

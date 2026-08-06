@@ -136,7 +136,7 @@ export const SpeakerButton: React.FC<SpeakerButtonProps> = ({
         text,
         messageId,
         voiceId: settings.voiceSettings.voiceId,
-        modelId: 'eleven_turbo_v2_5',
+        modelId: 'gpt-4o-mini-tts',
       });
 
       if (!response.success) {

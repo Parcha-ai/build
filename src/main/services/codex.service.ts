@@ -10,7 +10,6 @@ import type { SpawnedProcess } from './ssh.service';
 import type { Attachment, ChatMessage, SSHConfig } from '../../shared/types';
 import { terminateProcessTree } from '../utils/process-tree';
 import { truncateMiddlePreservingTail } from '../../shared/utils/prompt-truncation';
-import { mcpService } from './mcp.service';
 import { CachedStore } from '../cached-store';
 import { getSessionStoreName } from '../store-names';
 import { findUsableLocalExecutable, isUsableLocalExecutable } from '../utils/local-executable';
@@ -25,6 +24,7 @@ import {
 import { CodexAgentMessageBuffer } from './codex-agent-message-buffer';
 import {
   CodexAppServerConnection,
+  getCodexAppServerMessageTurnId,
   type CodexAppServerMessage,
 } from './codex-app-server-connection';
 import { filterRemoteCodexEnvironment } from '../utils/remote-codex-env';
@@ -131,6 +131,7 @@ interface CodexJsonEvent {
     id: string;
     type: string;
     text?: string;
+    phase?: string;
     command?: string;
     aggregated_output?: string;
     status?: string;
@@ -194,7 +195,10 @@ class CodexServiceImpl {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private sessionStore: any = new CachedStore({ name: getSessionStoreName() }) as any;
   private readonly CODEX_INSTRUCTION_CONTEXT_CHAR_LIMIT = 30000;
-  private readonly CODEX_DEVELOPER_INSTRUCTIONS_VERSION = 1;
+  // v2 retires native threads created before Plan -> Build became a hard
+  // continuation boundary. Build's canonical transcript re-seeds the fresh
+  // thread, so this is a one-time handle migration rather than context loss.
+  private readonly CODEX_DEVELOPER_INSTRUCTIONS_VERSION = 2;
 
   getOpenAiApiKey(): string | undefined {
     const userKey = settingsStore.get('openAiApiKey') as string | undefined;
@@ -253,15 +257,25 @@ class CodexServiceImpl {
 
   getThreadId(sessionId: string): string | undefined {
     const cached = this.codexThreadIds.get(sessionId);
-    if (cached) return cached;
+    const stored = cached
+      || this.sessionStore.get(`harnessState.${sessionId}.codexThreadId`) as string | undefined;
+    if (!stored) return undefined;
 
-    const stored = this.sessionStore.get(`harnessState.${sessionId}.codexThreadId`) as string | undefined;
-    if (stored) {
-      this.codexThreadIds.set(sessionId, stored);
-      return stored;
+    const seeded = this.sessionStore.get(`harnessState.${sessionId}.codexDeveloperInstructions`) as {
+      threadId?: string;
+      version?: number;
+    } | undefined;
+    if (seeded?.threadId !== stored || seeded.version !== this.CODEX_DEVELOPER_INSTRUCTIONS_VERSION) {
+      this.clearThreadId(sessionId);
+      console.log(
+        `[Codex Service] Retired pre-v${this.CODEX_DEVELOPER_INSTRUCTIONS_VERSION} native thread `
+        + `${stored} for session ${sessionId.substring(0, 8)}`,
+      );
+      return undefined;
     }
 
-    return undefined;
+    this.codexThreadIds.set(sessionId, stored);
+    return stored;
   }
 
   clearThreadId(sessionId: string): void {
@@ -541,7 +555,12 @@ class CodexServiceImpl {
 
     switch (type) {
       case 'agentMessage':
-        return { id, type: 'agent_message', text: typeof item.text === 'string' ? item.text : '' };
+        return {
+          id,
+          type: 'agent_message',
+          text: typeof item.text === 'string' ? item.text : '',
+          phase: typeof item.phase === 'string' ? item.phase : undefined,
+        };
       case 'reasoning': {
         const summary = Array.isArray(item.summary) ? item.summary.filter((part): part is string => typeof part === 'string') : [];
         const content = Array.isArray(item.content) ? item.content.filter((part): part is string => typeof part === 'string') : [];
@@ -585,6 +604,7 @@ class CodexServiceImpl {
   private mapAppServerNotification(
     message: CodexAppServerMessage,
     usage?: CodexJsonEvent['usage'],
+    itemPhases?: Map<string, string>,
   ): CodexJsonEvent | null {
     const params = message.params || {};
     switch (message.method) {
@@ -598,9 +618,26 @@ class CodexServiceImpl {
       case 'item/completed': {
         const item = this.mapAppServerItem(params.item);
         if (!item) return null;
+        if (item.type === 'agent_message' && item.phase) {
+          itemPhases?.set(item.id, item.phase);
+        }
         return {
           type: message.method === 'item/started' ? 'item.started' : 'item.completed',
           item,
+        };
+      }
+      case 'item/agentMessage/delta': {
+        const itemId = typeof params.itemId === 'string' ? params.itemId : undefined;
+        const delta = typeof params.delta === 'string' ? params.delta : undefined;
+        if (!itemId || !delta) return null;
+        return {
+          type: 'item.delta',
+          item: {
+            id: itemId,
+            type: 'agent_message',
+            text: delta,
+            phase: itemPhases?.get(itemId),
+          },
         };
       }
       case 'item/fileChange/patchUpdated': {
@@ -793,7 +830,9 @@ class CodexServiceImpl {
           detached: process.platform !== 'win32',
         });
 
+    let processError: Error | undefined;
     child.once('error', (error: Error) => {
+      processError = error;
       if ((error as NodeJS.ErrnoException).code !== 'ABORT_ERR') {
         console.warn('[Codex App Server] Process error:', error.message);
       }
@@ -911,6 +950,7 @@ class CodexServiceImpl {
       console.log(`[Codex App Server] Turn ${turnId} is steerable for ${sessionId.substring(0, 8)}`);
 
       let usage: CodexJsonEvent['usage'];
+      const itemPhases = new Map<string, string>();
       while (true) {
         const message = await connection.nextNotification();
         if (!message) break;
@@ -920,12 +960,20 @@ class CodexServiceImpl {
           continue;
         }
 
-        if (message.method === 'turn/started') {
-          const startedTurn = message.params?.turn as Record<string, unknown> | undefined;
-          if (typeof startedTurn?.id === 'string') {
-            activeState.turnId = startedTurn.id;
-          }
-        } else if (message.method === 'thread/tokenUsage/updated') {
+        // Delegated agents emit their complete item and turn lifecycles on the
+        // same app-server connection as the root. Filtering only turn/started
+        // lets a child's final agentMessage and turn/completed terminate the
+        // visible Build turn before the root has integrated the result.
+        const notificationTurnId = getCodexAppServerMessageTurnId(message);
+        if (notificationTurnId && notificationTurnId !== activeState.turnId) {
+          console.log(
+            `[Codex App Server] Ignoring non-root ${message.method || 'notification'} ${notificationTurnId}; `
+            + `root turn remains ${activeState.turnId}`,
+          );
+          continue;
+        }
+
+        if (message.method === 'thread/tokenUsage/updated') {
           const tokenUsage = message.params?.tokenUsage as Record<string, unknown> | undefined;
           const last = tokenUsage?.last as Record<string, unknown> | undefined;
           if (last) {
@@ -937,7 +985,7 @@ class CodexServiceImpl {
           }
         }
 
-        const event = this.mapAppServerNotification(message, usage);
+        const event = this.mapAppServerNotification(message, usage, itemPhases);
         if (!event) continue;
         // App-server emits an `error` notification immediately before the
         // authoritative failed `turn/completed`. Do not end the consumer on
@@ -959,6 +1007,19 @@ class CodexServiceImpl {
       if (!terminalEventSeen) {
         throw new Error(pendingAppServerError || 'Codex app-server ended before the active turn completed');
       }
+    } catch (error) {
+      // Detached SSH startup failures arrive on the process emitter while the
+      // JSON-RPC reader only sees stdout close. Preserve the actionable launch
+      // error (bad cwd, missing CLI, bridge failure) instead of replacing it
+      // with the generic "app-server output closed" message.
+      if (
+        processError
+        && error instanceof Error
+        && /app-server (?:output|connection) closed|app-server is not writable/i.test(error.message)
+      ) {
+        throw processError;
+      }
+      throw error;
     } finally {
       if (activeState && this.activeAppServers.get(sessionId) === activeState) {
         this.activeAppServers.delete(sessionId);
@@ -1274,32 +1335,10 @@ class CodexServiceImpl {
       return;
     }
 
-    if (sshConfig) {
-      if (nativeThread?.persistThread) {
-        // ClaudeService already schedules this sync at turn start. Native Codex
-        // threads must not wait behind optional MCP bridge startup before they
-        // can resume; the existing remote config remains usable for this turn.
-        void sshService.syncMcpConfigsToRemote(sessionId, sshConfig).then((syncResult) => {
-          if (!syncResult.success) {
-            console.warn('[Codex Service] Background remote MCP sync failed:', syncResult.error);
-          }
-        }).catch((error) => {
-          console.warn('[Codex Service] Background remote MCP sync failed:', error);
-        });
-      } else {
-        const syncResult = await sshService.syncMcpConfigsToRemote(sessionId, sshConfig);
-        if (!syncResult.success) {
-          yield { type: 'error', error: `Failed to sync MCP config to remote: ${syncResult.error}` };
-          return;
-        }
-      }
-    } else {
-      const syncResult = await mcpService.syncLocalHarnessConfigs();
-      if (Object.keys(syncResult.errors).length > 0) {
-        yield { type: 'error', error: `Failed to sync local MCP config: ${JSON.stringify(syncResult.errors)}` };
-        return;
-      }
-    }
+    yield {
+      type: 'thinking_delta',
+      content: nativeThread?.resumeThreadId ? 'Resuming Codex thread…\n' : 'Starting Codex thread…\n',
+    };
 
     let preparedAssets: PreparedCodexAssets = {
       imagePaths: [],
@@ -1352,7 +1391,21 @@ class CodexServiceImpl {
     } else {
       promptWithInstructions = await this.prependCodexInstructionContext(sessionId, promptWithFiles, workingDir, sshConfig);
     }
-    const promptWithModeContext = this.buildPromptWithExecutionMode(promptWithInstructions, executionMode);
+    // Older releases could clear the app's Plan marker without retiring the
+    // persistent Codex thread. Explicitly supersede that transcript-local
+    // instruction on resumed non-Plan turns so already-affected sessions
+    // recover in place as well as new phase transitions.
+    const promptExecutionMode = preparedNativeThread?.resumeThreadId && permissionMode !== 'plan'
+      ? {
+        ...executionMode,
+        promptPreamble: [
+          'The current turn is not in PLAN mode.',
+          'Any earlier instruction to remain in PLAN mode or return only a plan no longer applies.',
+          'Follow the current request within the active sandbox and approval policy.',
+        ].join(' '),
+      }
+      : executionMode;
+    const promptWithModeContext = this.buildPromptWithExecutionMode(promptWithInstructions, promptExecutionMode);
     let safePrompt = prompt;
     if (promptWithModeContext.length > MAX_CODEX_INITIAL_PROMPT_CHARS) {
       console.warn(`[Codex Service] Prompt too long (${promptWithModeContext.length} chars), middle-truncating to ${MAX_CODEX_INITIAL_PROMPT_CHARS} while preserving latest input`);
@@ -1412,15 +1465,26 @@ class CodexServiceImpl {
     options: { sessionId?: string; persistThread?: boolean } = {},
   ): AsyncGenerator<CodexStreamEvent> {
     const agentMessages = new CodexAgentMessageBuffer();
+    const streamedAgentMessageIds = new Set<string>();
 
     for await (const event of eventSource) {
       if (options.persistThread && options.sessionId && event.type === 'thread.started' && event.thread_id) {
         this.rememberThreadId(options.sessionId, event.thread_id);
       }
 
+      if (event.type === 'item.delta' && event.item?.type === 'agent_message' && event.item.text) {
+        streamedAgentMessageIds.add(event.item.id);
+        yield {
+          type: event.item.phase === 'final_answer' ? 'text_delta' : 'thinking_delta',
+          content: event.item.text,
+        };
+        continue;
+      }
+
       // A later agent message proves the previous one was commentary/progress.
       // Hold the current message until turn.completed establishes it as final.
       if (event.type === 'item.completed' && event.item?.type === 'agent_message' && event.item.text) {
+        if (streamedAgentMessageIds.has(event.item.id)) continue;
         const progressMessage = agentMessages.accept(event.item.text);
         if (progressMessage) {
           yield { type: 'thinking_delta', content: progressMessage };
@@ -1499,6 +1563,8 @@ class CodexServiceImpl {
     const mapAppServerNotification = this.mapAppServerNotification.bind(this);
     async function* jsonEvents(): AsyncGenerator<CodexJsonEvent> {
       let appServerUsage: CodexJsonEvent['usage'];
+      let rootTurnId: string | undefined;
+      const itemPhases = new Map<string, string>();
       for await (const line of rl) {
         const trimmed = line.trim();
         if (!trimmed) continue;
@@ -1507,7 +1573,25 @@ class CodexServiceImpl {
         try {
           const parsed = JSON.parse(trimmed.slice(jsonStart)) as CodexJsonEvent & CodexAppServerMessage;
           if (!parsed.method) {
+            const responseTurnId = (parsed as unknown as {
+              result?: { turn?: { id?: unknown } };
+            }).result?.turn?.id;
+            if (typeof responseTurnId === 'string' && responseTurnId) {
+              rootTurnId = responseTurnId;
+            }
             if (parsed.type) yield parsed;
+            continue;
+          }
+
+          // The detached log contains delegated-agent notifications too. The
+          // live app-server path filters them by the root turn; recovery must
+          // apply the identical boundary or a child's turn/completed can make
+          // Build report a false terminal result while the lead is still busy.
+          const notificationTurnId = getCodexAppServerMessageTurnId(parsed);
+          if (!rootTurnId && parsed.method === 'turn/started' && notificationTurnId) {
+            rootTurnId = notificationTurnId;
+          }
+          if (rootTurnId && notificationTurnId && notificationTurnId !== rootTurnId) {
             continue;
           }
 
@@ -1525,7 +1609,7 @@ class CodexServiceImpl {
               };
             }
           }
-          const event = mapAppServerNotification(parsed, appServerUsage);
+          const event = mapAppServerNotification(parsed, appServerUsage, itemPhases);
           if (event) yield event;
         } catch {
           // Non-JSON bridge/diagnostic output — skip

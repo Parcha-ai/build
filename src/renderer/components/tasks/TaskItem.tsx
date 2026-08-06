@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { GripVertical, X, Square, CheckSquare, Link2, Unlink, Plus, ChevronDown, ChevronRight } from 'lucide-react';
-import { useSessionStore } from '../../stores/session.store';
+import { GripVertical, X, Square, CheckSquare, Plus, ChevronDown, ChevronRight, Clock3 } from 'lucide-react';
 import type { FocusTask } from '../../../shared/types';
+import TaskSessionPicker from './TaskSessionPicker';
 
 interface TaskItemProps {
   task: FocusTask;
@@ -9,6 +9,7 @@ interface TaskItemProps {
   onUpdate: (id: string, updates: Partial<FocusTask>) => void;
   onDelete: (id: string) => void;
   onToggleDone: (id: string) => void;
+  onStartPomodoro: (id: string) => void;
   onAddSubtask: (taskId: string, title: string) => void;
   onToggleSubtask: (taskId: string, subtaskId: string) => void;
   onDeleteSubtask: (taskId: string, subtaskId: string) => void;
@@ -28,6 +29,7 @@ export default function TaskItem({
   onUpdate,
   onDelete,
   onToggleDone,
+  onStartPomodoro,
   onAddSubtask,
   onToggleSubtask,
   onDeleteSubtask,
@@ -42,31 +44,11 @@ export default function TaskItem({
 }: TaskItemProps) {
   const [isEditing, setIsEditing] = useState(false);
   const [editValue, setEditValue] = useState(task.title);
-  const [showSessionPicker, setShowSessionPicker] = useState(false);
   const [showSubtasks, setShowSubtasks] = useState(false);
   const [addingSubtask, setAddingSubtask] = useState(false);
   const [newSubtaskTitle, setNewSubtaskTitle] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
   const subtaskInputRef = useRef<HTMLInputElement>(null);
-  const pickerRef = useRef<HTMLDivElement>(null);
-  const sessions = useSessionStore((s) => s.sessions);
-
-  // Close session picker on outside click
-  useEffect(() => {
-    if (!showSessionPicker) return;
-    const handleClick = (e: MouseEvent) => {
-      if (pickerRef.current && !pickerRef.current.contains(e.target as Node)) {
-        setShowSessionPicker(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClick);
-    return () => document.removeEventListener('mousedown', handleClick);
-  }, [showSessionPicker]);
-
-  const linkedSession = task.sessionId ? sessions.find(s => s.id === task.sessionId) : null;
-  // Sessions available to link (exclude forks)
-  const linkableSessions = sessions.filter(s => !s.parentSessionId);
-
   useEffect(() => {
     if (isEditing && inputRef.current) {
       inputRef.current.focus();
@@ -161,70 +143,37 @@ export default function TaskItem({
           {task.title}
           {(task.subtasks?.length || 0) > 0 && (
             <span className="ml-1 text-[9px] text-claude-text-secondary">
-              {task.subtasks!.filter(st => st.done).length}/{task.subtasks!.length}
+              {(task.subtasks || []).filter(st => st.done).length}/{(task.subtasks || []).length}
             </span>
           )}
         </span>
       )}
 
-      {/* Session link indicator / button */}
-      <div className="relative flex-shrink-0" ref={pickerRef}>
-        {linkedSession ? (
-          <button
-            onClick={() => setShowSessionPicker(!showSessionPicker)}
-            className="opacity-60 group-hover:opacity-100 transition-opacity text-cyan-400 hover:text-cyan-300"
-            title={`Linked: ${linkedSession.name}`}
-          >
-            <Link2 size={10} />
-          </button>
-        ) : (
-          <button
-            onClick={() => setShowSessionPicker(!showSessionPicker)}
-            className="opacity-0 group-hover:opacity-100 transition-opacity text-claude-text-secondary hover:text-cyan-400"
-            title="Link to session"
-          >
-            <Link2 size={10} />
-          </button>
-        )}
+      {/* Session link / outside-Build location */}
+      <TaskSessionPicker
+        selectedSessionId={task.sessionId}
+        external={Boolean(task.pomodoroExternal)}
+        onSelect={(selection) => onUpdate(task.id, {
+          sessionId: selection.external ? undefined : selection.sessionId,
+          pomodoroExternal: selection.external,
+        })}
+      />
 
-        {/* Session picker dropdown */}
-        {showSessionPicker && (
-          <div className="absolute right-0 top-5 z-50 w-56 max-h-48 overflow-y-auto bg-claude-surface border border-claude-border shadow-lg">
-            {linkedSession && (
-              <button
-                onClick={() => {
-                  onUpdate(task.id, { sessionId: undefined });
-                  setShowSessionPicker(false);
-                }}
-                className="w-full text-left px-3 py-1.5 text-[10px] font-mono text-red-400 hover:bg-claude-bg flex items-center gap-1.5"
-              >
-                <Unlink size={9} />
-                Unlink session
-              </button>
-            )}
-            <div className="border-t border-claude-border" />
-            {linkableSessions.map(s => (
-              <button
-                key={s.id}
-                onClick={() => {
-                  onUpdate(task.id, { sessionId: s.id });
-                  setShowSessionPicker(false);
-                }}
-                className={`w-full text-left px-3 py-1.5 text-[10px] font-mono hover:bg-claude-bg truncate ${
-                  s.id === task.sessionId ? 'text-cyan-400' : 'text-claude-text'
-                }`}
-              >
-                {s.name}
-              </button>
-            ))}
-            {linkableSessions.length === 0 && (
-              <div className="px-3 py-2 text-[9px] font-mono text-claude-text-secondary">
-                No sessions available
-              </div>
-            )}
-          </div>
-        )}
-      </div>
+      {/* Start a focus slot for this task */}
+      {!isDone && (
+        <button
+          type="button"
+          onClick={() => onStartPomodoro(task.id)}
+          className={`shrink-0 transition-opacity ${
+            isActive
+              ? 'text-emerald-400 opacity-100'
+              : 'text-claude-text-secondary opacity-0 hover:text-emerald-400 group-hover:opacity-100'
+          }`}
+          title="Start Pomodoro for this task"
+        >
+          <Clock3 size={10} />
+        </button>
+      )}
 
       {/* Add subtask button */}
       <button

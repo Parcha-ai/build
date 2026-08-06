@@ -3,6 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Check, Copy, FileText, X } from 'lucide-react';
 import { useUIStore } from '../../stores/ui.store';
+import ChatMarkdownLink from '../chat/ChatMarkdownLink';
 
 interface MarkdownResponsePanelProps {
   sessionId?: string | null;
@@ -134,8 +135,8 @@ export default function MarkdownResponsePanel({ sessionId }: MarkdownResponsePan
                 blockquote: ({ children, ...props }) => (
                   <blockquote className="border-l-2 border-claude-accent pl-3 my-3 text-claude-text-secondary italic" {...props}>{children}</blockquote>
                 ),
-                a: ({ children, href, ...props }) => (
-                  <a className="text-claude-accent hover:underline" href={href} target="_blank" rel="noopener noreferrer" {...props}>{children}</a>
+                a: ({ children, href }) => (
+                  <ChatMarkdownLink href={href} sessionId={sessionId || undefined}>{children}</ChatMarkdownLink>
                 ),
                 strong: ({ children, ...props }) => <strong className="font-bold text-claude-text" {...props}>{children}</strong>,
                 hr: (props) => <hr className="my-4 border-claude-border" {...props} />,

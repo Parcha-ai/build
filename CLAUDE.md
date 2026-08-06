@@ -107,8 +107,8 @@ Claudette follows Electron's multi-process architecture:
 | `session.service.ts` | Session lifecycle, Claude Code transcript discovery |
 | `terminal.service.ts` | PTY terminal emulation via node-pty |
 | `git.service.ts` | Git operations via simple-git |
-| `audio.service.ts` | Text-to-speech (ElevenLabs), transcription (OpenAI) |
-| `realtime.service.ts` | OpenAI Realtime API for voice input |
+| `audio.service.ts` | OpenAI text-to-speech and transcription |
+| `openai-realtime-voice.service.ts` | Ephemeral OpenAI Realtime WebRTC session credentials |
 
 ### IPC Communication Pattern
 

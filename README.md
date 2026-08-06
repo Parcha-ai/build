@@ -26,7 +26,7 @@ Build is a desktop IDE that orchestrates your coding agents. Point it at any pro
 - **Session management** — multiple projects in parallel, each with their own branch and context
 - **Semantic search** — QMD-powered codebase navigation
 - **MCP servers** — connect Model Context Protocol tools for extended capabilities
-- **Voice mode** — speech-to-speech conversations (optional, requires OpenAI/ElevenLabs keys)
+- **Voice mode** — OpenAI Realtime speech-to-speech conversations that can steer Build while you talk
 
 ## Quick Start
 
@@ -66,7 +66,11 @@ Select "Auto Build" from the model picker, or choose a specific model directly.
 
 | Model | Tier |
 |-------|------|
-| Opus 4.7 | Flagship — most capable |
+| Opus 5 | Latest flagship — complex coding and long-running agents |
+| Fable 5 | Most capable — demanding coding and long-horizon work |
+| Sonnet 5 | Fast frontier coding and agentic work |
+| Opus 4.8 | Previous-generation flagship |
+| Opus 4.7 | Previous-generation flagship |
 | Opus 4.6 | Highly capable |
 | Sonnet 4.6 | Default — excellent balance of speed and capability |
 | Sonnet 4 | Fast and capable |

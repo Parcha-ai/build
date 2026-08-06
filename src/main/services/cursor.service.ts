@@ -54,6 +54,15 @@ function toolTypeName(type: string): string {
 interface AgentState {
   agent: SDKAgent;
   turnCount: number;
+  workDir: string;
+  activeRun?: Run;
+}
+
+interface PersistedCursorAgentState {
+  agentId: string;
+  workDir: string;
+  turnCount: number;
+  activeRunId?: string;
 }
 
 export function toCursorSdkMcpServers(servers: Record<string, MCPServerConfig>): Record<string, McpServerConfig> {
@@ -84,6 +93,25 @@ export function toCursorSdkMcpServers(servers: Record<string, MCPServerConfig>):
 
 class CursorService {
   private activeAgents: Map<string, AgentState> = new Map();
+
+  private stateKey(sessionId: string): string {
+    return `cursorSdkAgents.${sessionId}`;
+  }
+
+  private persistState(sessionId: string, state: AgentState): void {
+    const persisted: PersistedCursorAgentState = {
+      agentId: state.agent.agentId,
+      workDir: state.workDir,
+      turnCount: state.turnCount,
+      ...(state.activeRun ? { activeRunId: state.activeRun.id } : {}),
+    };
+    settingsStore.set(this.stateKey(sessionId), persisted);
+  }
+
+  private clearPersistedRun(sessionId: string, state: AgentState): void {
+    state.activeRun = undefined;
+    this.persistState(sessionId, state);
+  }
 
   private getApiKey(): string | undefined {
     const settings = settingsStore.get('settings', {}) as Record<string, unknown>;
@@ -150,15 +178,61 @@ class CursorService {
       let state = this.activeAgents.get(sessionId);
 
       if (!state) {
-        console.log(`[Cursor Service] Creating agent for session ${sessionId.substring(0, 8)}`);
-        const agent = await Agent.create({
-          model: { id: modelId },
-          apiKey,
-          local: { cwd: workDir },
-          mcpServers: cursorMcpServers,
-        });
-        state = { agent, turnCount: 0 };
+        const persisted = settingsStore.get(this.stateKey(sessionId)) as PersistedCursorAgentState | undefined;
+        let agent: SDKAgent | undefined;
+        if (persisted?.agentId && persisted.workDir === workDir) {
+          try {
+            agent = await Agent.resume(persisted.agentId, {
+              model: { id: modelId },
+              apiKey,
+              local: { cwd: workDir },
+              mcpServers: cursorMcpServers,
+            });
+            console.log(`[Cursor Service] Resumed agent ${persisted.agentId} for session ${sessionId.substring(0, 8)}`);
+          } catch (error) {
+            console.warn('[Cursor Service] Persisted agent resume failed; creating a replacement:', error);
+            settingsStore.delete(this.stateKey(sessionId));
+          }
+        }
+        if (!agent) {
+          console.log(`[Cursor Service] Creating agent for session ${sessionId.substring(0, 8)}`);
+          agent = await Agent.create({
+            model: { id: modelId },
+            apiKey,
+            local: { cwd: workDir },
+            mcpServers: cursorMcpServers,
+          });
+        }
+        state = { agent, turnCount: persisted?.agentId === agent.agentId ? persisted.turnCount : 0, workDir };
         this.activeAgents.set(sessionId, state);
+        this.persistState(sessionId, state);
+
+        // Cursor's local run store survives a renderer/main-process restart.
+        // Wait for an unfinished persisted run instead of force-expiring it;
+        // then continue the user's new message on the same SDK agent.
+        if (persisted?.activeRunId && persisted.agentId === agent.agentId) {
+          try {
+            const recoveredRun = await Agent.getRun(persisted.activeRunId, { runtime: 'local', cwd: workDir });
+            let recoveredResult;
+            if (recoveredRun.status === 'running') {
+              state.activeRun = recoveredRun;
+              this.persistState(sessionId, state);
+              pushEvent({ type: 'thinking_delta', content: 'Reattached to the active Cursor run; waiting for it to finish before continuing.\n' });
+              recoveredResult = await recoveredRun.wait();
+            } else {
+              // An app close can happen after Cursor persisted its terminal run
+              // but before Build committed the final response to the transcript.
+              recoveredResult = await recoveredRun.wait();
+            }
+            if (recoveredResult.result?.trim()) {
+              pushEvent({ type: 'text_delta', content: `${recoveredResult.result}\n\n` });
+            }
+          } catch (error) {
+            console.warn('[Cursor Service] Failed to recover persisted run:', error);
+          } finally {
+            this.clearPersistedRun(sessionId, state);
+          }
+        }
       }
 
       state.turnCount++;
@@ -181,6 +255,8 @@ class CursorService {
         },
         ...(isFollowUp ? { local: { force: true } } : {}),
       });
+      state.activeRun = run;
+      this.persistState(sessionId, state);
 
       run.wait()
         .then((result) => {
@@ -206,11 +282,13 @@ class CursorService {
             };
           }
           pushEvent({ type: 'message_complete', message });
+          this.clearPersistedRun(sessionId, state);
           finished = true;
           notifyWakeup();
         })
         .catch((err: Error) => {
           runError = err;
+          this.clearPersistedRun(sessionId, state);
           finished = true;
           notifyWakeup();
         });
@@ -317,15 +395,24 @@ class CursorService {
     const state = this.activeAgents.get(sessionId);
     if (state) {
       console.log(`[Cursor Service] Closing agent for session ${sessionId}`);
+      if (state.activeRun?.status === 'running') {
+        void state.activeRun.cancel().catch((error) => {
+          console.warn('[Cursor Service] Failed to cancel active run:', error);
+        });
+      }
       state.agent.close();
       this.activeAgents.delete(sessionId);
+      settingsStore.delete(this.stateKey(sessionId));
     }
   }
 
   disposeAll(): void {
     for (const [id, state] of this.activeAgents) {
       try {
-        state.agent.close();
+        // Preserve Cursor's persisted agent/run record on app quit. A later
+        // launch can use Agent.resume + Agent.getRun instead of discarding the
+        // long-running turn. Idle agents can still release local resources.
+        if (!state.activeRun || state.activeRun.status !== 'running') state.agent.close();
       } catch {
         // best-effort
       }

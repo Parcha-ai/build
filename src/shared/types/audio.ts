@@ -34,18 +34,40 @@ export interface TTSRequest {
 
 export interface VoiceSettings {
   voiceId: string;
-  stability: number; // 0-1
-  similarityBoost: number; // 0-1
-  style: number; // 0-1
-  useSpeakerBoost: boolean;
 }
 
+export const OPENAI_REALTIME_MODEL = 'gpt-realtime-2.1' as const;
+export const OPENAI_TTS_MODEL = 'gpt-4o-mini-tts' as const;
+
+export const OPENAI_VOICES = [
+  'alloy',
+  'ash',
+  'ballad',
+  'coral',
+  'echo',
+  'sage',
+  'shimmer',
+  'verse',
+  'marin',
+  'cedar',
+] as const;
+
+export type OpenAIVoice = typeof OPENAI_VOICES[number];
+export const REALTIME_VOICE_OPTIONS = ['M', ...OPENAI_VOICES] as const;
+export type RealtimeVoiceOption = typeof REALTIME_VOICE_OPTIONS[number];
+
+export function getRealtimeVoiceLabel(voice: RealtimeVoiceOption): string {
+  return voice === 'M' ? 'Moneypenny' : voice;
+}
+
+export type RealtimeReasoningEffort = 'low' | 'medium' | 'high';
+
 export interface AudioSettings {
-  elevenLabsApiKey?: string;
   openAiApiKey?: string;
-  elevenLabsAgentId?: string; // ElevenLabs Conversational AI agent ID for voice mode
   selectedVoice: string;
   voiceSettings: VoiceSettings;
+  realtimeVoice: RealtimeVoiceOption;
+  realtimeReasoningEffort: RealtimeReasoningEffort;
   autoPlayResponses: boolean;
   transcriptionLanguage: string;
   voiceTriggerWord: string; // Word that triggers auto-submit when speaking
@@ -57,18 +79,15 @@ export interface AudioSettings {
 
 // Default settings
 export const DEFAULT_AUDIO_SETTINGS: AudioSettings = {
-  selectedVoice: 'EXAVITQu4vr4xnSDxMaL', // Rachel (ElevenLabs default)
+  selectedVoice: 'marin',
   voiceSettings: {
-    voiceId: 'EXAVITQu4vr4xnSDxMaL',
-    stability: 0.5,
-    similarityBoost: 0.75,
-    style: 0,
-    useSpeakerBoost: true,
+    voiceId: 'marin',
   },
+  realtimeVoice: 'marin',
+  realtimeReasoningEffort: 'low',
   autoPlayResponses: false,
   transcriptionLanguage: 'en',
   voiceTriggerWord: 'please', // Default trigger word
-  elevenLabsAgentId: undefined, // User must configure in Settings
   voiceModeEnabled: true, // Enable voice mode by default
   ralphLoopEnabled: false, // Ralph Loop disabled by default
   computerUseEnabled: false, // Computer Use disabled by default

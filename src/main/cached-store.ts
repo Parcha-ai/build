@@ -48,7 +48,7 @@ export class CachedStore {
     return this.cache!;
   }
 
-  get(key?: string): unknown {
+  get(key?: string, defaultValue?: unknown): unknown {
     const data = this.loadCache();
     if (!key) return data;
 
@@ -56,10 +56,10 @@ export class CachedStore {
     const parts = key.split('.');
     let current: unknown = data;
     for (const part of parts) {
-      if (current == null || typeof current !== 'object') return undefined;
+      if (current == null || typeof current !== 'object') return defaultValue;
       current = (current as Record<string, unknown>)[part];
     }
-    return current;
+    return current === undefined ? defaultValue : current;
   }
 
   set(key: string, value: unknown): void {

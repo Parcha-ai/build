@@ -85,6 +85,19 @@ if (!fs.existsSync(fastUriPackagePath)) {
   fail(`packaged fast-uri dependency missing at ${fastUriPackagePath}`);
 }
 console.log(`ok packaged dependency: ${fastUriPackagePath}`);
+const bufbuildProtobufPackagePath = path.join(
+  appPath,
+  'Contents',
+  'Resources',
+  'node_modules',
+  '@bufbuild',
+  'protobuf',
+  'package.json'
+);
+if (!fs.existsSync(bufbuildProtobufPackagePath)) {
+  fail(`packaged @bufbuild/protobuf dependency missing at ${bufbuildProtobufPackagePath}`);
+}
+console.log(`ok packaged dependency: ${bufbuildProtobufPackagePath}`);
 for (const bundledAdhdFile of ['SKILL.md', 'LICENSE', path.join('agents', 'openai.yaml')]) {
   const bundledAdhdPath = path.join(appPath, 'Contents', 'Resources', 'i-have-adhd', bundledAdhdFile);
   if (!fs.existsSync(bundledAdhdPath)) {
@@ -113,7 +126,9 @@ const mainMarkers = [
   'Sonnet 5',
   'claude-fable-5',
   'Fable 5',
-  'SSH foreground Claude turn: resuming stored Claude SDK session without repair scan',
+  'claude-opus-5',
+  'Opus 5',
+  'SSH foreground Claude turn: probing the verified Claude SDK resume owner',
   'Manual Codex',
   'selected after',
   'resuming native thread',
@@ -125,7 +140,9 @@ const mainMarkers = [
   'Remembered native Codex thread',
   'Seeded native Codex developer instructions',
   'Reusing native thread developer instructions',
-  'Background remote MCP sync failed',
+  'Preparing Codex session',
+  'Starting Codex thread',
+  'Resuming Codex thread',
   'claude-ipc-send-message',
   'stdio process error during startup',
   'Resuming native SSH Codex thread',
@@ -133,6 +150,23 @@ const mainMarkers = [
   'Codex app-server process exited',
   'getDiagnostics',
   'Received preliminary error notification; waiting for terminal turn status',
+  'Ignoring non-root ',
+  'root turn remains',
+  'Retired pre-v',
+  'Deferring terminal result for',
+  'background task(s) still running',
+  'continuing the parent turn for synthesis',
+  'message on persistent SDK input for session',
+  'Recovered interim result for',
+  'queued final synthesis on the original SSH stdin',
+  'Reattached to the active Cursor run; waiting for it to finish before continuing.',
+  'cursorSdkAgents.',
+  'cursor-cli-recovered-tool-only-',
+  'opencode-recovered-result-',
+  'recoveryCommand',
+  'Reattach found no remaining remote turn',
+  'Disabled legacy per-turn output skill copies',
+  'route cannot use sandboxed Codex on SSH',
   'terminal provider failure',
   'Ignoring pending approved plan for unrelated Auto turn',
   'Clearing stale active query before drain',
@@ -169,9 +203,11 @@ const mainMarkers = [
   'persist:browser-',
   'buildSessionEnvProcessLoop',
   '].join("\\n")',
-  'ps -p "$pid" -o args=',
   'label:"New Window",accelerator:"CommandOrControl+Shift+N"',
   'label:"New Session",accelerator:"CommandOrControl+N"',
+  'Toggle Voice Mode',
+  'CommandOrControl+Shift+Y',
+  'toggle-voice-mode',
   'Overrode stale Auto Build plan permission for direct model turn',
   'Auto Build plan route using turn-local plan permission',
   'Explicit mutating workflow invocation must execute immediately',
@@ -200,10 +236,11 @@ const mainMarkers = [
   'Closing one-shot recoverability probe connection',
   'recoverable-probe',
   'MCP config sync already running for remote, reusing promise',
-  'MCP auth token sync running in background',
-  'Background MCP auth token sync failed',
-  'Waiting for MCP config sync before SSH agent start',
-  'BUILD_HARNESS=cursor',
+  'MCP auth token sync completed before harness start',
+  'syncMcpAuthToRemote',
+  'localFingerprint',
+  'Background MCP session setup failed',
+  'BUILD_HARNESS:"cursor"',
   'stopped after tool activity without returning a final text response',
   'Skipping SSH SDK resume repair scan',
   'cursor-agent --print <prompt:',
@@ -211,9 +248,33 @@ const mainMarkers = [
   'Collapsed duplicate assistant transcript row by content',
   'originalChars',
   'GitHub credential forwarding disabled; preserving remote user/bot auth',
+  'gpt-realtime-2.1',
+  '/v1/realtime/client_secrets',
+  'steer_build',
+  'get_build_status',
+  'list_build_sessions',
+  'updated in the last 24 hours',
+  'Proactively brief the user',
+  'You are Build, speaking directly to the user through the app',
+  '[MONEYPENNY VOICE PERSONA]',
+  'theatrical Bond impersonation',
+  'Queen and country',
+  'switch_build_session',
+  'switch_build_tab',
+  'target_tab_id',
+  'Explicit commit, push, or pull-request publication request must execute without a planning turn',
+  'Pull-request or branch status lookup is verification, not planning',
+  'Permission mode is plan — routing to Plan tier',
+  'fork_build_session',
+  'start_new_build_tab',
+  'inspect_build_screen',
+  'app:capture-screen',
 ];
 
 const rendererMarkers = [
+  'grep-session-panel-states-v1',
+  'sessionWorkspaces',
+  'panelSplitPercent',
   'Build transcript exists for',
   'not sending supplemental local fallback as model context',
   'grep-supplemental-messages-',
@@ -262,6 +323,33 @@ const rendererMarkers = [
   'Forward local GitHub identity & authentication',
   'Leave off to preserve remote or bot credentials.',
   'live-thinking-indicator',
+  'live-thinking-cluster',
+  'oai-events',
+  'voiceConversation',
+  'data-voice-capture-region',
+  'voice-inspected-screen',
+  'voice-browser-inspector',
+  'updated during the last 24 hours',
+  'build_session_updates',
+  'question_required',
+  'plan_approval_required',
+  'conversation_fork',
+  'fresh_context',
+  'grep-browser-refresh',
+  'build-voice-presence',
+  'build-voice-composer-orb',
+  'build-composer-voice-active',
+  'build-app',
+  'switch_build_tab',
+  'target_tab_id',
+  '[VoiceRouting] Switching visible tab',
+  'grep-voice-toggle',
+  'Build is speaking',
+  'Moneypenny',
+  'conversation_already_has_active_response',
+  'response.create.deferred',
+  'Retry using target_tab_id',
+  'turnBaselineAssistantId',
 ];
 
 for (const marker of mainMarkers) {
@@ -272,11 +360,16 @@ for (const marker of rendererMarkers) {
 }
 requireMarker('renderer bundle', rendererBundle, 'case"new-session"');
 forbidMarker('main bundle', mainBundle, 'label:"New Window",accelerator:"CommandOrControl+N"');
+forbidMarker('renderer bundle', rendererBundle, 'build-voice-wave');
+forbidMarker('renderer bundle', rendererBundle, 'The turn ended without a final assistant response.');
 forbidMarker('main bundle', mainBundle, '].join("; ")}buildKillSessionEnvProcessesCommand');
 forbidMarker('main bundle', mainBundle, 'Auto-generate session name from task');
 forbidMarker('main bundle', mainBundle, 'Could not auto-generate tab name');
+forbidMarker('main bundle', mainBundle, 'Background remote MCP sync failed');
 forbidMarker('renderer bundle', rendererBundle, 'scanRemoteTranscripts');
 forbidMarker('renderer bundle', rendererBundle, '[ForkTabs] Discovered');
+forbidMarker('main bundle', mainBundle.toLowerCase(), 'elevenlabs');
+forbidMarker('renderer bundle', rendererBundle.toLowerCase(), 'elevenlabs');
 
 if (process.platform === 'darwin' && isInstalledProductionApp) {
   run('codesign', ['--verify', '--deep', '--strict', appPath]);

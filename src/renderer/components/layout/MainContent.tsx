@@ -50,6 +50,8 @@ export default function MainContent() {
   const toggleExtensionsPanel = useUIStore((s) => s.toggleExtensionsPanel);
   const setTerminalHeight = useUIStore((s) => s.setTerminalHeight);
   const splitRatio = useUIStore((s) => s.splitRatio);
+  const panelSplitPercent = useUIStore((s) => s.panelSplitPercent);
+  const setPanelSplitPercent = useUIStore((s) => s.setPanelSplitPercent);
   const viewportMode = useUIStore((s) => s.viewportMode);
   const toggleViewportMode = useUIStore((s) => s.toggleViewportMode);
   const mobileBrowserHeight = useUIStore((s) => s.mobileBrowserHeight);
@@ -71,7 +73,6 @@ export default function MainContent() {
   const [isTerminalResizing, setIsTerminalResizing] = useState(false);
   const [isPanelResizing, setIsPanelResizing] = useState(false);
   const [isMobileBrowserResizing, setIsMobileBrowserResizing] = useState(false);
-  const [customSplitRatio, setCustomSplitRatio] = useState<number | null>(null);
   const [isSessionSplitDropActive, setIsSessionSplitDropActive] = useState(false);
   const chatSplitAreaRef = React.useRef<HTMLDivElement>(null);
   const previousPrimarySessionIdRef = React.useRef<string | null>(null);
@@ -170,6 +171,11 @@ export default function MainContent() {
   const activeBrowserOwnerSession = activeBrowserTab
     ? sessions.find((session) => session.id === activeBrowserTab.ownerSessionId) || null
     : null;
+  // A browser tab keeps the session that created it as its storage owner, but
+  // the live webview must bind to the conversation currently using that fork
+  // family's browser partition. Otherwise selecting a sibling fork can leave
+  // the preview and browser tools registered to a stale/stopped owner session.
+  const activeBrowserRuntimeSession = chatTargetSession || activeBrowserOwnerSession;
 
   const createTabForSession = useCallback((session = chatTargetSession) => {
     if (!session) return null;
@@ -280,8 +286,8 @@ export default function MainContent() {
   // Calculate flex basis percentages based on split ratio
   const getFlexBasis = () => {
     // Use custom ratio if set (from dragging)
-    if (customSplitRatio !== null) {
-      return { main: `${customSplitRatio}%`, side: `${100 - customSplitRatio}%` };
+    if (panelSplitPercent !== null) {
+      return { main: `${panelSplitPercent}%`, side: `${100 - panelSplitPercent}%` };
     }
 
     switch (splitRatio) {
@@ -331,7 +337,7 @@ export default function MainContent() {
       const mouseX = e.clientX - containerRect.left;
       const ratio = (mouseX / containerRect.width) * 100;
       const newRatio = Math.max(20, Math.min(80, ratio));
-      setCustomSplitRatio(newRatio);
+      setPanelSplitPercent(newRatio);
     };
 
     const handleMouseUp = () => {
@@ -345,7 +351,7 @@ export default function MainContent() {
 
     document.addEventListener('mousemove', handleMouseMove);
     document.addEventListener('mouseup', handleMouseUp);
-  }, []);
+  }, [setPanelSplitPercent]);
 
   // Handle terminal vertical resize
   const handleTerminalResizeMouseDown = useCallback((e: React.MouseEvent) => {
@@ -528,7 +534,7 @@ export default function MainContent() {
                 onMouseDown={(e) => e.stopPropagation()}
                 onClick={(e) => {
                   e.stopPropagation();
-                  setCustomSplitRatio(null); // Reset any custom drag ratio
+                  setPanelSplitPercent(null); // Reset any custom drag ratio
                   toggleViewportMode();
                 }}
                 className="p-0.5 my-1 rounded hover:bg-claude-surface-hover text-claude-text-secondary hover:text-claude-accent transition-colors opacity-0 group-hover:opacity-100"
@@ -546,6 +552,7 @@ export default function MainContent() {
             {/* Side panel container - horizontal layout for browser + extensions */}
             {/* In mobile mode with only browser panel, use fixed width for mobile device frame */}
             <div
+              data-voice-capture-region="side-panel"
               className="flex overflow-hidden bg-claude-surface transition-all duration-200"
               style={{
                 flexBasis: (viewportMode === 'mobile' && isBrowserPanelOpen && !isGitPanelOpen && !isEditorOpen && !isExtensionsPanelOpen && !isPlanPanelOpen && !isHtmlPanelOpen && !isMarkdownPanelOpen)
@@ -605,7 +612,7 @@ export default function MainContent() {
                             Chromium guest alive. A hidden <webview> still owns a
                             renderer process, so mounting the whole saved workspace
                             made inactive sessions consume gigabytes after restart. */}
-                        {activeBrowserTab && activeBrowserOwnerSession ? (
+                        {activeBrowserTab && activeBrowserRuntimeSession ? (
                           <div
                             key={activeBrowserTab.id}
                             data-browser-tab-id={activeBrowserTab.id}
@@ -614,7 +621,7 @@ export default function MainContent() {
                           >
                             <BrowserPreviewBoundary tabId={activeBrowserTab.id}>
                               <BrowserPreview
-                                session={activeBrowserOwnerSession}
+                                session={activeBrowserRuntimeSession}
                                 isVisible={true}
                                 partitionId={activeBrowserTab.partitionId}
                                 browserTabId={activeBrowserTab.id}
@@ -794,6 +801,7 @@ export default function MainContent() {
 
           {/* Terminal container with dynamic height */}
           <div
+            data-voice-capture-region="terminal-panel"
             className="border-t border-claude-border"
             style={{ height: terminalHeight || 250 }}
           >

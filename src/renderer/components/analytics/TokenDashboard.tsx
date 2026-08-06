@@ -50,6 +50,7 @@ function getModelShortName(model: string): string {
   if (model.includes('glm-5.2') || model.includes('zai-glm')) return 'GLM 5.2';
   if (model.includes('fable-5')) return 'Fable 5';
   if (model.includes('sonnet-5')) return 'Sonnet 5';
+  if (model.includes('opus-5')) return 'Opus 5';
   if (model.includes('opus-4-8')) return 'Opus 4.8';
   if (model.includes('opus-4-7')) return 'Opus 4.7';
   if (model.includes('opus-4-6')) return 'Opus 4.6';

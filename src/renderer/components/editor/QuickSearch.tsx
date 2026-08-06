@@ -311,7 +311,7 @@ export default function QuickSearch() {
       {
         id: 'set-effort-max',
         label: 'Set Effort: Max',
-        description: 'Maximum capability (Opus 4.6 only)',
+        description: 'Maximum capability (Opus only)',
         icon: <Zap size={16} className="text-pink-400" />,
         category: 'agent',
         shortcut: '⌘⇧4',

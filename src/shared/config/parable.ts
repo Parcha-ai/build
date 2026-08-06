@@ -29,7 +29,7 @@ export const DEFAULT_PARABLE_CONFIG: ParableConfig = {
     },
     {
       id: 'opus',
-      model: 'claude-opus-4-8',
+      model: 'claude-opus-5',
       enabled: true,
       effort: 'high',
       taskClasses: ['gnarly', 'review', 'smoke_test'],

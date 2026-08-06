@@ -25,7 +25,33 @@ const inputArea = fs.readFileSync(
 );
 assert.match(inputArea, /icon: <Workflow size=\{14\} \/>/, 'Cascade should use a compact workflow icon');
 assert.match(inputArea, /data-testid="toolbar-overflow-toggle"/);
-assert.match(inputArea, /data-testid="toolbar-pinned-controls"[\s\S]*?<Square[\s\S]*?<MicrophoneButton/);
+assert.match(inputArea, /data-testid="toolbar-pinned-controls"[\s\S]*?<Square/);
+assert.match(inputArea, /data-testid="toolbar-pinned-controls"[\s\S]*?<VoiceComposerControl/);
+assert.doesNotMatch(inputArea, /<MicrophoneButton/, 'the singleton voice transport must not be owned by a session toolbar');
 assert.doesNotMatch(inputArea, />\s*CASCADE\s*</, 'the inline Cascade text pill should be removed');
+
+const statusBar = fs.readFileSync(
+  path.resolve(__dirname, '../src/renderer/components/layout/StatusBar.tsx'),
+  'utf8',
+);
+assert.match(statusBar, /<MicrophoneButton \/>/);
+
+const microphoneButton = fs.readFileSync(
+  path.resolve(__dirname, '../src/renderer/components/chat/MicrophoneButton.tsx'),
+  'utf8',
+);
+assert.match(microphoneButton, /sessionId: APP_VOICE_SESSION_ID/);
+assert.match(microphoneButton, /return null/, 'the singleton voice transport should be headless');
+
+const voiceComposer = fs.readFileSync(
+  path.resolve(__dirname, '../src/renderer/components/chat/VoiceComposerControl.tsx'),
+  'utf8',
+);
+assert.match(voiceComposer, /data-testid="app-voice-control"/);
+assert.match(voiceComposer, /build-voice-composer-orb/);
+assert.match(voiceComposer, /build-voice-composer-bars/);
+assert.match(voiceComposer, /new CustomEvent\('grep-voice-toggle'\)/);
+assert.doesNotMatch(voiceComposer, /fixed bottom-/);
+assert.doesNotMatch(statusBar, /VoiceModeStatusBar/, 'the bottom status-bar listening animation must not be rendered');
 
 console.log('input toolbar overflow verifier passed');

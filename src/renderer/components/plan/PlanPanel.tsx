@@ -5,6 +5,7 @@ import { X, FileText, Trash2, Check, XCircle, RefreshCw, ClipboardList, FileChec
 import { v4 as uuid } from 'uuid';
 import { useUIStore } from '../../stores/ui.store';
 import { useSessionStore } from '../../stores/session.store';
+import ChatMarkdownLink from '../chat/ChatMarkdownLink';
 
 const EMPTY_CHAT_MESSAGES: never[] = [];
 
@@ -765,14 +766,9 @@ export default function PlanPanel() {
                     );
                   }
                   return (
-                    <a
-                      href={href}
-                      className="text-claude-accent hover:underline"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                    >
+                    <ChatMarkdownLink href={href} sessionId={activeSessionId || undefined}>
                       {children}
-                    </a>
+                    </ChatMarkdownLink>
                   );
                 },
                 // Task list support

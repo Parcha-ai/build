@@ -16,8 +16,7 @@ export function registerDesignHandlers(ipcMain: IpcMain): void {
   });
 
   // Start the daemon and create/attach the session's design workspace.
-  // Used when the user opens the design panel manually (agent-triggered
-  // activation goes through the designMode MCP tool instead).
+  // Used when the user opens the design panel manually without starting a run.
   ipcMain.handle(IPC_CHANNELS.DESIGN_ENSURE_WORKSPACE, async (_event, sessionId: string) => {
     const session = await sessionService.getSession(sessionId);
     if (!session) throw new Error(`Unknown session: ${sessionId}`);
@@ -29,6 +28,36 @@ export function registerDesignHandlers(ipcMain: IpcMain): void {
       session.name,
       session.sshConfig?.remoteWorkdir ? { config: session.sshConfig, remoteWorkdir: session.sshConfig.remoteWorkdir } : undefined
     );
+  });
+
+  // Start DesignMode directly from an app surface such as voice. This is an
+  // app action, not a coding-harness prompt, so it behaves the same regardless
+  // of whether the active tab uses Claude, Codex, Cursor, Gemini, or OpenCode.
+  ipcMain.handle(IPC_CHANNELS.DESIGN_START_RUN, async (event, sessionId: string, brief: string) => {
+    const session = await sessionService.getSession(sessionId);
+    if (!session) throw new Error(`Unknown session: ${sessionId}`);
+    const cwd = session.worktreePath || session.repoPath || session.sshConfig?.remoteWorkdir;
+    if (!cwd) throw new Error('Session has no working directory');
+    const activation = await designService.activateDesignMode({
+      sessionId,
+      sessionCwd: cwd,
+      sessionName: session.name,
+      ssh: session.sshConfig?.remoteWorkdir
+        ? { config: session.sshConfig, remoteWorkdir: session.sshConfig.remoteWorkdir }
+        : undefined,
+    }, brief);
+    event.sender.send(IPC_CHANNELS.DESIGN_OPEN_PANEL, {
+      sessionId,
+      url: activation.conversationUrl,
+      workspaceDir: activation.workspace.workspaceDir,
+      takeover: true,
+    });
+    return {
+      projectId: activation.workspace.projectId,
+      conversationId: activation.conversationId,
+      workspaceDir: activation.workspace.workspaceDir,
+      panelUrl: activation.conversationUrl,
+    };
   });
 
   // Manual "sync designs to remote now" (SSH sessions; no-op for local)

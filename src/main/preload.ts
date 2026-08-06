@@ -23,7 +23,23 @@ import type {
   MarketplacePlugin,
   OpenClawConfig,
   PullRequestStatusResult,
-  BrowserChatInsertPayload
+  BrowserChatInsertPayload,
+  ArcBrowserProfile,
+  ArcCookieImportResult,
+  RealtimeVoiceSessionRequest,
+  RealtimeVoiceSessionResult,
+  RealtimeVoiceConfiguration,
+  RealtimeVoiceRoutingLog,
+  RemoteVoiceDeploymentStatus,
+  VoiceMemoryAppendRequest,
+  VoiceMemoryEntry,
+  VoiceMemorySnapshot,
+  ParableSubscriptionStatus,
+  ParableAuthRunState,
+  ParableVendor,
+  PomodoroStartRequest,
+  PomodoroState,
+  PomodoroUIRequest,
 } from '../shared/types';
 
 // Dev instance name from environment variable (set by scripts/dev.sh)
@@ -80,6 +96,34 @@ const electronAPI = {
       ipcRenderer.on('auth:oauth-callback', handler);
       return () => ipcRenderer.removeListener('auth:oauth-callback', handler);
     },
+  },
+
+  parable: {
+    getStatus: (): Promise<ParableSubscriptionStatus> =>
+      ipcRenderer.invoke(IPC_CHANNELS.PARABLE_GET_STATUS),
+    getSetupCommand: (vendors: ParableVendor[], buildProxy = true): Promise<string> =>
+      ipcRenderer.invoke(IPC_CHANNELS.PARABLE_GET_SETUP_COMMAND, vendors, buildProxy),
+    startSetup: (vendors: ParableVendor[]): Promise<ParableAuthRunState> =>
+      ipcRenderer.invoke(IPC_CHANNELS.PARABLE_SETUP_START, vendors),
+    startAuth: (vendor: ParableVendor): Promise<ParableAuthRunState> =>
+      ipcRenderer.invoke(IPC_CHANNELS.PARABLE_AUTH_START, vendor),
+    cancelAuth: (): Promise<void> =>
+      ipcRenderer.invoke(IPC_CHANNELS.PARABLE_AUTH_CANCEL),
+    getAuthRun: (): Promise<ParableAuthRunState> =>
+      ipcRenderer.invoke(IPC_CHANNELS.PARABLE_AUTH_GET_RUN),
+    onAuthEvent: (callback: (state: ParableAuthRunState) => void) => {
+      const handler = (_: IpcRendererEvent, state: ParableAuthRunState) => callback(state);
+      ipcRenderer.on(IPC_CHANNELS.PARABLE_AUTH_EVENT, handler);
+      return () => {
+        ipcRenderer.removeListener(IPC_CHANNELS.PARABLE_AUTH_EVENT, handler);
+      };
+    },
+    getConfig: (): Promise<string> => ipcRenderer.invoke(IPC_CHANNELS.PARABLE_CONFIG_GET),
+    setConfig: (content: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.PARABLE_CONFIG_SET, content),
+    getConfigData: (): Promise<Record<string, any>> => ipcRenderer.invoke(IPC_CHANNELS.PARABLE_CONFIG_GET_DATA),
+    setConfigData: (data: Record<string, any>): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.PARABLE_CONFIG_SET_DATA, data),
+    syncAuthToSsh: (sessionId: string): Promise<{ copied: number; host: string }> =>
+      ipcRenderer.invoke(IPC_CHANNELS.PARABLE_SYNC_AUTH_SSH, sessionId),
   },
 
   // Sessions
@@ -313,7 +357,7 @@ const electronAPI = {
     respondToPlanApproval: (response: { requestId: string; approved: boolean; sessionId?: string; planContent?: string; planFilePath?: string; feedback?: string }): Promise<void> =>
       ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_PLAN_APPROVAL_RESPONSE, response),
     // Auto Build routing decision listener
-    onAutoRouteDecision: (callback: (data: { sessionId: string; decision: { tier: string; domain?: string; resolvedModel: string; resolvedHarness?: string; resolvedEffort?: string; resolvedSpeed?: string; workflow?: string; budgetUsd?: number; verification?: string; confidence: number; reason: string; method: string; enableGoals?: boolean; planningGate?: { action: 'none' | 'suggest' | 'start'; confidence: number; reason: string; changeKind: 'feature' | 'bug' | 'update' | 'migration' | 'general' }; goal?: { objective: string; source: 'slash-command' | 'ralph-loop' }; orchestration?: { mode: string; leadHarness: string; leadModel: string; stages: Array<{ tier: string; harness: string; model: string; purpose: string; effort?: string; speed?: string; workflow?: string; budgetUsd?: number; verification?: string; fallbackModels?: string[]; required?: boolean; trigger?: string }> } } }) => void) => {
+    onAutoRouteDecision: (callback: (data: { sessionId: string; decision: { tier: string; categoryId?: string; categoryLabel?: string; domain?: string; resolvedModel: string; resolvedHarness?: string; resolvedEffort?: string; resolvedSpeed?: string; workflow?: string; budgetUsd?: number; verification?: string; confidence: number; reason: string; method: string; enableGoals?: boolean; planningGate?: { action: 'none' | 'suggest' | 'start'; confidence: number; reason: string; changeKind: 'feature' | 'bug' | 'update' | 'migration' | 'general' }; goal?: { objective: string; source: 'slash-command' | 'ralph-loop' }; orchestration?: { mode: string; leadHarness: string; leadModel: string; stages: Array<{ tier: string; harness: string; model: string; purpose: string; effort?: string; speed?: string; workflow?: string; budgetUsd?: number; verification?: string; fallbackModels?: string[]; required?: boolean; trigger?: string }> } } }) => void) => {
       const handler = (_: IpcRendererEvent, data: any) => callback(data);
       ipcRenderer.on(IPC_CHANNELS.CLAUDE_AUTO_ROUTE_DECISION, handler);
       return () => ipcRenderer.removeListener(IPC_CHANNELS.CLAUDE_AUTO_ROUTE_DECISION, handler);
@@ -453,6 +497,10 @@ const electronAPI = {
     },
     clearStorage: (sessionId?: string): Promise<{ success: boolean }> =>
       ipcRenderer.invoke(IPC_CHANNELS.BROWSER_CLEAR_STORAGE, sessionId),
+    listArcProfiles: (): Promise<ArcBrowserProfile[]> =>
+      ipcRenderer.invoke(IPC_CHANNELS.BROWSER_LIST_ARC_PROFILES),
+    importArcCookies: (partitionId: string, profileId: string): Promise<ArcCookieImportResult> =>
+      ipcRenderer.invoke(IPC_CHANNELS.BROWSER_IMPORT_ARC_COOKIES, partitionId, profileId),
     registerWebview: (sessionId: string, webContentsId: number, partitionName?: string) => {
       ipcRenderer.send('browser:register-webview', { sessionId, webContentsId, partitionName });
     },
@@ -471,8 +519,8 @@ const electronAPI = {
       return () => ipcRenderer.removeListener(IPC_CHANNELS.BROWSER_UPDATE, handler);
     },
     // Request to open browser panel (from main process for Stagehand)
-    onBrowserOpenPanel: (callback: (data: { sessionId: string }) => void) => {
-      const handler = (_: IpcRendererEvent, data: { sessionId: string }) => callback(data);
+    onBrowserOpenPanel: (callback: (data: { sessionId?: string; url?: string }) => void) => {
+      const handler = (_: IpcRendererEvent, data: { sessionId?: string; url?: string }) => callback(data);
       ipcRenderer.on(IPC_CHANNELS.BROWSER_OPEN_PANEL, handler);
       return () => ipcRenderer.removeListener(IPC_CHANNELS.BROWSER_OPEN_PANEL, handler);
     },
@@ -484,6 +532,8 @@ const electronAPI = {
       ipcRenderer.invoke(IPC_CHANNELS.DESIGN_GET_STATUS, sessionId),
     ensureWorkspace: (sessionId: string): Promise<{ projectId: string; workspaceDir: string; panelUrl: string; daemonUrl: string }> =>
       ipcRenderer.invoke(IPC_CHANNELS.DESIGN_ENSURE_WORKSPACE, sessionId),
+    startRun: (sessionId: string, brief: string): Promise<{ projectId: string; conversationId: string; workspaceDir: string; panelUrl: string }> =>
+      ipcRenderer.invoke(IPC_CHANNELS.DESIGN_START_RUN, sessionId, brief),
     pushWorkspace: (sessionId: string): Promise<{ pushed: number }> =>
       ipcRenderer.invoke(IPC_CHANNELS.DESIGN_PUSH_WORKSPACE, sessionId),
     onDesignOpenPanel: (callback: (data: { sessionId: string; url: string; workspaceDir: string; takeover?: boolean }) => void) => {
@@ -511,6 +561,29 @@ const electronAPI = {
       ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_SET_GOOGLE_API_KEY, key),
   },
 
+  pomodoro: {
+    getState: (): Promise<PomodoroState> =>
+      ipcRenderer.invoke(IPC_CHANNELS.POMODORO_GET_STATE),
+    start: (request: PomodoroStartRequest): Promise<PomodoroState> =>
+      ipcRenderer.invoke(IPC_CHANNELS.POMODORO_START, request),
+    pause: (): Promise<PomodoroState> =>
+      ipcRenderer.invoke(IPC_CHANNELS.POMODORO_PAUSE),
+    resume: (): Promise<PomodoroState> =>
+      ipcRenderer.invoke(IPC_CHANNELS.POMODORO_RESUME),
+    stop: (): Promise<PomodoroState> =>
+      ipcRenderer.invoke(IPC_CHANNELS.POMODORO_STOP),
+    onStateChanged: (callback: (state: PomodoroState) => void) => {
+      const handler = (_event: IpcRendererEvent, state: PomodoroState) => callback(state);
+      ipcRenderer.on(IPC_CHANNELS.POMODORO_STATE_CHANGED, handler);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.POMODORO_STATE_CHANGED, handler);
+    },
+    onUIRequested: (callback: (request: PomodoroUIRequest) => void) => {
+      const handler = (_event: IpcRendererEvent, request: PomodoroUIRequest) => callback(request);
+      ipcRenderer.on(IPC_CHANNELS.POMODORO_UI_REQUESTED, handler);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.POMODORO_UI_REQUESTED, handler);
+    },
+  },
+
   // App
   app: {
     getVersion: (): Promise<string> =>
@@ -523,6 +596,12 @@ const electronAPI = {
       ipcRenderer.invoke(IPC_CHANNELS.APP_GET_PATH, name),
     showDialog: (options: unknown): Promise<unknown> =>
       ipcRenderer.invoke(IPC_CHANNELS.APP_SHOW_DIALOG, options),
+    captureScreen: (region?: { x: number; y: number; width: number; height: number; target?: string }): Promise<{
+      dataUrl: string;
+      width: number;
+      height: number;
+      target: string;
+    }> => ipcRenderer.invoke(IPC_CHANNELS.APP_CAPTURE_SCREEN, region),
     onCmdRPressed: (callback: () => void) => {
       const handler = () => callback();
       ipcRenderer.on(IPC_CHANNELS.APP_CMD_R_PRESSED, handler);
@@ -658,6 +737,8 @@ const electronAPI = {
     }>> => ipcRenderer.invoke(IPC_CHANNELS.FS_LIST_FILES, sessionId, query),
     readFile: (filePath: string, sessionId?: string): Promise<{ success: boolean; content?: string; error?: string }> =>
       ipcRenderer.invoke(IPC_CHANNELS.FS_READ_FILE, filePath, sessionId),
+    openPath: (filePath: string, sessionId?: string): Promise<{ success: boolean; path?: string; error?: string }> =>
+      ipcRenderer.invoke(IPC_CHANNELS.FS_OPEN_PATH, filePath, sessionId),
     writeFile: (filePath: string, content: string, sessionId?: string): Promise<{ success: boolean; error?: string }> =>
       ipcRenderer.invoke(IPC_CHANNELS.FS_WRITE_FILE, filePath, content, sessionId),
     searchFiles: (
@@ -711,10 +792,6 @@ const electronAPI = {
       return () => ipcRenderer.removeListener(IPC_CHANNELS.AUDIO_TTS_ERROR, handler);
     },
     // API Key management
-    getElevenLabsKey: (): Promise<string> =>
-      ipcRenderer.invoke(IPC_CHANNELS.AUDIO_GET_ELEVENLABS_KEY),
-    setElevenLabsKey: (key: string): Promise<{ success: boolean }> =>
-      ipcRenderer.invoke(IPC_CHANNELS.AUDIO_SET_ELEVENLABS_KEY, key),
     getOpenAiKey: (): Promise<string> =>
       ipcRenderer.invoke(IPC_CHANNELS.AUDIO_GET_OPENAI_KEY),
     setOpenAiKey: (key: string): Promise<{ success: boolean }> =>
@@ -791,79 +868,24 @@ const electronAPI = {
       ipcRenderer.invoke(IPC_CHANNELS.EXTENSION_LIST_AVAILABLE_SKILLS, source),
   },
 
-  // Voice mode (ElevenLabs Conversational AI)
+  // OpenAI Realtime voice mode. Only ephemeral credentials cross renderer IPC.
   voice: {
-    connect: (config: { agentId: string; systemPrompt?: string; sessionContext?: Record<string, unknown> }): Promise<{ success: boolean; error?: string }> =>
-      ipcRenderer.invoke(IPC_CHANNELS.VOICE_CONNECT, config),
-    disconnect: (): Promise<{ success: boolean; error?: string }> =>
-      ipcRenderer.invoke(IPC_CHANNELS.VOICE_DISCONNECT),
-    sendAudio: (audioData: number[]): Promise<{ success: boolean; error?: string }> =>
-      ipcRenderer.invoke(IPC_CHANNELS.VOICE_SEND_AUDIO, audioData),
-    sendText: (text: string): Promise<{ success: boolean; error?: string }> =>
-      ipcRenderer.invoke(IPC_CHANNELS.VOICE_SEND_TEXT, text),
-    endInput: (): Promise<{ success: boolean; error?: string }> =>
-      ipcRenderer.invoke(IPC_CHANNELS.VOICE_END_INPUT),
-    clearAudioBuffer: (): Promise<{ success: boolean; error?: string }> =>
-      ipcRenderer.invoke(IPC_CHANNELS.VOICE_CLEAR_AUDIO_BUFFER),
-    sendContextUpdate: (context: string): Promise<{ success: boolean; error?: string }> =>
-      ipcRenderer.invoke(IPC_CHANNELS.VOICE_CONTEXT_UPDATE, context),
-    onConnected: (callback: () => void) => {
-      const handler = () => callback();
-      ipcRenderer.on(IPC_CHANNELS.VOICE_CONNECTED, handler);
-      return () => ipcRenderer.removeListener(IPC_CHANNELS.VOICE_CONNECTED, handler);
-    },
-    onDisconnected: (callback: () => void) => {
-      const handler = () => callback();
-      ipcRenderer.on(IPC_CHANNELS.VOICE_DISCONNECTED, handler);
-      return () => ipcRenderer.removeListener(IPC_CHANNELS.VOICE_DISCONNECTED, handler);
-    },
-    onReconnecting: (callback: (data: { attempt: number; maxAttempts: number }) => void) => {
-      const handler = (_: IpcRendererEvent, data: { attempt: number; maxAttempts: number }) => callback(data);
-      ipcRenderer.on(IPC_CHANNELS.VOICE_RECONNECTING, handler);
-      return () => ipcRenderer.removeListener(IPC_CHANNELS.VOICE_RECONNECTING, handler);
-    },
-    onUserTranscript: (callback: (data: { text: string; isFinal: boolean }) => void) => {
-      const handler = (_: IpcRendererEvent, data: { text: string; isFinal: boolean }) => callback(data);
-      ipcRenderer.on(IPC_CHANNELS.VOICE_USER_TRANSCRIPT, handler);
-      return () => ipcRenderer.removeListener(IPC_CHANNELS.VOICE_USER_TRANSCRIPT, handler);
-    },
-    onAgentResponse: (callback: (text: string) => void) => {
-      const handler = (_: IpcRendererEvent, text: string) => callback(text);
-      ipcRenderer.on(IPC_CHANNELS.VOICE_AGENT_RESPONSE, handler);
-      return () => ipcRenderer.removeListener(IPC_CHANNELS.VOICE_AGENT_RESPONSE, handler);
-    },
-    onAudioChunk: (callback: (data: { data: number[]; eventId: number }) => void) => {
-      const handler = (_: IpcRendererEvent, data: { data: number[]; eventId: number }) => callback(data);
-      ipcRenderer.on(IPC_CHANNELS.VOICE_AUDIO_CHUNK, handler);
-      return () => ipcRenderer.removeListener(IPC_CHANNELS.VOICE_AUDIO_CHUNK, handler);
-    },
-    onInterruption: (callback: (reason: string) => void) => {
-      const handler = (_: IpcRendererEvent, reason: string) => callback(reason);
-      ipcRenderer.on(IPC_CHANNELS.VOICE_INTERRUPTION, handler);
-      return () => ipcRenderer.removeListener(IPC_CHANNELS.VOICE_INTERRUPTION, handler);
-    },
-    onError: (callback: (error: string) => void) => {
-      const handler = (_: IpcRendererEvent, error: string) => callback(error);
-      ipcRenderer.on(IPC_CHANNELS.VOICE_ERROR, handler);
-      return () => ipcRenderer.removeListener(IPC_CHANNELS.VOICE_ERROR, handler);
-    },
-    onToolCall: (callback: (data: { toolCallId: string; toolName: string; parameters: Record<string, unknown> }) => void) => {
-      const handler = (_: IpcRendererEvent, data: { toolCallId: string; toolName: string; parameters: Record<string, unknown> }) => callback(data);
-      ipcRenderer.on(IPC_CHANNELS.VOICE_TOOL_CALL, handler);
-      return () => ipcRenderer.removeListener(IPC_CHANNELS.VOICE_TOOL_CALL, handler);
-    },
-    sendToolResult: (data: { toolCallId: string; result: string; isError?: boolean }): Promise<{ success: boolean; error?: string }> =>
-      ipcRenderer.invoke(IPC_CHANNELS.VOICE_TOOL_RESULT, data),
-    updateAgentPrompt: (data: { agentId: string; prompt: string }): Promise<{ success: boolean; error?: string }> =>
-      ipcRenderer.invoke(IPC_CHANNELS.VOICE_UPDATE_AGENT_PROMPT, data),
-    sendUserActivity: (): Promise<{ success: boolean; error?: string }> =>
-      ipcRenderer.invoke(IPC_CHANNELS.VOICE_USER_ACTIVITY),
-    // Get signed URL for SDK-based WebSocket connection
-    getSignedUrl: (config: { agentId: string }): Promise<{ success: boolean; signedUrl?: string; error?: string }> =>
-      ipcRenderer.invoke(IPC_CHANNELS.VOICE_GET_SIGNED_URL, config),
-    // Get conversation token for SDK-based WebRTC connection (better echo cancellation)
-    getConversationToken: (config: { agentId: string }): Promise<{ success: boolean; conversationToken?: string; error?: string }> =>
-      ipcRenderer.invoke(IPC_CHANNELS.VOICE_GET_CONVERSATION_TOKEN, config),
+    createRealtimeSession: (request: RealtimeVoiceSessionRequest): Promise<RealtimeVoiceSessionResult> =>
+      ipcRenderer.invoke(IPC_CHANNELS.VOICE_CREATE_REALTIME_SESSION, request),
+    getConfiguration: (): Promise<RealtimeVoiceConfiguration> =>
+      ipcRenderer.invoke(IPC_CHANNELS.VOICE_GET_CONFIGURATION),
+    logRoutingEvent: (event: RealtimeVoiceRoutingLog): void =>
+      ipcRenderer.send(IPC_CHANNELS.VOICE_LOG_ROUTING_EVENT, event),
+    appendMemory: (request: VoiceMemoryAppendRequest): Promise<VoiceMemoryEntry | null> =>
+      ipcRenderer.invoke(IPC_CHANNELS.VOICE_APPEND_MEMORY, request),
+    getMemory: (): Promise<VoiceMemorySnapshot> =>
+      ipcRenderer.invoke(IPC_CHANNELS.VOICE_GET_MEMORY),
+    deployRemoteAgent: (sessionId: string): Promise<RemoteVoiceDeploymentStatus> =>
+      ipcRenderer.invoke(IPC_CHANNELS.VOICE_DEPLOY_REMOTE_AGENT, sessionId),
+    getRemoteAgentStatus: (): Promise<RemoteVoiceDeploymentStatus> =>
+      ipcRenderer.invoke(IPC_CHANNELS.VOICE_GET_REMOTE_AGENT_STATUS),
+    stopRemoteAgent: (): Promise<RemoteVoiceDeploymentStatus> =>
+      ipcRenderer.invoke(IPC_CHANNELS.VOICE_STOP_REMOTE_AGENT),
   },
 
   // SSH Remote Sessions

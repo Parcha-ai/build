@@ -5,16 +5,16 @@ import { useUIStore } from '../../stores/ui.store';
 import { useAudioStore } from '../../stores/audio.store';
 import MentionAutocomplete, { type Mention } from './MentionAutocomplete';
 import CommandAutocomplete, { type CommandAutocompleteHandle } from './CommandAutocomplete';
-import { MicrophoneButton, type VoiceModeHandle } from './MicrophoneButton';
 import { MessageQueuePanel } from './MessageQueuePanel';
-import { VoiceModeErrorBoundary } from './VoiceModeErrorBoundary';
 import SecureInput from './SecureInput';
 import CompactionSwitchNotice from './CompactionSwitchNotice';
+import { VoiceComposerControl } from './VoiceComposerControl';
 import { AutoRouteBadge, formatHarnessModelLabel, inferHarnessFromModel } from './AutoRouteBadge';
 import { GSTACK_MODE_META } from '../../../shared/types';
 import { PARABLE_MODE_ID } from '../../../shared/config/parable';
 import { getBrowserPartitionId } from '../../../shared/utils/browser-partition';
 import { calculateVisibleToolbarActions } from '../../utils/toolbar-overflow';
+import { APP_VOICE_SESSION_ID } from '../../utils/voice-session-directory';
 
 // Permission mode config for UI - using terminal-style prompts
 const PERMISSION_MODE_CONFIG: Record<PermissionMode, { prompt: string; label: string; color: string; description: string }> = {
@@ -358,7 +358,7 @@ function shouldSuggestPlanModeNudge(
   return copyRewriteIntent && broadScope && (hasVisualContext || trimmed.length > 120);
 }
 
-export default function InputArea({ sessionId, disabled, systemInfo, isStreaming: isStreamingProp }: InputAreaProps) {
+function InputArea({ sessionId, disabled, systemInfo, isStreaming: isStreamingProp }: InputAreaProps) {
   // Composer text is deliberately local. Putting keystrokes in the global UI
   // store invalidated every mounted panel/webview and could steal focus after
   // each character. The module cache preserves drafts across session-tab
@@ -414,7 +414,6 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dragCounterRef = useRef(0);
   const commandAutocompleteRef = useRef<CommandAutocompleteHandle>(null);
-  const voiceModeRef = useRef<VoiceModeHandle>(null);
   const blurFromBrowserEditRef = useRef(false);
   const submittedInputRef = useRef<{ texts: string[]; at: number } | null>(null);
 
@@ -457,6 +456,12 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
   const queuedMessages = useSessionStore(useCallback((s) => s.messageQueue[sessionId] || EMPTY_QUEUE, [sessionId]));
   const currentModel = useSessionStore(useCallback((s) => s.selectedModel[sessionId] || 'auto', [sessionId]));
   const activeStreamModel = useSessionStore(useCallback((s) => s.activeStreamModel[sessionId], [sessionId]));
+  const activeParableAgent = useSessionStore(useCallback((s) => {
+    const monitors = s.monitorInstances[sessionId] || [];
+    return [...monitors].reverse().find((monitor) => (
+      monitor.active && monitor.kind === 'subagent' && /\bparable[-\w]*/i.test(monitor.description)
+    ));
+  }, [sessionId]));
   const autoRouteDecision = useSessionStore(useCallback((s) => s.autoRouteDecision[sessionId] || null, [sessionId]));
   const compactionSwitch = useSessionStore(useCallback((s) => s.compactionSwitch[sessionId] || null, [sessionId]));
   const availableModels = useSessionStore((s) => s.availableModels || EMPTY_MODELS);
@@ -490,23 +495,12 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
   const setSessionInspectorActive = useUIStore((s) => s.setSessionInspectorActive);
 
   // Audio store — fine-grained selectors
-  const audioSettings = useAudioStore((s) => s.settings);
   const setAudioMode = useAudioStore((s) => s.setAudioMode);
-  const voiceModeStates = useAudioStore((s) => s.voiceModeStates);
-
-  // Voice mode state for this session
-  const voiceState = voiceModeStates[sessionId];
-  const isVoiceModeActive = voiceState?.isConnected || false;
-
-  // Animation time for wave visualization
-  const [waveTime, setWaveTime] = useState(0);
-  useEffect(() => {
-    if (!isVoiceModeActive) return;
-    const interval = setInterval(() => {
-      setWaveTime(Date.now() / 200);  // Update ~60fps worth of animation time
-    }, 50);  // 20fps is enough for smooth wave animation
-    return () => clearInterval(interval);
-  }, [isVoiceModeActive]);
+  // Realtime voice is owned by the app and remains active while tabs change.
+  const isVoiceModeActive = useAudioStore((s) => Boolean(s.voiceModeStates[APP_VOICE_SESSION_ID]?.isConnected));
+  const isVoiceModeConnecting = useAudioStore((s) => Boolean(s.voiceModeStates[APP_VOICE_SESSION_ID]?.isConnecting));
+  const isActiveComposer = useSessionStore(useCallback((s) => s.activeSessionId === sessionId, [sessionId]));
+  const voiceComposerExpanded = isActiveComposer && (isVoiceModeActive || isVoiceModeConnecting);
 
   // Command/Skill/Agent autocomplete state
   const [showCommands, setShowCommands] = useState(false);
@@ -517,9 +511,6 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
   const [commands, setCommands] = useState<any[]>([]);
   const [skills, setSkills] = useState<any[]>([]);
   const [agents, setAgents] = useState<any[]>([]);
-
-  // Get the configurable trigger word (default: "please")
-  const triggerWord = audioSettings?.voiceTriggerWord || 'please';
 
   const modeConfig = PERMISSION_MODE_CONFIG[currentMode];
   const permissionModeTitle = `${modeConfig.description} (click to change)`;
@@ -633,13 +624,17 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
       actualActiveModel,
       actualActiveModelInfo?.name,
     );
+  const parableAgentLabel = activeParableAgent?.description.match(/\b(parable[-\w]*)/i)?.[1];
   const selectedModelLabel = currentModel === 'auto'
     ? 'AUTO'
     : currentModel === PARABLE_MODE_ID
       ? 'PARABLE'
       : formatHarnessModelLabel(inferHarnessFromModel(currentModel), currentModel, currentModelInfo.name) || currentModelInfo.name;
+  const autoRouteScope = autoRouteDecision
+    ? autoRouteDecision.categoryLabel || autoRouteDecision.categoryId || autoRouteDecision.tier
+    : undefined;
   const modelButtonTitle = isSending && actualActiveModelLabel
-    ? `Using ${actualActiveModelLabel}${isAutoRouteActive && autoRouteDecision ? `. Auto Build scope: ${autoRouteDecision.domain && autoRouteDecision.domain !== 'general' ? `${autoRouteDecision.tier}:${autoRouteDecision.domain}` : autoRouteDecision.tier}` : ''}`
+    ? `Using ${actualActiveModelLabel}${isAutoRouteActive && autoRouteDecision && autoRouteScope ? `. Auto Build scope: ${autoRouteDecision.domain && autoRouteDecision.domain !== 'general' ? `${autoRouteScope}:${autoRouteDecision.domain}` : autoRouteScope}` : ''}`
     : `${currentModelInfo.description || selectedModelLabel} (click to change)`;
 
   // Load available models on mount
@@ -1844,73 +1839,6 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
     }
   };
 
-  const handleVoiceTranscriptionComplete = async (text: string) => {
-    console.log('[InputArea] onTranscriptionComplete called with:', text, 'voiceModeActive:', isVoiceModeActive);
-
-    // In voice mode (ElevenLabs), send directly without trigger word.
-    if (isVoiceModeActive && !disabled && !isSending && text.trim()) {
-      console.log('[InputArea] Voice mode active - sending directly to Build');
-      setAudioMode(sessionId, true);
-      rememberSubmittedInput(text.trim());
-      setMessage('');
-
-      let messageToSend = text.trim();
-      const fileMentions = attachments.filter((attachment) => attachment.type === 'mention');
-      if (fileMentions.length > 0) {
-        const fileContext = fileMentions.map((mention) => `@${mention.name}`).join(', ');
-        messageToSend = `[Files: ${fileContext}]\n\n${messageToSend}`;
-      }
-
-      const otherAttachments = attachments.filter((attachment) => attachment.type !== 'mention');
-      setAttachments([]);
-      await sendMessage(sessionId, messageToSend, otherAttachments.length > 0 ? otherAttachments : undefined);
-      return;
-    }
-
-    // Outside voice mode, only send automatically when the transcript ends in
-    // the configured trigger word. Otherwise leave it in the composer.
-    const escapedTrigger = triggerWord.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const triggerPattern = new RegExp(`\\b${escapedTrigger}\\s*[.!?]?\\s*$`, 'i');
-    const hasTrigger = triggerPattern.test(text);
-    console.log('[InputArea] Trigger detection:', {
-      triggerWord,
-      escapedTrigger,
-      text,
-      hasTrigger,
-      disabled,
-      isSending,
-    });
-
-    if (hasTrigger && !disabled && !isSending) {
-      const cleanedText = text.replace(triggerPattern, '').trim();
-      if (!cleanedText) {
-        setMessage('');
-        return;
-      }
-
-      setAudioMode(sessionId, true);
-      rememberSubmittedInput(cleanedText, text);
-      setMessage('');
-
-      let messageToSend = cleanedText;
-      const fileMentions = attachments.filter((attachment) => attachment.type === 'mention');
-      if (fileMentions.length > 0) {
-        const fileContext = fileMentions.map((mention) => `@${mention.name}`).join(', ');
-        messageToSend = `[Files: ${fileContext}]\n\n${messageToSend}`;
-      }
-
-      const otherAttachments = attachments.filter((attachment) => attachment.type !== 'mention');
-      setAttachments([]);
-      await sendMessage(sessionId, messageToSend, otherAttachments.length > 0 ? otherAttachments : undefined);
-      return;
-    }
-
-    setAudioMode(sessionId, true);
-    if (suppressSubmittedInputEcho(text, 'voice-final-transcript')) return;
-    setMessage(text);
-    textareaRef.current?.focus();
-  };
-
   const toolbarActions: Array<{
     id: string;
     label: string;
@@ -2002,7 +1930,8 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
 
       <div
         ref={containerRef}
-        className={`px-4 py-2 relative font-mono border-t ${isDragging ? 'border-claude-accent bg-claude-accent/5' : 'border-claude-border'}`}
+        className={`build-composer-shell px-4 relative font-mono border-t ${voiceComposerExpanded ? 'build-composer-voice-active' : ''} ${isDragging ? 'border-claude-accent bg-claude-accent/5' : 'border-claude-border'}`}
+        data-voice-composer-active={voiceComposerExpanded || undefined}
         onDragOver={handleDragOver}
         onDragEnter={handleDragEnter}
         onDragLeave={handleDragLeave}
@@ -2206,104 +2135,6 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
         </div>
       )}
 
-      {/* Voice Mode Status Bar - shown above input when voice mode is active */}
-      {isVoiceModeActive && (
-        <div className="mb-2 px-2 py-1.5 bg-claude-bg-secondary/50 border border-claude-border flex items-center gap-3 min-w-0">
-          {/* Audio wave visualization - reacts to voice input */}
-          <div className="flex items-center gap-[2px] h-5 flex-shrink-0">
-            {[...Array(12)].map((_, i) => {
-              const isAgentTalking = voiceState?.isSpeaking;
-              const audioLevel = voiceState?.audioLevel || 0;
-              const phase = Math.sin(waveTime + i * 0.5);
-              const dynamicScale = isAgentTalking
-                ? 0.6 + phase * 0.4
-                : audioLevel > 0.05
-                  ? 0.3 + audioLevel * 0.7 * (0.8 + Math.abs(phase) * 0.2)
-                  : 0.25 + Math.abs(phase) * 0.15;
-              return (
-                <div
-                  key={i}
-                  className={`w-[2px] rounded-full transition-all duration-75 ${
-                    isAgentTalking ? 'bg-claude-accent' : 'bg-green-400'
-                  }`}
-                  style={{
-                    height: '14px',
-                    transform: `scaleY(${dynamicScale})`,
-                    opacity: isAgentTalking ? 1 : (audioLevel > 0.05 ? 0.8 + audioLevel * 0.2 : 0.5 + Math.abs(phase) * 0.2),
-                  }}
-                />
-              );
-            })}
-          </div>
-
-          {/* Status text - shows agent response or listening state, scrolls to end */}
-          <div className="flex-1 min-w-0 overflow-hidden">
-            {voiceState?.agentResponse ? (
-              <div
-                className="overflow-x-auto hide-scrollbar"
-                ref={(el) => { if (el) el.scrollLeft = el.scrollWidth; }}
-              >
-                <span className={`font-mono text-sm whitespace-nowrap inline-block ${
-                  voiceState?.isSpeaking ? 'grep-speaking-shimmer' : 'text-claude-text'
-                }`}>
-                  {voiceState.agentResponse}
-                </span>
-              </div>
-            ) : voiceState?.isSpeaking ? (
-              <span className="font-mono text-sm text-claude-accent grep-speaking-shimmer block">
-                Speaking...
-              </span>
-            ) : voiceState?.transcript ? (
-              <div
-                className="overflow-x-auto hide-scrollbar"
-                ref={(el) => { if (el) el.scrollLeft = el.scrollWidth; }}
-              >
-                <span className="font-mono text-sm text-green-400 whitespace-nowrap inline-block">
-                  {voiceState.transcript}
-                </span>
-              </div>
-            ) : (
-              <span className="font-mono text-sm text-green-400/70 block">
-                Listening...
-              </span>
-            )}
-          </div>
-
-          {/* Shimmer effect and hide scrollbar */}
-          <style>{`
-            .hide-scrollbar {
-              -ms-overflow-style: none;
-              scrollbar-width: none;
-            }
-            .hide-scrollbar::-webkit-scrollbar {
-              display: none;
-            }
-            @keyframes grepShimmer {
-              0% { background-position: -200% center; }
-              100% { background-position: 200% center; }
-            }
-            .grep-speaking-shimmer {
-              background: linear-gradient(90deg, #8B5CF6 0%, #A78BFA 25%, #C4B5FD 50%, #A78BFA 75%, #8B5CF6 100%);
-              background-size: 200% auto;
-              background-clip: text;
-              -webkit-background-clip: text;
-              color: transparent;
-              animation: grepShimmer 2s linear infinite;
-            }
-          `}</style>
-
-          {/* Status indicator */}
-          <div className="flex items-center gap-1.5 text-xs font-mono flex-shrink-0">
-            <span className={`h-2 w-2 rounded-full ${
-              voiceState?.isSpeaking ? 'bg-claude-accent' : 'bg-green-400'
-            }`} />
-            <span className={voiceState?.isSpeaking ? 'text-claude-accent' : 'text-green-400'}>
-              {voiceState?.isSpeaking ? 'SPEAKING' : 'LISTENING'}
-            </span>
-          </div>
-        </div>
-      )}
-
       {/* Input row - CLI style - always visible */}
       <div className="flex flex-col gap-1">
         {/* Prompt + Input */}
@@ -2422,6 +2253,8 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
               autoRouteDecision ? (
                 <AutoRouteBadge
                   tier={autoRouteDecision.tier}
+                  categoryId={autoRouteDecision.categoryId}
+                  categoryLabel={autoRouteDecision.categoryLabel}
                   domain={autoRouteDecision.domain}
                   resolvedHarness={actualActiveHarness || autoRouteDecision.resolvedHarness}
                   modelLabel={actualActiveModelInfo?.name || autoRouteModelInfo?.name}
@@ -2439,8 +2272,8 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
                 title={modelButtonTitle}
               >
                 <span className="font-bold tracking-wider">PARABLE</span>
-                {isSending && actualActiveModelLabel && actualActiveModelLabel !== 'PARABLE' && (
-                  <span className="min-w-0 truncate opacity-70">{actualActiveModelLabel}</span>
+                {isSending && (parableAgentLabel || (actualActiveModelLabel !== 'PARABLE' ? actualActiveModelLabel : undefined)) && (
+                  <span className="min-w-0 truncate opacity-70">{parableAgentLabel || actualActiveModelLabel}</span>
                 )}
               </span>
             ) : (
@@ -2699,8 +2532,9 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
             )}
           </div>
 
-          {/* Stop and microphone never enter overflow. */}
+          {/* Stop remains pinned so it never enters overflow. */}
           <div ref={toolbarPinnedRef} data-testid="toolbar-pinned-controls" className="flex flex-none items-center gap-2">
+            <VoiceComposerControl active={isActiveComposer} disabled={disabled} sessionId={sessionId} />
             {isSending && (
               <button
                 onClick={handleStopStreaming}
@@ -2711,18 +2545,6 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
                 <Square size={14} fill="currentColor" />
               </button>
             )}
-            <VoiceModeErrorBoundary>
-              <MicrophoneButton
-                ref={voiceModeRef}
-                sessionId={sessionId}
-                onInterimTranscript={(text) => {
-                  if (suppressSubmittedInputEcho(text, 'voice-interim-transcript')) return;
-                  setMessage(text);
-                }}
-                onTranscriptionComplete={handleVoiceTranscriptionComplete}
-                disabled={disabled}
-              />
-            </VoiceModeErrorBoundary>
           </div>
 
           {showGStack && (
@@ -2737,3 +2559,8 @@ export default function InputArea({ sessionId, disabled, systemInfo, isStreaming
     </>
   );
 }
+
+// ChatContainer receives token-frequency stream updates. Keep its large input
+// tree out of those renders unless one of the input's own props or fine-grained
+// store selectors actually changes.
+export default React.memo(InputArea);

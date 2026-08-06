@@ -8,6 +8,7 @@ import App from './App';
 import { useAuthStore } from './stores/auth.store';
 import { useSessionStore } from './stores/session.store';
 import { useUIStore } from './stores/ui.store';
+import { useAudioStore } from './stores/audio.store';
 import './styles/globals.css';
 
 // Create React Query client
@@ -42,6 +43,7 @@ if (typeof window !== 'undefined') {
     useAuthStore,
     useSessionStore,
     useUIStore,
+    useAudioStore,
   };
 }
 
@@ -53,6 +55,7 @@ declare global {
       useAuthStore: typeof useAuthStore;
       useSessionStore: typeof useSessionStore;
       useUIStore: typeof useUIStore;
+      useAudioStore: typeof useAudioStore;
     };
   }
 }

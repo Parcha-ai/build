@@ -357,10 +357,11 @@ function writeAssistantToTranscript(
 }
 
 function createTranscriptSnapshotWriter(sessionId: string, model?: string | null, overrideId?: string) {
-  let id = overrideId || randomUUID();
+  let id = overrideId || transcriptService.getInProgressMessageId(sessionId) || randomUUID();
   const startedAt = new Date();
   let lastWriteAt = 0;
-  let lastWrittenSignature = '';
+  let snapshotVersion = 0;
+  let lastWrittenVersion = -1;
   let pendingTimer: NodeJS.Timeout | null = null;
   let latestSnapshot: {
     content: string;
@@ -373,25 +374,25 @@ function createTranscriptSnapshotWriter(sessionId: string, model?: string | null
 
   const write = (): void => {
     if (!latestSnapshot) return;
-    const signature = JSON.stringify(latestSnapshot);
-    if (signature === lastWrittenSignature) return;
+    if (snapshotVersion === lastWrittenVersion) return;
     lastWriteAt = Date.now();
-    const snapshotMessage: ChatMessage = {
+    const snapshotEntry: TranscriptEntry = {
       id,
       role: 'assistant',
       content: latestSnapshot.content,
-      timestamp: startedAt,
-      toolCalls: latestSnapshot.toolCalls.length > 0 ? latestSnapshot.toolCalls : undefined,
+      timestamp: startedAt.toISOString(),
+      model: latestSnapshot.resolvedModel || model || undefined,
+      toolCalls: serializeToolCallsForTranscript(latestSnapshot.toolCalls),
+      thinking: latestSnapshot.accumulatedThinking || undefined,
       contentBlocks: latestSnapshot.contentBlocks.length > 0 ? latestSnapshot.contentBlocks : undefined,
-      interrupted: latestSnapshot.interrupted,
       harness: harnessFromModel(latestSnapshot.resolvedModel || model),
+      interrupted: latestSnapshot.interrupted || undefined,
     };
-    id = writeAssistantToTranscript(sessionId, snapshotMessage, {
-      accumulatedThinking: latestSnapshot.accumulatedThinking,
-      model,
-      resolvedModel: latestSnapshot.resolvedModel,
-    });
-    lastWrittenSignature = signature;
+    // In-progress recovery belongs in a small sidecar. Rewriting and reparsing
+    // the entire JSONL transcript for every text/tool event made long sessions
+    // block Electron's main thread for seconds at a time.
+    transcriptService.writeInProgressMessage(sessionId, snapshotEntry);
+    lastWrittenVersion = snapshotVersion;
   };
 
   const schedule = (force = false): void => {
@@ -412,6 +413,7 @@ function createTranscriptSnapshotWriter(sessionId: string, model?: string | null
   return {
     update(snapshot: NonNullable<typeof latestSnapshot>, force = false): void {
       latestSnapshot = snapshot;
+      snapshotVersion += 1;
       if (!snapshot.content.trim() && snapshot.toolCalls.length === 0 && snapshot.contentBlocks.length === 0) {
         return;
       }
@@ -441,13 +443,14 @@ function createTranscriptSnapshotWriter(sessionId: string, model?: string | null
         resolvedModel: opts.resolvedModel,
         interrupted: finalizedMessage.interrupted,
       };
+      const snapshotId = id;
       id = writeAssistantToTranscript(sessionId, finalizedMessage, {
         accumulatedThinking: opts.accumulatedThinking,
         model,
         resolvedModel: opts.resolvedModel,
       });
+      transcriptService.clearInProgressMessage(sessionId, snapshotId);
       finalizedMessage.id = id;
-      lastWrittenSignature = JSON.stringify(latestSnapshot);
       return finalizedMessage;
     },
   };
@@ -567,9 +570,9 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
         });
       }
 
-      // Resolve project/user .claude commands and skills before routing. The
-      // original invocation stays in the canonical transcript, while every
-      // harness receives the same authoritative workflow definition.
+      // Resolve an installed leading slash workflow once, before choosing a
+      // harness. Natural-language intent remains untouched for Auto Router;
+      // every harness receives the same installed command or skill definition.
       const streamSession = await sessionService.getSession(sessionId).catch(() => null);
       const modelMessage = await resolveCrossHarnessWorkflowMessage(sessionId, message, streamSession);
 
@@ -620,11 +623,12 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
       };
       const upsertAccumulatedToolCall = (toolCall: ToolCall | undefined): void => {
         if (!toolCall) return;
-        const idx = accumulatedToolCalls.findIndex(tc => tc.id === toolCall.id);
+        const compactToolCall = slimToolCallForRenderer(toolCall) || toolCall;
+        const idx = accumulatedToolCalls.findIndex(tc => tc.id === compactToolCall.id);
         if (idx >= 0) {
-          accumulatedToolCalls[idx] = toolCall;
+          accumulatedToolCalls[idx] = compactToolCall;
         } else {
-          accumulatedToolCalls.push(toolCall);
+          accumulatedToolCalls.push(compactToolCall);
         }
       };
       const appendTextContentBlock = (content: string | undefined, agentId?: string): void => {
@@ -1041,6 +1045,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
             // renderer to reattach so the turn streams to completion.
             void sshService.cleanupDetachedBridgeProcessesForNewTurn(sessionId, completedSession.sshConfig, {
               killActive: false,
+              completedTurn: !hadError && turnCompleted,
             }).catch((error) => {
               console.warn('[Claude IPC] Background stream-end SSH cleanup failed:', error);
             });
@@ -1152,11 +1157,12 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
 
       const upsertAccumulatedToolCall = (toolCall: ToolCall | undefined): void => {
         if (!toolCall) return;
-        const idx = accumulatedToolCalls.findIndex(tc => tc.id === toolCall.id);
+        const compactToolCall = slimToolCallForRenderer(toolCall) || toolCall;
+        const idx = accumulatedToolCalls.findIndex(tc => tc.id === compactToolCall.id);
         if (idx >= 0) {
-          accumulatedToolCalls[idx] = toolCall;
+          accumulatedToolCalls[idx] = compactToolCall;
         } else {
-          accumulatedToolCalls.push(toolCall);
+          accumulatedToolCalls.push(compactToolCall);
         }
       };
       const appendTextContentBlock = (content: string | undefined, agentId?: string): void => {
@@ -1353,6 +1359,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
           // is still making progress. Only explicit user cancel kills it.
           void sshService.cleanupDetachedBridgeProcessesForNewTurn(sessionId, completedSession.sshConfig, {
             killActive: false,
+            completedTurn: !hadError && resumeCompletedWithResult,
           }).catch((error) => {
             console.warn('[Claude IPC] Background resume SSH cleanup failed:', error);
           });
@@ -1693,6 +1700,7 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
       if (session?.sshConfig) {
         await sshService.cleanupDetachedBridgeProcessesForNewTurn(sessionId, session.sshConfig, {
           killActive: false,
+          completedTurn: true,
         });
         remoteActive = await readRemoteActive();
         console.log(

@@ -87,8 +87,8 @@ assert.match(
 );
 assert.match(
   service,
-  /SSH foreground Claude turn: resuming stored Claude SDK session without repair scan/,
-  'foreground SSH Claude sends must use native SDK resume without slow remote transcript repair scans when staying on Claude',
+  /SSH foreground Claude turn: probing the verified Claude SDK resume owner/,
+  'foreground SSH Claude sends must only probe ownership after the stored resume mapping has been verified',
 );
 assert.match(
   service,
@@ -105,21 +105,17 @@ const streamMessageStart = service.indexOf('async *streamMessage(');
 const cursorRouteIndex = service.indexOf("if (selectedModel?.startsWith('cursor:'))", streamMessageStart);
 const eagerRepairIndex = service.indexOf('await this.repairSshSdkSessionIdFromBuildTranscript(', streamMessageStart);
 const guardedRepairIndex = service.indexOf('repairSshSdkSessionIdFromBuildTranscriptOnce(', streamMessageStart);
-const sshNativeResumeIndex = service.indexOf('SSH foreground Claude turn: resuming stored Claude SDK session without repair scan', streamMessageStart);
-const resumeOptionIndex = service.indexOf('...(effectiveSdkSessionId ? { resume: effectiveSdkSessionId } : {})', sshNativeResumeIndex);
-const sshNativeResumeBlock = service.slice(
-  service.lastIndexOf('} else if (session.sshConfig) {', sshNativeResumeIndex),
-  service.indexOf('}', sshNativeResumeIndex) + 1,
-);
+const verifiedResumeIndex = service.indexOf('SSH foreground Claude turn: probing the verified Claude SDK resume owner', streamMessageStart);
+const resumeOptionIndex = service.indexOf('...(effectiveSdkSessionId ? { resume: effectiveSdkSessionId } : {})', verifiedResumeIndex);
 assert.ok(cursorRouteIndex >= 0, 'Cursor route must exist in streamMessage');
 assert.ok(eagerRepairIndex === -1, 'streamMessage must not call the expensive repair implementation directly');
-assert.ok(guardedRepairIndex === -1, 'streamMessage must not call the guarded SSH repair wrapper on foreground sends');
-assert.ok(sshNativeResumeIndex > cursorRouteIndex, 'SSH native-resume decision must be below non-Claude routes');
-assert.ok(resumeOptionIndex > sshNativeResumeIndex, 'SSH native-resume decision must happen before Claude SDK resume options are built');
-assert.doesNotMatch(
-  sshNativeResumeBlock,
-  /effectiveSdkSessionId = undefined/,
-  'same-harness SSH Claude turns must not clear native SDK resume',
+assert.ok(guardedRepairIndex > cursorRouteIndex, 'foreground SSH Claude sends must verify stored resume mappings after non-Claude routes');
+assert.ok(verifiedResumeIndex > guardedRepairIndex, 'remote ownership must only be probed after resume verification');
+assert.ok(resumeOptionIndex > verifiedResumeIndex, 'verified SSH resume selection must happen before Claude SDK options are built');
+assert.match(
+  service.slice(guardedRepairIndex, verifiedResumeIndex),
+  /if \(!repairedResumeSessionId\)[\s\S]*?this\.clearSdkSessionId\(sessionId\);[\s\S]*?effectiveSdkSessionId = undefined;[\s\S]*?effectiveForkFromSdkSessionId = undefined;/,
+  'missing remote transcripts must retire both canonical and one-shot fork resume handles before launch',
 );
 
 console.log('SSH SDK resume repair verifier passed');

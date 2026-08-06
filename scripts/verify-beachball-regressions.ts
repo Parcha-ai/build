@@ -10,8 +10,13 @@ const claudeService = fs.readFileSync(path.join(root, 'src/main/services/claude.
 const mainIndex = fs.readFileSync(path.join(root, 'src/main/index.ts'), 'utf8');
 const chatContainer = fs.readFileSync(path.join(root, 'src/renderer/components/chat/ChatContainer.tsx'), 'utf8');
 const messageList = fs.readFileSync(path.join(root, 'src/renderer/components/chat/MessageList.tsx'), 'utf8');
+const messageBubble = fs.readFileSync(path.join(root, 'src/renderer/components/chat/MessageBubble.tsx'), 'utf8');
 const lazyMonacoEditor = fs.readFileSync(path.join(root, 'src/renderer/components/chat/LazyMonacoEditor.tsx'), 'utf8');
 const globalStyles = fs.readFileSync(path.join(root, 'src/renderer/styles/globals.css'), 'utf8');
+const cachedStore = fs.readFileSync(path.join(root, 'src/main/cached-store.ts'), 'utf8');
+const analyticsService = fs.readFileSync(path.join(root, 'src/main/services/analytics.service.ts'), 'utf8');
+const transcriptService = fs.readFileSync(path.join(root, 'src/main/services/transcript.service.ts'), 'utf8');
+const claudeIpc = fs.readFileSync(path.join(root, 'src/main/ipc/claude.ipc.ts'), 'utf8');
 
 const pollMethods = [...sshService.matchAll(/const pollForExit = async \(\): Promise<void> => \{([\s\S]*?)\n {4}\};/g)];
 assert.equal(pollMethods.length, 2, 'both detached SSH exit pollers must be guarded');
@@ -30,7 +35,29 @@ assert.match(chatContainer, /sessionMessages\.length >= 80/);
 assert.match(chatContainer, /reduceContinuousMotion \? 'reduce-continuous-motion'/);
 assert.match(globalStyles, /\.reduce-continuous-motion \.animate-spin/);
 assert.match(globalStyles, /\.reduce-continuous-motion \[style\*='infinite'\]:not\(\.live-thinking-indicator\)/);
+assert.match(globalStyles, /\.live-thinking-cluster \{[\s\S]*?contain: layout paint;[\s\S]*?isolation: isolate;/);
+assert.match(globalStyles, /\.live-thinking-indicator \{[\s\S]*?will-change: opacity;/);
+assert.match(messageList, /live-thinking-cluster[^"']*flex gap-0\.5/);
 assert.match(messageList, /live-thinking-indicator[^"']*w-2 h-2/);
+assert.match(messageList, /key=\{`\$\{message\.id\}:\$\{isLatestMessage \? 'latest' : 'history'\}`\}/);
+assert.match(messageBubble, /const DENSE_TOOL_CALL_THRESHOLD = 24/);
+assert.match(messageBubble, /collapseToolCardsByDefault = isOldMessage[\s\S]*?toolCalls\.length >= DENSE_TOOL_CALL_THRESHOLD/);
+assert.match(messageBubble, /defaultCollapsed=\{collapseToolCardsByDefault\}/);
+assert.match(messageBubble, /const shouldOfferReader = assistantTextContent\.length >= READER_PANEL_CHAR_THRESHOLD[\s\S]*?Boolean\(sessionId\)/);
+assert.doesNotMatch(
+  messageBubble,
+  /!historicalCollapsed && assistantTextContent\.length >= READER_PANEL_CHAR_THRESHOLD/,
+  'historical collapsing must not hide the Markdown Reader action for a large response',
+);
+assert.match(cachedStore, /get\(key\?: string, defaultValue\?: unknown\)/);
+assert.match(analyticsService, /this\.store = new CachedStore\(\{ name: 'claudette-analytics' \}\)/);
+assert.match(transcriptService, /writeInProgressMessage\(sessionId: string, entry: TranscriptEntry\)/);
+assert.match(transcriptService, /promoteInProgressMessage\(sessionId: string\)/);
+assert.match(claudeIpc, /transcriptService\.writeInProgressMessage\(sessionId, snapshotEntry\)/);
+assert.doesNotMatch(claudeIpc, /const signature = JSON\.stringify\(latestSnapshot\)/);
+assert.match(chatContainer, /streaming \? \(reduceContinuousMotion \? 120 : 50\) : 100/);
+const inputArea = fs.readFileSync(path.join(root, 'src/renderer/components/chat/InputArea.tsx'), 'utf8');
+assert.match(inputArea, /export default React\.memo\(InputArea\);/);
 assert.doesNotMatch(
   lazyMonacoEditor,
   /Never been visible - loading state[\s\S]*?animate-spin/,

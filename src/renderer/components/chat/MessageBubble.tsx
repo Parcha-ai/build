@@ -7,17 +7,18 @@ import HtmlArtifactLink from './HtmlArtifactLink';
 import { SpeakerButton } from './SpeakerButton';
 import { useEditorStore } from '../../stores/editor.store';
 import { useUIStore } from '../../stores/ui.store';
-import { useSessionStore } from '../../stores/session.store';
 import { isHtmlResponse, extractHtml } from '../../utils/htmlDetector';
 import type { ChatMessage, ToolCall } from '../../../shared/types';
 import { AGENT_COLORS } from '../../../shared/types';
 import { buildMissingToolCall, getMessageRenderArtifacts, getRenderedBlockText } from '../../../shared/utils/message-rendering';
 import { isTranscriptVisibleToolCall } from '../../../shared/utils/tool-call-transformer';
+import ChatMarkdownLink from './ChatMarkdownLink';
 
 // Regex to match file paths with optional line numbers
 // Matches: /path/to/file.ext or /path/to/file.ext:123
 const FILE_PATH_REGEX = /(\/(?:Users|home|var|etc|opt|tmp|usr|app|src|lib|pkg|workspace)[^\s:,;)}\]"'`<>]*\.[a-zA-Z0-9]+(?::\d+)?)/g;
 const RECENT_TOOL_CARD_LIMIT = 80;
+const DENSE_TOOL_CALL_THRESHOLD = 24;
 const HISTORICAL_PREVIEW_HEAD_CHARS = 700;
 const HISTORICAL_PREVIEW_TAIL_CHARS = 500;
 const READER_PANEL_CHAR_THRESHOLD = 1500;
@@ -41,8 +42,6 @@ interface TextContentBlockProps {
   messageId: string;
   showSpeaker: boolean;
   openFile: (path: string, line?: number) => void;
-  toggleBrowserPanel: () => void;
-  isBrowserPanelOpen: boolean;
   renderHtmlResponse?: boolean;
   autoOpenHtmlArtifact?: boolean;
 }
@@ -53,8 +52,6 @@ function TextContentBlock({
   messageId,
   showSpeaker,
   openFile,
-  toggleBrowserPanel,
-  isBrowserPanelOpen,
   renderHtmlResponse = false,
   autoOpenHtmlArtifact = false,
 }: TextContentBlockProps) {
@@ -168,44 +165,10 @@ function TextContentBlock({
               return <h3 className="text-sm font-bold mt-2 mb-1">{children}</h3>;
             },
             a({ href, children }) {
-              // Check if the link text or href looks like a file path
-              const linkText = typeof children === 'string' ? children : String(children);
-              const looksLikeFile = /\.(tsx?|jsx?|py|md|rs|go|css|html|json|toml|yaml|yml|sh|sql|rb|c|cpp|h|java|kt|swift)$/i.test(href || '') ||
-                /\.(tsx?|jsx?|py|md|rs|go|css|html|json|toml|yaml|yml|sh|sql|rb|c|cpp|h|java|kt|swift)$/i.test(linkText);
-
               return (
-                <a
-                  href={href}
-                  onClick={(e) => {
-                    e.preventDefault();
-                    if (!href) return;
-
-                    // File path links → open in editor
-                    if (looksLikeFile) {
-                      const filePath = href.startsWith('/') ? href : href;
-                      openFile(filePath);
-                      return;
-                    }
-
-                    if (href.includes('localhost') || href.includes('127.0.0.1')) {
-                      const store = useSessionStore.getState();
-                      const session = store.sessions.find((s) => s.id === store.activeSessionId);
-                      if (session) {
-                        store.updateSession(session.id, { lastBrowserUrl: href });
-                        if (!isBrowserPanelOpen) {
-                          toggleBrowserPanel();
-                        }
-                        window.electronAPI.browser.navigateTo(session.id, href);
-                      }
-                    } else {
-                      window.electronAPI.app.openExternal(href);
-                    }
-                  }}
-                  className={`${looksLikeFile ? 'text-cyan-400 hover:text-cyan-300' : 'text-claude-accent'} underline hover:no-underline cursor-pointer`}
-                  title={looksLikeFile ? `Open ${href} in editor` : undefined}
-                >
+                <ChatMarkdownLink href={href} sessionId={sessionId}>
                   {children}
-                </a>
+                </ChatMarkdownLink>
               );
             },
             blockquote({ children }) {
@@ -349,8 +312,6 @@ function MessageBubble({
   const [isRewinding, setIsRewinding] = useState(false);
   const [showHistoricalDetail, setShowHistoricalDetail] = useState(false);
   const openFile = useEditorStore((state) => state.openFile);
-  const toggleBrowserPanel = useUIStore((state) => state.toggleBrowserPanel);
-  const isBrowserPanelOpen = useUIStore((state) => state.isBrowserPanelOpen);
   // Note: activeSessionId, updateSession, sessions accessed via getState() in click handlers only
 
   // Show rewind button for user messages that aren't the most recent one
@@ -389,6 +350,12 @@ function MessageBubble({
   const toolCardRenderLimit = isOldMessage && !isLatestMessage && !isStreaming
     ? 0
     : RECENT_TOOL_CARD_LIMIT;
+  // A completed agent run can contain dozens of large tool results. Expanding
+  // all of them while STREAM_END moves the run into message history creates a
+  // large synchronous React/Monaco mount and can beachball the renderer.
+  // Keep dense runs and non-latest results as cheap headers until requested.
+  const collapseToolCardsByDefault = isOldMessage
+    || (!isStreaming && (!isLatestMessage || toolCalls.length >= DENSE_TOOL_CALL_THRESHOLD));
   const historicalCollapsed = !isUser && !isSystem && isOldMessage && !isLatestMessage && !isStreaming && !showHistoricalDetail;
   const historicalPreview = useMemo(() => getHistoricalPreview(message), [message]);
   const historicalToolCount = useMemo(() => countHistoricalToolBlocks(message, toolCalls.length), [message, toolCalls.length]);
@@ -396,6 +363,11 @@ function MessageBubble({
     const renderedBlockText = getRenderedBlockText(message.contentBlocks);
     return renderedBlockText.trim() ? renderedBlockText : (message.content || '');
   }, [message.content, message.contentBlocks]);
+  // Reader is the lightweight way to inspect a large historical response. Do
+  // not hide it with the historical-collapse optimization—the response can
+  // become "old" immediately after a tool-heavy turn adds enough messages.
+  const shouldOfferReader = assistantTextContent.length >= READER_PANEL_CHAR_THRESHOLD
+    && Boolean(sessionId);
   const shouldRenderAssistantTextAsHtml = renderHtmlResponse
     && !isUser
     && !isSystem
@@ -500,7 +472,7 @@ function MessageBubble({
             )}
 
             {/* Open in Reader button for large responses */}
-            {!historicalCollapsed && assistantTextContent.length >= READER_PANEL_CHAR_THRESHOLD && sessionId && (
+            {shouldOfferReader && sessionId && (
               <button
                 onClick={() => {
                   const firstLine = assistantTextContent.split('\n').find(l => l.trim())?.replace(/^#+\s*/, '').trim();
@@ -569,7 +541,7 @@ function MessageBubble({
                           toolCall={toolCall}
                           isLatestToolCall={isLatestMessage && blockIndex === message.contentBlocks!.length - 1 && block.type === 'tool_use'}
                           isStreaming={isStreaming}
-                          defaultCollapsed={isOldMessage}
+                          defaultCollapsed={collapseToolCardsByDefault}
                         />
                       </div>
                     );
@@ -585,8 +557,6 @@ function MessageBubble({
                           messageId={message.id}
                           showSpeaker={blockIndex === firstTextBlockIndex}
                           openFile={openFile}
-                          toggleBrowserPanel={toggleBrowserPanel}
-                          isBrowserPanelOpen={isBrowserPanelOpen}
                           renderHtmlResponse={renderHtmlResponse}
                           autoOpenHtmlArtifact={isLatestMessage || Boolean(isStreaming)}
                         />
@@ -608,7 +578,7 @@ function MessageBubble({
                       toolCall={toolCall}
                       isLatestToolCall={isLatestMessage && index === unrenderedToolCalls.length - 1}
                       isStreaming={isStreaming}
-                      defaultCollapsed={isOldMessage}
+                      defaultCollapsed={collapseToolCardsByDefault}
                     />
                   );
                 });
@@ -634,8 +604,6 @@ function MessageBubble({
                       messageId={message.id}
                       showSpeaker={false}
                       openFile={openFile}
-                      toggleBrowserPanel={toggleBrowserPanel}
-                      isBrowserPanelOpen={isBrowserPanelOpen}
                       renderHtmlResponse={renderHtmlResponse}
                       autoOpenHtmlArtifact={isLatestMessage || Boolean(isStreaming)}
                     />
@@ -652,7 +620,7 @@ function MessageBubble({
                     toolCall={toolCall}
                     isLatestToolCall={isLatestMessage && index === toolCalls.length - 1}
                     isStreaming={isStreaming}
-                    defaultCollapsed={isOldMessage}
+                    defaultCollapsed={collapseToolCardsByDefault}
                   />
                 ))}
                 <CollapsedToolSummary count={Math.max(0, toolCalls.length - toolCardRenderLimit)} />
@@ -768,42 +736,10 @@ function MessageBubble({
                     },
                     // Style links
                     a({ href, children }) {
-                      const linkText = typeof children === 'string' ? children : String(children);
-                      const looksLikeFile = /\.(tsx?|jsx?|py|md|rs|go|css|html|json|toml|yaml|yml|sh|sql|rb|c|cpp|h|java|kt|swift)$/i.test(href || '') ||
-                        /\.(tsx?|jsx?|py|md|rs|go|css|html|json|toml|yaml|yml|sh|sql|rb|c|cpp|h|java|kt|swift)$/i.test(linkText);
-
                       return (
-                        <a
-                          href={href}
-                          onClick={(e) => {
-                            e.preventDefault();
-                            if (!href) return;
-
-                            // File path links → open in editor
-                            if (looksLikeFile) {
-                              openFile(href);
-                              return;
-                            }
-
-                            if (href.includes('localhost') || href.includes('127.0.0.1')) {
-                              const store = useSessionStore.getState();
-                              const session = store.sessions.find(s => s.id === store.activeSessionId);
-                              if (session) {
-                                store.updateSession(session.id, { lastBrowserUrl: href });
-                                if (!isBrowserPanelOpen) {
-                                  toggleBrowserPanel();
-                                }
-                                window.electronAPI.browser.navigateTo(session.id, href);
-                              }
-                            } else {
-                              window.electronAPI.app.openExternal(href);
-                            }
-                          }}
-                          className={`${looksLikeFile ? 'text-cyan-400 hover:text-cyan-300' : 'text-claude-accent'} underline hover:no-underline cursor-pointer`}
-                          title={looksLikeFile ? `Open ${href} in editor` : undefined}
-                        >
+                        <ChatMarkdownLink href={href} sessionId={sessionId}>
                           {children}
-                        </a>
+                        </ChatMarkdownLink>
                       );
                     },
                     // Style blockquotes

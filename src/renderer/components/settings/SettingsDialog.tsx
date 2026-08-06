@@ -1,13 +1,22 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { X, Eye, EyeOff, Check, Loader2, Search, Download, Sparkles, Settings, Key, History, AlertCircle, ExternalLink, Terminal, Copy, Bot, RefreshCw, BookOpen, Plus, Trash2 } from 'lucide-react';
+import { X, Eye, EyeOff, Check, Loader2, Search, Download, Sparkles, Settings, Key, History, AlertCircle, ExternalLink, Terminal, Copy, Bot, RefreshCw, BookOpen } from 'lucide-react';
 import { useUIStore } from '../../stores/ui.store';
 import { useAudioStore } from '../../stores/audio.store';
 import { useSessionStore } from '../../stores/session.store';
 import ReleaseNotes from '../common/ReleaseNotes';
-import type { ParableCheckConfig, ParableConfig, ParableExecutorConfig, ParableTaskClass } from '../../../shared/types';
-import { cloneDefaultParableConfig, PARABLE_MODE_ID, PARABLE_TASK_CLASSES } from '../../../shared/config/parable';
+import {
+  getRealtimeVoiceLabel,
+  OPENAI_REALTIME_MODEL,
+  REALTIME_VOICE_OPTIONS,
+  type ParableSubscriptionStatus,
+  type ParableAuthRunState,
+  type ParableVendor,
+  type RealtimeReasoningEffort,
+  type RealtimeVoiceOption,
+} from '../../../shared/types';
+import { PARABLE_MODE_ID } from '../../../shared/config/parable';
 import { CASCADE_MODE_ID } from '../../../shared/config/cascade';
-import { getKnownModelPricing } from '../../../shared/config/model-pricing';
+import { stripTerminalControlSequences } from '../../../shared/utils/remote-workdir';
 
 type TabId = 'general' | 'autoBuild' | 'parable' | 'agents' | 'releases';
 
@@ -46,7 +55,7 @@ interface TabConfig {
   icon: React.ReactNode;
 }
 
-type AutoBuildModelKey = 'plan' | 'build' | 'verify' | 'refine' | 'fallback';
+type AutoBuildModelKey = 'pr' | 'plan' | 'build' | 'verify' | 'refine' | 'fallback';
 
 type AutoBuildModelSettings = Record<AutoBuildModelKey, string>;
 
@@ -57,6 +66,7 @@ type AutoBuildVerificationSettings = Record<AutoBuildModelKey, string>;
 type AutoBuildBudgetSettings = Record<AutoBuildModelKey, string>;
 
 const AUTO_BUILD_EFFORT_DEFAULTS: AutoBuildEffortSettings = {
+  pr: 'max',
   plan: '',
   build: '',
   verify: '',
@@ -65,6 +75,7 @@ const AUTO_BUILD_EFFORT_DEFAULTS: AutoBuildEffortSettings = {
 };
 
 const AUTO_BUILD_SPEED_DEFAULTS: AutoBuildSpeedSettings = {
+  pr: 'auto',
   plan: 'auto',
   build: 'auto',
   verify: 'auto',
@@ -73,6 +84,7 @@ const AUTO_BUILD_SPEED_DEFAULTS: AutoBuildSpeedSettings = {
 };
 
 const AUTO_BUILD_WORKFLOW_DEFAULTS: AutoBuildWorkflowSettings = {
+  pr: 'single',
   plan: 'auto',
   build: 'auto',
   verify: 'auto',
@@ -81,6 +93,7 @@ const AUTO_BUILD_WORKFLOW_DEFAULTS: AutoBuildWorkflowSettings = {
 };
 
 const AUTO_BUILD_VERIFICATION_DEFAULTS: AutoBuildVerificationSettings = {
+  pr: 'none',
   plan: 'auto',
   build: 'auto',
   verify: 'auto',
@@ -89,6 +102,7 @@ const AUTO_BUILD_VERIFICATION_DEFAULTS: AutoBuildVerificationSettings = {
 };
 
 const AUTO_BUILD_BUDGET_DEFAULTS: AutoBuildBudgetSettings = {
+  pr: '',
   plan: '',
   build: '',
   verify: '',
@@ -127,6 +141,7 @@ const VERIFICATION_OPTIONS: Array<{ value: string; label: string }> = [
 ];
 
 const AUTO_BUILD_MODEL_DEFAULTS: AutoBuildModelSettings = {
+  pr: 'claude-fable-5',
   plan: 'claude-sonnet-4-6',
   build: 'codex:gpt-5.6-sol',
   verify: 'codex:gpt-5.6-sol',
@@ -135,6 +150,7 @@ const AUTO_BUILD_MODEL_DEFAULTS: AutoBuildModelSettings = {
 };
 
 const AUTO_BUILD_MODEL_ROWS: Array<{ id: AutoBuildModelKey; label: string; detail: string }> = [
+  { id: 'pr', label: 'Pull requests', detail: 'Native /pr publication workflow' },
   { id: 'plan', label: 'Planning', detail: 'Architecture, reviews, tradeoffs' },
   { id: 'build', label: 'Execution', detail: 'Code and file changes' },
   { id: 'verify', label: 'Verification', detail: 'Tests, QA, debugging' },
@@ -155,7 +171,7 @@ interface CustomCategoryState {
   keywords: string;
 }
 
-const FIXED_TIER_IDS = ['plan', 'build', 'verify', 'refine', 'fallback'];
+const FIXED_TIER_IDS = ['pr', 'plan', 'build', 'verify', 'refine', 'fallback'];
 
 function autoBuildConfigFromState(
   models: AutoBuildModelSettings,
@@ -189,31 +205,37 @@ function autoBuildConfigFromState(
   return {
     prePlanEnabled,
     prePlanModel,
+    prModel: models.pr,
     planModel: models.plan,
     buildModel: models.build,
     verifyModel: models.verify,
     refineModel: models.refine,
     fallbackModel: models.fallback,
+    ...(effort?.pr ? { prEffort: effort.pr } : {}),
     ...(effort?.plan ? { planEffort: effort.plan } : {}),
     ...(effort?.build ? { buildEffort: effort.build } : {}),
     ...(effort?.verify ? { verifyEffort: effort.verify } : {}),
     ...(effort?.refine ? { refineEffort: effort.refine } : {}),
     ...(effort?.fallback ? { fallbackEffort: effort.fallback } : {}),
+    ...(speed?.pr && speed.pr !== 'auto' ? { prSpeed: speed.pr } : {}),
     ...(speed?.plan && speed.plan !== 'auto' ? { planSpeed: speed.plan } : {}),
     ...(speed?.build && speed.build !== 'auto' ? { buildSpeed: speed.build } : {}),
     ...(speed?.verify && speed.verify !== 'auto' ? { verifySpeed: speed.verify } : {}),
     ...(speed?.refine && speed.refine !== 'auto' ? { refineSpeed: speed.refine } : {}),
     ...(speed?.fallback && speed.fallback !== 'auto' ? { fallbackSpeed: speed.fallback } : {}),
+    ...(workflow?.pr && workflow.pr !== 'auto' ? { prWorkflow: workflow.pr } : {}),
     ...(workflow?.plan && workflow.plan !== 'auto' ? { planWorkflow: workflow.plan } : {}),
     ...(workflow?.build && workflow.build !== 'auto' ? { buildWorkflow: workflow.build } : {}),
     ...(workflow?.verify && workflow.verify !== 'auto' ? { verifyWorkflow: workflow.verify } : {}),
     ...(workflow?.refine && workflow.refine !== 'auto' ? { refineWorkflow: workflow.refine } : {}),
     ...(workflow?.fallback && workflow.fallback !== 'auto' ? { fallbackWorkflow: workflow.fallback } : {}),
+    ...(budget?.pr && parseBudget(budget.pr) !== undefined ? { prBudgetUsd: parseBudget(budget.pr) } : {}),
     ...(budget?.plan && parseBudget(budget.plan) !== undefined ? { planBudgetUsd: parseBudget(budget.plan) } : {}),
     ...(budget?.build && parseBudget(budget.build) !== undefined ? { buildBudgetUsd: parseBudget(budget.build) } : {}),
     ...(budget?.verify && parseBudget(budget.verify) !== undefined ? { verifyBudgetUsd: parseBudget(budget.verify) } : {}),
     ...(budget?.refine && parseBudget(budget.refine) !== undefined ? { refineBudgetUsd: parseBudget(budget.refine) } : {}),
     ...(budget?.fallback && parseBudget(budget.fallback) !== undefined ? { fallbackBudgetUsd: parseBudget(budget.fallback) } : {}),
+    ...(verification?.pr && verification.pr !== 'auto' ? { prVerification: verification.pr } : {}),
     ...(verification?.plan && verification.plan !== 'auto' ? { planVerification: verification.plan } : {}),
     ...(verification?.build && verification.build !== 'auto' ? { buildVerification: verification.build } : {}),
     ...(verification?.verify && verification.verify !== 'auto' ? { verifyVerification: verification.verify } : {}),
@@ -229,6 +251,7 @@ function migrateAutoBuildModels(savedAutoConfig: any): AutoBuildModelSettings {
 
   if (Array.isArray(savedAutoConfig?.categories)) {
     for (const category of savedAutoConfig.categories) {
+      if (category?.id === 'pr' && typeof category.model === 'string') models.pr = category.model;
       if (category?.id === 'plan' && typeof category.model === 'string') models.plan = category.model;
       if (category?.id === 'build' && typeof category.model === 'string') models.build = category.model;
       if (category?.id === 'verify' && typeof category.model === 'string') models.verify = category.model;
@@ -236,6 +259,7 @@ function migrateAutoBuildModels(savedAutoConfig: any): AutoBuildModelSettings {
     }
   }
 
+  if (typeof savedAutoConfig?.prModel === 'string') models.pr = savedAutoConfig.prModel;
   if (typeof savedAutoConfig?.planModel === 'string') models.plan = savedAutoConfig.planModel;
   if (typeof savedAutoConfig?.buildModel === 'string') models.build = savedAutoConfig.buildModel;
   if (typeof savedAutoConfig?.verifyModel === 'string') models.verify = savedAutoConfig.verifyModel;
@@ -318,9 +342,6 @@ export default function SettingsDialog() {
   const [showOpenaiApiKey, setShowOpenaiApiKey] = useState(false);
   const [googleApiKey, setGoogleApiKey] = useState('');
   const [showGoogleApiKey, setShowGoogleApiKey] = useState(false);
-  const [elevenLabsApiKey, setElevenLabsApiKey] = useState('');
-  const [showElevenLabsApiKey, setShowElevenLabsApiKey] = useState(false);
-  const [elevenLabsAgentId, setElevenLabsAgentId] = useState('');
   const [cursorApiKey, setCursorApiKey] = useState('');
   const [showCursorApiKey, setShowCursorApiKey] = useState(false);
   const [deepseekApiKey, setDeepseekApiKey] = useState('');
@@ -336,6 +357,8 @@ export default function SettingsDialog() {
 
   // Audio settings
   const [voiceModeEnabled, setVoiceModeEnabled] = useState(false);
+  const [realtimeVoice, setRealtimeVoice] = useState<RealtimeVoiceOption>('marin');
+  const [realtimeReasoningEffort, setRealtimeReasoningEffort] = useState<RealtimeReasoningEffort>('low');
   const [ralphLoopEnabled, setRalphLoopEnabled] = useState(false);
   const [computerUseEnabled, setComputerUseEnabled] = useState(false);
   const [maxComputerUseIterations, setMaxComputerUseIterations] = useState(20);
@@ -366,6 +389,7 @@ export default function SettingsDialog() {
 
   // Auto Build fixed model routing tiers
   const availableModels = useSessionStore((s) => s.availableModels || []);
+  const activeParableSession = useSessionStore((s) => s.sessions.find((session) => session.id === s.activeSessionId));
   const [autoBuildModels, setAutoBuildModels] = useState<AutoBuildModelSettings>(AUTO_BUILD_MODEL_DEFAULTS);
   const [autoBuildEffort, setAutoBuildEffort] = useState<AutoBuildEffortSettings>(AUTO_BUILD_EFFORT_DEFAULTS);
   const [autoBuildSpeed, setAutoBuildSpeed] = useState<AutoBuildSpeedSettings>(AUTO_BUILD_SPEED_DEFAULTS);
@@ -377,8 +401,18 @@ export default function SettingsDialog() {
   const [autoBuildPrePlanModel, setAutoBuildPrePlanModel] = useState('claude-fable-5');
   const [customCategories, setCustomCategories] = useState<CustomCategoryState[]>([]);
 
-  // Parable mode — Claude Code is the meta-harness and owns executor routing.
-  const [parableConfig, setParableConfig] = useState<ParableConfig>(() => cloneDefaultParableConfig());
+  // Parable mode — upstream owns subscription setup, OAuth, and executor routing.
+  const [parableStatus, setParableStatus] = useState<ParableSubscriptionStatus | null>(null);
+  const [isCheckingParable, setIsCheckingParable] = useState(false);
+  const [parableChatGpt, setParableChatGpt] = useState(true);
+  const [parableXai, setParableXai] = useState(true);
+  const [parableAuthRun, setParableAuthRun] = useState<ParableAuthRunState>({ running: false, output: '', phase: 'idle' });
+  const parableAuthOutputRef = useRef<HTMLPreElement | null>(null);
+  const [parableToml, setParableToml] = useState('');
+  const [parableConfigData, setParableConfigData] = useState<Record<string, any>>({});
+  const [parableConfigMessage, setParableConfigMessage] = useState('');
+  const [isSavingParableToml, setIsSavingParableToml] = useState(false);
+  const [isSyncingParableAuth, setIsSyncingParableAuth] = useState(false);
 
   // QMD status
   const [qmdStatus, setQmdStatus] = useState<{ installed: boolean; bundled: boolean } | null>(null);
@@ -404,7 +438,7 @@ export default function SettingsDialog() {
   }, []);
 
   // Auto-save app settings (toggles and time picker)
-  const autoSaveAppSettings = useCallback(async (updates: { qmdEnabled?: boolean; ultraPlanMode?: boolean; showClearContextOnPlanAccept?: boolean; lunchReminderEnabled?: boolean; lunchReminderTime?: string; bedtimeReminderEnabled?: boolean; bedtimeReminderTime?: string; dailyReviewEnabled?: boolean; dailyReviewTime?: string; bedtimeTaskReviewEnabled?: boolean; foundryEnabled?: boolean; foundryBaseUrl?: string; foundryApiKey?: string; foundryDefaultSonnetModel?: string; foundryDefaultHaikuModel?: string; foundryDefaultOpusModel?: string; customModels?: typeof customModels; cursorApiKey?: string; deepseekApiKey?: string; geminiApiKey?: string; zaiApiKey?: string; xaiApiKey?: string; cerebrasApiKey?: string; autoRouterConfig?: any; parableConfig?: ParableConfig }) => {
+  const autoSaveAppSettings = useCallback(async (updates: { qmdEnabled?: boolean; ultraPlanMode?: boolean; showClearContextOnPlanAccept?: boolean; lunchReminderEnabled?: boolean; lunchReminderTime?: string; bedtimeReminderEnabled?: boolean; bedtimeReminderTime?: string; dailyReviewEnabled?: boolean; dailyReviewTime?: string; bedtimeTaskReviewEnabled?: boolean; foundryEnabled?: boolean; foundryBaseUrl?: string; foundryApiKey?: string; foundryDefaultSonnetModel?: string; foundryDefaultHaikuModel?: string; foundryDefaultOpusModel?: string; customModels?: typeof customModels; cursorApiKey?: string; deepseekApiKey?: string; geminiApiKey?: string; zaiApiKey?: string; xaiApiKey?: string; cerebrasApiKey?: string; autoRouterConfig?: any }) => {
     showSaveIndicator();
     try {
       await window.electronAPI.settings.set(updates);
@@ -437,7 +471,7 @@ export default function SettingsDialog() {
   }, [audioSettings, updateSettings, showSaveIndicator]);
 
   // Auto-save API keys with debounce for text inputs
-  const autoSaveApiKey = useCallback(async (key: string, type: 'anthropic' | 'openai' | 'google' | 'elevenlabs') => {
+  const autoSaveApiKey = useCallback(async (key: string, type: 'anthropic' | 'openai' | 'google') => {
     showSaveIndicator();
     try {
       if (type === 'anthropic') {
@@ -446,8 +480,6 @@ export default function SettingsDialog() {
         await window.electronAPI.audio.setOpenAiKey(key);
       } else if (type === 'google') {
         await window.electronAPI.settings.setGoogleApiKey(key);
-      } else if (type === 'elevenlabs') {
-        await window.electronAPI.audio.setElevenLabsKey(key);
       }
       console.log(`[SettingsDialog] Auto-saved ${type} API key`);
     } catch (error) {
@@ -479,6 +511,42 @@ export default function SettingsDialog() {
     }
   }, []);
 
+  const refreshParableStatus = useCallback(async () => {
+    setIsCheckingParable(true);
+    try {
+      const status = await window.electronAPI.parable.getStatus();
+      setParableStatus(status);
+      if (status.configured) {
+        setParableChatGpt(status.vendors.includes('chatgpt'));
+        setParableXai(status.vendors.includes('xai'));
+        const [toml, data] = await Promise.all([
+          window.electronAPI.parable.getConfig(),
+          window.electronAPI.parable.getConfigData(),
+        ]);
+        setParableToml(toml);
+        setParableConfigData(data);
+      }
+    } catch (error) {
+      console.warn('[SettingsDialog] Parable status check failed:', error);
+    } finally {
+      setIsCheckingParable(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isSettingsOpen) return;
+    void window.electronAPI.parable.getAuthRun().then(setParableAuthRun);
+    return window.electronAPI.parable.onAuthEvent((state) => {
+      setParableAuthRun(state);
+      if (!state.running) void refreshParableStatus();
+    });
+  }, [isSettingsOpen, refreshParableStatus]);
+
+  useEffect(() => {
+    const output = parableAuthOutputRef.current;
+    if (output) output.scrollTop = output.scrollHeight;
+  }, [parableAuthRun.output]);
+
   useEffect(() => {
     if (isSettingsOpen) {
       setActiveTab((settingsTab as TabId) || 'general');
@@ -490,6 +558,7 @@ export default function SettingsDialog() {
     if (isSettingsOpen) {
       setIsLoading(true);
       void refreshProviders();
+      void refreshParableStatus();
 
       // These are all instant electron-store reads — never hang
       Promise.all([
@@ -498,14 +567,12 @@ export default function SettingsDialog() {
         window.electronAPI.settings.getGoogleApiKey(),
         window.electronAPI.settings.get(),
         loadSettings(),
-        window.electronAPI.audio.getElevenLabsKey(),
       ])
-        .then(([anthropicKey, openAiKey, googleKey, appSettings, , elevenLabsKey]) => {
+        .then(([anthropicKey, openAiKey, googleKey, appSettings]) => {
           console.log('[SettingsDialog] Loaded settings:', appSettings);
           setApiKey(anthropicKey || '');
           setOpenaiApiKey(openAiKey || '');
           setGoogleApiKey(googleKey || '');
-          setElevenLabsApiKey(elevenLabsKey || '');
           setQmdEnabled(appSettings.qmdEnabled || false);
           setUltraPlanMode(appSettings.ultraPlanMode || false);
           setShowClearContextOnPlanAccept((appSettings as any).showClearContextOnPlanAccept || false);
@@ -529,22 +596,6 @@ export default function SettingsDialog() {
           setZaiApiKey((appSettings as any).zaiApiKey || '');
           setCerebrasApiKey((appSettings as any).cerebrasApiKey || '');
           setXaiApiKey((appSettings as any).xaiApiKey || '');
-          const savedParableConfig = (appSettings as any).parableConfig as Partial<ParableConfig> | undefined;
-          if (savedParableConfig) {
-            const parableDefaults = cloneDefaultParableConfig();
-            setParableConfig({
-              ...parableDefaults,
-              ...savedParableConfig,
-              executors: Array.isArray(savedParableConfig.executors)
-                ? savedParableConfig.executors
-                : parableDefaults.executors,
-              checks: Array.isArray(savedParableConfig.checks)
-                ? savedParableConfig.checks
-                : parableDefaults.checks,
-            });
-          } else {
-            setParableConfig(cloneDefaultParableConfig());
-          }
           // Auto Build config
           const savedAutoConfig = (appSettings as any).autoRouterConfig;
           if (savedAutoConfig) {
@@ -557,6 +608,7 @@ export default function SettingsDialog() {
           setAutoBuildPrePlanModel(savedAutoConfig?.prePlanModel || 'claude-fable-5');
           // Load effort settings
           const savedEffort: AutoBuildEffortSettings = { ...AUTO_BUILD_EFFORT_DEFAULTS };
+          if (savedAutoConfig?.prEffort) savedEffort.pr = savedAutoConfig.prEffort;
           if (savedAutoConfig?.planEffort) savedEffort.plan = savedAutoConfig.planEffort;
           if (savedAutoConfig?.buildEffort) savedEffort.build = savedAutoConfig.buildEffort;
           if (savedAutoConfig?.verifyEffort) savedEffort.verify = savedAutoConfig.verifyEffort;
@@ -564,6 +616,7 @@ export default function SettingsDialog() {
           if (savedAutoConfig?.fallbackEffort) savedEffort.fallback = savedAutoConfig.fallbackEffort;
           setAutoBuildEffort(savedEffort);
           const savedSpeed: AutoBuildSpeedSettings = { ...AUTO_BUILD_SPEED_DEFAULTS };
+          if (savedAutoConfig?.prSpeed) savedSpeed.pr = savedAutoConfig.prSpeed;
           if (savedAutoConfig?.planSpeed) savedSpeed.plan = savedAutoConfig.planSpeed;
           if (savedAutoConfig?.buildSpeed) savedSpeed.build = savedAutoConfig.buildSpeed;
           if (savedAutoConfig?.verifySpeed) savedSpeed.verify = savedAutoConfig.verifySpeed;
@@ -571,6 +624,7 @@ export default function SettingsDialog() {
           if (savedAutoConfig?.fallbackSpeed) savedSpeed.fallback = savedAutoConfig.fallbackSpeed;
           setAutoBuildSpeed(savedSpeed);
           const savedWorkflow: AutoBuildWorkflowSettings = { ...AUTO_BUILD_WORKFLOW_DEFAULTS };
+          if (savedAutoConfig?.prWorkflow) savedWorkflow.pr = savedAutoConfig.prWorkflow;
           if (savedAutoConfig?.planWorkflow) savedWorkflow.plan = savedAutoConfig.planWorkflow;
           if (savedAutoConfig?.buildWorkflow) savedWorkflow.build = savedAutoConfig.buildWorkflow;
           if (savedAutoConfig?.verifyWorkflow) savedWorkflow.verify = savedAutoConfig.verifyWorkflow;
@@ -578,6 +632,7 @@ export default function SettingsDialog() {
           if (savedAutoConfig?.fallbackWorkflow) savedWorkflow.fallback = savedAutoConfig.fallbackWorkflow;
           setAutoBuildWorkflow(savedWorkflow);
           const savedBudget: AutoBuildBudgetSettings = { ...AUTO_BUILD_BUDGET_DEFAULTS };
+          if (savedAutoConfig?.prBudgetUsd !== undefined) savedBudget.pr = String(savedAutoConfig.prBudgetUsd);
           if (savedAutoConfig?.planBudgetUsd !== undefined) savedBudget.plan = String(savedAutoConfig.planBudgetUsd);
           if (savedAutoConfig?.buildBudgetUsd !== undefined) savedBudget.build = String(savedAutoConfig.buildBudgetUsd);
           if (savedAutoConfig?.verifyBudgetUsd !== undefined) savedBudget.verify = String(savedAutoConfig.verifyBudgetUsd);
@@ -585,6 +640,7 @@ export default function SettingsDialog() {
           if (savedAutoConfig?.fallbackBudgetUsd !== undefined) savedBudget.fallback = String(savedAutoConfig.fallbackBudgetUsd);
           setAutoBuildBudget(savedBudget);
           const savedVerification: AutoBuildVerificationSettings = { ...AUTO_BUILD_VERIFICATION_DEFAULTS };
+          if (savedAutoConfig?.prVerification) savedVerification.pr = savedAutoConfig.prVerification;
           if (savedAutoConfig?.planVerification) savedVerification.plan = savedAutoConfig.planVerification;
           if (savedAutoConfig?.buildVerification) savedVerification.build = savedAutoConfig.buildVerification;
           if (savedAutoConfig?.verifyVerification) savedVerification.verify = savedAutoConfig.verifyVerification;
@@ -621,7 +677,7 @@ export default function SettingsDialog() {
         .then((s) => setQmdStatus(s))
         .catch((err) => console.warn('[SettingsDialog] QMD status check failed:', err));
     }
-  }, [isSettingsOpen, loadSettings, refreshProviders]);
+  }, [isSettingsOpen, loadSettings, refreshParableStatus, refreshProviders]);
 
   // Update local state when audio settings load
   useEffect(() => {
@@ -630,7 +686,8 @@ export default function SettingsDialog() {
       setRalphLoopEnabled(audioSettings.ralphLoopEnabled || false);
       setComputerUseEnabled(audioSettings.computerUseEnabled || false);
       setMaxComputerUseIterations(audioSettings.maxComputerUseIterations || 20);
-      setElevenLabsAgentId(audioSettings.elevenLabsAgentId || '');
+      setRealtimeVoice(audioSettings.realtimeVoice || 'marin');
+      setRealtimeReasoningEffort(audioSettings.realtimeReasoningEffort || 'low');
     }
   }, [audioSettings]);
 
@@ -639,7 +696,7 @@ export default function SettingsDialog() {
     return () => {
       if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
       if (debounceTimeoutRef.current) clearTimeout(debounceTimeoutRef.current);
-    };
+  };
   }, []);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -1060,10 +1117,10 @@ export default function SettingsDialog() {
         </div>
       </div>
 
-      {/* Voice Conversation Mode */}
+      {/* OpenAI Realtime Voice */}
       <div className="space-y-4 pt-4 border-t border-claude-border">
         <h3 className="text-xs font-mono text-claude-text uppercase tracking-wider">
-          Voice Conversation Mode (Experimental)
+          OpenAI Realtime Voice
         </h3>
 
         <div className="flex items-center justify-between">
@@ -1072,7 +1129,7 @@ export default function SettingsDialog() {
               Enable Voice Conversation
             </label>
             <p className="text-[10px] font-mono text-claude-text-secondary mt-1">
-              Hands-free speech-to-speech conversations with Claude
+              Conversational speech-to-speech that can steer Build while you keep talking. AI-generated voice.
             </p>
           </div>
           <Toggle
@@ -1084,6 +1141,59 @@ export default function SettingsDialog() {
             disabled={isLoading}
           />
         </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <label className="space-y-1">
+            <span className="block text-[10px] font-mono text-claude-text-secondary uppercase tracking-wider">
+              Voice
+            </span>
+            <select
+              value={realtimeVoice}
+              onChange={(event) => {
+                const value = event.target.value as RealtimeVoiceOption;
+                setRealtimeVoice(value);
+                void autoSaveAudioSettings({
+                  realtimeVoice: value,
+                  selectedVoice: value === 'M' ? 'marin' : value,
+                  voiceSettings: { voiceId: value === 'M' ? 'marin' : value },
+                });
+              }}
+              disabled={isLoading}
+              className="w-full border border-claude-border bg-claude-bg px-2 py-1.5 font-mono text-xs text-claude-text focus:border-claude-accent focus:outline-none"
+            >
+              {REALTIME_VOICE_OPTIONS.map((voice) => (
+                <option key={voice} value={voice}>{getRealtimeVoiceLabel(voice)}</option>
+              ))}
+            </select>
+            <span className="block text-[9px] font-mono leading-relaxed text-claude-text-secondary">
+              Moneypenny keeps Marin's timbre with a modern British secret-agent speaking style.
+            </span>
+          </label>
+
+          <label className="space-y-1">
+            <span className="block text-[10px] font-mono text-claude-text-secondary uppercase tracking-wider">
+              Reasoning
+            </span>
+            <select
+              value={realtimeReasoningEffort}
+              onChange={(event) => {
+                const value = event.target.value as RealtimeReasoningEffort;
+                setRealtimeReasoningEffort(value);
+                void autoSaveAudioSettings({ realtimeReasoningEffort: value });
+              }}
+              disabled={isLoading}
+              className="w-full border border-claude-border bg-claude-bg px-2 py-1.5 font-mono text-xs text-claude-text focus:border-claude-accent focus:outline-none"
+            >
+              <option value="low">low · fastest</option>
+              <option value="medium">medium</option>
+              <option value="high">high</option>
+            </select>
+          </label>
+        </div>
+
+        <p className="font-mono text-[10px] text-claude-text-secondary">
+          Model: {OPENAI_REALTIME_MODEL}. Uses WebRTC with semantic turn detection and interruption support.
+        </p>
       </div>
     </div>
   );
@@ -1615,369 +1725,413 @@ export default function SettingsDialog() {
   };
 
   const renderParableTab = () => {
-    const concreteModels = availableModels.filter((model) => model.id !== 'auto' && model.id !== PARABLE_MODE_ID && model.id !== CASCADE_MODE_ID);
-    const brainModels = concreteModels.filter((model) => !/^(?:codex|cursor|gemini|opencode|custom):/.test(model.id));
-    const executorModels = concreteModels.filter((model) => (
-      !model.id.includes(':') || model.id.startsWith('codex:') || model.id.startsWith('cursor:')
-    ));
-    const withSavedModel = (models: typeof availableModels, modelId: string) => (
-      models.some((model) => model.id === modelId)
-        ? models
-        : [{ id: modelId, name: modelId, description: 'Saved model' }, ...models]
-    );
-    const saveParableConfig = (next: ParableConfig) => {
-      setParableConfig(next);
-      void autoSaveAppSettings({ parableConfig: next });
+    const selectedVendors: ParableVendor[] = [
+      'claude',
+      ...(parableChatGpt ? ['chatgpt' as const] : []),
+      ...(parableXai ? ['xai' as const] : []),
+    ];
+    const startSetup = async () => {
+      try {
+        setParableAuthRun(await window.electronAPI.parable.startSetup(selectedVendors));
+      } catch (error) {
+        setParableAuthRun({ running: false, output: error instanceof Error ? error.message : String(error), exitCode: 1 });
+      }
     };
-    const updateExecutor = (executorIndex: number, updates: Partial<ParableExecutorConfig>) => {
-      const next = {
-        ...parableConfig,
-        executors: parableConfig.executors.map((executor, index) => index === executorIndex ? { ...executor, ...updates } : executor),
-      };
-      saveParableConfig(next);
+    const startAuth = async (vendor: ParableVendor) => {
+      try {
+        setParableAuthRun(await window.electronAPI.parable.startAuth(vendor));
+      } catch (error) {
+        setParableAuthRun({ running: false, output: error instanceof Error ? error.message : String(error), exitCode: 1 });
+      }
     };
-    const renameExecutor = (executorIndex: number, nextId: string) => {
-      const executorId = parableConfig.executors[executorIndex]?.id;
-      if (executorId === undefined) return;
-      saveParableConfig({
-        ...parableConfig,
-        defaultExecutor: parableConfig.defaultExecutor === executorId ? nextId : parableConfig.defaultExecutor,
-        defaultReviewer: parableConfig.defaultReviewer === executorId ? nextId : parableConfig.defaultReviewer,
-        executors: parableConfig.executors.map((executor, index) => index === executorIndex ? { ...executor, id: nextId } : executor),
+    const saveToml = async () => {
+      setIsSavingParableToml(true);
+      setParableConfigMessage('');
+      try {
+        await window.electronAPI.parable.setConfig(parableToml);
+        setParableConfigMessage('Saved and validated.');
+        await refreshParableStatus();
+      } catch (error) {
+        setParableConfigMessage(error instanceof Error ? error.message : String(error));
+      } finally {
+        setIsSavingParableToml(false);
+      }
+    };
+    const saveConfigData = async () => {
+      setIsSavingParableToml(true);
+      setParableConfigMessage('');
+      try {
+        await window.electronAPI.parable.setConfigData(parableConfigData);
+        const [toml, data] = await Promise.all([
+          window.electronAPI.parable.getConfig(),
+          window.electronAPI.parable.getConfigData(),
+        ]);
+        setParableToml(toml);
+        setParableConfigData(data);
+        setParableConfigMessage('Saved and validated.');
+        await refreshParableStatus();
+      } catch (error) {
+        setParableConfigMessage(error instanceof Error ? error.message : String(error));
+      } finally {
+        setIsSavingParableToml(false);
+      }
+    };
+    const setSectionField = (section: string, field: string, value: any) => {
+      setParableConfigData((current) => ({
+        ...current,
+        [section]: { ...(current[section] || {}), [field]: value },
+      }));
+    };
+    const setNamedField = (section: string, id: string, field: string, value: any) => {
+      setParableConfigData((current) => ({
+        ...current,
+        [section]: {
+          ...(current[section] || {}),
+          [id]: { ...(current[section]?.[id] || {}), [field]: value },
+        },
+      }));
+    };
+    const addNamedItem = (section: 'providers' | 'executors' | 'checks', prefix: string, defaults: Record<string, any>) => {
+      const existing = parableConfigData[section] || {};
+      let index = 1;
+      let id = prefix;
+      while (existing[id]) id = `${prefix}${++index}`;
+      setParableConfigData((current) => ({ ...current, [section]: { ...(current[section] || {}), [id]: defaults } }));
+    };
+    const removeNamedItem = (section: 'providers' | 'executors' | 'checks', id: string) => {
+      setParableConfigData((current) => {
+        const nextSection = { ...(current[section] || {}) };
+        delete nextSection[id];
+        return { ...current, [section]: nextSection };
       });
     };
-    const addExecutor = () => {
-      const existing = new Set(parableConfig.executors.map((executor) => executor.id));
-      let index = parableConfig.executors.length + 1;
-      let id = `executor-${index}`;
-      while (existing.has(id)) id = `executor-${++index}`;
-      const model = executorModels.find((candidate) => candidate.id === 'claude-sonnet-5')?.id
-        || executorModels[0]?.id
-        || 'claude-sonnet-5';
-      saveParableConfig({
-        ...parableConfig,
-        executors: [...parableConfig.executors, {
-          id,
-          model,
-          enabled: true,
-          effort: 'high',
-          taskClasses: ['feature'],
-          useFor: '',
-          avoidFor: '',
-        }],
-      });
+    const fieldClass = 'w-full border border-claude-border bg-claude-bg px-2 py-1.5 font-mono text-[10px] text-claude-text focus:border-amber-500/50 focus:outline-none';
+    const labelClass = 'space-y-1 text-[9px] font-mono uppercase tracking-wider text-claude-text-secondary';
+    const syncAuthToActiveSsh = async () => {
+      if (!activeParableSession?.sshConfig) return;
+      setIsSyncingParableAuth(true);
+      setParableConfigMessage('');
+      try {
+        const result = await window.electronAPI.parable.syncAuthToSsh(activeParableSession.id);
+        setParableConfigMessage(`Copied ${result.copied} credential record(s) to ${result.host}.`);
+      } catch (error) {
+        setParableConfigMessage(error instanceof Error ? error.message : String(error));
+      } finally {
+        setIsSyncingParableAuth(false);
+      }
     };
-    const removeExecutor = (executorIndex: number) => {
-      if (parableConfig.executors.length <= 1) return;
-      const executorId = parableConfig.executors[executorIndex]?.id;
-      if (executorId === undefined) return;
-      const executors = parableConfig.executors.filter((_, index) => index !== executorIndex);
-      const firstEnabled = executors.find((executor) => executor.enabled)?.id || executors[0].id;
-      saveParableConfig({
-        ...parableConfig,
-        executors,
-        defaultExecutor: parableConfig.defaultExecutor === executorId ? firstEnabled : parableConfig.defaultExecutor,
-        defaultReviewer: parableConfig.defaultReviewer === executorId ? firstEnabled : parableConfig.defaultReviewer,
-      });
-    };
-    const toggleTaskClass = (executorIndex: number, executor: ParableExecutorConfig, taskClass: ParableTaskClass) => {
-      const taskClasses = executor.taskClasses.includes(taskClass)
-        ? executor.taskClasses.filter((value) => value !== taskClass)
-        : [...executor.taskClasses, taskClass];
-      updateExecutor(executorIndex, { taskClasses });
-    };
-    const updateCheck = (checkIndex: number, updates: Partial<ParableCheckConfig>) => {
-      saveParableConfig({
-        ...parableConfig,
-        checks: parableConfig.checks.map((check, index) => index === checkIndex ? { ...check, ...updates } : check),
-      });
-    };
-    const addCheck = () => {
-      const id = `check-${parableConfig.checks.length + 1}`;
-      saveParableConfig({
-        ...parableConfig,
-        checks: [...parableConfig.checks, { id, run: '', cwd: '.', when: ['post-implement'], timeoutMinutes: 15 }],
-      });
-    };
-
+    const providerRows: Array<{ id: ParableVendor; label: string; models: string }> = [
+      { id: 'claude', label: 'Claude', models: 'Fable, Sonnet, Opus, Haiku' },
+      { id: 'chatgpt', label: 'ChatGPT', models: 'Sol, Terra, Luna' },
+      { id: 'xai', label: 'xAI', models: 'Grok 4.5' },
+    ];
     return (
-      <div className="space-y-5">
+      <div className="min-w-0 space-y-5 overflow-hidden">
         <div className="border border-amber-500/30 bg-amber-500/5 p-3">
-          <div className="flex items-center gap-2">
-            <BookOpen size={14} className="text-amber-400" />
-            <h3 className="text-sm font-medium text-claude-text">Claude Code meta-harness</h3>
+          <div className="flex min-w-0 items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <BookOpen size={14} className="text-amber-400" />
+                <h3 className="text-sm font-medium text-claude-text">Claude Code, multi-model cast</h3>
+              </div>
+              <p className="mt-1 break-words text-[10px] text-claude-text-secondary">
+                Claude Code stays the harness. Parable routes its parent and named agents through a user-owned loopback proxy to native subscription OAuth; Build does not copy provider tokens or reimplement the proxy.
+              </p>
+            </div>
+            <div className={`shrink-0 flex items-center gap-1.5 border px-2 py-1 text-[10px] font-mono ${
+              parableStatus?.ready
+                ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-400'
+                : 'border-amber-500/50 bg-amber-500/10 text-amber-400'
+            }`}>
+              {isCheckingParable ? <Loader2 size={11} className="animate-spin" /> : parableStatus?.ready ? <Check size={11} /> : <AlertCircle size={11} />}
+              {parableStatus?.ready ? 'READY' : parableStatus?.configured ? 'AUTH NEEDED' : 'SETUP NEEDED'}
+            </div>
           </div>
-          <p className="mt-1 text-[10px] text-claude-text-secondary">
-            Parable is a separate model mode. Claude Code plans and routes work to this cast, then verifies and reviews it. Auto Build routing and helper stages are disabled for Parable turns.
-          </p>
         </div>
 
-        <div className="grid grid-cols-[minmax(220px,1fr)_120px] gap-3">
-          <label className="space-y-1">
-            <span className="block text-[9px] font-mono uppercase tracking-wider text-claude-text-secondary">Brain model</span>
-            <select
-              value={parableConfig.brainModel}
-              onChange={(event) => saveParableConfig({ ...parableConfig, brainModel: event.target.value })}
-              className="w-full bg-claude-bg border border-claude-border px-2 py-1.5 text-xs font-mono text-claude-text"
-            >
-              {withSavedModel(brainModels, parableConfig.brainModel).map((model) => (
-                <option key={model.id} value={model.id}>{model.name}</option>
-              ))}
-            </select>
-          </label>
-          <label className="space-y-1">
-            <span className="block text-[9px] font-mono uppercase tracking-wider text-claude-text-secondary">Max parallel</span>
-            <select
-              value={parableConfig.maxParallel}
-              onChange={(event) => saveParableConfig({ ...parableConfig, maxParallel: Number(event.target.value) })}
-              className="w-full bg-claude-bg border border-claude-border px-2 py-1.5 text-xs font-mono text-claude-text"
-            >
-              {[1, 2, 3, 4].map((count) => <option key={count} value={count}>{count}</option>)}
-            </select>
-          </label>
-        </div>
-
-        <div className="grid grid-cols-2 gap-3">
-          <label className="space-y-1">
-            <span className="block text-[9px] font-mono uppercase tracking-wider text-claude-text-secondary">Default executor</span>
-            <select
-              value={parableConfig.defaultExecutor}
-              onChange={(event) => saveParableConfig({ ...parableConfig, defaultExecutor: event.target.value })}
-              className="w-full bg-claude-bg border border-claude-border px-2 py-1.5 text-xs font-mono text-claude-text"
-            >
-              {parableConfig.executors.map((executor, index) => <option key={`executor-option-${index}`} value={executor.id}>{executor.id}</option>)}
-            </select>
-          </label>
-          <label className="space-y-1">
-            <span className="block text-[9px] font-mono uppercase tracking-wider text-claude-text-secondary">Default reviewer</span>
-            <select
-              value={parableConfig.defaultReviewer}
-              onChange={(event) => saveParableConfig({ ...parableConfig, defaultReviewer: event.target.value })}
-              className="w-full bg-claude-bg border border-claude-border px-2 py-1.5 text-xs font-mono text-claude-text"
-            >
-              {parableConfig.executors.map((executor, index) => <option key={`reviewer-option-${index}`} value={executor.id}>{executor.id}</option>)}
-            </select>
-          </label>
-        </div>
-
-        <label className="block space-y-1">
-          <span className="block text-[9px] font-mono uppercase tracking-wider text-claude-text-secondary">Repository notes copied into plans</span>
-          <textarea
-            value={parableConfig.repoNotes || ''}
-            onChange={(event) => saveParableConfig({ ...parableConfig, repoNotes: event.target.value })}
-            rows={3}
-            className="w-full resize-y bg-claude-bg border border-claude-border px-2 py-1.5 text-xs font-mono text-claude-text"
-            placeholder="Project conventions every executor must follow…"
-          />
-        </label>
-
-        <section className="space-y-3 border-t border-claude-border/30 pt-4">
+        <section className="space-y-2">
           <div className="flex items-center justify-between">
             <div>
-              <h4 className="text-xs font-mono uppercase tracking-wider text-claude-text">Executor cast</h4>
-              <p className="text-[9px] text-claude-text-secondary">Claude subagents, Codex, and Cursor executors are supported by the bundled Parable runtime.</p>
+              <h4 className="text-xs font-mono uppercase tracking-wider text-claude-text">Subscription pools</h4>
+              <p className="text-[9px] text-claude-text-secondary">Claude is required because Claude Code is the harness. The other pools are optional.</p>
             </div>
-            <button onClick={addExecutor} className="flex items-center gap-1 text-[10px] font-mono text-amber-400 hover:text-amber-300">
-              <Plus size={12} /> Add executor
+            <button
+              type="button"
+              onClick={() => void refreshParableStatus()}
+              className="flex items-center gap-1 text-[10px] font-mono text-claude-text-secondary hover:text-claude-text"
+            >
+              <RefreshCw size={11} className={isCheckingParable ? 'animate-spin' : ''} /> Refresh
             </button>
           </div>
-
-          {parableConfig.executors.map((executor, executorIndex) => (
-            <div key={`executor-row-${executorIndex}`} className="border border-claude-border/40 bg-claude-bg/20 p-3 space-y-3">
-              <div className="grid grid-cols-[120px_minmax(220px,1fr)_90px_28px] items-center gap-2">
+          {providerRows.map((provider) => {
+            const selected = provider.id === 'claude'
+              || (provider.id === 'chatgpt' ? parableChatGpt : parableXai);
+            const authorized = Boolean(parableStatus?.providers[provider.id]?.present);
+            return (
+              <div key={provider.id} className="flex min-w-0 flex-wrap items-center gap-3 border border-claude-border/50 bg-claude-bg/20 p-3 sm:flex-nowrap">
                 <input
-                  value={executor.id}
-                  onChange={(event) => renameExecutor(executorIndex, event.target.value)}
-                  className="min-w-0 bg-claude-bg border border-claude-border px-2 py-1.5 text-xs font-mono text-claude-text"
-                  aria-label="Executor id"
+                  type="checkbox"
+                  checked={selected}
+                  disabled={provider.id === 'claude' || Boolean(parableStatus?.configured)}
+                  onChange={(event) => provider.id === 'chatgpt'
+                    ? setParableChatGpt(event.target.checked)
+                    : setParableXai(event.target.checked)}
+                  className="accent-amber-400"
                 />
-                <select
-                  value={executor.model}
-                  onChange={(event) => updateExecutor(executorIndex, {
-                    model: event.target.value,
-                    costIn: undefined,
-                    costOut: undefined,
-                    cacheIn: undefined,
-                  })}
-                  className="min-w-0 bg-claude-bg border border-claude-border px-2 py-1.5 text-xs font-mono text-claude-text"
-                >
-                  {withSavedModel(executorModels, executor.model).map((model) => (
-                    <option key={model.id} value={model.id}>{model.name}</option>
-                  ))}
-                </select>
-                <select
-                  value={executor.effort || 'high'}
-                  onChange={(event) => updateExecutor(executorIndex, { effort: event.target.value })}
-                  className="bg-claude-bg border border-claude-border px-1.5 py-1.5 text-[10px] font-mono text-claude-text"
-                >
-                  {EFFORT_OPTIONS.filter((option) => option.value).map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-                </select>
-                <button
-                  onClick={() => removeExecutor(executorIndex)}
-                  disabled={parableConfig.executors.length <= 1}
-                  className="text-red-400/70 hover:text-red-400 disabled:opacity-20"
-                  title="Remove executor"
-                >
-                  <Trash2 size={13} />
-                </button>
+                <div className="min-w-0 flex-1">
+                  <div className="text-xs font-mono text-claude-text">{provider.label}</div>
+                  <div className="text-[9px] text-claude-text-secondary">{provider.models}</div>
+                </div>
+                <span className={`text-[9px] font-mono ${authorized ? 'text-emerald-400' : selected ? 'text-amber-400' : 'text-claude-text-secondary'}`}>
+                  {authorized ? 'AUTHORIZED' : selected ? 'SELECTED' : 'OFF'}
+                </span>
+                {parableStatus?.configured && selected && !authorized && (
+                  <button
+                    type="button"
+                    onClick={() => void startAuth(provider.id)}
+                    disabled={parableAuthRun.running}
+                    className="flex shrink-0 items-center gap-1.5 border border-amber-500/50 bg-amber-500/10 px-2 py-1.5 text-[9px] font-mono text-amber-300 disabled:opacity-50"
+                  >
+                    {parableAuthRun.running && parableAuthRun.vendor === provider.id
+                      ? <Loader2 size={10} className="animate-spin" />
+                      : <Key size={10} />}
+                    {parableAuthRun.running && parableAuthRun.vendor === provider.id ? 'Waiting…' : 'Connect'}
+                  </button>
+                )}
               </div>
-
-              <div className="flex flex-wrap gap-1.5">
-                {PARABLE_TASK_CLASSES.map((taskClass) => {
-                  const selected = executor.taskClasses.includes(taskClass.id);
-                  return (
-                    <button
-                      key={taskClass.id}
-                      onClick={() => toggleTaskClass(executorIndex, executor, taskClass.id)}
-                      className={`px-2 py-1 text-[9px] font-mono border ${selected ? 'border-amber-400/60 bg-amber-400/10 text-amber-300' : 'border-claude-border/40 text-claude-text-secondary hover:text-claude-text'}`}
-                    >
-                      {taskClass.label}
-                    </button>
-                  );
-                })}
-                <button
-                  onClick={() => updateExecutor(executorIndex, { enabled: !executor.enabled })}
-                  className={`ml-auto px-2 py-1 text-[9px] font-mono border ${executor.enabled ? 'border-green-500/50 text-green-400' : 'border-claude-border text-claude-text-secondary'}`}
-                >
-                  {executor.enabled ? 'Enabled' : 'Disabled'}
-                </button>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2">
-                <input
-                  value={executor.useFor || ''}
-                  onChange={(event) => updateExecutor(executorIndex, { useFor: event.target.value })}
-                  className="bg-transparent border-b border-claude-border/40 px-1 py-1 text-[10px] text-claude-text"
-                  placeholder="Use for…"
-                />
-                <input
-                  value={executor.avoidFor || ''}
-                  onChange={(event) => updateExecutor(executorIndex, { avoidFor: event.target.value })}
-                  className="bg-transparent border-b border-claude-border/40 px-1 py-1 text-[10px] text-claude-text"
-                  placeholder="Avoid for…"
-                />
-              </div>
-
-              <details className="text-[10px] text-claude-text-secondary">
-                <summary className="cursor-pointer font-mono uppercase tracking-wider">Cost and limits</summary>
-                {(() => {
-                  const catalogPricing = getKnownModelPricing(executor.model);
-                  const hasCostOverride = executor.costIn !== undefined || executor.costOut !== undefined || executor.cacheIn !== undefined;
-                  const costFields: Array<[keyof ParableExecutorConfig, string, number | undefined]> = [
-                    ['costIn', 'Input $/M', executor.costIn ?? catalogPricing?.input],
-                    ['costOut', 'Output $/M', executor.costOut ?? catalogPricing?.output],
-                    ['cacheIn', 'Cache $/M', executor.cacheIn ?? catalogPricing?.cacheRead],
-                  ];
-                  return <div className="mt-2 space-y-2">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className={catalogPricing && !hasCostOverride ? 'text-green-400' : 'text-amber-400'}>
-                        {catalogPricing
-                          ? hasCostOverride ? 'Manual pricing override' : 'Automatic pricing from Build model catalog'
-                          : 'Unknown model — enter pricing manually'}
-                      </span>
-                      {catalogPricing && (
-                        <button
-                          type="button"
-                          onClick={() => updateExecutor(executorIndex, hasCostOverride
-                            ? { costIn: undefined, costOut: undefined, cacheIn: undefined }
-                            : { costIn: catalogPricing.input, costOut: catalogPricing.output, cacheIn: catalogPricing.cacheRead })}
-                          className="font-mono text-[9px] text-amber-400 hover:text-amber-300"
-                        >
-                          {hasCostOverride ? 'Use catalog pricing' : 'Override'}
-                        </button>
-                      )}
-                    </div>
-                    <div className="grid grid-cols-5 gap-2">
-                      {costFields.map(([field, label, effectiveValue]) => (
-                        <label key={field} className="space-y-1">
-                          <span className="block text-[8px] font-mono uppercase">{label}</span>
-                          <input
-                            type="number"
-                            min="0"
-                            value={effectiveValue ?? ''}
-                            disabled={Boolean(catalogPricing) && !hasCostOverride}
-                            onChange={(event) => updateExecutor(executorIndex, { [field]: event.target.value === '' ? undefined : Number(event.target.value) })}
-                            className="w-full bg-claude-bg border border-claude-border px-1.5 py-1 text-[9px] font-mono text-claude-text disabled:opacity-60"
-                          />
-                        </label>
-                      ))}
-                      {([
-                        ['contextKtok', 'Context K'],
-                        ['maxMinutes', 'Max min'],
-                      ] as Array<[keyof ParableExecutorConfig, string]>).map(([field, label]) => (
-                    <label key={field} className="space-y-1">
-                      <span className="block text-[8px] font-mono uppercase">{label}</span>
-                      <input
-                        type="number"
-                        min="0"
-                        value={(executor[field] as number | undefined) ?? ''}
-                        onChange={(event) => updateExecutor(executorIndex, { [field]: event.target.value === '' ? undefined : Number(event.target.value) })}
-                        className="w-full bg-claude-bg border border-claude-border px-1.5 py-1 text-[9px] font-mono text-claude-text"
-                      />
-                    </label>
-                      ))}
-                    </div>
-                  </div>;
-                })()}
-              </details>
-            </div>
-          ))}
+            );
+          })}
         </section>
 
-        <section className="space-y-3 border-t border-claude-border/30 pt-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <h4 className="text-xs font-mono uppercase tracking-wider text-claude-text">Deterministic checks</h4>
-              <p className="text-[9px] text-claude-text-secondary">Parable runs these before spending reviewer tokens.</p>
-            </div>
-            <button onClick={addCheck} className="flex items-center gap-1 text-[10px] font-mono text-amber-400 hover:text-amber-300">
-              <Plus size={12} /> Add check
-            </button>
-          </div>
-          {parableConfig.checks.length === 0 && (
-            <p className="border border-dashed border-claude-border/40 p-3 text-[10px] text-claude-text-secondary">No checks configured. Verification will pass vacuously until you add commands.</p>
-          )}
-          {parableConfig.checks.map((check, checkIndex) => (
-            <div key={`parable-check-${checkIndex}`} className="grid grid-cols-[100px_minmax(260px,1fr)_100px_130px_28px] items-center gap-2 border border-claude-border/40 p-2">
-              <input
-                value={check.id}
-                onChange={(event) => updateCheck(checkIndex, { id: event.target.value })}
-                className="bg-claude-bg border border-claude-border px-1.5 py-1 text-[10px] font-mono text-claude-text"
-                placeholder="id"
-              />
-              <input
-                value={check.run}
-                onChange={(event) => updateCheck(checkIndex, { run: event.target.value })}
-                className="bg-claude-bg border border-claude-border px-1.5 py-1 text-[10px] font-mono text-claude-text"
-                placeholder="npm test"
-              />
-              <input
-                value={check.cwd || '.'}
-                onChange={(event) => updateCheck(checkIndex, { cwd: event.target.value })}
-                className="bg-claude-bg border border-claude-border px-1.5 py-1 text-[10px] font-mono text-claude-text"
-                placeholder="cwd"
-              />
-              <select
-                value={check.when.includes('pre-commit') ? 'pre-commit' : 'post-implement'}
-                onChange={(event) => updateCheck(checkIndex, { when: [event.target.value as 'post-implement' | 'pre-commit'] })}
-                className="bg-claude-bg border border-claude-border px-1.5 py-1 text-[10px] font-mono text-claude-text"
-              >
-                <option value="post-implement">Post implement</option>
-                <option value="pre-commit">Pre commit</option>
-              </select>
+        {!parableStatus?.configured ? (
+          <section className="space-y-3 border-t border-claude-border/30 pt-4">
+            <p className="text-[10px] text-claude-text-secondary">
+              Install Parable and build its pinned local proxy. Build will then guide you through each selected subscription here. Provider credentials remain private files owned by Parable's proxy.
+            </p>
+            <div className="flex gap-2">
               <button
-                onClick={() => saveParableConfig({ ...parableConfig, checks: parableConfig.checks.filter((_, index) => index !== checkIndex) })}
-                className="text-red-400/70 hover:text-red-400"
-                title="Remove check"
+                type="button"
+                onClick={() => void startSetup()}
+                disabled={parableAuthRun.running}
+                className="flex items-center gap-2 border border-amber-500/50 bg-amber-500/10 px-3 py-2 text-[10px] font-mono text-amber-300 hover:bg-amber-500/15 disabled:opacity-50"
               >
-                <Trash2 size={13} />
+                {parableAuthRun.running ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />}
+                {parableAuthRun.running ? 'Setting up Parable…' : 'Install Parable'}
+              </button>
+              {parableAuthRun.running && (
+                <button
+                  type="button"
+                  onClick={() => void window.electronAPI.parable.cancelAuth()}
+                  className="border border-claude-border px-3 py-2 text-[10px] font-mono text-claude-text-secondary hover:text-claude-text"
+                >
+                  Cancel
+                </button>
+              )}
+            </div>
+            {parableAuthRun.output && (
+              <details className="max-w-full border border-claude-border/50 bg-black/20 p-2 text-[9px] text-claude-text-secondary">
+                <summary className="cursor-pointer font-mono">Installation diagnostics</summary>
+                <pre ref={parableAuthOutputRef} className="mt-2 max-h-40 max-w-full overflow-auto whitespace-pre-wrap break-all font-mono leading-relaxed">
+                  {stripTerminalControlSequences(parableAuthRun.output)}
+                </pre>
+              </details>
+            )}
+            {!parableAuthRun.running && parableAuthRun.exitCode === 0 && (
+              <p className="text-[9px] font-mono text-emerald-400">Parable installed. Connect the selected subscriptions above.</p>
+            )}
+          </section>
+        ) : !parableStatus.ready ? (
+          <section className="space-y-3 border-t border-claude-border/30 pt-4">
+            <p className="text-[10px] text-claude-text-secondary">
+              Connect each selected subscription above. Build opens the provider authorization page and tracks completion here; Parable's proxy owns the OAuth exchange, refresh tokens, and private credential records.
+            </p>
+            {parableAuthRun.running && (
+              <div className="space-y-3 border border-amber-500/30 bg-amber-500/5 p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-xs font-mono text-claude-text">Authorize {providerRows.find((row) => row.id === parableAuthRun.vendor)?.label || parableAuthRun.vendor}</div>
+                    <div className="mt-1 text-[9px] text-claude-text-secondary">Complete the provider approval in your browser. This window will update automatically.</div>
+                  </div>
+                  <Loader2 size={14} className="shrink-0 animate-spin text-amber-400" />
+                </div>
+                {parableAuthRun.userCode && (
+                  <div className="flex items-center justify-between border border-claude-border bg-black/20 px-3 py-2">
+                    <span className="text-[9px] font-mono text-claude-text-secondary">Device code</span>
+                    <button type="button" onClick={() => void navigator.clipboard.writeText(parableAuthRun.userCode || '')} className="flex items-center gap-2 font-mono text-sm tracking-widest text-claude-text">
+                      {parableAuthRun.userCode} <Copy size={11} />
+                    </button>
+                  </div>
+                )}
+                <div className="flex gap-2">
+                  {parableAuthRun.authorizationUrl && (
+                    <button
+                      type="button"
+                      onClick={() => void window.electronAPI.app.openExternal(parableAuthRun.authorizationUrl!)}
+                      className="flex items-center gap-2 border border-amber-500/50 bg-amber-500/10 px-3 py-2 text-[10px] font-mono text-amber-300"
+                    >
+                      <ExternalLink size={11} /> Open authorization page
+                    </button>
+                  )}
+                <button
+                  type="button"
+                  onClick={() => void window.electronAPI.parable.cancelAuth()}
+                  className="border border-claude-border px-3 py-2 text-[10px] font-mono text-claude-text-secondary hover:text-claude-text"
+                >
+                  Cancel
+                </button>
+                </div>
+              </div>
+            )}
+            {parableAuthRun.output && parableAuthRun.vendor && (
+              <details className="max-w-full border border-claude-border/50 bg-black/20 p-2 text-[9px] text-claude-text-secondary">
+                <summary className="cursor-pointer font-mono">Authorization diagnostics</summary>
+                <pre ref={parableAuthOutputRef} className="mt-2 max-h-40 max-w-full overflow-auto whitespace-pre-wrap break-all font-mono leading-relaxed">
+                  {stripTerminalControlSequences(parableAuthRun.output)}
+                </pre>
+              </details>
+            )}
+            {!parableAuthRun.running && parableAuthRun.exitCode === 0 && (
+              <p className="text-[9px] font-mono text-emerald-400">{parableAuthRun.vendor || 'Subscription'} authorization completed.</p>
+            )}
+            {parableStatus.error && <p className="text-[9px] font-mono text-red-400">{parableStatus.error}</p>}
+          </section>
+        ) : (
+          <section className="space-y-3 border-t border-claude-border/30 pt-4">
+            <p className="text-[10px] text-claude-text-secondary">
+              Ready. Selecting Parable now wraps the Agent SDK's Claude Code process with upstream <span className="font-mono text-claude-text">parable --brain auto</span>. Parable starts or reuses the proxy, verifies the exact catalog, generates project-local agents, and stops only a proxy it owns.
+            </p>
+            <button
+              type="button"
+              onClick={() => window.electronAPI.app?.openPath?.(parableStatus.configPath)}
+              className="flex items-center gap-2 border border-claude-border px-3 py-2 text-[10px] font-mono text-claude-text-secondary hover:text-claude-text"
+            >
+              <ExternalLink size={12} /> Open parable.toml
+            </button>
+          </section>
+        )}
+
+        {parableStatus?.configured && (
+          <section className="space-y-3 border-t border-claude-border/30 pt-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h4 className="text-xs font-mono uppercase tracking-wider text-claude-text">Models and routing</h4>
+                <p className="text-[9px] text-claude-text-secondary">Configure the cast and routing here. Build validates and writes parable.toml for you.</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => void saveConfigData()}
+                disabled={isSavingParableToml}
+                className="border border-amber-500/50 bg-amber-500/10 px-3 py-2 text-[10px] font-mono text-amber-300 disabled:opacity-50"
+              >
+                {isSavingParableToml ? 'Validating…' : 'Save settings'}
               </button>
             </div>
-          ))}
-        </section>
 
-        <div className="border-t border-claude-border/30 pt-4 text-[10px] text-claude-text-secondary">
-          Select <span className="font-bold text-amber-400">Parable</span> from the model picker to test this mode independently from Auto Build. Build keeps its tested upstream copy isolated at <span className="font-mono">~/.claude/skills/parable-build</span>, leaving any personal Parable install untouched.
+            <details open className="border border-claude-border/60 bg-black/10 p-3">
+              <summary className="cursor-pointer text-[10px] font-mono uppercase tracking-wider text-claude-text">Defaults and parent model</summary>
+              <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
+                <label className={labelClass}>Default executor<input className={fieldClass} value={parableConfigData.parable?.default_executor || ''} onChange={(e) => setSectionField('parable', 'default_executor', e.target.value)} /></label>
+                <label className={labelClass}>Default reviewer<input className={fieldClass} value={parableConfigData.parable?.default_reviewer || ''} onChange={(e) => setSectionField('parable', 'default_reviewer', e.target.value)} /></label>
+                <label className={labelClass}>Log directory<input className={fieldClass} value={parableConfigData.parable?.log_dir || '.parable'} onChange={(e) => setSectionField('parable', 'log_dir', e.target.value)} /></label>
+                <label className={labelClass}>Brain model<input className={fieldClass} value={parableConfigData.claude?.brain_model || ''} onChange={(e) => setSectionField('claude', 'brain_model', e.target.value)} /></label>
+                <label className={`${labelClass} md:col-span-2`}>Repository instructions<textarea rows={3} className={fieldClass} value={parableConfigData.parable?.repo_notes || ''} onChange={(e) => setSectionField('parable', 'repo_notes', e.target.value)} /></label>
+                <label className={labelClass}>Research provider<select className={fieldClass} value={parableConfigData.research?.provider || 'grep.ai'} onChange={(e) => setSectionField('research', 'provider', e.target.value)}><option value="grep.ai">grep.ai</option><option value="claude">Claude</option></select></label>
+                <label className={labelClass}>Claude binary<input className={fieldClass} value={parableConfigData.claude?.binary || 'claude'} onChange={(e) => setSectionField('claude', 'binary', e.target.value)} /></label>
+              </div>
+            </details>
+
+            <details className="border border-claude-border/60 bg-black/10 p-3">
+              <summary className="cursor-pointer text-[10px] font-mono uppercase tracking-wider text-claude-text">Providers ({Object.keys(parableConfigData.providers || {}).length})</summary>
+              <div className="mt-3 space-y-3">
+                {Object.entries(parableConfigData.providers || {}).map(([id, raw]) => {
+                  const provider = raw as Record<string, any>;
+                  return <div key={id} className="space-y-2 border border-claude-border/50 p-3">
+                    <div className="flex items-center justify-between"><span className="font-mono text-xs text-claude-text">{id}</span><button type="button" onClick={() => removeNamedItem('providers', id)} className="text-[9px] font-mono text-red-400">Remove</button></div>
+                    <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+                      <label className={labelClass}>Type<select className={fieldClass} value={provider.type || 'subagent'} onChange={(e) => setNamedField('providers', id, 'type', e.target.value)}>{['subagent','codex-native','codex','pi','cursor'].map((v) => <option key={v}>{v}</option>)}</select></label>
+                      <label className={labelClass}>Base URL<input className={fieldClass} value={provider.base_url || ''} onChange={(e) => setNamedField('providers', id, 'base_url', e.target.value)} /></label>
+                      <label className={labelClass}>Credential environment variable<input className={fieldClass} value={provider.env_key || ''} onChange={(e) => setNamedField('providers', id, 'env_key', e.target.value)} /></label>
+                      <label className={labelClass}>API protocol<input className={fieldClass} value={provider.api || provider.wire_api || ''} onChange={(e) => setNamedField('providers', id, provider.type === 'pi' ? 'api' : 'wire_api', e.target.value)} /></label>
+                    </div>
+                  </div>;
+                })}
+                <button type="button" onClick={() => addNamedItem('providers', 'provider', { type: 'codex', base_url: '', env_key: '', wire_api: 'responses' })} className="border border-claude-border px-2 py-1.5 text-[9px] font-mono text-claude-text-secondary">+ Add provider</button>
+              </div>
+            </details>
+
+            <details open className="border border-claude-border/60 bg-black/10 p-3">
+              <summary className="cursor-pointer text-[10px] font-mono uppercase tracking-wider text-claude-text">Agents and executors ({Object.keys(parableConfigData.executors || {}).length})</summary>
+              <div className="mt-3 space-y-3">
+                {Object.entries(parableConfigData.executors || {}).map(([id, raw]) => {
+                  const executor = raw as Record<string, any>;
+                  return <div key={id} className="space-y-2 border border-claude-border/50 p-3">
+                    <div className="flex items-center justify-between gap-3"><span className="font-mono text-xs text-claude-text">{id}</span><div className="flex items-center gap-3"><label className="flex items-center gap-1 text-[9px] font-mono text-claude-text-secondary"><input type="checkbox" checked={executor.enabled !== false} onChange={(e) => setNamedField('executors', id, 'enabled', e.target.checked)} /> Enabled</label><button type="button" onClick={() => removeNamedItem('executors', id)} className="text-[9px] font-mono text-red-400">Remove</button></div></div>
+                    <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
+                      <label className={labelClass}>Provider<select className={fieldClass} value={executor.provider || ''} onChange={(e) => setNamedField('executors', id, 'provider', e.target.value)}><option value="">Select…</option>{Object.keys(parableConfigData.providers || {}).map((v) => <option key={v}>{v}</option>)}</select></label>
+                      <label className={labelClass}>Model<input className={fieldClass} value={executor.model || ''} onChange={(e) => setNamedField('executors', id, 'model', e.target.value)} /></label>
+                      <label className={labelClass}>Reasoning effort<select className={fieldClass} value={executor.effort || 'high'} onChange={(e) => setNamedField('executors', id, 'effort', e.target.value)}>{['off','minimal','low','medium','high','xhigh','max','ultra'].map((v) => <option key={v}>{v}</option>)}</select></label>
+                      <label className={labelClass}>Tags (comma separated)<input className={fieldClass} value={(executor.tags || []).join(', ')} onChange={(e) => setNamedField('executors', id, 'tags', e.target.value.split(',').map((v) => v.trim()).filter(Boolean))} /></label>
+                      <label className={labelClass}>Context (K tokens)<input type="number" className={fieldClass} value={executor.context_ktok || ''} onChange={(e) => setNamedField('executors', id, 'context_ktok', Number(e.target.value) || undefined)} /></label>
+                      <label className={labelClass}>Timeout (minutes)<input type="number" className={fieldClass} value={executor.max_minutes || ''} onChange={(e) => setNamedField('executors', id, 'max_minutes', Number(e.target.value) || undefined)} /></label>
+                      <label className={`${labelClass} md:col-span-3`}>Use for<textarea rows={2} className={fieldClass} value={executor.use_for || ''} onChange={(e) => setNamedField('executors', id, 'use_for', e.target.value)} /></label>
+                      <label className={`${labelClass} md:col-span-3`}>Avoid for<textarea rows={2} className={fieldClass} value={executor.avoid_for || ''} onChange={(e) => setNamedField('executors', id, 'avoid_for', e.target.value)} /></label>
+                    </div>
+                  </div>;
+                })}
+                <button type="button" onClick={() => addNamedItem('executors', 'agent', { provider: 'claude', model: '', effort: 'high', enabled: true, tags: [] })} className="border border-amber-500/40 bg-amber-500/5 px-2 py-1.5 text-[9px] font-mono text-amber-300">+ Create agent</button>
+              </div>
+            </details>
+
+            <details open className="border border-claude-border/60 bg-black/10 p-3">
+              <summary className="cursor-pointer text-[10px] font-mono uppercase tracking-wider text-claude-text">Routing</summary>
+              <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2">
+                {Object.entries(parableConfigData.routing || {}).filter(([key]) => key !== 'notes').map(([task, chain]) => <label key={task} className={labelClass}>{task.replaceAll('_', ' ')}<input className={fieldClass} value={(chain as string[]).join(', ')} onChange={(e) => setSectionField('routing', task, e.target.value.split(',').map((v) => v.trim()).filter(Boolean))} /></label>)}
+                <label className={`${labelClass} md:col-span-2`}>Routing instructions<textarea rows={3} className={fieldClass} value={parableConfigData.routing?.notes || ''} onChange={(e) => setSectionField('routing', 'notes', e.target.value)} /></label>
+              </div>
+            </details>
+
+            <details className="border border-claude-border/60 bg-black/10 p-3">
+              <summary className="cursor-pointer text-[10px] font-mono uppercase tracking-wider text-claude-text">Verification checks ({Object.keys(parableConfigData.checks || {}).length})</summary>
+              <div className="mt-3 space-y-3">
+                {Object.entries(parableConfigData.checks || {}).map(([id, raw]) => { const check = raw as Record<string, any>; return <div key={id} className="grid grid-cols-1 gap-2 border border-claude-border/50 p-3 md:grid-cols-2"><div className="flex items-center justify-between md:col-span-2"><span className="font-mono text-xs text-claude-text">{id}</span><button type="button" onClick={() => removeNamedItem('checks', id)} className="text-[9px] font-mono text-red-400">Remove</button></div><label className={`${labelClass} md:col-span-2`}>Command<input className={fieldClass} value={check.run || ''} onChange={(e) => setNamedField('checks', id, 'run', e.target.value)} /></label><label className={labelClass}>Working directory<input className={fieldClass} value={check.cwd || '.'} onChange={(e) => setNamedField('checks', id, 'cwd', e.target.value)} /></label><label className={labelClass}>Timeout (minutes)<input type="number" className={fieldClass} value={check.timeout_minutes || 15} onChange={(e) => setNamedField('checks', id, 'timeout_minutes', Number(e.target.value))} /></label><label className={`${labelClass} md:col-span-2`}>Run at<div className="flex gap-4 pt-1">{['post-implement','pre-commit'].map((gate) => <label key={gate} className="flex items-center gap-1 normal-case"><input type="checkbox" checked={(check.when || []).includes(gate)} onChange={(e) => setNamedField('checks', id, 'when', e.target.checked ? [...(check.when || []), gate] : (check.when || []).filter((v: string) => v !== gate))} />{gate}</label>)}</div></label></div>; })}
+                <button type="button" onClick={() => addNamedItem('checks', 'check', { run: '', cwd: '.', when: ['post-implement', 'pre-commit'], timeout_minutes: 15 })} className="border border-claude-border px-2 py-1.5 text-[9px] font-mono text-claude-text-secondary">+ Add check</button>
+              </div>
+            </details>
+
+            <details className="border border-claude-border/60 bg-black/10 p-3">
+              <summary className="cursor-pointer text-[10px] font-mono uppercase tracking-wider text-claude-text-secondary">Advanced TOML</summary>
+              <p className="my-2 text-[9px] text-claude-text-secondary">Use this escape hatch for custom headers, query parameters, model overrides, costs, and future Parable fields.</p>
+              <textarea value={parableToml} onChange={(event) => setParableToml(event.target.value)} spellCheck={false} rows={18} className="w-full resize-y border border-claude-border bg-black/30 p-3 font-mono text-[10px] leading-relaxed text-claude-text focus:border-amber-500/50 focus:outline-none" />
+              <button type="button" onClick={() => void saveToml()} disabled={isSavingParableToml} className="mt-2 border border-claude-border px-2 py-1.5 text-[9px] font-mono text-claude-text-secondary">Validate and save raw TOML</button>
+            </details>
+          </section>
+        )}
+
+        {parableStatus?.ready && activeParableSession?.sshConfig && (
+          <section className="space-y-2 border-t border-claude-border/30 pt-4">
+            <h4 className="text-xs font-mono uppercase tracking-wider text-claude-text">Active SSH host</h4>
+            <p className="text-[9px] text-claude-text-secondary">
+              Explicitly trust <span className="font-mono text-claude-text">{activeParableSession.sshConfig.username}@{activeParableSession.sshConfig.host}</span> with reusable Parable subscription credentials. Existing remote credential files are never overwritten.
+            </p>
+            <button
+              type="button"
+              onClick={() => void syncAuthToActiveSsh()}
+              disabled={isSyncingParableAuth}
+              className="border border-red-500/40 bg-red-500/5 px-3 py-2 text-[10px] font-mono text-red-300 disabled:opacity-50"
+            >
+              {isSyncingParableAuth ? 'Copying securely…' : 'Trust host and copy credentials'}
+            </button>
+          </section>
+        )}
+
+        {parableConfigMessage && (
+          <p className={`text-[9px] font-mono ${/saved|copied/i.test(parableConfigMessage) ? 'text-emerald-400' : 'text-red-400'}`}>
+            {parableConfigMessage}
+          </p>
+        )}
+
+        <div className="border-t border-claude-border/30 pt-4 text-[9px] font-mono text-claude-text-secondary">
+          Bundled runtime {parableStatus?.runtimeVersion || 'not installed'} · config {parableStatus?.configPath || '~/.config/parable/parable.toml'}
         </div>
       </div>
     );
@@ -2477,7 +2631,7 @@ export default function SettingsDialog() {
       {/* OpenAI API Key */}
       <div className="space-y-2 pt-4 border-t border-claude-border">
         <label className="block text-xs font-mono text-claude-text-secondary uppercase tracking-wider">
-          OpenAI API Key (Speech-to-Text)
+          OpenAI API Key (Realtime Voice + Transcription)
         </label>
         <ApiKeyInput
           value={openaiApiKey}
@@ -2490,7 +2644,7 @@ export default function SettingsDialog() {
           handleDebouncedChange={handleDebouncedChange}
         />
         <p className="text-[10px] font-mono text-claude-text-secondary">
-          For voice transcription using Whisper. This is the same OpenAI key used by the Codex agent.{' '}
+          Powers GPT Realtime voice, speech transcription, and text-to-speech. Voice WebRTC receives only a short-lived client secret, not your stored API key.{' '}
           <a
             href="#"
             onClick={(e) => {
@@ -2531,61 +2685,6 @@ export default function SettingsDialog() {
           >
             Get key
           </a>
-        </p>
-      </div>
-
-      {/* ElevenLabs API Key */}
-      <div className="space-y-2 pt-4 border-t border-claude-border">
-        <label className="block text-xs font-mono text-claude-text-secondary uppercase tracking-wider">
-          ElevenLabs API Key
-        </label>
-        <ApiKeyInput
-          value={elevenLabsApiKey}
-          onChange={setElevenLabsApiKey}
-          show={showElevenLabsApiKey}
-          onToggleShow={() => setShowElevenLabsApiKey(!showElevenLabsApiKey)}
-          placeholder="xi-..."
-          onSave={(value) => autoSaveApiKey(value, 'elevenlabs')}
-          isLoading={isLoading}
-          handleDebouncedChange={handleDebouncedChange}
-        />
-        <p className="text-[10px] font-mono text-claude-text-secondary">
-          Required for voice mode.{' '}
-          <a
-            href="#"
-            onClick={(e) => {
-              e.preventDefault();
-              window.electronAPI.app?.openExternal?.('https://elevenlabs.io/app/settings/api-keys');
-            }}
-            className="text-claude-accent hover:underline"
-          >
-            Get your key at elevenlabs.io
-          </a>
-        </p>
-      </div>
-
-      {/* ElevenLabs Agent ID */}
-      <div className="space-y-2 pt-4 border-t border-claude-border">
-        <label className="block text-xs font-mono text-claude-text-secondary uppercase tracking-wider">
-          ElevenLabs Agent ID
-        </label>
-        <div className="relative">
-          <input
-            type="text"
-            value={elevenLabsAgentId}
-            onChange={(e) => {
-              const newValue = e.target.value;
-              setElevenLabsAgentId(newValue);
-              handleDebouncedChange(newValue, (v) => autoSaveAudioSettings({ elevenLabsAgentId: v }));
-            }}
-            placeholder="agent_..."
-            disabled={isLoading}
-            className="w-full px-3 py-2 bg-claude-bg border border-claude-border text-claude-text font-mono text-sm placeholder:text-claude-text-secondary focus:outline-none focus:border-claude-accent disabled:opacity-50"
-            style={{ borderRadius: 0 }}
-          />
-        </div>
-        <p className="text-[10px] font-mono text-claude-text-secondary">
-          Your Conversational AI agent ID for voice mode
         </p>
       </div>
 
@@ -2771,7 +2870,7 @@ export default function SettingsDialog() {
         style={{ borderRadius: 0 }}
       >
         {/* Left Sidebar - Tab Navigation */}
-        <div className="w-[160px] border-r border-claude-border bg-claude-bg flex flex-col">
+        <div className="w-[160px] shrink-0 border-r border-claude-border bg-claude-bg flex flex-col">
           <div className="p-3 border-b border-claude-border">
             <h2 className="text-xs font-mono font-bold text-claude-text uppercase tracking-wider">
               Settings
@@ -2815,7 +2914,7 @@ export default function SettingsDialog() {
         </div>
 
         {/* Right Content Area */}
-        <div className="flex-1 flex flex-col">
+        <div className="min-w-0 flex-1 flex flex-col">
           {/* Header */}
           <div className="flex items-center justify-between px-4 py-3 border-b border-claude-border">
             <h3 className="text-xs font-mono font-bold text-claude-text uppercase tracking-wider">
@@ -2830,7 +2929,7 @@ export default function SettingsDialog() {
           </div>
 
           {/* Content */}
-          <div className="flex-1 overflow-y-auto p-4">
+          <div className="min-w-0 flex-1 overflow-x-hidden overflow-y-auto p-4">
             {renderTabContent()}
           </div>
         </div>

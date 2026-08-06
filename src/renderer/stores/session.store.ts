@@ -7,7 +7,6 @@ import { buildCompletedStreamMessage } from '../../shared/utils/stream-finalizat
 import { extractContentBlockText, stringifyToolResultForDisplay } from '../../shared/utils/content-block-text';
 import { PARABLE_MODE_ID } from '../../shared/config/parable';
 import { CASCADE_MODE_ID } from '../../shared/config/cascade';
-import { useAudioStore } from './audio.store';
 import { getSessionDisplayName } from '../utils/session-display';
 
 // Check if running in Electron environment
@@ -136,6 +135,8 @@ function hasSameSessionListIdentity(current: Session[], next: Session[]): boolea
 
 type AutoRouteDecisionState = {
   tier: string;
+  categoryId?: string;
+  categoryLabel?: string;
   domain?: string;
   resolvedModel: string;
   resolvedHarness?: string;
@@ -436,7 +437,15 @@ interface SessionState {
   toggleFastMode: () => void;
   setSelectedModel: (sessionId: string, model: string, trigger?: HarnessSelectionTrigger) => void;
   loadAvailableModels: () => Promise<void>;
-  sendMessage: (sessionId: string, message: string, attachments?: unknown[], opts?: { existingMessageId?: string; suppressUserMessage?: boolean; fromQueueDrain?: boolean }) => Promise<void>;
+  sendMessage: (sessionId: string, message: string, attachments?: unknown[], opts?: {
+    existingMessageId?: string;
+    suppressUserMessage?: boolean;
+    fromQueueDrain?: boolean;
+    /** Keep this request distinct instead of coalescing it into a just-started turn. */
+    forceQueue?: boolean;
+    /** Resolve once the request has started or been persisted to the queue. */
+    returnAfterAdmission?: boolean;
+  }) => Promise<void>;
   loadMessages: (sessionId: string, options?: LoadMessagesOptions) => Promise<void>;
   subscribeToClaude: () => () => void;
   // Permission handling
@@ -482,7 +491,7 @@ interface SessionState {
   // Rewind and fork
   rewindAndFork: (messageId: string) => Promise<void>;
   // Conversation fork management
-  createForkFromCurrent: (userMessage: string) => Promise<void>;
+  createForkFromCurrent: (userMessage: string, attachments?: unknown[]) => Promise<Session | null>;
   getForkSiblings: (sessionId: string) => Session[];
   getProjectSessions: (sessionId: string) => Session[];
   cycleForkTabs: (direction: 'next' | 'prev') => void;
@@ -620,6 +629,7 @@ const PREFERRED_CLAUDE_FALLBACK_MODELS = [
   'claude-sonnet-4-20250514',
   'claude-haiku-4-5-20251001',
   'claude-fable-5',
+  'claude-opus-5',
   'claude-opus-4-8',
   'claude-opus-4-7',
   'claude-opus-4-6',
@@ -1898,7 +1908,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // Auto-open plan panel if switching to a session with pending plan approval
     if (sessionId && get().pendingPlanApproval[sessionId]) {
       import('./ui.store').then(({ useUIStore }) => {
-        useUIStore.getState().showPlanPanel();
+        useUIStore.getState().showPlanPanel(sessionId);
       });
     }
 
@@ -2136,6 +2146,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       useUIStore.getState().clearPlanContent(sessionId);
       useUIStore.getState().clearHtmlArtifact(sessionId);
     });
+    import('./editor.store').then(({ useEditorStore }) => {
+      useEditorStore.getState().cleanupSession(sessionId);
+    });
 
     // Clean up TTS audio chunks keyed by messageId
     if (messageIds.length > 0) {
@@ -2354,17 +2367,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       },
     }));
 
-    // Send thinking updates to ElevenLabs agent (if voice mode active)
-    // Format as [THINKING] so agent knows to narrate it
-    const audioState = useAudioStore.getState();
-    const voiceModeEnabled = !!audioState.settings?.voiceModeEnabled;
-    const voiceConnected = !!audioState.voiceModeStates[sessionId]?.isConnected;
-
-    if (window.electronAPI?.voice && voiceModeEnabled && voiceConnected) {
-      window.electronAPI.voice.sendContextUpdate(`[THINKING] ${content}`).catch((err: Error) => {
-        console.error('[SessionStore] Failed to send thinking to voice:', err);
-      });
-    }
   },
 
   addToolCall: (sessionId, toolCall) => {
@@ -2849,12 +2851,26 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       return;
     }
 
+    const normalizedMessage = message.trim();
+    const recentlyQueuedSame = !fromQueueDrain
+      && !opts?.forceQueue
+      && normalizedMessage.length > 0
+      && (state.messageQueue[sessionId] || []).some((queuedMessage) =>
+        queuedMessage.message.trim() === normalizedMessage
+        && Date.now() - queuedMessage.timestamp < 10_000
+      );
+    if (recentlyQueuedSame) {
+      console.warn(`[SessionStore] Suppressing duplicate queued message for ${sessionId}`);
+      return;
+    }
+
     // If the user sends a quick follow-up before the agent has visibly started,
     // restart the turn with both prompts together instead of making the second
     // prompt wait behind a doomed first draft.
     if (
       !fromQueueDrain &&
       !suppressUserMessage &&
+      !opts?.forceQueue &&
       state.isStreaming[sessionId] &&
       !state.isProcessingQueue[sessionId] &&
       currentQueueLength === 0 &&
@@ -2927,64 +2943,58 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       return;
     }
 
+    // Echo the submitted message before any backend or SSH probe. Those probes
+    // can take seconds on a sleeping remote connection; they decide whether the
+    // turn starts or queues, but must never delay visible acknowledgement.
+    const submittedModel = state.selectedModel[sessionId] || 'auto';
+    const submittedAt = new Date();
+    const existingMessages = state.messages[sessionId] || [];
+    const alreadyInChat = Boolean(
+      opts?.existingMessageId
+      && existingMessages.some((candidate) => candidate.id === opts.existingMessageId)
+    );
+    const userMessage: ChatMessage = {
+      id: opts?.existingMessageId || `msg-${submittedAt.getTime()}-${Math.random().toString(36).slice(2, 9)}`,
+      role: 'user',
+      content: message,
+      timestamp: submittedAt,
+      harness: harnessFromModel(submittedModel),
+      attachments: (attachments as ChatMessage['attachments'])?.length
+        ? attachments as ChatMessage['attachments']
+        : undefined,
+    };
+    if (!suppressUserMessage && !alreadyInChat) {
+      state.addMessage(sessionId, userMessage);
+    }
+
     let backendActiveQuery = false;
-    let remoteActiveProcess = false;
+    let remoteActiveProcessPromise: Promise<boolean> = Promise.resolve(false);
     if (!fromQueueDrain && !state.isStreaming[sessionId] && !state.isProcessingQueue[sessionId]) {
       backendActiveQuery = await window.electronAPI.claude.hasActiveQuery(sessionId).catch(() => false);
       if (!backendActiveQuery) {
         const currentSession = state.sessions.find((session) => session.id === sessionId);
-        remoteActiveProcess = currentSession?.sshConfig
-          ? await window.electronAPI.ssh.hasActiveRemoteProcess(sessionId).catch(() => false)
-          : false;
+        remoteActiveProcessPromise = currentSession?.sshConfig
+          ? window.electronAPI.ssh.hasActiveRemoteProcess(sessionId).catch(() => false)
+          : Promise.resolve(false);
       }
-      if (backendActiveQuery || remoteActiveProcess) {
-        console.warn(
-          backendActiveQuery
-            ? `[SessionStore] Backend still has active query for ${sessionId}; queueing instead of starting duplicate turn`
-            : `[SessionStore] Remote Claude process still active for ${sessionId}; queueing before stream state reset`
-        );
+      if (backendActiveQuery) {
+        console.warn(`[SessionStore] Backend still has active query for ${sessionId}; queueing instead of starting duplicate turn`);
         state = get();
       }
     }
 
     // If already streaming, queue handoff is in progress, or the backend still
     // owns an active query after renderer state went stale, queue the message.
-    if (!fromQueueDrain && (state.isStreaming[sessionId] || state.isProcessingQueue[sessionId] || backendActiveQuery || remoteActiveProcess)) {
-      const normalizedMessage = message.trim();
-      const existingQueue = state.messageQueue[sessionId] || [];
-      const recentlyQueuedSame = normalizedMessage.length > 0 && existingQueue.some((queuedMessage) =>
-        queuedMessage.message.trim() === normalizedMessage && Date.now() - queuedMessage.timestamp < 10_000
-      );
-      if (recentlyQueuedSame) {
-        console.warn(`[SessionStore] Suppressing duplicate queued message for ${sessionId}`);
-        return;
-      }
-
+    if (!fromQueueDrain && (state.isStreaming[sessionId] || state.isProcessingQueue[sessionId] || backendActiveQuery)) {
       const queuedMsg = {
-        id: `msg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+        id: userMessage.id,
         message,
         attachments,
-        timestamp: Date.now(),
+        timestamp: submittedAt.getTime(),
         suppressUserMessage,
       };
-      // Show the user message in chat IMMEDIATELY with a "queued" flag so the
-      // user knows their input was received. Without this, the input clears
-      // but nothing visible happens — users think the send silently failed
-      // and re-type the same message.
-      const userMessage: ChatMessage | undefined = suppressUserMessage ? undefined : {
-        id: queuedMsg.id,
-        role: 'user',
-        content: message,
-        timestamp: new Date(queuedMsg.timestamp),
-        harness: harnessFromModel(state.selectedModel[sessionId]),
-        attachments: (attachments as ChatMessage['attachments'])?.length ? attachments as ChatMessage['attachments'] : undefined,
-      };
-      const model = state.selectedModel[sessionId] || 'auto';
+      const model = submittedModel;
       set((state) => ({
-        messages: userMessage ? {
-          ...state.messages,
-          [sessionId]: [...(state.messages[sessionId] || []), userMessage],
-        } : state.messages,
         messageQueue: {
           ...state.messageQueue,
           [sessionId]: [
@@ -2996,11 +3006,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         // the authoritative processing bit and will publish it when dequeue
         // actually starts.
         isProcessingQueue: { ...state.isProcessingQueue, [sessionId]: false },
-        sessionActivity: remoteActiveProcess
-          ? { ...state.sessionActivity, [sessionId]: 'waiting' }
-          : state.sessionActivity,
+        sessionActivity: state.sessionActivity,
       }));
-      console.log(`[SessionStore] Message queued${suppressUserMessage ? '' : ' + shown in chat'}. Queue length:`, (state.messageQueue[sessionId] || []).length + 1);
+      console.log(`[SessionStore] Message queued${suppressUserMessage ? '' : '; user bubble already visible'}. Queue length:`, (state.messageQueue[sessionId] || []).length + 1);
       console.log('[SessionStore] Queued message preview:', message.slice(0, 50));
 
       // Also enqueue in main process (source of truth for drain timing)
@@ -3008,17 +3016,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         id: queuedMsg.id,
         model,
         suppressUserMessage,
-        deferDrain: remoteActiveProcess || undefined,
+        deferDrain: undefined,
       });
-
-      if (remoteActiveProcess) {
-        console.log(`[SessionStore] Remote Claude process still active for ${sessionId}; queued message and requesting reattach`);
-        const { loadMessages } = get();
-        startRemoteProcessMonitor(sessionId, get, set, loadMessages, {
-          recoverableKnown: true,
-          attachStream: true,
-        });
-      }
 
       return;
     }
@@ -3034,8 +3033,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       state = get();
     }
 
-    const { addMessage, setStreaming, permissionMode, thinkingMode, selectedModel, gstackMode, cascadeMode } = state;
-    const model = selectedModel[sessionId] || 'auto';
+    const { setStreaming, permissionMode, thinkingMode, gstackMode, cascadeMode } = state;
+    const model = submittedModel;
     const mode = normalizePermissionModeForModel(model, permissionMode[sessionId]);
     // Apply migration to handle old thinking mode values, default to 'high' (full capability)
     const thinking = migrateThinkingMode(thinkingMode[sessionId] || 'high');
@@ -3056,24 +3055,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       sessionActivity: { ...state.sessionActivity, [sessionId]: 'idle' },
     }));
     window.electronAPI.sessions.update(sessionId, { updatedAt: now });
-
-    // Add the user's message before slower async preprocessing so pressing
-    // Enter always produces immediate visible feedback in the chat.
-    const existingMessages = get().messages[sessionId] || [];
-    const alreadyInChat =
-      !!opts?.existingMessageId &&
-      existingMessages.some((m) => m.id === opts!.existingMessageId);
-    const userMessage: ChatMessage = {
-      id: opts?.existingMessageId || `msg-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
-      role: 'user',
-      content: message,
-      timestamp: new Date(),
-      harness: harnessFromModel(model),
-      attachments: (attachments as ChatMessage['attachments'])?.length ? attachments as ChatMessage['attachments'] : undefined,
-    };
-    if (!suppressUserMessage && !alreadyInChat) {
-      addMessage(sessionId, userMessage);
-    }
 
     const previousStreamSnapshot = {
       events: get().streamEvents[sessionId] || [],
@@ -3118,10 +3099,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }));
 
     if (!fromQueueDrain) {
-      const currentSession = get().sessions.find((session) => session.id === sessionId);
-      const remoteActive = currentSession?.sshConfig
-        ? await window.electronAPI.ssh.hasActiveRemoteProcess(sessionId).catch(() => false)
-        : false;
+      // The remote ownership probe was started above but is awaited only after
+      // the optimistic stream state is visible. This keeps the duplicate-turn
+      // guard without running two sequential SSH probes before submission.
+      const remoteActive = await remoteActiveProcessPromise;
 
       if (remoteActive) {
         const queuedMsg = {
@@ -3230,26 +3211,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       persistSupplementalMessage(sessionId, outboundUserMessage);
     }
 
-    try {
-      console.log('[SessionStore] Calling electronAPI.claude.sendMessage with', attachments?.length || 0, 'attachments, model:', model);
-      console.log('[SessionStore] sendMessage params:', { sessionId: sessionId.substring(0, 8), messageLen: message.length, mode, thinking, model });
-
-      const result = await window.electronAPI.claude.sendMessage(
-        sessionId,
-        modifiedText,
-        attachments,
-        mode,
-        thinking,
-        model,
-        activeGStackMode,
-        supplementalMessagesForContext,
-        get().fastMode,
-        suppressUserMessage,
-        userMessage.id,
-        isCascadeActive,
-      );
-      console.log('[SessionStore] sendMessage returned:', result);
-    } catch (error) {
+    const handleSendError = (error: unknown) => {
       setStreaming(sessionId, false);
       const errorText = error instanceof Error ? error.message : String(error);
       const errorMessage: ChatMessage = {
@@ -3260,9 +3222,45 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         harness: harnessFromModel(model),
       };
       persistSupplementalMessage(sessionId, errorMessage);
-      addMessage(sessionId, errorMessage);
+      get().addMessage(sessionId, errorMessage);
       console.error('[SessionStore] Failed to send message:', error);
       console.error('[SessionStore] Error stack:', error instanceof Error ? error.stack : 'No stack');
+    };
+
+    console.log('[SessionStore] Calling electronAPI.claude.sendMessage with', attachments?.length || 0, 'attachments, model:', model);
+    console.log('[SessionStore] sendMessage params:', { sessionId: sessionId.substring(0, 8), messageLen: message.length, mode, thinking, model });
+
+    const sendPromise = window.electronAPI.claude.sendMessage(
+      sessionId,
+      modifiedText,
+      attachments,
+      mode,
+      thinking,
+      model,
+      activeGStackMode,
+      supplementalMessagesForContext,
+      get().fastMode,
+      suppressUserMessage,
+      userMessage.id,
+      isCascadeActive,
+    );
+
+    if (opts?.returnAfterAdmission) {
+      // Voice tool calls must be acknowledged as soon as Build owns the work.
+      // Keeping this promise open for a multi-minute coding turn prevents the
+      // Realtime model from reliably issuing a second, independently queued
+      // function call while the first turn is still running.
+      void sendPromise
+        .then((result) => console.log('[SessionStore] Background sendMessage returned:', result))
+        .catch(handleSendError);
+      return;
+    }
+
+    try {
+      const result = await sendPromise;
+      console.log('[SessionStore] sendMessage returned:', result);
+    } catch (error) {
+      handleSendError(error);
     }
   },
 
@@ -4318,7 +4316,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         // Only auto-open plan panel if this is the active session
         if (request.sessionId === activeSessionId) {
           console.log('[Session Store] Plan content set in approval flow, opening panel');
-          useUIStore.getState().showPlanPanel();
+          useUIStore.getState().showPlanPanel(request.sessionId);
         } else {
           console.log('[Session Store] Plan approval for background session, not opening panel:', request.sessionId);
         }
@@ -4993,13 +4991,41 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
 
     const selectedModel = getSessionModel(initialState, sessionId);
-    const fastStackSiblings = (initialState.messageQueue[sessionId] || []).filter(
-      (candidate) => candidate.id !== queuedMessageId,
+    const initialQueue = initialState.messageQueue[sessionId] || [];
+    const attachmentIdentity = (attachment: unknown): string => {
+      if (!attachment || typeof attachment !== 'object') return String(attachment ?? '');
+      const candidate = attachment as Record<string, unknown>;
+      return [candidate.type, candidate.name, candidate.path, candidate.filePath, candidate.size]
+        .map((value) => String(value ?? ''))
+        .join('\u0000');
+    };
+    const sameAttachments = (left?: unknown[], right?: unknown[]): boolean => {
+      const leftItems = left || [];
+      const rightItems = right || [];
+      return leftItems.length === rightItems.length
+        && leftItems.every((attachment, index) =>
+          attachment === rightItems[index]
+          || attachmentIdentity(attachment) === attachmentIdentity(rightItems[index])
+        );
+    };
+    // Cmd/Ctrl+Shift+Enter can race the normal enqueue path: the prompt is
+    // already visible and queued, but the shortcut does not carry its queue
+    // id. Adopt that exact queued item as the Fast Stack target so it is not
+    // treated as a sibling and sent a second time.
+    const matchingQueuedMessage = queuedMessageId
+      ? initialQueue.find((candidate) => candidate.id === queuedMessageId)
+      : [...initialQueue].reverse().find((candidate) =>
+        candidate.message.trim() === message.trim()
+        && sameAttachments(candidate.attachments, attachments)
+      );
+    const effectiveQueuedMessageId = queuedMessageId || matchingQueuedMessage?.id;
+    const fastStackSiblings = initialQueue.filter(
+      (candidate) => candidate.id !== effectiveQueuedMessageId,
     );
-    const fastStackMessageId = queuedMessageId || `fast-stack-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+    const fastStackMessageId = effectiveQueuedMessageId || `fast-stack-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
     const queuedMessageAlreadyVisible = Boolean(
-      queuedMessageId
-      && (initialState.messages[sessionId] || []).some((candidate) => candidate.id === queuedMessageId)
+      effectiveQueuedMessageId
+      && (initialState.messages[sessionId] || []).some((candidate) => candidate.id === effectiveQueuedMessageId)
     );
 
     if (!suppressUserMessage && !queuedMessageAlreadyVisible) {
@@ -5017,7 +5043,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     console.log(
       `[Fast Stack] Preparing one-shot in-place fork for ${sessionId.substring(0, 8)}`
-      + `${queuedMessageId ? ` from queued message ${queuedMessageId}` : ''}`
+      + `${effectiveQueuedMessageId ? ` from queued message ${effectiveQueuedMessageId}` : ''}`
     );
 
     // Renderer queue updates are immediate while the normal main-process
@@ -5038,14 +5064,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
     await (window.electronAPI.queue?.beginFastStack(sessionId) || Promise.resolve());
 
-    if (queuedMessageId) {
+    if (effectiveQueuedMessageId) {
       // Remove only the selected message. Every sibling remains held in both
       // queue copies until the Fast Stack turn completes.
-      await (window.electronAPI.queue?.remove(sessionId, queuedMessageId) || Promise.resolve());
+      await (window.electronAPI.queue?.remove(sessionId, effectiveQueuedMessageId) || Promise.resolve());
       set((state) => ({
         messageQueue: {
           ...state.messageQueue,
-          [sessionId]: (state.messageQueue[sessionId] || []).filter((candidate) => candidate.id !== queuedMessageId),
+          [sessionId]: (state.messageQueue[sessionId] || []).filter((candidate) => candidate.id !== effectiveQueuedMessageId),
         },
       }));
     }
@@ -5120,6 +5146,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       await get().sendMessage(sessionId, message, attachments, {
         existingMessageId: fastStackMessageId,
         suppressUserMessage,
+        // The parent has already been cancelled and the in-place fork is
+        // prepared. Do not let a stale SSH process probe re-enqueue this
+        // replacement prompt behind the turn it is replacing.
+        fromQueueDrain: true,
       });
 
       // Fast Stack owns the held sibling snapshot through the replacement
@@ -5843,13 +5873,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
    * Fork is created at the end of the current conversation
    * The user's message is sent only to the fork, not the parent
    */
-  createForkFromCurrent: async (userMessage: string) => {
-    if (!hasElectronAPI) return;
+  createForkFromCurrent: async (userMessage: string, attachments?: unknown[]) => {
+    if (!hasElectronAPI) return null;
 
     const { activeSessionId, sessions, setActiveSession, sendMessage } = get();
     if (!activeSessionId) {
       console.error('[SessionStore] No active session to fork from');
-      return;
+      return null;
     }
 
     try {
@@ -5915,9 +5945,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       await setActiveSession(forkedSession.id);
 
       // Send user message to new fork
-      await sendMessage(forkedSession.id, userMessage);
+      if (userMessage.trim() || (attachments?.length || 0) > 0) {
+        await sendMessage(forkedSession.id, userMessage, attachments);
+      }
 
       console.log('[SessionStore] Fork created and message sent:', forkedSession.name);
+      return forkedSession;
     } catch (error) {
       console.error('[SessionStore] Failed to create conversation fork:', error);
       throw error;

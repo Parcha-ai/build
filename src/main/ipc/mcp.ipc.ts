@@ -92,6 +92,16 @@ export function registerMcpHandlers(ipcMain: IpcMain): void {
     });
   }
 
+  // Startup is cache-only: merely opening Build must never launch browser
+  // OAuth. Completed desktop credentials are discovered and synced; missing
+  // auth is omitted until the user explicitly installs/reconnects that server.
+  void mcpService.removeLegacyOpenDesignMcpServer()
+    .then(() => mcpService.prepareConfiguredRemoteAuth())
+    .then(() => syncHarnessesAndSshSessions())
+    .catch((error) => {
+      console.warn('[MCP IPC] Initial MCP cleanup/auth cache preparation failed:', error);
+    });
+
   // Get list of active/configured MCP servers
   ipcMain.handle(
     IPC_CHANNELS.MCP_GET_SERVERS,
