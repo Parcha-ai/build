@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { X, Eye, EyeOff, Check, Loader2, Search, Download, Sparkles, Settings, Key, History, AlertCircle, ExternalLink, Terminal, Copy, Bot, RefreshCw, BookOpen } from 'lucide-react';
+import { DEFAULT_IN_APP_BROWSER_URL_PATTERNS } from '../../../shared/utils/browser-routing';
 import { useUIStore } from '../../stores/ui.store';
 import { useAudioStore } from '../../stores/audio.store';
 import { useSessionStore } from '../../stores/session.store';
@@ -38,6 +39,7 @@ type ProvidersState = {
   gemini: ProviderStatus;
   grok: ProviderStatus;
   opencode: ProviderStatus;
+  prime: ProviderStatus;
 };
 
 const DEFAULT_PROVIDERS: ProvidersState = {
@@ -47,7 +49,70 @@ const DEFAULT_PROVIDERS: ProvidersState = {
   gemini: { loggedIn: false },
   grok: { loggedIn: false },
   opencode: { loggedIn: false },
+  prime: { loggedIn: false },
 };
+
+function ParableStringMapField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value?: Record<string, string>;
+  onChange: (value: Record<string, string>) => void;
+}) {
+  const entries = Object.entries(value || {});
+  const updateEntry = (index: number, key: string, entryValue: string) => {
+    const nextEntries = [...entries];
+    nextEntries[index] = [key, entryValue];
+    onChange(Object.fromEntries(nextEntries.filter(([entryKey]) => entryKey.trim())));
+  };
+  return (
+    <div className="space-y-1 md:col-span-2">
+      <div className="text-[9px] font-mono uppercase tracking-wider text-claude-text-secondary">{label}</div>
+      {entries.map(([key, entryValue], index) => (
+        <div key={`${key}-${index}`} className="flex gap-2">
+          <input aria-label={`${label} key ${index + 1}`} className="w-1/3 border border-claude-border bg-claude-bg px-2 py-1.5 font-mono text-[10px] text-claude-text" value={key} placeholder="Name" onChange={(event) => updateEntry(index, event.target.value, entryValue)} />
+          <input aria-label={`${label} value ${index + 1}`} className="min-w-0 flex-1 border border-claude-border bg-claude-bg px-2 py-1.5 font-mono text-[10px] text-claude-text" value={entryValue} placeholder="Value" onChange={(event) => updateEntry(index, key, event.target.value)} />
+          <button type="button" onClick={() => onChange(Object.fromEntries(entries.filter((_, entryIndex) => entryIndex !== index)))} className="border border-claude-border px-2 text-[9px] font-mono text-red-400">Remove</button>
+        </div>
+      ))}
+      <button type="button" onClick={() => onChange({ ...(value || {}), [`key${entries.length + 1}`]: '' })} className="border border-claude-border px-2 py-1 text-[9px] font-mono text-claude-text-secondary">+ Add entry</button>
+    </div>
+  );
+}
+
+function ParableJsonObjectField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value?: Record<string, unknown>;
+  onChange: (value: Record<string, unknown>) => void;
+}) {
+  const serialized = JSON.stringify(value || {}, null, 2);
+  const [draft, setDraft] = useState(serialized);
+  const [error, setError] = useState('');
+  useEffect(() => setDraft(serialized), [serialized]);
+  const apply = () => {
+    try {
+      const parsed = JSON.parse(draft);
+      if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') throw new Error('Enter a JSON object.');
+      onChange(parsed);
+      setError('');
+    } catch (parseError) {
+      setError(parseError instanceof Error ? parseError.message : 'Invalid JSON object.');
+    }
+  };
+  return (
+    <label className="space-y-1 text-[9px] font-mono uppercase tracking-wider text-claude-text-secondary md:col-span-2">
+      {label}
+      <textarea rows={4} className="w-full border border-claude-border bg-claude-bg px-2 py-1.5 font-mono text-[10px] normal-case text-claude-text focus:border-amber-500/50 focus:outline-none" value={draft} onChange={(event) => setDraft(event.target.value)} onBlur={apply} />
+      {error && <span className="block normal-case text-red-400">{error}</span>}
+    </label>
+  );
+}
 
 interface TabConfig {
   id: TabId;
@@ -374,6 +439,12 @@ export default function SettingsDialog() {
   const [dailyReviewEnabled, setDailyReviewEnabled] = useState(false);
   const [dailyReviewTime, setDailyReviewTime] = useState('09:00');
   const [bedtimeTaskReviewEnabled, setBedtimeTaskReviewEnabled] = useState(true);
+  const [eveningPlanningLockEnabled, setEveningPlanningLockEnabled] = useState(true);
+  const [eveningPlanningLockTime, setEveningPlanningLockTime] = useState('22:30');
+  const [eveningPlanningCalendarUrl, setEveningPlanningCalendarUrl] = useState('https://calendar.google.com/calendar/u/0/r');
+  const [inAppBrowserUrlPatterns, setInAppBrowserUrlPatterns] = useState(
+    DEFAULT_IN_APP_BROWSER_URL_PATTERNS.join('\n'),
+  );
 
   // Foundry settings
   const [foundryEnabled, setFoundryEnabled] = useState(false);
@@ -422,6 +493,8 @@ export default function SettingsDialog() {
   const [isLoading, setIsLoading] = useState(true);
   const [providers, setProviders] = useState<ProvidersState>(DEFAULT_PROVIDERS);
   const [isCheckingProviders, setIsCheckingProviders] = useState(false);
+  const [providerSetupId, setProviderSetupId] = useState<keyof ProvidersState | null>(null);
+  const [providerSetupError, setProviderSetupError] = useState<{ id: keyof ProvidersState; message: string } | null>(null);
 
   // Show save indicator briefly
   const showSaveIndicator = useCallback(() => {
@@ -438,7 +511,7 @@ export default function SettingsDialog() {
   }, []);
 
   // Auto-save app settings (toggles and time picker)
-  const autoSaveAppSettings = useCallback(async (updates: { qmdEnabled?: boolean; ultraPlanMode?: boolean; showClearContextOnPlanAccept?: boolean; lunchReminderEnabled?: boolean; lunchReminderTime?: string; bedtimeReminderEnabled?: boolean; bedtimeReminderTime?: string; dailyReviewEnabled?: boolean; dailyReviewTime?: string; bedtimeTaskReviewEnabled?: boolean; foundryEnabled?: boolean; foundryBaseUrl?: string; foundryApiKey?: string; foundryDefaultSonnetModel?: string; foundryDefaultHaikuModel?: string; foundryDefaultOpusModel?: string; customModels?: typeof customModels; cursorApiKey?: string; deepseekApiKey?: string; geminiApiKey?: string; zaiApiKey?: string; xaiApiKey?: string; cerebrasApiKey?: string; autoRouterConfig?: any }) => {
+  const autoSaveAppSettings = useCallback(async (updates: { qmdEnabled?: boolean; ultraPlanMode?: boolean; showClearContextOnPlanAccept?: boolean; lunchReminderEnabled?: boolean; lunchReminderTime?: string; bedtimeReminderEnabled?: boolean; bedtimeReminderTime?: string; dailyReviewEnabled?: boolean; dailyReviewTime?: string; bedtimeTaskReviewEnabled?: boolean; eveningPlanningLockEnabled?: boolean; eveningPlanningLockTime?: string; eveningPlanningCalendarUrl?: string; inAppBrowserUrlPatterns?: string[]; foundryEnabled?: boolean; foundryBaseUrl?: string; foundryApiKey?: string; foundryDefaultSonnetModel?: string; foundryDefaultHaikuModel?: string; foundryDefaultOpusModel?: string; customModels?: typeof customModels; cursorApiKey?: string; deepseekApiKey?: string; geminiApiKey?: string; zaiApiKey?: string; xaiApiKey?: string; cerebrasApiKey?: string; autoRouterConfig?: any }) => {
     showSaveIndicator();
     try {
       await window.electronAPI.settings.set(updates);
@@ -583,6 +656,12 @@ export default function SettingsDialog() {
           setDailyReviewEnabled((appSettings as any).dailyReviewEnabled ?? false);
           setDailyReviewTime((appSettings as any).dailyReviewTime || '09:00');
           setBedtimeTaskReviewEnabled((appSettings as any).bedtimeTaskReviewEnabled ?? true);
+          setEveningPlanningLockEnabled((appSettings as any).eveningPlanningLockEnabled ?? true);
+          setEveningPlanningLockTime((appSettings as any).eveningPlanningLockTime || '22:30');
+          setEveningPlanningCalendarUrl((appSettings as any).eveningPlanningCalendarUrl || 'https://calendar.google.com/calendar/u/0/r');
+          setInAppBrowserUrlPatterns(
+            (appSettings.inAppBrowserUrlPatterns || DEFAULT_IN_APP_BROWSER_URL_PATTERNS).join('\n'),
+          );
           setFoundryEnabled(appSettings.foundryEnabled || false);
           setFoundryBaseUrl(appSettings.foundryBaseUrl || '');
           setFoundryApiKey(appSettings.foundryApiKey || '');
@@ -762,8 +841,38 @@ export default function SettingsDialog() {
   // Render General Tab
   const renderGeneralTab = () => (
     <div className="space-y-6">
+      {/* Browser link routing */}
+      <div className="space-y-3">
+        <div className="flex items-center gap-2">
+          <ExternalLink size={14} className="text-cyan-400" />
+          <h3 className="text-xs font-mono text-claude-text uppercase tracking-wider">
+            Browser Link Routing
+          </h3>
+        </div>
+        <p className="text-[10px] font-mono text-claude-text-secondary">
+          Matching HTTP(S) links open in the app browser. All other links open in your system browser.
+        </p>
+        <textarea
+          value={inAppBrowserUrlPatterns}
+          onChange={(event) => setInAppBrowserUrlPatterns(event.target.value)}
+          onBlur={() => {
+            const patterns = inAppBrowserUrlPatterns.split(/\r?\n/).map((value) => value.trim()).filter(Boolean);
+            void autoSaveAppSettings({ inAppBrowserUrlPatterns: patterns });
+          }}
+          disabled={isLoading}
+          rows={4}
+          spellCheck={false}
+          className="w-full px-3 py-2 bg-claude-bg border border-claude-border text-claude-text font-mono text-xs focus:outline-none focus:border-claude-accent disabled:opacity-50 resize-y"
+          style={{ borderRadius: 0 }}
+          placeholder={'*.m.parcha.dev*\nlocalhost:*'}
+        />
+        <p className="text-[10px] font-mono text-claude-text-secondary">
+          Enter one wildcard pattern per line. An empty list sends every link to the system browser.
+        </p>
+      </div>
+
       {/* QMD Semantic Search */}
-      <div className="space-y-4">
+      <div className="space-y-4 pt-4 border-t border-claude-border">
         <div className="flex items-center gap-2">
           <Search size={14} className="text-blue-400" />
           <h3 className="text-xs font-mono text-claude-text uppercase tracking-wider">
@@ -987,6 +1096,67 @@ export default function SettingsDialog() {
             color="bg-indigo-500"
           />
         </div>
+
+        <div className="pt-4 border-t border-claude-border space-y-4">
+          <div className="flex items-center justify-between gap-6">
+            <div>
+              <label className="block text-xs font-mono text-claude-text-secondary uppercase tracking-wider">
+                Next-Day Planning Lock
+              </label>
+              <p className="text-[10px] font-mono text-claude-text-secondary mt-1">
+                At the set time, open the planner. Finish as soon as your plan is ready.
+              </p>
+            </div>
+            <Toggle
+              enabled={eveningPlanningLockEnabled}
+              onChange={(value) => {
+                setEveningPlanningLockEnabled(value);
+                autoSaveAppSettings({ eveningPlanningLockEnabled: value });
+              }}
+              disabled={isLoading}
+              color="bg-amber-500"
+            />
+          </div>
+
+          {eveningPlanningLockEnabled && (
+            <>
+              <div className="space-y-2">
+                <label className="block text-xs font-mono text-claude-text-secondary uppercase tracking-wider">
+                  Planning Time
+                </label>
+                <input
+                  type="time"
+                  value={eveningPlanningLockTime}
+                  onChange={(e) => {
+                    setEveningPlanningLockTime(e.target.value);
+                    autoSaveAppSettings({ eveningPlanningLockTime: e.target.value });
+                  }}
+                  disabled={isLoading}
+                  className="w-full px-3 py-2 bg-claude-bg border border-claude-border text-claude-text font-mono text-sm focus:outline-none focus:border-claude-accent disabled:opacity-50"
+                  style={{ borderRadius: 0 }}
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="block text-xs font-mono text-claude-text-secondary uppercase tracking-wider">
+                  Calendar Address
+                </label>
+                <input
+                  type="url"
+                  value={eveningPlanningCalendarUrl}
+                  onChange={(e) => setEveningPlanningCalendarUrl(e.target.value)}
+                  onBlur={() => autoSaveAppSettings({ eveningPlanningCalendarUrl })}
+                  disabled={isLoading}
+                  placeholder="https://calendar.google.com/"
+                  className="w-full px-3 py-2 bg-claude-bg border border-claude-border text-claude-text font-mono text-sm focus:outline-none focus:border-claude-accent disabled:opacity-50"
+                  style={{ borderRadius: 0 }}
+                />
+                <p className="text-[10px] font-mono text-claude-text-secondary">
+                  Scheduled tasks open here in Build's browser as prefilled calendar events.
+                </p>
+              </div>
+            </>
+          )}
+        </div>
       </div>
 
       {/* Ultra Plan Mode */}
@@ -1206,6 +1376,7 @@ export default function SettingsDialog() {
       if (id.startsWith('gemini:')) return 'Gemini';
       if (id.startsWith('grok:')) return 'Grok';
       if (id.startsWith('opencode:')) return 'DeepSeek';
+      if (id.startsWith('prime:')) return 'Prime Agent';
       if (id.startsWith('custom:')) return 'Custom';
       if (id.startsWith('claude-')) return 'Claude';
       return '';
@@ -1791,6 +1962,12 @@ export default function SettingsDialog() {
         },
       }));
     };
+    const setExecutorCostField = (id: string, executor: Record<string, any>, field: 'in' | 'out' | 'cache_in', rawValue: string) => {
+      const cost = { ...(executor.cost || {}) };
+      if (rawValue === '') delete cost[field];
+      else cost[field] = Number(rawValue);
+      setNamedField('executors', id, 'cost', cost);
+    };
     const addNamedItem = (section: 'providers' | 'executors' | 'checks', prefix: string, defaults: Record<string, any>) => {
       const existing = parableConfigData[section] || {};
       let index = 1;
@@ -2034,6 +2211,8 @@ export default function SettingsDialog() {
                 <label className={labelClass}>Default reviewer<input className={fieldClass} value={parableConfigData.parable?.default_reviewer || ''} onChange={(e) => setSectionField('parable', 'default_reviewer', e.target.value)} /></label>
                 <label className={labelClass}>Log directory<input className={fieldClass} value={parableConfigData.parable?.log_dir || '.parable'} onChange={(e) => setSectionField('parable', 'log_dir', e.target.value)} /></label>
                 <label className={labelClass}>Brain model<input className={fieldClass} value={parableConfigData.claude?.brain_model || ''} onChange={(e) => setSectionField('claude', 'brain_model', e.target.value)} /></label>
+                <label className={labelClass}>Claude proxy URL<input className={fieldClass} value={parableConfigData.claude?.base_url || ''} onChange={(e) => setSectionField('claude', 'base_url', e.target.value)} /></label>
+                <label className={labelClass}>Claude token environment variable<input className={fieldClass} value={parableConfigData.claude?.auth_token_env || ''} onChange={(e) => setSectionField('claude', 'auth_token_env', e.target.value)} /></label>
                 <label className={`${labelClass} md:col-span-2`}>Repository instructions<textarea rows={3} className={fieldClass} value={parableConfigData.parable?.repo_notes || ''} onChange={(e) => setSectionField('parable', 'repo_notes', e.target.value)} /></label>
                 <label className={labelClass}>Research provider<select className={fieldClass} value={parableConfigData.research?.provider || 'grep.ai'} onChange={(e) => setSectionField('research', 'provider', e.target.value)}><option value="grep.ai">grep.ai</option><option value="claude">Claude</option></select></label>
                 <label className={labelClass}>Claude binary<input className={fieldClass} value={parableConfigData.claude?.binary || 'claude'} onChange={(e) => setSectionField('claude', 'binary', e.target.value)} /></label>
@@ -2052,6 +2231,9 @@ export default function SettingsDialog() {
                       <label className={labelClass}>Base URL<input className={fieldClass} value={provider.base_url || ''} onChange={(e) => setNamedField('providers', id, 'base_url', e.target.value)} /></label>
                       <label className={labelClass}>Credential environment variable<input className={fieldClass} value={provider.env_key || ''} onChange={(e) => setNamedField('providers', id, 'env_key', e.target.value)} /></label>
                       <label className={labelClass}>API protocol<input className={fieldClass} value={provider.api || provider.wire_api || ''} onChange={(e) => setNamedField('providers', id, provider.type === 'pi' ? 'api' : 'wire_api', e.target.value)} /></label>
+                      <ParableStringMapField label="HTTP headers" value={provider.type === 'pi' ? provider.headers : provider.http_headers} onChange={(value) => setNamedField('providers', id, provider.type === 'pi' ? 'headers' : 'http_headers', value)} />
+                      <ParableStringMapField label="Query parameters" value={provider.query_params} onChange={(value) => setNamedField('providers', id, 'query_params', value)} />
+                      {provider.type === 'pi' && <ParableJsonObjectField label="PI compatibility options" value={provider.compat} onChange={(value) => setNamedField('providers', id, 'compat', value)} />}
                     </div>
                   </div>;
                 })}
@@ -2073,6 +2255,12 @@ export default function SettingsDialog() {
                       <label className={labelClass}>Tags (comma separated)<input className={fieldClass} value={(executor.tags || []).join(', ')} onChange={(e) => setNamedField('executors', id, 'tags', e.target.value.split(',').map((v) => v.trim()).filter(Boolean))} /></label>
                       <label className={labelClass}>Context (K tokens)<input type="number" className={fieldClass} value={executor.context_ktok || ''} onChange={(e) => setNamedField('executors', id, 'context_ktok', Number(e.target.value) || undefined)} /></label>
                       <label className={labelClass}>Timeout (minutes)<input type="number" className={fieldClass} value={executor.max_minutes || ''} onChange={(e) => setNamedField('executors', id, 'max_minutes', Number(e.target.value) || undefined)} /></label>
+                      <label className="flex items-center gap-2 text-[9px] font-mono uppercase tracking-wider text-claude-text-secondary"><input type="checkbox" checked={executor.reasoning !== false} onChange={(e) => setNamedField('executors', id, 'reasoning', e.target.checked)} /> Reasoning model</label>
+                      <label className={labelClass}>Input cost ($/M tokens)<input type="number" step="any" className={fieldClass} value={executor.cost?.in ?? ''} onChange={(e) => setExecutorCostField(id, executor, 'in', e.target.value)} /></label>
+                      <label className={labelClass}>Output cost ($/M tokens)<input type="number" step="any" className={fieldClass} value={executor.cost?.out ?? ''} onChange={(e) => setExecutorCostField(id, executor, 'out', e.target.value)} /></label>
+                      <label className={labelClass}>Cache input cost ($/M tokens)<input type="number" step="any" className={fieldClass} value={executor.cost?.cache_in ?? ''} onChange={(e) => setExecutorCostField(id, executor, 'cache_in', e.target.value)} /></label>
+                      <label className={`${labelClass} md:col-span-3`}>Codex extra configuration (one -c value per line)<textarea rows={3} className={fieldClass} value={(executor.extra_config || []).join('\n')} onChange={(e) => setNamedField('executors', id, 'extra_config', e.target.value.split('\n').map((value) => value.trim()).filter(Boolean))} /></label>
+                      <ParableJsonObjectField label="PI model overrides" value={executor.model_overrides} onChange={(value) => setNamedField('executors', id, 'model_overrides', value)} />
                       <label className={`${labelClass} md:col-span-3`}>Use for<textarea rows={2} className={fieldClass} value={executor.use_for || ''} onChange={(e) => setNamedField('executors', id, 'use_for', e.target.value)} /></label>
                       <label className={`${labelClass} md:col-span-3`}>Avoid for<textarea rows={2} className={fieldClass} value={executor.avoid_for || ''} onChange={(e) => setNamedField('executors', id, 'avoid_for', e.target.value)} /></label>
                     </div>
@@ -2093,14 +2281,14 @@ export default function SettingsDialog() {
             <details className="border border-claude-border/60 bg-black/10 p-3">
               <summary className="cursor-pointer text-[10px] font-mono uppercase tracking-wider text-claude-text">Verification checks ({Object.keys(parableConfigData.checks || {}).length})</summary>
               <div className="mt-3 space-y-3">
-                {Object.entries(parableConfigData.checks || {}).map(([id, raw]) => { const check = raw as Record<string, any>; return <div key={id} className="grid grid-cols-1 gap-2 border border-claude-border/50 p-3 md:grid-cols-2"><div className="flex items-center justify-between md:col-span-2"><span className="font-mono text-xs text-claude-text">{id}</span><button type="button" onClick={() => removeNamedItem('checks', id)} className="text-[9px] font-mono text-red-400">Remove</button></div><label className={`${labelClass} md:col-span-2`}>Command<input className={fieldClass} value={check.run || ''} onChange={(e) => setNamedField('checks', id, 'run', e.target.value)} /></label><label className={labelClass}>Working directory<input className={fieldClass} value={check.cwd || '.'} onChange={(e) => setNamedField('checks', id, 'cwd', e.target.value)} /></label><label className={labelClass}>Timeout (minutes)<input type="number" className={fieldClass} value={check.timeout_minutes || 15} onChange={(e) => setNamedField('checks', id, 'timeout_minutes', Number(e.target.value))} /></label><label className={`${labelClass} md:col-span-2`}>Run at<div className="flex gap-4 pt-1">{['post-implement','pre-commit'].map((gate) => <label key={gate} className="flex items-center gap-1 normal-case"><input type="checkbox" checked={(check.when || []).includes(gate)} onChange={(e) => setNamedField('checks', id, 'when', e.target.checked ? [...(check.when || []), gate] : (check.when || []).filter((v: string) => v !== gate))} />{gate}</label>)}</div></label></div>; })}
+                {Object.entries(parableConfigData.checks || {}).map(([id, raw]) => { const check = raw as Record<string, any>; return <div key={id} className="grid grid-cols-1 gap-2 border border-claude-border/50 p-3 md:grid-cols-2"><div className="flex items-center justify-between md:col-span-2"><span className="font-mono text-xs text-claude-text">{id}</span><button type="button" onClick={() => removeNamedItem('checks', id)} className="text-[9px] font-mono text-red-400">Remove</button></div><label className={`${labelClass} md:col-span-2`}>Command<input className={fieldClass} value={check.run || ''} onChange={(e) => setNamedField('checks', id, 'run', e.target.value)} /></label><label className={labelClass}>Working directory<input className={fieldClass} value={check.cwd || '.'} onChange={(e) => setNamedField('checks', id, 'cwd', e.target.value)} /></label><label className={labelClass}>Timeout (minutes)<input type="number" className={fieldClass} value={check.timeout_minutes || 15} onChange={(e) => setNamedField('checks', id, 'timeout_minutes', Number(e.target.value))} /></label><label className={labelClass}>Failure line pattern<input className={fieldClass} value={check.grep || ''} onChange={(e) => setNamedField('checks', id, 'grep', e.target.value)} /></label><label className={labelClass}>Failure tail lines<input type="number" min="1" className={fieldClass} value={check.tail_lines || 8} onChange={(e) => setNamedField('checks', id, 'tail_lines', Number(e.target.value))} /></label><label className={`${labelClass} md:col-span-2`}>Run at<div className="flex gap-4 pt-1">{['post-implement','pre-commit'].map((gate) => <label key={gate} className="flex items-center gap-1 normal-case"><input type="checkbox" checked={(check.when || []).includes(gate)} onChange={(e) => setNamedField('checks', id, 'when', e.target.checked ? [...(check.when || []), gate] : (check.when || []).filter((v: string) => v !== gate))} />{gate}</label>)}</div></label></div>; })}
                 <button type="button" onClick={() => addNamedItem('checks', 'check', { run: '', cwd: '.', when: ['post-implement', 'pre-commit'], timeout_minutes: 15 })} className="border border-claude-border px-2 py-1.5 text-[9px] font-mono text-claude-text-secondary">+ Add check</button>
               </div>
             </details>
 
             <details className="border border-claude-border/60 bg-black/10 p-3">
               <summary className="cursor-pointer text-[10px] font-mono uppercase tracking-wider text-claude-text-secondary">Advanced TOML</summary>
-              <p className="my-2 text-[9px] text-claude-text-secondary">Use this escape hatch for custom headers, query parameters, model overrides, costs, and future Parable fields.</p>
+              <p className="my-2 text-[9px] text-claude-text-secondary">The normal controls above cover the current Parable schema. Use this only for future fields that this Build version does not know yet.</p>
               <textarea value={parableToml} onChange={(event) => setParableToml(event.target.value)} spellCheck={false} rows={18} className="w-full resize-y border border-claude-border bg-black/30 p-3 font-mono text-[10px] leading-relaxed text-claude-text focus:border-amber-500/50 focus:outline-none" />
               <button type="button" onClick={() => void saveToml()} disabled={isSavingParableToml} className="mt-2 border border-claude-border px-2 py-1.5 text-[9px] font-mono text-claude-text-secondary">Validate and save raw TOML</button>
             </details>
@@ -2160,6 +2348,7 @@ export default function SettingsDialog() {
     apiKeyInput,
     docsUrl,
     keyHelp,
+    onSetup,
   }: {
     id: keyof ProvidersState;
     label: string;
@@ -2169,10 +2358,26 @@ export default function SettingsDialog() {
     apiKeyInput: React.ReactNode;
     docsUrl: string;
     keyHelp: React.ReactNode;
+    onSetup?: () => Promise<void>;
   }) => {
     const ready = status.loggedIn;
     const setupCommand = status.installCommand;
     const effectiveDocsUrl = status.docsUrl || docsUrl;
+    const setupRunning = providerSetupId === id;
+    const setupError = providerSetupError?.id === id ? providerSetupError.message : '';
+
+    const runSetup = async () => {
+      if (!onSetup || setupRunning) return;
+      setProviderSetupId(id);
+      setProviderSetupError(null);
+      try {
+        await onSetup();
+      } catch (error) {
+        setProviderSetupError({ id, message: error instanceof Error ? error.message : String(error) });
+      } finally {
+        setProviderSetupId(null);
+      }
+    };
 
     return (
       <div key={id} className="border border-claude-border bg-claude-bg/30" style={{ borderRadius: 0 }}>
@@ -2217,14 +2422,27 @@ export default function SettingsDialog() {
                 <code className="flex-1 min-w-0 px-2 py-1.5 bg-claude-surface border border-claude-border text-[10px] font-mono text-claude-text-secondary truncate">
                   {setupCommand}
                 </code>
-                <button
-                  type="button"
-                  onClick={() => copySetupCommand(setupCommand)}
-                  className="p-1.5 border border-claude-border text-claude-text-secondary hover:text-claude-text hover:bg-claude-surface"
-                  title="Copy setup command"
-                >
-                  <Copy size={12} />
-                </button>
+                {onSetup && status.installed === false ? (
+                  <button
+                    type="button"
+                    onClick={() => void runSetup()}
+                    disabled={setupRunning}
+                    className="flex items-center gap-1.5 px-2 py-1.5 border border-claude-accent/50 text-[10px] font-mono text-claude-accent hover:bg-claude-accent/10 disabled:opacity-50"
+                    title={`Install ${label} inside Build`}
+                  >
+                    {setupRunning ? <Loader2 size={12} className="animate-spin" /> : <Terminal size={12} />}
+                    {setupRunning ? 'Installing…' : 'Install'}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => copySetupCommand(setupCommand)}
+                    className="p-1.5 border border-claude-border text-claude-text-secondary hover:text-claude-text hover:bg-claude-surface"
+                    title="Copy setup command"
+                  >
+                    <Copy size={12} />
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => window.electronAPI.app?.openExternal?.(effectiveDocsUrl)}
@@ -2234,6 +2452,7 @@ export default function SettingsDialog() {
                   <ExternalLink size={12} />
                 </button>
               </div>
+              {setupError && <p className="text-[10px] font-mono text-red-400">{setupError}</p>}
             </div>
           )}
 
@@ -2471,6 +2690,28 @@ export default function SettingsDialog() {
               platform.deepseek.com
             </button>
             .
+          </>
+        ),
+      }),
+      renderHarnessCard({
+        id: 'prime',
+        label: 'Prime Agent',
+        description: 'Self-improving RLM harness with persistent sessions, goals, schedules, and native recursive subagents.',
+        status: providers.prime,
+        apiKeyLabel: 'Authentication',
+        docsUrl: 'https://github.com/PrimeIntellect-ai/prime-agent',
+        onSetup: async () => {
+          await window.electronAPI.auth.setupProvider('prime');
+          await refreshProviders();
+        },
+        apiKeyInput: (
+          <div className="border border-claude-border bg-claude-surface px-2 py-2 text-[10px] font-mono text-claude-text-secondary">
+            Prime Agent owns its provider credentials in <span className="text-claude-text">~/.prime/agent/auth.json</span>.
+          </div>
+        ),
+        keyHelp: (
+          <>
+            After installation, start <span className="text-claude-text">prime-agent</span> once and use <span className="text-claude-text">/login</span>. Build then resumes the same private Prime Agent sessions.
           </>
         ),
       }),

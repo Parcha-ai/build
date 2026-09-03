@@ -20,6 +20,7 @@ import { normalizeRemoteWorkdir } from '../../shared/utils/remote-workdir';
 const ANSI_ESCAPE = String.fromCharCode(27);
 const ANSI_COLOR_CODE_RE = new RegExp(`${ANSI_ESCAPE}\\[[0-9;]*m`, 'g');
 const LEGACY_BUNDLED_ADHD_SKILL_SHA256 = '944ddb6a03cdbeff392d81f26f4486f3f20e23285c37bed2e50f1eb9c9b089ca';
+const DETACHED_EXIT_POLL_MS = 3_000;
 
 /**
  * Interface matching the Claude Agent SDK's SpawnedProcess
@@ -30,6 +31,8 @@ export interface SpawnedProcess {
   stdout: Readable;
   readonly killed: boolean;
   readonly exitCode: number | null;
+  /** Remote bridge directory, when this process uses the detached SSH bridge. */
+  readonly remoteBridgeJobDir?: string;
   kill(signal: NodeJS.Signals): boolean;
   on(event: 'exit', listener: (code: number | null, signal: NodeJS.Signals | null) => void): void;
   on(event: 'error', listener: (error: Error) => void): void;
@@ -80,10 +83,14 @@ export function filterRemoteClaudeArguments(args: string[]): string[] {
     const arg = args[index];
 
     if (arg === '--mcp-config') {
+      const safeConfig = filterRemoteMcpConfig(args[index + 1]);
       index += 1;
+      if (safeConfig) filtered.push('--mcp-config', safeConfig);
       continue;
     }
     if (arg.startsWith('--mcp-config=')) {
+      const safeConfig = filterRemoteMcpConfig(arg.slice('--mcp-config='.length));
+      if (safeConfig) filtered.push(`--mcp-config=${safeConfig}`);
       continue;
     }
 
@@ -98,6 +105,35 @@ export function filterRemoteClaudeArguments(args: string[]): string[] {
   }
 
   return filtered;
+}
+
+function filterRemoteMcpConfig(rawConfig?: string): string | undefined {
+  if (!rawConfig) return undefined;
+  try {
+    const parsed = JSON.parse(rawConfig) as { mcpServers?: Record<string, unknown> };
+    const safeServers: Record<string, unknown> = {};
+    for (const [name, rawServer] of Object.entries(parsed.mcpServers || {})) {
+      const server = rawServer as { type?: string; url?: string; command?: string; args?: unknown; env?: unknown };
+      const isDesignBridge = name === 'claudette-design'
+        && server.type === 'http'
+        && /^http:\/\/127\.0\.0\.1:\d+\/mcp$/.test(server.url || '');
+      const args = Array.isArray(server.args) && server.args.every((arg) => typeof arg === 'string')
+        ? server.args as string[]
+        : [];
+      const isPinnedRemoteWrapper = server.type === 'stdio'
+        && server.command === 'npx'
+        && args[0] === '-y'
+        && args[1] === 'mcp-remote@0.1.38'
+        && typeof args[2] === 'string'
+        && /^https?:\/\//.test(args[2]);
+      if (isDesignBridge || isPinnedRemoteWrapper) safeServers[name] = server;
+    }
+    return Object.keys(safeServers).length > 0
+      ? JSON.stringify({ mcpServers: safeServers })
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 // Bridge job commands that resumeRemoteTurn knows how to replay. Every harness
@@ -131,6 +167,7 @@ export interface DetachedRemoteBridgeJob {
   active: boolean;
   completed: boolean;
   recovered: boolean;
+  idle: boolean;
   hasMetadata: boolean;
   hasExitFile: boolean;
   exitCode?: number | null;
@@ -179,6 +216,7 @@ export interface RemoteCliCapabilities {
   cursor: boolean;
   gemini: boolean;
   opencode: boolean;
+  prime: boolean;
 }
 
 export interface RemoteCliSetupCommand {
@@ -223,19 +261,37 @@ const REMOTE_CLI_SETUP_COMMANDS: Record<keyof RemoteCliCapabilities, RemoteCliSe
     command: 'npm install -g opencode-ai',
     docsUrl: 'https://opencode.ai/docs',
   },
+  prime: {
+    harness: 'prime',
+    label: 'Prime Agent',
+    command: 'curl -fsSL https://app.primeintellect.ai/prime-agent/install.sh | sh',
+    docsUrl: 'https://github.com/PrimeIntellect-ai/prime-agent',
+  },
 };
 
 /**
  * Service for managing SSH connections and remote process execution
  */
 export class SSHService {
+  private sendParableSetupProgress(
+    sessionId: string,
+    status: 'running' | 'completed' | 'error',
+    message: string,
+    output?: string,
+  ): void {
+    for (const window of BrowserWindow.getAllWindows()) {
+      window.webContents.send(IPC_CHANNELS.SSH_SETUP_PROGRESS, {
+        sessionId,
+        status,
+        message,
+        ...(output ? { output } : {}),
+        ...(status === 'error' ? { error: message } : {}),
+      });
+    }
+  }
+
   private connections: Map<string, SSHConnectionInfo> = new Map();
   private connectionTimeout = 30000; // 30 seconds
-
-  // SSH health check intervals — heartbeats to detect dead connections
-  private healthCheckIntervals = new Map<string, ReturnType<typeof setInterval>>();
-  private healthCheckFailures = new Map<string, number>();
-  private readonly MAX_HEALTH_CHECK_FAILURES = 3;
 
   // Performance optimization: Cache remote transcripts with TTL
   private sshTranscriptCache = new Map<string, {
@@ -261,6 +317,7 @@ export class SSHService {
   private remoteGitHubCliAuthCache = new Map<string, { available: boolean; fetchedAt: number }>();
   private readonly REMOTE_GITHUB_AUTH_TTL = 10 * 60 * 1000;
   private remoteBridgeReady = new Map<string, Promise<RemoteBridgeInstall>>();
+  private remoteBridgeValidatedAt = new Map<string, number>();
   private activeTunnels: Set<string> = new Set();
   // A normal foreground result can leave the stream-json bridge alive for a
   // short stdin/iterator unwind window. During that window the renderer must
@@ -395,7 +452,7 @@ export class SSHService {
             client.end();
             resolve({
               success: false,
-              error: 'No supported harness CLI is installed on the remote machine. Install Claude Code, Codex, Cursor Agent, Gemini CLI, or OpenCode first.',
+              error: 'No supported harness CLI is installed on the remote machine. Install Claude Code, Codex, Cursor Agent, Gemini CLI, OpenCode, or Prime Agent first.',
               cliCapabilities: capabilities,
               missingCliInstallCommands,
             });
@@ -480,12 +537,47 @@ export class SSHService {
     });
   }
 
+  async installRemoteCli(
+    config: SSHConfig,
+    harness: keyof RemoteCliCapabilities,
+  ): Promise<{ success: true; output: string; capabilities: RemoteCliCapabilities }> {
+    const setup = REMOTE_CLI_SETUP_COMMANDS[harness];
+    if (!setup) throw new Error(`Unsupported remote harness setup request: ${String(harness)}`);
+    const setupSessionId = `remote-cli-setup-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    await this.connect(setupSessionId, config);
+    try {
+      const output = await this.runRemoteCommand(
+        setupSessionId,
+        config,
+        `set -eu\n${setup.command}\nprintf '\\n__build_cli_setup_complete__\\n'`,
+      );
+      this.remoteCliCapabilitiesCache.delete(this.getRemoteCliCapabilitiesCacheKey(config));
+      const capabilities = await this.detectRemoteCliCapabilities(setupSessionId, config, { force: true });
+      if (!capabilities[harness]) {
+        throw new Error(`${setup.label} installation completed, but Build cannot find its command on the remote PATH.`);
+      }
+      return { success: true, output, capabilities };
+    } finally {
+      this.disconnect(setupSessionId);
+    }
+  }
+
   private stripPathLineSuffix(filePath: string): string {
     const match = filePath.match(/^(.+):(\d+)(?::\d+)?$/);
     if (!match) return filePath;
     const basePath = match[1];
     if (!basePath.includes('/') && !basePath.includes('\\')) return filePath;
     return basePath;
+  }
+
+  /** Run a short command over a reusable SSH connection. */
+  async runRemoteCommand(sessionId: string, config: SSHConfig, command: string): Promise<string> {
+    if (!this.connections.has(sessionId)) {
+      await this.connect(sessionId, config);
+    }
+    const connectionInfo = this.connections.get(sessionId);
+    if (!connectionInfo) throw new Error('SSH connection could not be established.');
+    return this.execCommand(connectionInfo.client, command);
   }
 
   /**
@@ -571,10 +663,97 @@ export class SSHService {
           : remoteDir;
 
       console.log(`[SSH Service] Syncing managed directory ${localDir} -> ${expandedRemoteDir}`);
-      await this.uploadDirectoryViaSftp(client, localDir, expandedRemoteDir);
+      await Promise.race([
+        this.uploadDirectoryViaSftp(client, localDir, expandedRemoteDir),
+        new Promise<never>((_resolve, reject) => setTimeout(
+          () => reject(new Error('remote upload timed out after 60 seconds')),
+          60_000,
+        )),
+      ]);
       return expandedRemoteDir;
     } catch (error) {
       throw new Error(`Failed to sync managed directory ${localDir}: ${(error as Error).message}`);
+    }
+  }
+
+  async ensureRemoteParableRuntime(
+    sessionId: string,
+    config: SSHConfig,
+    localSkillDir: string,
+    vendors: ParableVendor[],
+    localConfigText: string,
+  ): Promise<{ skillDir: string; status: ParableSubscriptionStatus }> {
+    const initial = await this.getRemoteParableSubscriptionStatus(sessionId, config);
+
+    try {
+      if (!initial.ready) {
+        this.sendParableSetupProgress(sessionId, 'running', 'Preparing Parable on this remote host…', 'Checking remote Parable runtime\n');
+      }
+      const remoteSkillDir = await this.syncLocalDirectoryToRemote(
+        sessionId,
+        config,
+        localSkillDir,
+        '~/.claude/skills/parable-build',
+      );
+      const client = await this.getConnection(sessionId, config);
+      let status = await this.getRemoteParableSubscriptionStatus(sessionId, config);
+      if (!status.runtimeInstalled || !status.configured) {
+        this.sendParableSetupProgress(sessionId, 'running', 'Installing Parable runtime and proxy…', 'Uploaded bundled Parable runtime\nInstalling remote prerequisites and pinned proxy (first use only)\n');
+        const vendorList = (['claude', 'chatgpt', 'xai'] as ParableVendor[])
+          .filter((vendor) => vendor === 'claude' || vendors.includes(vendor))
+          .join(',');
+        const setup = [
+          'set -eu',
+          'if ! command -v go >/dev/null 2>&1; then',
+          '  if sudo -n true >/dev/null 2>&1; then sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq golang-go;',
+          '  else echo "Go is required; install Go on this SSH host or enable passwordless sudo." >&2; exit 1; fi',
+          'fi',
+          'mkdir -p "$HOME/.config/parable" && chmod 700 "$HOME/.config/parable"',
+          `timeout 30m flock "$HOME/.config/parable/.build-setup.lock" ${this.quoteForShell(`${remoteSkillDir}/parable.sh`)} --non-interactive --vendors ${this.quoteForShell(vendorList)} --build-proxy --no-auth`,
+          '"$HOME/.local/bin/parable" install',
+        ].join('\n');
+        await this.execCommand(client, setup);
+        status = await this.getRemoteParableSubscriptionStatus(sessionId, config);
+      }
+
+      // Build's Parable settings are authoritative for SSH turns. Credentials
+      // stay in Parable's private auth directory, but parable.toml contains no
+      // provider tokens and must follow the user to each remote host. Without
+      // this sync, a ready host can retain stale generated agents (for example
+      // claude-opus-5 after the catalog moved to claude-opus-4-8).
+      if (!localConfigText.trim()) {
+        throw new Error('Local Parable configuration is empty; save or repair it before starting a remote turn.');
+      }
+      const remoteConfigPath = `${status.configDir}/parable.toml`;
+      const temporaryConfigPath = `${status.configDir}/.parable.toml.build-${process.pid}-${Date.now()}.tmp`;
+      await this.execCommand(client, `mkdir -p ${this.quoteForShell(status.configDir)} && chmod 700 ${this.quoteForShell(status.configDir)}`);
+      await this.writeRemoteFile(sessionId, config, temporaryConfigPath, localConfigText.endsWith('\n') ? localConfigText : `${localConfigText}\n`);
+      try {
+        await this.execCommand(
+          client,
+          `PARABLE_CONFIG=${this.quoteForShell(temporaryConfigPath)} python3 ${this.quoteForShell(`${remoteSkillDir}/scripts/parable.py`)} config --validate`
+          + ` && chmod 600 ${this.quoteForShell(temporaryConfigPath)}`
+          + ` && mv -f ${this.quoteForShell(temporaryConfigPath)} ${this.quoteForShell(remoteConfigPath)}`,
+        );
+      } catch (error) {
+        await this.execCommand(client, `rm -f ${this.quoteForShell(temporaryConfigPath)}`).catch(() => undefined);
+        throw new Error(`Remote Parable settings validation failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      await this.execCommand(client, `${this.quoteForShell(status.launcherPath)} install`);
+
+      if (!status.ready) {
+        this.sendParableSetupProgress(sessionId, 'running', 'Syncing Parable subscription credentials…', 'Runtime and proxy installed\nCopying non-overwriting credential records\n');
+        await this.syncLocalParableAuthToRemote(sessionId, config);
+        status = await this.getRemoteParableSubscriptionStatus(sessionId, config);
+      }
+      status = await this.getRemoteParableSubscriptionStatus(sessionId, config);
+      if (!status.ready) throw new Error(status.error || 'Remote Parable did not become ready after setup.');
+      this.sendParableSetupProgress(sessionId, 'completed', 'Parable is ready on the remote host', 'Remote runtime, proxy, configuration, and credentials verified\n');
+      return { skillDir: remoteSkillDir, status };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.sendParableSetupProgress(sessionId, 'error', `Remote Parable setup failed: ${message}`);
+      throw error;
     }
   }
 
@@ -679,7 +858,7 @@ export class SSHService {
       const remotePath = `${remoteAuthDir}/${entry.name}`;
       const exists = (await this.execCommand(client, `test -e ${this.quoteForShell(remotePath)} && echo yes || echo no`)).trim().endsWith('yes');
       if (exists) {
-        throw new Error(`Remote credential ${entry.name} already exists; refusing to overwrite it.`);
+        continue;
       }
       const temporary = `${remotePath}.claudette-${process.pid}.tmp`;
       await this.uploadFile(client, localPath, temporary);
@@ -1122,6 +1301,7 @@ export class SSHService {
         'for jobdir in "$bridge_dir"/*; do ' +
         'test -d "$jobdir" || continue; ' +
         'test -f "$jobdir/recovered.json" && continue; ' +
+        'test -f "$jobdir/idle.json" && continue; ' +
         'pid="$(cat "$jobdir/pid" 2>/dev/null || true)"; ' +
         'if test -n "$pid" && kill -0 "$pid" 2>/dev/null; then active=1; break; fi; ' +
         'done; ' +
@@ -1143,7 +1323,7 @@ export class SSHService {
       .map((line) => line.trim())
       .filter(Boolean)
       .map((line): DetachedRemoteBridgeJob | null => {
-        const [jobDir, pid, command, active, completed, recovered, hasMetadata, updatedAt, logBytes, logPath, exitPath, hasExitFile, exitCode] = line.split('\t');
+        const [jobDir, pid, command, active, completed, recovered, idle, hasMetadata, updatedAt, logBytes, logPath, exitPath, hasExitFile, exitCode] = line.split('\t');
         if (!jobDir) return null;
         const normalizedJobDir = jobDir.replace(/\/+$/, '');
         const parsedExitCode = exitCode === 'null'
@@ -1163,6 +1343,7 @@ export class SSHService {
           active: active === '1',
           completed: completed === '1',
           recovered: recovered === '1',
+          idle: idle === '1',
           hasMetadata: hasMetadata === '1',
           hasExitFile: hasExitFile === '1',
           exitCode: parsedExitCode,
@@ -1197,10 +1378,11 @@ export class SSHService {
         'if test "$hasexit" = "1"; then completed=1; ' +
         'elif test "$active" = "0" && test -f "$log" && grep -q \'"type":"result"\' "$log" 2>/dev/null; then completed=1; fi; ' +
         'recovered=0; test -f "$recoveredfile" && recovered=1; ' +
+        'idle=0; test -f "$jobdir/idle.json" && idle=1; ' +
         'metadata=0; test -f "$jobdir/metadata.json" && metadata=1; ' +
         'updated="$(stat -c %Y "$jobdir" 2>/dev/null || stat -f %m "$jobdir" 2>/dev/null || echo 0)"; ' +
         'bytes="$(wc -c < "$log" 2>/dev/null || echo 0)"; ' +
-        'printf "%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n" "$jobdir" "$pid" "$cmdname" "$active" "$completed" "$recovered" "$metadata" "$updated" "$bytes" "$log" "$exitfile" "$hasexit" "$exitcode"; ' +
+        'printf "%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n" "$jobdir" "$pid" "$cmdname" "$active" "$completed" "$recovered" "$idle" "$metadata" "$updated" "$bytes" "$log" "$exitfile" "$hasexit" "$exitcode"; ' +
         'done; ' +
         'fi; true'
       );
@@ -1223,6 +1405,7 @@ export class SSHService {
     const recentCompletedCutoff = Math.floor((Date.now() - 24 * 60 * 60 * 1000) / 1000);
     return jobs.find((job) => {
       if (job.recovered) return false;
+      if (job.idle) return false;
       // Recovery replay needs a harness-specific stream parser; only commands
       // with one registered in resumeRemoteTurn are recoverable.
       if (job.command && !RECOVERABLE_BRIDGE_COMMANDS.has(job.command)) return false;
@@ -1299,6 +1482,26 @@ export class SSHService {
       );
     } catch (error) {
       console.warn(`[SSH Service] Failed to mark bridge job recovered for ${sessionId}:`, error);
+    }
+  }
+
+  async setDetachedBridgeJobIdle(
+    sessionId: string,
+    config: SSHConfig,
+    jobDir: string,
+    idle: boolean,
+  ): Promise<void> {
+    const safeJobDir = jobDir.replace(/\/+$/, '');
+    if (!safeJobDir.startsWith(this.getDetachedBridgeSessionDir(sessionId) + '/')) {
+      throw new Error('Refusing to update idle state for unrelated bridge job');
+    }
+    const client = await this.getConnection(sessionId, config);
+    const marker = `${safeJobDir}/idle.json`;
+    if (idle) {
+      const payload = JSON.stringify({ idleAt: new Date().toISOString() });
+      await this.execCommand(client, `printf %s ${this.quoteForShell(payload)} > ${this.quoteForShell(marker)}`);
+    } else {
+      await this.execCommand(client, `rm -f ${this.quoteForShell(marker)}`);
     }
   }
 
@@ -1666,6 +1869,7 @@ detect_cli codex codex
 detect_cli cursor cursor-agent agent
 detect_cli opencode opencode npx
 detect_cli gemini gemini
+detect_cli prime prime-agent
 `;
   }
 
@@ -1676,10 +1880,11 @@ detect_cli gemini gemini
       cursor: false,
       gemini: false,
       opencode: false,
+      prime: false,
     };
 
     for (const line of output.split('\n')) {
-      const match = /^(claude|codex|cursor|gemini|opencode)=(0|1)$/.exec(line.trim());
+      const match = /^(claude|codex|cursor|gemini|opencode|prime)=(0|1)$/.exec(line.trim());
       if (!match) continue;
       capabilities[match[1] as keyof RemoteCliCapabilities] = match[2] === '1';
     }
@@ -1730,6 +1935,7 @@ detect_cli gemini gemini
         cursor: false,
         gemini: false,
         opencode: false,
+        prime: false,
       };
 
       try {
@@ -1883,6 +2089,14 @@ done
     const existing = this.remoteBridgeReady.get(key);
     if (existing) {
       const install = await existing;
+      // The bridge executable is installed under the remote user's home, not
+      // inside the per-turn /tmp job directory. Do not probe the same stable
+      // file again for every channel and every turn. A launch failure still
+      // clears this cache and performs one clean reinstall below.
+      const lastValidatedAt = this.remoteBridgeValidatedAt.get(key) || 0;
+      if (Date.now() - lastValidatedAt < 5 * 60_000) {
+        return install;
+      }
       try {
         const client = await this.getConnection(sessionId, config);
         const validation = await this.execCommand(
@@ -1890,6 +2104,7 @@ done
           `test -s ${this.quoteForShell(install.bridgePath)} && echo ready || echo missing`
         );
         if (validation.trim().split('\n').pop() === 'ready') {
+          this.remoteBridgeValidatedAt.set(key, Date.now());
           return install;
         }
       } catch (error) {
@@ -1903,6 +2118,7 @@ done
         return current;
       }
       this.remoteBridgeReady.delete(key);
+      this.remoteBridgeValidatedAt.delete(key);
       console.warn('[SSH Service] Cached detached bridge install is missing; reinstalling');
     }
 
@@ -1941,7 +2157,9 @@ done
     });
 
     this.remoteBridgeReady.set(key, promise);
-    return promise;
+    const install = await promise;
+    this.remoteBridgeValidatedAt.set(key, Date.now());
+    return install;
   }
 
   private createDetachedBridgeConfig(
@@ -2496,13 +2714,16 @@ done
       try {
         const launchState = await this.launchDetachedRemoteBridge(sessionId, config, bridge);
         bridgeLaunched = true;
-        await attachReader();
-        if (launchState === 'running') {
-          await openStdinBridge();
-        }
+        // Both channels depend on the detached process, but not on each other.
+        // Opening them in sequence adds a full SSH round trip to every remote
+        // harness turn before its first JSON-RPC request can be written.
+        await Promise.all([
+          attachReader(),
+          launchState === 'running' ? openStdinBridge() : Promise.resolve(),
+        ]);
         exitPoller = setInterval(() => {
           void pollForExit();
-        }, 1000);
+        }, DETACHED_EXIT_POLL_MS);
         if (launchState === 'exited') {
           void pollForExit();
         }
@@ -2515,7 +2736,7 @@ done
           });
           exitPoller = setInterval(() => {
             void pollForExit();
-          }, 1000);
+          }, DETACHED_EXIT_POLL_MS);
           return;
         }
 
@@ -2587,6 +2808,7 @@ done
       get exitCode() {
         return exitCode;
       },
+      remoteBridgeJobDir: bridge.jobDir,
       kill: (signal: NodeJS.Signals) => {
         if (killed) return false;
         killed = true;
@@ -2974,14 +3196,14 @@ done
         await openStdinBridge();
         exitPoller = setInterval(() => {
           void pollForExit();
-        }, 1000);
+        }, DETACHED_EXIT_POLL_MS);
         void pollForExit();
       } catch (error) {
         console.warn('[SSH Service] Initial recovered bridge attach failed; retrying:', error);
         scheduleReaderReconnect();
         exitPoller = setInterval(() => {
           void pollForExit();
-        }, 1000);
+        }, DETACHED_EXIT_POLL_MS);
       }
     })();
 
@@ -3129,6 +3351,7 @@ done
 
     const installKey = this.getRemoteBridgeInstallKey(config);
     this.remoteBridgeReady.delete(installKey);
+    this.remoteBridgeValidatedAt.delete(installKey);
     if (attempt === 0) {
       console.warn(`[SSH Service] Detached bridge did not become ready; reinstalling once (${diagnostic.trim()})`);
       await this.killDetachedProcess(sessionId, config, bridge).catch(() => undefined);
@@ -3285,17 +3508,11 @@ done
     });
   }
 
-  /**
-   * Start a health check heartbeat for an SSH connection.
-   * Sends `echo ok` every 30 seconds.
-   *
-   * Important: this check must be non-disruptive. We already rely on ssh2's
-   * keepalive (`keepaliveInterval` / `keepaliveCountMax`) and close/error events
-   * for authoritative connection state. If this exec-based heartbeat times out
-   * under load, force-disconnecting creates reconnect loops.
-   */
-  // Track which sessions are actively being used (streaming, sending messages).
-  // Only these get health checks — idle connections are cleaned up on next use.
+  // ssh2 already sends protocol keepalives every 10 seconds. Older builds also
+  // opened `echo ok` exec channels while a harness was busy. Those channels
+  // competed with detached output, stdin, MCP, and exit-poll channels and made
+  // healthy long turns report false timeouts. Keep this API for callers, but do
+  // not add a second heartbeat mechanism.
   private activeSessionIds = new Set<string>();
 
   markSessionActive(sessionId: string): void {
@@ -3304,82 +3521,15 @@ done
 
   markSessionInactive(sessionId: string): void {
     this.activeSessionIds.delete(sessionId);
-    this.stopHealthCheck(sessionId);
   }
 
-  private startHealthCheck(sessionId: string): void {
-    // Only health-check sessions that are actively being used.
-    // With 128+ SSH sessions, health-checking all of them saturates the
-    // SSH connection to the remote host and causes beachballs/crashes.
-    if (!this.activeSessionIds.has(sessionId)) {
-      return;
-    }
-    this.stopHealthCheck(sessionId); // Clear any existing interval
-    this.healthCheckFailures.delete(sessionId);
-
-    const interval = setInterval(async () => {
-      const conn = this.connections.get(sessionId);
-      if (!conn) {
-        this.stopHealthCheck(sessionId);
-        return;
-      }
-
-      try {
-        await new Promise<void>((resolve, reject) => {
-          const timeout = setTimeout(() => reject(new Error('Health check timeout')), 10000);
-          conn.client.exec('echo ok', (err, channel) => {
-            if (err) {
-              clearTimeout(timeout);
-              reject(err);
-              return;
-            }
-            // Must consume stdout or the stream stays paused and 'close' never fires
-            channel.on('data', () => { /* drain */ });
-            channel.stderr.on('data', () => { /* drain */ });
-            channel.on('close', () => {
-              clearTimeout(timeout);
-              resolve();
-            });
-            channel.on('error', (e: Error) => {
-              clearTimeout(timeout);
-              reject(e);
-            });
-          });
-        });
-
-        this.healthCheckFailures.delete(sessionId);
-      } catch (error) {
-        const failures = (this.healthCheckFailures.get(sessionId) || 0) + 1;
-        this.healthCheckFailures.set(sessionId, failures);
-        console.warn(
-          `[SSH Service] Health check failed for session ${sessionId} (${failures}/${this.MAX_HEALTH_CHECK_FAILURES}):`,
-          error
-        );
-
-        // Keep the connection alive; let ssh2 keepalive + real close/error events
-        // drive reconnection. Stop noisy heartbeats after repeated failures.
-        if (failures >= this.MAX_HEALTH_CHECK_FAILURES) {
-          console.warn(
-            `[SSH Service] Disabling heartbeat checks for ${sessionId} after repeated failures (connection remains active)`
-          );
-          this.stopHealthCheck(sessionId);
-        }
-      }
-    }, 30000);
-
-    this.healthCheckIntervals.set(sessionId, interval);
-  }
+  private startHealthCheck(_sessionId: string): void {}
 
   /**
    * Stop the health check heartbeat for a session
    */
   private stopHealthCheck(sessionId: string): void {
-    const interval = this.healthCheckIntervals.get(sessionId);
-    if (interval) {
-      clearInterval(interval);
-      this.healthCheckIntervals.delete(sessionId);
-    }
-    this.healthCheckFailures.delete(sessionId);
+    this.activeSessionIds.delete(sessionId);
   }
 
   /**
@@ -4802,7 +4952,10 @@ CONFIG_EOF`);
           });
         });
       };
-      const concurrency = 8;
+      // ssh2's SFTP wrapper can stall when several fastPut operations share a
+      // high-latency channel. These managed directories are tiny; sequential
+      // transfer is both faster in practice and gives us deterministic failure.
+      const concurrency = 1;
       for (let index = 0; index < files.length; index += concurrency) {
         await Promise.all(files.slice(index, index + concurrency).map(uploadFile));
       }

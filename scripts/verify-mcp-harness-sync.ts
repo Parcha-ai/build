@@ -279,8 +279,8 @@ command = "old"
     'DesignMode activation must not mutate global harness MCP configuration',
   );
   assert.ok(
-    claudeSource.includes("disallowedTools: ['DesignSync']"),
-    'Claude must not substitute DesignSync for Build\'s DesignMode capability',
+    !claudeSource.includes("disallowedTools: ['DesignSync']"),
+    'Claude must expose native DesignSync alongside Build DesignMode',
   );
   assert.ok(
     !claudeSource.includes('sshService.scheduleMcpConfigsToRemote(sessionId, session.sshConfig)')

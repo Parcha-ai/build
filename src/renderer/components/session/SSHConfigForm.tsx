@@ -19,6 +19,7 @@ type RemoteCliCapabilities = {
   cursor?: boolean;
   gemini?: boolean;
   opencode?: boolean;
+  prime?: boolean;
 };
 
 type RemoteCliSetupCommand = {
@@ -34,9 +35,10 @@ const REMOTE_HARNESS_LABELS: Record<keyof RemoteCliCapabilities, string> = {
   cursor: 'Cursor',
   gemini: 'Gemini',
   opencode: 'OpenCode',
+  prime: 'Prime Agent',
 };
 
-const REMOTE_HARNESS_ORDER: Array<keyof RemoteCliCapabilities> = ['claude', 'codex', 'cursor', 'gemini', 'opencode'];
+const REMOTE_HARNESS_ORDER: Array<keyof RemoteCliCapabilities> = ['claude', 'codex', 'cursor', 'gemini', 'opencode', 'prime'];
 
 function getRemoteHarnessLabels(capabilities?: RemoteCliCapabilities): string[] {
   if (!capabilities) return [];
@@ -72,6 +74,8 @@ export default function SSHConfigForm({ onBack, onConnect, teleportSource, onTel
 
   // Status
   const [isTesting, setIsTesting] = useState(false);
+  const [installingHarness, setInstallingHarness] = useState<keyof RemoteCliCapabilities | null>(null);
+  const [installError, setInstallError] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<{
     success: boolean;
     error?: string;
@@ -252,6 +256,40 @@ export default function SSHConfigForm({ onBack, onConnect, teleportSource, onTel
       setResumeCandidates([]);
     } finally {
       setIsTesting(false);
+    }
+  };
+
+  const handleInstallRemoteHarness = async (harness: keyof RemoteCliCapabilities) => {
+    if (!host || !username || !privateKeyPath || !remoteWorkdir) {
+      setInstallError('Fill in the host, username, key, and remote directory first.');
+      return;
+    }
+
+    setInstallingHarness(harness);
+    setInstallError(null);
+    try {
+      const config: SSHConfig = {
+        host,
+        port: parseInt(port) || 22,
+        username,
+        privateKeyPath,
+        remoteWorkdir,
+        passphrase: passphrase || undefined,
+      };
+      const result = await window.electronAPI.ssh.installCli(config, harness);
+      const nextCapabilities = result.capabilities;
+      setTestResult((current) => ({
+        ...(current || { success: true }),
+        success: true,
+        cliCapabilities: nextCapabilities,
+        setupWarning: undefined,
+        missingCliInstallCommands: current?.missingCliInstallCommands?.filter((setup) => setup.harness !== harness),
+      }));
+      await handleTestConnection();
+    } catch (error) {
+      setInstallError(error instanceof Error ? error.message : `Could not install ${REMOTE_HARNESS_LABELS[harness]}.`);
+    } finally {
+      setInstallingHarness(null);
     }
   };
 
@@ -709,6 +747,17 @@ export default function SSHConfigForm({ onBack, onConnect, teleportSource, onTel
                     </code>
                     <button
                       type="button"
+                      onClick={() => handleInstallRemoteHarness(setup.harness)}
+                      disabled={installingHarness !== null}
+                      className="px-2 py-1 border border-claude-accent text-claude-accent hover:bg-claude-accent/10 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
+                      title={`Install ${setup.label} on this remote computer`}
+                      style={{ borderRadius: 0 }}
+                    >
+                      {installingHarness === setup.harness && <Loader2 size={10} className="animate-spin" />}
+                      {installingHarness === setup.harness ? 'INSTALLING...' : 'INSTALL'}
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => navigator.clipboard?.writeText(setup.command).catch(() => undefined)}
                       className="p-1 border border-claude-border text-claude-text-secondary hover:text-claude-text hover:bg-claude-surface"
                       title={`Copy ${setup.label} install command`}
@@ -718,6 +767,9 @@ export default function SSHConfigForm({ onBack, onConnect, teleportSource, onTel
                     </button>
                   </div>
                 ))}
+                {installError && (
+                  <div className="mt-2 text-[9px] text-red-300">{installError}</div>
+                )}
               </div>
             )}
           </div>
@@ -740,7 +792,8 @@ export default function SSHConfigForm({ onBack, onConnect, teleportSource, onTel
               <code className="bg-claude-bg px-1">codex</code>,{' '}
               <code className="bg-claude-bg px-1">cursor-agent</code>,{' '}
               <code className="bg-claude-bg px-1">gemini</code>, or{' '}
-              <code className="bg-claude-bg px-1">opencode</code>.
+              <code className="bg-claude-bg px-1">opencode</code>, or{' '}
+              <code className="bg-claude-bg px-1">prime-agent</code>.
             </span>
           </div>
         )}

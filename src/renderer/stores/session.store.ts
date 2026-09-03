@@ -597,7 +597,7 @@ export function isCodexModel(model?: string | null): boolean {
 
 export function isNonClaudeHarness(model?: string | null): boolean {
   if (!model) return false;
-  return model.startsWith('codex:') || model.startsWith('cursor:') || model.startsWith('gemini:') || model.startsWith('opencode:');
+  return model.startsWith('codex:') || model.startsWith('cursor:') || model.startsWith('gemini:') || model.startsWith('opencode:') || model.startsWith('prime:');
 }
 
 export function harnessFromModel(model?: string | null): Harness {
@@ -606,6 +606,7 @@ export function harnessFromModel(model?: string | null): Harness {
   if (model.startsWith('cursor:')) return 'cursor';
   if (model.startsWith('gemini:')) return 'gemini';
   if (model.startsWith('opencode:')) return 'opencode';
+  if (model.startsWith('prime:')) return 'prime';
   if (model.startsWith('custom:')) return 'custom';
   return 'claude';
 }
@@ -1439,7 +1440,7 @@ function extractAutoBuildSection(content: string, title: string): string {
 type WorkflowFailuresMetadata = NonNullable<NonNullable<ChatMessage['metadata']>['workflowFailures']>;
 
 function isHarnessValue(value: unknown): value is Harness {
-  return value === 'claude' || value === 'codex' || value === 'cursor' || value === 'gemini' || value === 'opencode' || value === 'custom';
+  return value === 'claude' || value === 'codex' || value === 'cursor' || value === 'gemini' || value === 'opencode' || value === 'prime' || value === 'custom';
 }
 
 function isTaskTierValue(value: unknown): value is TaskTier {
@@ -2862,6 +2863,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     if (recentlyQueuedSame) {
       console.warn(`[SessionStore] Suppressing duplicate queued message for ${sessionId}`);
       return;
+    }
+
+    // Name every new tab from its first real request regardless of which
+    // execution harness handles the turn. The backend protects manual titles.
+    if (!suppressUserMessage && normalizedMessage) {
+      void window.electronAPI.sessions.autoTitle(sessionId, normalizedMessage)
+        .catch((error) => console.warn('[SessionStore] Automatic tab naming failed:', error));
     }
 
     // If the user sends a quick follow-up before the agent has visibly started,

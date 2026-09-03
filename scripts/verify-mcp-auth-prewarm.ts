@@ -52,6 +52,13 @@ async function main(): Promise<void> {
       (await fs.stat(path.join(prepared.authDir, `${completePrefix}tokens.json`))).mode & 0o777,
       0o600,
     );
+    await fs.rm(path.join(prepared.authDir, `${completePrefix}tokens.json`));
+    const preparedAgain = await ensurePinnedMcpRemoteAuthDirectory(tempRoot);
+    assert.equal(preparedAgain.migratedFiles, 0);
+    await assert.rejects(
+      fs.access(path.join(prepared.authDir, `${completePrefix}tokens.json`)),
+      'an invalidated token must not be resurrected from an older version directory',
+    );
 
     const notionUrl = 'https://mcp.notion.com/mcp';
     const notionPrefix = 'cb42d1a06ae8db4e5585a26f2e5ca947';
@@ -77,6 +84,10 @@ async function main(): Promise<void> {
     assert.match(mcpService, /if \(lastAttempt\) \{\s*return Promise\.resolve\(lastAttempt\);/);
     assert.match(mcpService, /this\.remoteAuthReadiness\.get\(serverId\) !== true/);
     assert.match(mcpService, /hasCompletedMcpRemoteAuth\(remoteUrl\)/);
+    assert.match(mcpService, /async syncCodexHarnessConfig\(\): Promise<void>/);
+    assert.match(mcpService, /await this\.prepareConfiguredRemoteAuth\(\);/);
+    assert.match(codexService, /await mcpService\.syncCodexHarnessConfig\(\);/);
+    assert.match(codexService, /if \(!sshConfig\)/);
     assert.match(mcpService, /mergeMcpJsonFile\(path\.join\(homeDir, '\.cursor', 'mcp\.json'\), \{\}, removeServerIdSet\)/);
     assert.doesNotMatch(sshService, /await mcpSvc\.ensureConfiguredRemoteAuth\(\)/);
     assert.match(sshService, /await mcpSvc\.prepareConfiguredRemoteAuth\(\)/);
@@ -84,6 +95,22 @@ async function main(): Promise<void> {
     assert.match(sshService, /getClaudeMcpSyncDataForSSH\(/);
     assert.match(sshService, /getHarnessMcpSyncDataForSSH\(/);
     assert.match(sshService, /cached\.fingerprint === fingerprint/);
+    const remoteSyncStart = sshService.indexOf('private async syncMcpConfigsToRemoteInternal');
+    const buildSyncAt = sshService.indexOf('await this.syncBuildMcpServersInternal', remoteSyncStart);
+    const authSyncAt = sshService.indexOf('await this.syncMcpAuthInternal(client, true);', buildSyncAt);
+    const harnessSyncAt = sshService.indexOf('await this.syncHarnessMcpConfigsInternal', authSyncAt);
+    assert.ok(
+      remoteSyncStart >= 0 && buildSyncAt > remoteSyncStart && authSyncAt > buildSyncAt && harnessSyncAt > authSyncAt,
+      'remote OAuth state must finish syncing before harness configuration is exposed',
+    );
+    assert.doesNotMatch(
+      sshService,
+      /MCP auth token sync running in background/,
+      'routine remote startup must not leave OAuth state syncing in the background',
+    );
+    const syncKeyAt = sshService.indexOf('const syncKey = this.getMcpConfigSyncKey(config);');
+    const reuseAt = sshService.indexOf('this.mcpConfigSyncInFlight.get(syncKey)', syncKeyAt);
+    assert.ok(syncKeyAt >= 0 && reuseAt > syncKeyAt, 'concurrent turns on the same SSH host must share one MCP sync');
     assert.doesNotMatch(codexService, /sshService\.(?:sync|schedule)Mcp(?:Auth|Configs)ToRemote/);
     assert.doesNotMatch(sshService, /versionEntries\.at\(-1\)/);
 

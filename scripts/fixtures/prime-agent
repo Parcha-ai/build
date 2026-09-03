@@ -1,0 +1,17 @@
+#!/bin/sh
+set -eu
+
+prompt="$(cat)"
+case "$prompt" in
+  *PRIME_LIVE_SMOKE_PROMPT*) ;;
+  *)
+    printf '%s\n' '{"type":"error","message":"Build did not send the expected prompt over stdin."}'
+    exit 2
+    ;;
+esac
+
+printf '%s\n' '{"type":"session","id":"prime-live-smoke-session"}'
+printf '%s\n' '{"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","delta":"Checking the isolated fixture. "}}'
+printf '%s\n' '{"type":"tool_execution_start","toolCallId":"prime-live-tool","toolName":"read_file","args":{"path":"fixture.txt"}}'
+printf '%s\n' '{"type":"tool_execution_end","toolCallId":"prime-live-tool","toolName":"read_file","args":{"path":"fixture.txt"},"result":"fixture-ok","isError":false}'
+printf '%s\n' '{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"Prime Agent live smoke passed."}}'

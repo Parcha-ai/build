@@ -16,9 +16,11 @@ import SessionSwitcher from './components/session/SessionSwitcher';
 import QMDPrompt from './components/qmd/QMDPrompt';
 import LunchLockModal from './components/layout/LunchLockModal';
 import BedtimeLockModal from './components/layout/BedtimeLockModal';
-import DailyReviewModal from './components/tasks/DailyReviewModal';
+import DailyReviewModal, { type PlanningCalendarEvent } from './components/tasks/DailyReviewModal';
+import PlanningLockErrorBoundary from './components/tasks/PlanningLockErrorBoundary';
 import BedtimeTaskReviewModal from './components/tasks/BedtimeTaskReviewModal';
-import { Terminal, Globe, PanelRight, Settings, PanelLeftClose, Monitor, AlertTriangle, Package, FileText, FileCode, ClipboardList, GitBranch, Plus } from 'lucide-react';
+import { Terminal, Globe, PanelRight, Settings, PanelLeftClose, Monitor, AlertTriangle, Package, FileText, FileCode, ClipboardList, GitBranch, Plus, Activity } from 'lucide-react';
+import DockerHealthDashboard from './components/docker/DockerHealthDashboard';
 import OpenDesignIcon from './components/design/OpenDesignIcon';
 import { getBrowserPartitionId } from '../shared/utils/browser-partition';
 import { openLinkInAppBrowser } from './utils/open-link-in-browser';
@@ -33,6 +35,36 @@ const DAILY_REVIEW_DONE_KEY = 'daily-review-date';
 const DAILY_REVIEW_CLAIM_KEY = 'daily-review-active-window';
 const DAILY_REVIEW_WINDOW_ID_KEY = 'daily-review-window-id';
 const DAILY_REVIEW_CLAIM_TTL_MS = 6 * 60 * 60 * 1000;
+const EVENING_PLANNING_DONE_KEY = 'evening-planning-date';
+
+function formatGoogleCalendarDate(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  const hour = String(date.getHours()).padStart(2, '0');
+  const minute = String(date.getMinutes()).padStart(2, '0');
+  return `${year}${month}${day}T${hour}${minute}00`;
+}
+
+function createPlanningCalendarUrl(calendarUrl: string, event: PlanningCalendarEvent): string {
+  let configured: URL;
+  try {
+    configured = new URL(calendarUrl);
+  } catch {
+    configured = new URL('https://calendar.google.com/calendar/u/0/r');
+  }
+  if (!configured.hostname.endsWith('calendar.google.com')) return configured.toString();
+
+  const start = new Date(`${event.date}T${event.time}:00`);
+  const end = new Date(start.getTime() + event.durationMinutes * 60_000);
+  const params = new URLSearchParams({
+    action: 'TEMPLATE',
+    text: event.title,
+    dates: `${formatGoogleCalendarDate(start)}/${formatGoogleCalendarDate(end)}`,
+    details: 'Planned in Build',
+  });
+  return `https://calendar.google.com/calendar/render?${params.toString()}`;
+}
 
 function getDailyReviewWindowId() {
   try {
@@ -275,6 +307,7 @@ const StatusBarClock = memo(function StatusBarClock({
 
 // Main App component that requires Electron
 function ElectronApp() {
+  const [isDockerHealthOpen, setDockerHealthOpen] = useState(false);
   const { user, isLoading, isDevMode } = useAuthStore();
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
   const sessions = useSessionStore((s) => s.sessions);
@@ -332,6 +365,7 @@ function ElectronApp() {
   const [bedtimeTime, setBedtimeTime] = useState('23:00');
   const [showDailyReviewModal, setShowDailyReviewModal] = useState(false);
   const [showBedtimeTaskReviewModal, setShowBedtimeTaskReviewModal] = useState(false);
+  const [showEveningPlanningLock, setShowEveningPlanningLock] = useState(false);
   const dailyReviewWindowId = useMemo(() => getDailyReviewWindowId(), []);
 
   const activeSession = sessions.find((s) => s.id === activeSessionId);
@@ -541,6 +575,54 @@ function ElectronApp() {
   const handleBedtimeTaskReviewDismiss = () => {
     localStorage.setItem('bedtime-task-review-date', new Date().toDateString());
     setShowBedtimeTaskReviewModal(false);
+  };
+
+  useEffect(() => {
+    const checkPlanningLock = async () => {
+      const settings = await window.electronAPI.settings.get();
+      if (settings.eveningPlanningLockEnabled === false) {
+        setShowEveningPlanningLock(false);
+        await window.electronAPI.app.setPlanningLock(false);
+        return;
+      }
+      const now = new Date();
+      const [hour, minute] = (settings.eveningPlanningLockTime || '22:30').split(':').map(Number);
+      const due = now.getHours() > hour || (now.getHours() === hour && now.getMinutes() >= minute);
+      const completed = localStorage.getItem(EVENING_PLANNING_DONE_KEY) === now.toDateString();
+      if (due && !completed) {
+        setShowEveningPlanningLock(true);
+        await window.electronAPI.app.setPlanningLock(
+          true,
+          settings.eveningPlanningCalendarUrl || 'https://calendar.google.com/calendar/u/0/r',
+        );
+      } else {
+        // A lock that was opened before midnight must not survive into the
+        // next day. The next planning window starts at the configured time.
+        setShowEveningPlanningLock(false);
+        await window.electronAPI.app.setPlanningLock(false);
+      }
+    };
+    const interval = setInterval(checkPlanningLock, 60000);
+    void checkPlanningLock();
+    return () => clearInterval(interval);
+  }, []);
+
+  const handleEveningPlanningComplete = () => {
+    localStorage.setItem(EVENING_PLANNING_DONE_KEY, new Date().toDateString());
+    setShowEveningPlanningLock(false);
+    void window.electronAPI.app.setPlanningLock(false);
+  };
+
+  const handleOpenPlanningCalendarEvents = async (events: PlanningCalendarEvent[]) => {
+    const settings = await window.electronAPI.settings.get();
+    const calendarUrl = settings.eveningPlanningCalendarUrl || 'https://calendar.google.com/calendar/u/0/r';
+    for (const event of events) {
+      await openLinkInAppBrowser(
+        createPlanningCalendarUrl(calendarUrl, event),
+        activeSessionId,
+        { forceInApp: true, newTab: true, tabName: `Plan: ${event.title}` },
+      );
+    }
   };
 
   useEffect(() => {
@@ -844,7 +926,7 @@ function ElectronApp() {
   }
 
   return (
-    <div className="h-screen w-screen flex flex-col bg-claude-bg overflow-hidden">
+    <div className={`h-screen w-screen flex flex-col bg-claude-bg overflow-hidden ${showEveningPlanningLock ? 'planning-lock-active' : ''}`}>
       {/* Title bar with drag region and controls */}
       <div
         className="h-8 bg-claude-surface border-b border-claude-border flex items-center justify-between"
@@ -878,6 +960,13 @@ function ElectronApp() {
           className="flex items-center gap-0.5 px-2"
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
         >
+          <button
+            onClick={() => setDockerHealthOpen(true)}
+            className={`p-1 transition-colors hover:text-green-400 ${isDockerHealthOpen ? 'text-green-400' : 'text-claude-text-secondary'}`}
+            title="Docker Health"
+          >
+            <Activity size={14} />
+          </button>
           <button
             onClick={toggleTerminalPanel}
             className={`p-1 transition-colors hover:text-claude-text ${
@@ -1003,6 +1092,8 @@ function ElectronApp() {
       {/* Settings Dialog */}
       <SettingsDialog />
 
+      <DockerHealthDashboard isOpen={isDockerHealthOpen} onClose={() => setDockerHealthOpen(false)} />
+
       {/* API Key Onboarding */}
       <ApiKeyOnboarding />
 
@@ -1024,6 +1115,18 @@ function ElectronApp() {
       )}
       {showDailyReviewModal && (
         <DailyReviewModal onDismiss={handleDailyReviewDismiss} />
+      )}
+      {showEveningPlanningLock && (
+        <PlanningLockErrorBoundary>
+          <DailyReviewModal
+            onDismiss={handleEveningPlanningComplete}
+            onOpenCalendarEvents={handleOpenPlanningCalendarEvents}
+            title="Plan Tomorrow"
+            description="Review your calendar, capture loose ends, rank tomorrow's work, and commit to the first move. Build stays locked until you finish."
+            lockMode
+            sessionDurationMinutes={15}
+          />
+        </PlanningLockErrorBoundary>
       )}
       {showBedtimeTaskReviewModal && (
         <BedtimeTaskReviewModal onDismiss={handleBedtimeTaskReviewDismiss} />

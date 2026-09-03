@@ -29,6 +29,27 @@ assert.deepEqual(
   ['--output-format', 'stream-json', '--setting-sources=user,project'],
   'remote Claude argument filtering must remove --mcp-config with its local-only value',
 );
+const safeDesignConfig = JSON.stringify({
+  mcpServers: {
+    'claudette-design': { type: 'http', url: 'http://127.0.0.1:43123/mcp' },
+    linear: { type: 'stdio', command: 'npx', args: ['-y', 'mcp-remote@0.1.38', 'https://mcp.linear.app/mcp'] },
+    local: { command: '/local/node_modules/tool' },
+  },
+});
+assert.deepEqual(
+  filterRemoteClaudeArguments(['--verbose', '--mcp-config', safeDesignConfig, '--effort', 'low']),
+  [
+    '--verbose',
+    '--mcp-config',
+    JSON.stringify({ mcpServers: {
+      'claudette-design': { type: 'http', url: 'http://127.0.0.1:43123/mcp' },
+      linear: { type: 'stdio', command: 'npx', args: ['-y', 'mcp-remote@0.1.38', 'https://mcp.linear.app/mcp'] },
+    } }),
+    '--effort',
+    'low',
+  ],
+  'remote Claude must retain the DesignMode bridge and pinned authenticated mcp-remote wrappers',
+);
 assert.equal(normalizeRemoteWorkdir('Worktree: /home/ubuntu/worktrees/example'), '/home/ubuntu/worktrees/example');
 assert.equal(normalizeRemoteWorkdir('CWD: "~/project"'), '~/project');
 assert.equal(normalizeRemoteWorkdir('/home/ubuntu/project'), '/home/ubuntu/project');
@@ -127,6 +148,11 @@ assert.doesNotMatch(
 assert.match(hasActiveRemoteProcessMethod, /active=1; break/);
 assert.match(hasActiveRemoteProcessMethod, /bridge_dir=/);
 assert.match(hasActiveRemoteProcessMethod, /test -f "\$jobdir\/recovered\.json" && continue/);
+assert.match(
+  hasActiveRemoteProcessMethod,
+  /test -f "\$jobdir\/idle\.json" && continue/,
+  'an idle warm app-server must not block queue drain or look like an active user turn',
+);
 assert.doesNotMatch(
   hasActiveRemoteProcessMethod,
   /listDetachedBridgeJobs/,
@@ -146,6 +172,9 @@ assert.ok(
   ),
   'stdout result should only complete inactive detached bridge jobs'
 );
+assert.match(listDetachedBridgeJobsMethod, /idle=0; test -f "\$jobdir\/idle\.json" && idle=1/);
+assert.match(sshService, /if \(job\.idle\) return false;/);
+assert.match(sshService, /async setDetachedBridgeJobIdle\(/);
 
 const attachDetachedStart = sshService.indexOf('private attachDetachedCommandProcess');
 const launchDetachedStart = sshService.indexOf('private async launchDetachedRemoteBridge', attachDetachedStart);

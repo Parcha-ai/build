@@ -46,6 +46,7 @@ type ProvidersState = {
   cursor: ProviderStatus;
   gemini: ProviderStatus;
   opencode: ProviderStatus;
+  prime: ProviderStatus;
 };
 
 const SCAN_PHASES = [
@@ -54,6 +55,7 @@ const SCAN_PHASES = [
   { label: 'Detecting Cursor Agent', duration: 500 },
   { label: 'Detecting Gemini CLI', duration: 500 },
   { label: 'Detecting OpenCode', duration: 500 },
+  { label: 'Detecting Prime Agent', duration: 500 },
   { label: 'Scanning local sessions', duration: 700 },
 ];
 
@@ -73,6 +75,7 @@ export default function ApiKeyOnboarding() {
     cursor: { loggedIn: false },
     gemini: { loggedIn: false },
     opencode: { loggedIn: false },
+    prime: { loggedIn: false },
   });
 
   // Run scanning animation + real provider detection in parallel
@@ -154,8 +157,9 @@ export default function ApiKeyOnboarding() {
   // Auto-poll providers while onboarding is open and something isn't ready
   useEffect(() => {
     if (!isOnboardingOpen || !scanComplete) return;
-    const allReady = providers.claude.loggedIn && providers.codex.loggedIn &&
-      providers.cursor.loggedIn && providers.gemini.loggedIn && providers.opencode.loggedIn;
+    const allReady = providers.claude.loggedIn && providers.codex.loggedIn
+      && providers.cursor.loggedIn && providers.gemini.loggedIn
+      && providers.opencode.loggedIn && providers.prime.loggedIn;
     if (allReady) return;
 
     const interval = setInterval(() => {
@@ -164,9 +168,9 @@ export default function ApiKeyOnboarding() {
         .catch(() => undefined);
     }, 3000);
     return () => clearInterval(interval);
-  }, [isOnboardingOpen, scanComplete, providers.claude.loggedIn, providers.codex.loggedIn, providers.cursor.loggedIn, providers.gemini.loggedIn, providers.opencode.loggedIn]);
+  }, [isOnboardingOpen, scanComplete, providers.claude.loggedIn, providers.codex.loggedIn, providers.cursor.loggedIn, providers.gemini.loggedIn, providers.opencode.loggedIn, providers.prime.loggedIn]);
 
-  const anyLoggedIn = providers.claude.loggedIn || providers.codex.loggedIn || providers.cursor.loggedIn || providers.gemini.loggedIn || providers.opencode.loggedIn;
+  const anyLoggedIn = providers.claude.loggedIn || providers.codex.loggedIn || providers.cursor.loggedIn || providers.gemini.loggedIn || providers.opencode.loggedIn || providers.prime.loggedIn;
   const showApiKeyOption = scanComplete && (showApiKeyInput || !anyLoggedIn);
 
   if (!isOnboardingOpen) return null;
@@ -174,7 +178,7 @@ export default function ApiKeyOnboarding() {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80">
       <div
-        className="w-[520px] bg-claude-surface border border-claude-border"
+        className="w-[520px] max-h-[90vh] overflow-y-auto bg-claude-surface border border-claude-border"
         style={{ borderRadius: 0 }}
       >
         {/* Header */}
@@ -275,9 +279,21 @@ export default function ApiKeyOnboarding() {
               },
             }}
           />
+          <ProviderRow
+            icon={<Terminal size={18} />}
+            label="Prime Agent"
+            status={providers.prime}
+            phaseActive={scanPhase === 5 && !scanComplete}
+            phaseDone={scanPhase > 5 || scanComplete}
+            phaseLabel={SCAN_PHASES[5].label}
+            onSetup={async () => {
+              const result = await window.electronAPI.auth.setupProvider('prime');
+              setProviders((current) => ({ ...current, prime: result.status }));
+            }}
+          />
           <SessionScanRow
             icon={<SessionsIcon />}
-            phaseActive={scanPhase === 5 && !scanComplete}
+            phaseActive={scanPhase === 6 && !scanComplete}
             phaseDone={scanComplete}
           />
         </div>
@@ -333,6 +349,7 @@ function ProviderRow({
   phaseDone,
   phaseLabel,
   apiKeyConfig,
+  onSetup,
 }: {
   icon: React.ReactNode;
   label: string;
@@ -344,11 +361,14 @@ function ProviderRow({
     placeholder: string;
     onSave: (key: string) => Promise<void>;
   };
+  onSetup?: () => Promise<void>;
 }) {
   const [showKey, setShowKey] = useState(false);
   const [keyValue, setKeyValue] = useState('');
   const [expanded, setExpanded] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [setupRunning, setSetupRunning] = useState(false);
+  const [setupError, setSetupError] = useState('');
 
   const needsSetup = phaseDone && !phaseActive && !status.loggedIn;
   const missingCli = needsSetup && status.installed === false;
@@ -381,6 +401,19 @@ function ProviderRow({
     setSaving(false);
   };
 
+  const handleSetup = async () => {
+    if (!onSetup || setupRunning) return;
+    setSetupRunning(true);
+    setSetupError('');
+    try {
+      await onSetup();
+    } catch (error) {
+      setSetupError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSetupRunning(false);
+    }
+  };
+
   return (
     <div className="px-3 py-2.5 bg-claude-bg/40 border border-claude-border" style={{ borderRadius: 0 }}>
       <div className="flex items-center justify-between gap-3">
@@ -409,14 +442,27 @@ function ProviderRow({
             </code>
           )}
           {activeCommand && (
-            <button
-              type="button"
-              onClick={handleCopyCommand}
-              className="p-1.5 border border-claude-border text-claude-text-secondary hover:text-claude-text hover:bg-claude-surface"
-              title={needsAuth ? 'Copy login command' : 'Copy install command'}
-            >
-              <Copy size={12} />
-            </button>
+            onSetup && missingCli ? (
+              <button
+                type="button"
+                onClick={() => void handleSetup()}
+                disabled={setupRunning}
+                className="flex items-center gap-1.5 px-2 py-1.5 border border-claude-accent/50 text-[10px] font-mono text-claude-accent hover:bg-claude-accent/10 disabled:opacity-50"
+                title={`Install ${label} inside Build`}
+              >
+                {setupRunning ? <Loader2 size={12} className="animate-spin" /> : <Terminal size={12} />}
+                {setupRunning ? 'Installing…' : 'Install'}
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={handleCopyCommand}
+                className="p-1.5 border border-claude-border text-claude-text-secondary hover:text-claude-text hover:bg-claude-surface"
+                title={needsAuth ? 'Copy login command' : 'Copy install command'}
+              >
+                <Copy size={12} />
+              </button>
+            )
           )}
           {status.docsUrl && (
             <button
@@ -432,6 +478,7 @@ function ProviderRow({
           )}
         </div>
       )}
+      {setupError && <p className="mt-2 text-[10px] font-mono text-red-400">{setupError}</p>}
 
       {canShowApiKey && !expanded && (
         <button

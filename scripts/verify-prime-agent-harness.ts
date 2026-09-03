@@ -1,0 +1,44 @@
+import assert from 'assert';
+import fs from 'fs';
+import path from 'path';
+
+const root = path.resolve(__dirname, '..');
+const read = (file: string) => fs.readFileSync(path.join(root, file), 'utf8');
+const service = read('src/main/services/prime-agent.service.ts');
+const claude = read('src/main/services/claude.service.ts');
+const ssh = read('src/main/services/ssh.service.ts');
+const input = read('src/renderer/components/chat/InputArea.tsx');
+const settings = read('src/renderer/components/settings/SettingsDialog.tsx');
+const auth = read('src/main/ipc/auth.ipc.ts');
+const onboarding = read('src/renderer/components/onboarding/ApiKeyOnboarding.tsx');
+const channels = read('src/shared/constants/channels.ts');
+const preload = read('src/main/preload.ts');
+
+assert.match(claude, /id: 'prime:default', name: 'Prime Agent'/, 'model picker must expose Prime Agent');
+assert.match(claude, /selectedModel\?\.startsWith\('prime:'\)/, 'manual turns must route to Prime Agent');
+assert.match(claude, /stageHarness === 'prime'/, 'Auto Build helper stages must execute through Prime Agent');
+assert.match(service, /'--mode', 'json'/, 'Prime Agent must use its documented JSON event protocol');
+assert.match(service, /'--resume', resumeId/, 'Prime Agent must resume its native session');
+assert.match(service, /assistantMessageEvent/, 'Prime Agent text deltas must be translated from native events');
+assert.match(service, /tool_execution_start/, 'Prime Agent tool events must be translated');
+assert.match(service, /createDetachedCommandProcess/, 'Prime Agent SSH turns must use the recoverable detached bridge');
+assert.match(service, /replayDetachedAsChat/, 'Prime Agent must replay a detached SSH turn after app or network interruption');
+assert.match(claude, /bridgeCommand === 'prime-agent'/, 'SSH recovery must dispatch Prime Agent bridge logs to its parser');
+assert.match(service, /PI_SKIP_VERSION_CHECK: '1'/, 'Prime Agent startup must skip the release check');
+assert.match(service, /child\.stdin\?\.end\(prompt\)/, 'local prompts must travel over stdin instead of the process list');
+assert.match(service, /build-prime-prompt\.XXXXXX/, 'remote prompts must use a private temporary input file');
+assert.doesNotMatch(service, /shellQuote\(prompt\)/, 'remote prompts must not be embedded in the command line');
+assert.match(ssh, /detect_cli prime prime-agent/, 'SSH setup must detect Prime Agent');
+assert.match(ssh, /Prime Agent[\s\S]*install\.sh/, 'SSH setup must provide the official Prime Agent installer');
+assert.match(input, /prime: 'Prime Agent'/, 'model menu must have a Prime Agent harness group');
+assert.match(settings, /label: 'Prime Agent'/, 'Agents settings must show Prime Agent setup state');
+assert.match(onboarding, /label="Prime Agent"/, 'first-run harness setup must show Prime Agent');
+assert.match(onboarding, /auth\.setupProvider\('prime'\)/, 'first-run setup must install Prime Agent without leaving Build');
+assert.match(settings, /auth\.setupProvider\('prime'\)/, 'Agents settings must install Prime Agent without leaving Build');
+assert.match(channels, /AUTH_SETUP_PROVIDER: 'auth:setup-provider'/, 'Prime Agent setup must use a dedicated IPC channel');
+assert.match(preload, /setupProvider: \(provider: 'prime'\)/, 'renderer setup access must be limited to the Prime Agent provider');
+assert.match(auth, /provider !== 'prime'/, 'main setup handler must reject unapproved provider commands');
+assert.match(auth, /https:\/\/app\.primeintellect\.ai\/prime-agent\/install\.sh/, 'main setup handler must use the official fixed installer URL');
+assert.match(auth, /\.prime', 'agent', 'auth\.json'/, 'Prime Agent readiness must inspect its private auth record');
+
+console.log('Prime Agent harness verifier passed');

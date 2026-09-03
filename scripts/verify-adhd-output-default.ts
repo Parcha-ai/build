@@ -38,6 +38,7 @@ assert.equal(playbook.skillContent, skill);
 assert.match(playbook.systemContext, /<build_default_output_contract/);
 assert.match(playbook.systemContext, /every user-facing agent/);
 assert.match(playbook.systemContext, /every delegated or sub-agent prompt/);
+assert.match(playbook.systemContext, /Always respond to the user in ASD-STE100, also known as Simplified Technical English/);
 assert.match(playbook.systemContext, /controls presentation, not agency or task scope/);
 assert.match(playbook.systemContext, /Never replace execution with a plan, edit recipe, verification commands, delegated-agent handoff, or status-only report/);
 assert.match(playbook.systemContext, /Explicit user formatting instructions and safety requirements override/);

@@ -144,7 +144,7 @@ export const GSTACK_MODE_META: Record<string, { color: string; shortName: string
   'sdd':              { color: '#0d9488', shortName: 'SDD' },
 };
 
-export type Harness = 'claude' | 'codex' | 'cursor' | 'gemini' | 'opencode' | 'custom';
+export type Harness = 'claude' | 'codex' | 'cursor' | 'gemini' | 'opencode' | 'prime' | 'custom';
 
 // Auto Build mode — intelligent model routing and harness orchestration
 export type TaskTier = 'plan' | 'build' | 'verify' | 'refine';
@@ -628,6 +628,9 @@ export interface AppSettings {
   githubToken?: string;
   defaultSetupScript: string;
   autoStartContainer: boolean;
+  // HTTP(S) links matching these glob patterns open in Build's browser panel.
+  // Other HTTP(S) links open in the system browser.
+  inAppBrowserUrlPatterns?: string[];
   // QMD semantic search settings
   qmdEnabled: boolean; // Global toggle for QMD semantic search
   // Ultra Plan mode - automatic task decomposition after plan approval
@@ -664,6 +667,9 @@ export interface AppSettings {
   dailyReviewEnabled?: boolean;
   dailyReviewTime?: string;
   bedtimeTaskReviewEnabled?: boolean;
+  eveningPlanningLockEnabled?: boolean;
+  eveningPlanningLockTime?: string;
+  eveningPlanningCalendarUrl?: string;
   showClearContextOnPlanAccept?: boolean;
   autoRouterConfig?: AutoRouterConfig;
   parableConfig?: ParableConfig;

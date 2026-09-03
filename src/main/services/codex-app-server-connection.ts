@@ -119,6 +119,10 @@ export class CodexAppServerConnection {
     return new Promise((resolve) => this.notificationWaiters.push(resolve));
   }
 
+  isWritable(): boolean {
+    return !this.closed && !this.input.writableEnded && !this.input.destroyed;
+  }
+
   endInput(): void {
     if (!this.input.writableEnded && !this.input.destroyed) {
       this.input.end();

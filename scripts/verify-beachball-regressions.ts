@@ -26,6 +26,12 @@ for (const [, method] of pollMethods) {
   assert.match(method, /finally \{\s*exitPollInFlight = false/);
   assert.match(method, /now - lastExitPollWarningAt >= 30_000/);
 }
+assert.match(sshService, /const DETACHED_EXIT_POLL_MS = 3_000/);
+assert.equal((sshService.match(/}, DETACHED_EXIT_POLL_MS\);/g) || []).length, 4,
+  'normal and recovered detached bridges must use the bounded lower-frequency poll interval');
+const healthCheckMethod = sshService.match(/private startHealthCheck\([\s\S]*?\n {2}\}/)?.[0] || '';
+assert.doesNotMatch(healthCheckMethod, /client\.exec\('echo ok'/,
+  'Periodic SSH health checks must not compete with active harness channels.');
 
 assert.match(claudeService, /new SessionMessageCacheStore<ChatMessage\[]>\(app\.getPath\('userData'\)\)/);
 assert.doesNotMatch(claudeService, /new CachedStore\(\{ name: 'claudette-message-cache' \}\)/);

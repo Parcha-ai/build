@@ -108,6 +108,7 @@ for (const bundledAdhdFile of ['SKILL.md', 'LICENSE', path.join('agents', 'opena
 
 const mainMarkers = [
   '<build_default_output_contract',
+  'Always respond to the user in ASD-STE100, also known as Simplified Technical English',
   'Bundled playbook unavailable; using embedded default contract',
   'Requested SDK transcript not found; refusing to load a different transcript',
   'Cache invalidated - transcript path changed',
@@ -163,6 +164,9 @@ const mainMarkers = [
   'cursorSdkAgents.',
   'cursor-cli-recovered-tool-only-',
   'opencode-recovered-result-',
+  'prime-recovered-result-',
+  'build-prime-prompt.XXXXXX',
+  'Prime Agent is not installed on this remote',
   'recoveryCommand',
   'Reattach found no remaining remote turn',
   'Disabled legacy per-turn output skill copies',
@@ -272,6 +276,7 @@ const mainMarkers = [
 ];
 
 const rendererMarkers = [
+  'Prime Agent',
   'grep-session-panel-states-v1',
   'sessionWorkspaces',
   'panelSplitPercent',

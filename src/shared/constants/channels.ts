@@ -8,6 +8,7 @@ export const IPC_CHANNELS = {
   AUTH_GET_REPOS: 'auth:get-repos',
   AUTH_STATUS: 'auth:status',
   AUTH_CHECK_PROVIDERS: 'auth:check-providers',
+  AUTH_SETUP_PROVIDER: 'auth:setup-provider',
 
   // Parable subscription setup
   PARABLE_GET_STATUS: 'parable:get-status',
@@ -31,6 +32,7 @@ export const IPC_CHANNELS = {
   SESSION_LIST: 'session:list',
   SESSION_GET: 'session:get',
   SESSION_UPDATE: 'session:update',
+  SESSION_AUTO_TITLE: 'session:auto-title',
   SESSION_REWIND_FORK: 'session:rewind-fork',
   SESSION_CREATE_FORK: 'session:create-fork', // Create conversation fork
   SESSION_FAST_STACK_FORK: 'session:fast-stack-fork', // One-shot in-place fork for an immediate queued turn
@@ -43,6 +45,7 @@ export const IPC_CHANNELS = {
   DOCKER_STATUS: 'docker:status',
   DOCKER_CONTAINER_STATS: 'docker:container-stats',
   DOCKER_CONTAINER_LOGS: 'docker:container-logs',
+  DOCKER_REMOTE_OVERVIEW: 'docker:remote-overview',
 
   // Terminal channels
   TERMINAL_CREATE: 'terminal:create',
@@ -152,6 +155,7 @@ export const IPC_CHANNELS = {
   APP_SHORTCUT_TRIGGERED: 'app:shortcut-triggered',
   APP_OPEN_BROWSER_WINDOW: 'app:open-browser-window',
   APP_CLOSE_BROWSER_WINDOW: 'app:close-browser-window',
+  APP_SET_PLANNING_LOCK: 'app:set-planning-lock',
 
   // Dev mode channels
   DEV_OPEN_LOCAL_REPO: 'dev:open-local-repo',
@@ -219,6 +223,7 @@ export const IPC_CHANNELS = {
 
   // SSH channels
   SSH_TEST_CONNECTION: 'ssh:test-connection',
+  SSH_INSTALL_CLI: 'ssh:install-cli',
   SSH_CREATE_SESSION: 'ssh:create-session',
   SSH_LIST_RESUME_CANDIDATES: 'ssh:list-resume-candidates',
   SSH_SYNC_SETTINGS: 'ssh:sync-settings',

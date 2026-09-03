@@ -108,6 +108,53 @@ async function getMainRepoPath(repoPath: string): Promise<string> {
 }
 
 export function registerSSHHandlers(ipcMain: IpcMain): void {
+  ipcMain.handle(
+    IPC_CHANNELS.DOCKER_REMOTE_OVERVIEW,
+    async (_event, config: SSHConfig) => {
+      const connectionId = `docker-health-${config.username}@${config.host}:${config.port || 22}`;
+      const command = [
+        'set -e',
+        'command -v docker >/dev/null 2>&1 || { echo "Docker is not installed or is not on PATH" >&2; exit 127; }',
+        'printf "__DOCKER_VERSION__\\n"',
+        'docker version --format "{{.Server.Version}}"',
+        'printf "__DOCKER_INFO__\\n"',
+        'docker info --format "{{json .}}"',
+        'printf "__DOCKER_PS__\\n"',
+        'docker ps -a --no-trunc --format "{{json .}}"',
+        'printf "__DOCKER_STATS__\\n"',
+        'docker stats --no-stream --format "{{json .}}" 2>/dev/null || true',
+      ].join('; ');
+
+      try {
+        const output = await sshService.runRemoteCommand(connectionId, config, command);
+        const section = (name: string, next?: string) => {
+          const start = output.indexOf(`__${name}__\n`);
+          if (start < 0) return '';
+          const contentStart = start + name.length + 5;
+          const end = next ? output.indexOf(`__${next}__\n`, contentStart) : output.length;
+          return output.slice(contentStart, end < 0 ? output.length : end).trim();
+        };
+        const parseLines = (value: string) => value.split('\n').filter(Boolean).map((line) => {
+          try { return JSON.parse(line); } catch { return null; }
+        }).filter(Boolean);
+        const infoRaw = section('DOCKER_INFO', 'DOCKER_PS');
+        return {
+          connected: true,
+          checkedAt: new Date().toISOString(),
+          version: section('DOCKER_VERSION', 'DOCKER_INFO'),
+          info: infoRaw ? JSON.parse(infoRaw) : {},
+          containers: parseLines(section('DOCKER_PS', 'DOCKER_STATS')),
+          stats: parseLines(section('DOCKER_STATS')),
+        };
+      } catch (error) {
+        return {
+          connected: false,
+          checkedAt: new Date().toISOString(),
+          error: error instanceof Error ? error.message : 'Could not inspect Docker on the remote host.',
+        };
+      }
+    }
+  );
   /**
    * Test an SSH connection and verify Claude Code is installed
    */
@@ -128,6 +175,13 @@ export function registerSSHHandlers(ipcMain: IpcMain): void {
         };
       }
     }
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.SSH_INSTALL_CLI,
+    async (_event, config: SSHConfig, harness: 'claude' | 'codex' | 'cursor' | 'gemini' | 'opencode' | 'prime') => {
+      return sshService.installRemoteCli(config, harness);
+    },
   );
 
   /**

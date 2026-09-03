@@ -198,32 +198,43 @@ const config: ForgeConfig = {
           const appPath = path.join(outputPath, 'Build.app');
 
           // Sign with Developer ID certificate (after all file copies)
-          if (process.env.APPLE_ID && process.env.APPLE_PASSWORD && process.env.APPLE_TEAM_ID) {
+          if (process.env.GREP_SKIP_SIGNING !== '1' && process.env.APPLE_ID && process.env.APPLE_PASSWORD && process.env.APPLE_TEAM_ID) {
             // eslint-disable-next-line @typescript-eslint/no-var-requires
             const { signAsync } = require('@electron/osx-sign');
             // eslint-disable-next-line @typescript-eslint/no-var-requires
             const { notarize } = require('@electron/notarize');
 
+            // Electron Forge can reuse the versioned output directory. Remove
+            // any ticket left by an earlier stapling pass before signing. The
+            // stapler creates this special file after notarization; sealing a
+            // stale copy and then replacing it invalidates the app signature.
+            await fs.remove(path.join(appPath, 'Contents', 'CodeResources'));
+            const execFileAsync = promisify(execFile);
+            const lsregister = '/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister';
+            if (fs.existsSync(lsregister)) {
+              // macOS adds protected provenance metadata asynchronously when
+              // it first scans a new app. Force that scan before signing; if
+              // it happens after signing, every nested Electron signature is
+              // reported as modified several seconds later.
+              await execFileAsync(lsregister, ['-f', appPath]).catch(() => undefined);
+              await new Promise((resolve) => setTimeout(resolve, 10_000));
+            }
             console.log('[Packaging] Signing app with Developer ID certificate...');
-            await signAsync({
+            const signOptions = {
               app: appPath,
               identity: `Developer ID Application: Ajmal Asver (${process.env.APPLE_TEAM_ID})`,
               platform: 'darwin',
               hardenedRuntime: true,
               entitlements: path.join(__dirname, 'entitlements.plist'),
               'entitlements-inherit': path.join(__dirname, 'entitlements.plist'),
-            });
+            } as const;
+            await signAsync(signOptions);
+            await execFileAsync('codesign', ['--verify', '--deep', '--strict', appPath]);
             console.log('[Packaging] App signed with Developer ID');
 
             if (skipNotarization) {
               console.log('[Packaging] Skipping Apple notarization because GREP_SKIP_NOTARIZE=1');
             } else {
-              // stapler writes the compatibility ticket here. Some Electron
-              // bundles omit the file entirely, which makes stapling fail with
-              // "No such file or directory" even after Apple accepts the app.
-              // The file lives outside the signed resource seal and may be
-              // created after signing; stapler replaces it with the real ticket.
-              await fs.ensureFile(path.join(appPath, 'Contents', 'CodeResources'));
               console.log('[Packaging] Submitting for Apple notarization (this may take several minutes)...');
               await notarize({
                 appPath,
@@ -231,12 +242,35 @@ const config: ForgeConfig = {
                 appleIdPassword: process.env.APPLE_PASSWORD,
                 teamId: process.env.APPLE_TEAM_ID,
               });
+              await execFileAsync('codesign', ['--verify', '--deep', '--strict', appPath]);
+              await new Promise((resolve) => setTimeout(resolve, 60_000));
+              try {
+                await execFileAsync('codesign', ['--verify', '--deep', '--strict', appPath]);
+              } catch {
+                // macOS can add protected provenance metadata several seconds
+                // after the first notarization scan. Sign and notarize that
+                // final state once more so the installed app remains valid.
+                console.log('[Packaging] macOS updated provenance metadata; signing and notarizing the final bundle state...');
+                await fs.remove(path.join(appPath, 'Contents', 'CodeResources'));
+                await signAsync(signOptions);
+                await execFileAsync('codesign', ['--verify', '--deep', '--strict', appPath]);
+                await notarize({
+                  appPath,
+                  appleId: process.env.APPLE_ID,
+                  appleIdPassword: process.env.APPLE_PASSWORD,
+                  teamId: process.env.APPLE_TEAM_ID,
+                });
+                await new Promise((resolve) => setTimeout(resolve, 60_000));
+                await execFileAsync('codesign', ['--verify', '--deep', '--strict', appPath]);
+              }
               console.log('[Packaging] App notarized and stapled successfully');
             }
           } else {
             // eslint-disable-next-line @typescript-eslint/no-var-requires
             const { execSync } = require('child_process');
-            console.log('[Packaging] No Apple credentials — falling back to adhoc signature');
+            console.log(process.env.GREP_SKIP_SIGNING === '1'
+              ? '[Packaging] Developer ID signing disabled — using adhoc signature'
+              : '[Packaging] No Apple credentials — falling back to adhoc signature');
             try {
               execSync(`codesign --force --deep --sign - "${appPath}"`, { stdio: 'inherit' });
             } catch (err) {
@@ -255,30 +289,14 @@ const config: ForgeConfig = {
           try {
             await fs.remove(applicationsPath);
             await fs.copy(appPath, applicationsPath);
+            const execFileAsync = promisify(execFile);
+            await execFileAsync('codesign', ['--verify', '--deep', '--strict', applicationsPath]);
+            await new Promise((resolve) => setTimeout(resolve, 60_000));
+            await execFileAsync('codesign', ['--verify', '--deep', '--strict', applicationsPath]);
             console.log('[Packaging] Installed to /Applications/Build.app');
-
-            try {
-              // Avoid LaunchServices resolving com.parcha.build to an older
-              // staged out/v*/Build.app after installing the fresh app.
-              const execFileAsync = promisify(execFile);
-              const lsregister = '/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister';
-              const outRoot = path.join(__dirname, 'out');
-              if (fs.existsSync(lsregister) && fs.existsSync(outRoot)) {
-                const entries = await fs.readdir(outRoot);
-                for (const entry of entries) {
-                  if (!entry.startsWith('v')) continue;
-                  const oldApp = path.join(outRoot, entry, 'Build-darwin-arm64', 'Build.app');
-                  if (!fs.existsSync(oldApp)) continue;
-                  await execFileAsync(lsregister, ['-u', oldApp]).catch(() => undefined);
-                }
-                await execFileAsync(lsregister, ['-f', applicationsPath]).catch(() => undefined);
-                console.log('[Packaging] Refreshed LaunchServices registration for /Applications/Build.app');
-              }
-            } catch (registrationError) {
-              console.warn('[Packaging] Warning: Failed to refresh LaunchServices registration:', registrationError);
-            }
           } catch (err) {
-            console.error('[Packaging] Warning: Failed to copy to /Applications:', err);
+            console.error('[Packaging] Failed to install a valid /Applications build:', err);
+            throw err;
           }
         }
       }

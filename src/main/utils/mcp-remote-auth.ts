@@ -10,6 +10,7 @@ export const MCP_REMOTE_PACKAGE = `mcp-remote@${MCP_REMOTE_PACKAGE_VERSION}`;
 // Build migrates and uploads credentials to the directory the proxy reads.
 export const MCP_REMOTE_RUNTIME_AUTH_VERSION = '0.1.37';
 export const MCP_REMOTE_AUTH_DIR_NAME = `mcp-remote-${MCP_REMOTE_RUNTIME_AUTH_VERSION}`;
+const MCP_REMOTE_AUTH_MIGRATION_MARKER = '.build-migration-complete';
 
 function compareVersionDirectories(left: string, right: string): number {
   return left.localeCompare(right, undefined, { numeric: true });
@@ -59,6 +60,15 @@ export async function ensurePinnedMcpRemoteAuthDirectory(
   await fs.mkdir(authDir, { recursive: true, mode: 0o700 });
   await fs.chmod(authDir, 0o700).catch(() => undefined);
 
+  // Migration is intentionally one-shot. mcp-remote deletes tokens when the
+  // authorization server rejects a refresh grant. Re-copying an older token
+  // merely because the active token file disappeared resurrects the rejected
+  // credential and creates an OAuth popup loop on every harness launch.
+  const migrationMarker = path.join(authDir, MCP_REMOTE_AUTH_MIGRATION_MARKER);
+  if (await pathExists(migrationMarker)) {
+    return { authDir, migratedFiles: 0 };
+  }
+
   const versions = (await fs.readdir(authRoot, { withFileTypes: true }))
     .filter((entry) => entry.isDirectory() && /^mcp-remote-\d/.test(entry.name) && entry.name !== MCP_REMOTE_AUTH_DIR_NAME)
     .map((entry) => entry.name)
@@ -89,6 +99,8 @@ export async function ensurePinnedMcpRemoteAuthDirectory(
       }
     }
   }
+
+  await fs.writeFile(migrationMarker, 'completed\n', { mode: 0o600 });
 
   return { authDir, migratedFiles };
 }

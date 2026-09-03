@@ -61,10 +61,33 @@ try {
   fs.mkdirSync(configDir, { recursive: true, mode: 0o700 });
   fs.mkdirSync(binDir, { recursive: true });
   fs.writeFileSync(path.join(configDir, 'parable.toml'), '[parable]\nversion = 1\n', { mode: 0o600 });
-  const structuredConfig = service.getConfigData(runtimeHome) as { parable?: Record<string, unknown> };
-  structuredConfig.parable = { ...structuredConfig.parable, default_executor: 'sonnet' };
+  const structuredConfig = service.getConfigData(runtimeHome) as Record<string, any>;
+  structuredConfig.parable = { version: 1, default_executor: 'sonnet', default_reviewer: 'opus', log_dir: '.parable', repo_notes: 'Keep edits small.' };
+  structuredConfig.claude = { base_url: 'http://127.0.0.1:8317', auth_token_env: 'PARABLE_TEST_TOKEN', brain_model: 'claude-sonnet-5', binary: 'claude' };
+  structuredConfig.providers = {
+    claude: { type: 'subagent' },
+    codex_test: { type: 'codex', base_url: 'https://example.test/v1', env_key: 'CODEX_TEST_KEY', wire_api: 'responses', http_headers: { 'X-Test': 'yes' }, query_params: { region: 'test' } },
+    pi_test: { type: 'pi', base_url: 'https://example.test/v1', env_key: 'PI_TEST_KEY', api: 'openai-completions', headers: { 'X-PI': 'yes' }, compat: { supportsDeveloperRole: true } },
+  };
+  structuredConfig.executors = {
+    codex_test: { provider: 'codex_test', model: 'test-model', effort: 'high', enabled: false, cost: { in: 1, out: 2, cache_in: 0.5 }, extra_config: ['model_context_window=1000'] },
+    pi_test: { provider: 'pi_test', model: 'test-model', effort: 'high', enabled: false, reasoning: true, model_overrides: { maxTokens: 1000 } },
+  };
+  structuredConfig.checks = { tests: { run: 'true', cwd: '.', when: ['post-implement'], timeout_minutes: 1, grep: 'error', tail_lines: 12 } };
+  structuredConfig.routing = { feature: ['sonnet'], notes: 'Use the best fit.' };
+  structuredConfig.research = { provider: 'grep.ai' };
   service.saveConfigData(structuredConfig, runtimeHome);
-  assert.equal((service.getConfigData(runtimeHome).parable as Record<string, unknown>).default_executor, 'sonnet');
+  const roundTrippedConfig = service.getConfigData(runtimeHome) as Record<string, any>;
+  assert.equal(roundTrippedConfig.parable.default_executor, 'sonnet');
+  assert.equal(roundTrippedConfig.claude.auth_token_env, 'PARABLE_TEST_TOKEN');
+  assert.equal(roundTrippedConfig.providers.codex_test.http_headers['X-Test'], 'yes');
+  assert.equal(roundTrippedConfig.providers.codex_test.query_params.region, 'test');
+  assert.equal(roundTrippedConfig.providers.pi_test.compat.supportsDeveloperRole, true);
+  assert.equal(roundTrippedConfig.executors.codex_test.cost.cache_in, 0.5);
+  assert.deepEqual(roundTrippedConfig.executors.codex_test.extra_config, ['model_context_window=1000']);
+  assert.equal(roundTrippedConfig.executors.pi_test.model_overrides.maxTokens, 1000);
+  assert.equal(roundTrippedConfig.checks.tests.grep, 'error');
+  assert.equal(roundTrippedConfig.checks.tests.tail_lines, 12);
   assert.equal(fs.statSync(path.join(configDir, 'parable.toml')).mode & 0o777, 0o600);
   fs.writeFileSync(path.join(configDir, 'setup.json'), JSON.stringify({
     schemaVersion: 1,
@@ -103,8 +126,10 @@ const autoBuildBranch = claudeService.indexOf("if (selectedModel === 'auto')", p
 assert.ok(parableBranch >= 0, 'Claude service must resolve the Parable pseudo-model');
 assert.ok(autoBuildBranch > parableBranch, 'Parable must resolve before Auto Build');
 const parableBranchSource = claudeService.slice(parableBranch, autoBuildBranch);
-assert.match(parableBranchSource, /getRemoteParableSubscriptionStatus/);
+assert.match(parableBranchSource, /ensureRemoteParableRuntime/);
 assert.match(parableBranchSource, /useSubscriptionLauncher: remoteStatus\.ready/);
+assert.match(parableBranchSource, /Parable cannot start:/);
+assert.match(parableBranchSource, /Connect or deselect these subscription pools/);
 assert.doesNotMatch(parableBranchSource, /writeRemoteFile/);
 assert.match(claudeService, /createLocalParableClaudeCodeProcess/);
 assert.match(claudeService, /mkdtempSync\(path\.join\(os\.tmpdir\(\), 'claudette-parable-'\)\)/);
@@ -115,6 +140,16 @@ assert.match(claudeService, /createRemoteParableProcess/);
 assert.match(claudeService, /filterParableLauncherPrelude/);
 assert.match(claudeService, /const launcherArgs = \[[\s\S]*?'--brain',[\s\S]*?'auto',[\s\S]*?'--'/);
 assert.match(sshService, /getRemoteParableSubscriptionStatus/);
+assert.match(sshService, /Preparing Parable on this remote host/);
+assert.match(sshService, /Installing Parable runtime and proxy/);
+assert.match(sshService, /remote upload timed out after 60 seconds/);
+assert.match(sshService, /\.build-setup\.lock/);
+assert.match(sshService, /\.local\/bin\/parable" install/);
+assert.match(sshService, /localConfigText/);
+assert.match(sshService, /Remote Parable settings validation failed/);
+assert.match(sshService, /PARABLE_CONFIG=\$\{this\.quoteForShell\(temporaryConfigPath\)\}/);
+assert.match(sshService, /status\.launcherPath\)\} install/);
+assert.match(claudeService, /parableService\.getConfigText\(\)/);
 assert.match(sshService, /createRemoteParableProcess/);
 assert.match(sshService, /filterRemoteClaudeEnvironment\(sdkOptions\.env\)/);
 assert.match(inputArea, /onClick=\{\(\) => selectModel\(PARABLE_MODE_ID\)\}[\s\S]*?\bParable\s*<\/span>/);
@@ -133,6 +168,24 @@ assert.match(parableIpc, /userCode/);
 assert.match(settingsDialog, /\+ Create agent/);
 assert.match(settingsDialog, /Save settings/);
 assert.match(settingsDialog, /Verification checks/);
+for (const label of [
+  'Claude proxy URL',
+  'Claude token environment variable',
+  'HTTP headers',
+  'Query parameters',
+  'PI compatibility options',
+  'Reasoning model',
+  'Input cost',
+  'Output cost',
+  'Cache input cost',
+  'Codex extra configuration',
+  'PI model overrides',
+  'Failure line pattern',
+  'Failure tail lines',
+]) {
+  assert.ok(settingsDialog.includes(label), `Structured Parable UI must expose ${label}`);
+}
+assert.match(settingsDialog, /normal controls above cover the current Parable schema/);
 assert.match(preload, /PARABLE_CONFIG_GET_DATA/);
 assert.match(parableIpc, /parable\.legacy-/);
 assert.match(parableIpc, /restored the legacy configuration/);

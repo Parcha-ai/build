@@ -26,6 +26,7 @@ export const HARNESS_LABELS: Record<string, string> = {
   codex: 'Codex',
   gemini: 'Gemini',
   opencode: 'OpenCode',
+  prime: 'Prime Agent',
   custom: 'Custom',
 };
 
@@ -35,6 +36,7 @@ export function inferHarnessFromModel(model?: string): string | undefined {
   if (model.startsWith('cursor:')) return 'cursor';
   if (model.startsWith('gemini:')) return 'gemini';
   if (model.startsWith('opencode:')) return 'opencode';
+  if (model.startsWith('prime:')) return 'prime';
   if (model.startsWith('custom:')) return 'custom';
   return 'claude';
 }
@@ -54,8 +56,8 @@ export function formatModelId(model?: string): string | undefined {
 
 function normalizeModelLabel(label?: string): string | undefined {
   return label
-    ?.replace(/ \((Claude|Cursor|Codex|Gemini|OpenCode|Custom)\)$/i, '')
-    .replace(/ \[(Claude|Cursor|Codex|Gemini|OpenCode|Custom)\]$/i, '')
+    ?.replace(/ \((Claude|Cursor|Codex|Gemini|OpenCode|Prime Agent|Custom)\)$/i, '')
+    .replace(/ \[(Claude|Cursor|Codex|Gemini|OpenCode|Prime Agent|Custom)\]$/i, '')
     .trim();
 }
 

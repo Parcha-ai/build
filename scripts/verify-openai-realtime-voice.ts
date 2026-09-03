@@ -531,7 +531,11 @@ assert.ok(mainServiceSource.includes('ask one short clarification before calling
 assert.ok(mainServiceSource.includes('direct user response to that update authorizes the matching guarded reply route'));
 assert.ok(mainServiceSource.includes('An unrelated request by itself is not permission to choose or create a tab'));
 const forgeSource = read('forge.config.ts');
-assert.ok(forgeSource.includes("ensureFile(path.join(appPath, 'Contents', 'CodeResources'))"));
+assert.ok(forgeSource.includes("remove(path.join(appPath, 'Contents', 'CodeResources'))"));
+assert.ok(forgeSource.includes("execFileAsync('codesign', ['--verify', '--deep', '--strict', appPath])"));
+assert.ok(forgeSource.includes('setTimeout(resolve, 60_000)'));
+assert.ok(forgeSource.includes('signing and notarizing the final bundle state'));
+assert.ok(forgeSource.includes('Failed to install a valid /Applications build'));
 const preloadSource = read('src/main/preload.ts');
 assert.ok(preloadSource.includes('createRealtimeSession'));
 assert.ok(preloadSource.includes('logRoutingEvent'));

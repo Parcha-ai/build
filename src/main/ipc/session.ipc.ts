@@ -10,6 +10,7 @@ import Store from 'electron-store';
 import { v4 as uuid } from 'uuid';
 import { getSessionStoreName } from '../store-names';
 import { CachedStore } from '../cached-store';
+import { updateInitialSessionTitle } from '../services/session-title.service';
 
 const sessionService = new SessionService();
 
@@ -55,6 +56,17 @@ export function registerSessionHandlers(ipcMain: IpcMain): void {
 
   ipcMain.handle(IPC_CHANNELS.SESSION_UPDATE, async (_, sessionId: string, updates) => {
     return sessionService.updateSession(sessionId, updates);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.SESSION_AUTO_TITLE, async (_, sessionId: string, userMessage: string) => {
+    const session = await sessionService.getSession(sessionId);
+    if (!session) return;
+    await updateInitialSessionTitle({
+      sessionId,
+      session,
+      userMessage,
+      updateSession: (id, updates) => sessionService.updateSession(id, updates),
+    });
   });
 
   ipcMain.handle(IPC_CHANNELS.SESSION_REWIND_FORK, async (_, sessionId: string, rewindToMessageId: string) => {

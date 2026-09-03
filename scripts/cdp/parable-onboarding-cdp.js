@@ -120,6 +120,18 @@ async function main() {
       return true;
     })()`);
     if (!clickedCreate) throw new Error('Create agent missing');
+    const clickedCheck = await evaluate(`(() => {
+      for (const summary of [...document.querySelectorAll('summary')]) {
+        if ((summary.innerText.includes('VERIFICATION CHECKS') || summary.innerText.startsWith('PROVIDERS')) && summary.parentElement instanceof HTMLDetailsElement) {
+          summary.parentElement.open = true;
+        }
+      }
+      const create = [...document.querySelectorAll('button')].find((node) => node.innerText.includes('Add check'));
+      if (!create) return false;
+      create.click();
+      return true;
+    })()`);
+    if (!clickedCheck) throw new Error('Add check missing');
     await new Promise((resolve) => setTimeout(resolve, 100));
     const exercised = await evaluate(`(() => {
       const create = [...document.querySelectorAll('button')].find((node) => node.innerText.includes('Create agent'));
@@ -133,6 +145,7 @@ async function main() {
       }
       return {
         headings,
+        text: document.body.innerText,
         createVisible: create.getBoundingClientRect().right <= window.innerWidth,
         agentCountText: headings.find((value) => value.startsWith('AGENTS AND EXECUTORS')) || '',
         modelValue: lastModel?.value || '',
@@ -144,12 +157,20 @@ async function main() {
       };
     })()`);
     const after = await evaluate(`window.electronAPI.parable.getConfigData()`);
-    console.log(JSON.stringify({ exercised }));
     const expectedCount = Object.keys(before.executors || {}).length + 1;
-    if (exercised.error || !exercised.createVisible || !exercised.agentCountText.includes(String(expectedCount)) || exercised.modelValue !== 'test-model-not-saved' || !exercised.hasDefaults || !exercised.hasProviders || !exercised.hasRouting || !exercised.hasChecks || !exercised.hasAdvanced) {
-      throw new Error(`Structured config UI failed: ${JSON.stringify(exercised)}`);
+    const requiredStructuredFields = ['CLAUDE PROXY URL', 'CLAUDE TOKEN ENVIRONMENT VARIABLE', 'HTTP HEADERS', 'QUERY PARAMETERS', 'REASONING MODEL', 'INPUT COST', 'OUTPUT COST', 'CACHE INPUT COST', 'CODEX EXTRA CONFIGURATION', 'PI MODEL OVERRIDES', 'FAILURE LINE PATTERN', 'FAILURE TAIL LINES'];
+    const missingStructuredFields = requiredStructuredFields.filter((label) => !exercised.text.includes(label));
+    const report = { ...exercised, text: undefined, missingStructuredFields };
+    console.log(JSON.stringify({ exercised: report }));
+    if (exercised.error || !exercised.createVisible || !exercised.agentCountText.includes(String(expectedCount)) || exercised.modelValue !== 'test-model-not-saved' || !exercised.hasDefaults || !exercised.hasProviders || !exercised.hasRouting || !exercised.hasChecks || !exercised.hasAdvanced || missingStructuredFields.length > 0) {
+      await evaluate(`window.__GREP_TEST__.useUIStore.getState().closeSettings()`);
+      throw new Error(`Structured config UI failed: ${JSON.stringify(report)}`);
     }
-    if (JSON.stringify(before) !== JSON.stringify(after)) throw new Error('Editing the UI wrote config before Save settings');
+    if (JSON.stringify(before) !== JSON.stringify(after)) {
+      await evaluate(`window.__GREP_TEST__.useUIStore.getState().closeSettings()`);
+      throw new Error('Editing the UI wrote config before Save settings');
+    }
+    await evaluate(`window.__GREP_TEST__.useUIStore.getState().closeSettings()`);
     socket.close();
     return;
   }

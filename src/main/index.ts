@@ -107,6 +107,8 @@ import { powerService } from './services/power.service';
 import { maybeRunRendererCdpScript } from './services/renderer-cdp.service';
 import { updateService } from './services/update.service';
 import { pomodoroService } from './services/pomodoro.service';
+import { SettingsService } from './services/settings.service';
+import { shouldOpenUrlInAppBrowser } from '../shared/utils/browser-routing';
 
 // Global error handlers to prevent crashes from broken pipes and other uncaught errors
 process.on('uncaughtException', (error: Error) => {
@@ -269,9 +271,16 @@ function isRendererEntryUrl(targetUrl: string): boolean {
   }
 }
 
+const browserRoutingSettings = new SettingsService();
+
 function routeMainRendererLink(win: BrowserWindow, targetUrl: string): void {
   if (/^https?:\/\//i.test(targetUrl)) {
-    win.webContents.send(IPC_CHANNELS.BROWSER_OPEN_PANEL, { url: targetUrl });
+    const patterns = browserRoutingSettings.getSettings().inAppBrowserUrlPatterns;
+    if (shouldOpenUrlInAppBrowser(targetUrl, patterns)) {
+      win.webContents.send(IPC_CHANNELS.BROWSER_OPEN_PANEL, { url: targetUrl });
+    } else {
+      void shell.openExternal(targetUrl);
+    }
     return;
   }
   if (/^(?:mailto|tel):/i.test(targetUrl)) {

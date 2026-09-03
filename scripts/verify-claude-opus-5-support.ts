@@ -83,8 +83,8 @@ assert.match(
 );
 assert.match(
   parableConfig,
-  /id: 'opus',[\s\S]{0,80}model: 'claude-opus-5'/,
-  'New Parable configurations must use Opus 5 for the Opus reviewer',
+  /id: 'opus',[\s\S]{0,80}model: 'claude-opus-4-8'/,
+  'Parable must use the latest Opus identifier exposed by its subscription proxy catalog',
 );
 
 assert.equal(

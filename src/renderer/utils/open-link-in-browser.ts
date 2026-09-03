@@ -1,4 +1,5 @@
 import { getBrowserPartitionId } from '../../shared/utils/browser-partition';
+import { shouldOpenUrlInAppBrowser } from '../../shared/utils/browser-routing';
 import { useSessionStore } from '../stores/session.store';
 import { useUIStore } from '../stores/ui.store';
 
@@ -23,13 +24,23 @@ function browserTabName(url: string): string {
  * this in one place prevents individual Markdown renderers from accidentally
  * falling back to a top-level Electron navigation.
  */
-export async function openLinkInAppBrowser(href: string, preferredSessionId?: string | null): Promise<void> {
+export async function openLinkInAppBrowser(
+  href: string,
+  preferredSessionId?: string | null,
+  options: { forceInApp?: boolean; newTab?: boolean; tabName?: string } = {},
+): Promise<void> {
   const url = normalizeWebUrl(href);
   if (!url) return;
 
   // Browser previews are for navigable pages. Protocol actions still belong to
   // the operating system (email, phone, custom OAuth callbacks, and so on).
   if (!/^https?:\/\//i.test(url)) {
+    await window.electronAPI.app.openExternal(url);
+    return;
+  }
+
+  const settings = await window.electronAPI.settings.get();
+  if (!options.forceInApp && !shouldOpenUrlInAppBrowser(url, settings.inAppBrowserUrlPatterns)) {
     await window.electronAPI.app.openExternal(url);
     return;
   }
@@ -52,8 +63,8 @@ export async function openLinkInAppBrowser(href: string, preferredSessionId?: st
   ui.enableSessionBrowser(session.id);
   void sessionState.updateSession(session.id, { lastBrowserUrl: url });
 
-  if (!selectedTab) {
-    ui.createBrowserTab(session.id, partitionId, url, browserTabName(url));
+  if (!selectedTab || options.newTab) {
+    ui.createBrowserTab(session.id, partitionId, url, options.tabName || browserTabName(url));
     return;
   }
 

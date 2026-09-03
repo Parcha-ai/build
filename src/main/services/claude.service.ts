@@ -48,11 +48,13 @@ import { qmdService } from './qmd.service';
 import { mcpService } from './mcp.service';
 import { codexService } from './codex.service';
 import { designService } from './design.service';
+import { designMcpHttpService } from './design-mcp-http.service';
 import { openclawService } from './openclaw.service';
 import { getCursorCliService } from './cursor-cli.service';
 import { getCursorService } from './cursor.service';
 import { getGeminiService } from './gemini.service';
 import { getOpenCodeService } from './opencode.service';
+import { getPrimeAgentService } from './prime-agent.service';
 import { autoRouterService } from './auto-router.service';
 import { parableService, type PreparedParableRuntime } from './parable.service';
 import { cascadeService, type PreparedCascadeRuntime } from './cascade.service';
@@ -131,6 +133,7 @@ const ASSUMED_REMOTE_CLI_CAPABILITIES: RemoteCliCapabilities = {
   cursor: true,
   gemini: true,
   opencode: true,
+  prime: true,
 };
 
 const CLI_HARNESS_CONTEXT_LIMITS: Partial<Record<Harness, HarnessContextLimits>> = {
@@ -802,6 +805,7 @@ export class ClaudeService {
         return [
           { id: 'auto', name: 'Auto Build', description: 'Application-owned harness orchestration and helper stages' },
           { id: PARABLE_MODE_ID, name: 'Parable', description: 'Claude Code meta-harness — plans, casts executors, verifies, and reviews' },
+          { id: 'prime:default', name: 'Prime Agent', description: 'Self-improving RLM harness with persistent sessions and native subagents' },
           ...foundryModels,
         ];
       }
@@ -833,6 +837,7 @@ export class ClaudeService {
       { id: 'codex:gpt-5.3-codex', name: 'GPT-5.3 Codex (Codex)', description: 'OpenAI coding-optimised — purpose-built for agents' },
       { id: 'codex:o3', name: 'o3 (Codex)', description: 'OpenAI o3 — deep reasoning model' },
       { id: ZAI_GLM_CODEX_MODEL_PICKER_ID, name: 'GLM 5.2 (Codex)', description: 'Z.AI GLM-5.2 via Codex CLI OpenAI-compatible endpoint' },
+      { id: 'prime:default', name: 'Prime Agent', description: 'Self-improving RLM harness with persistent sessions and native subagents' },
     ];
 
     // Append custom models from settings (Kimi, Gemini, etc via API proxy)
@@ -1504,6 +1509,7 @@ Read or source that file if you need the actual values. Do not print secret valu
     if (model.startsWith('cursor:')) return 'cursor';
     if (model.startsWith('gemini:')) return 'gemini';
     if (model.startsWith('opencode:')) return 'opencode';
+    if (model.startsWith('prime:')) return 'prime';
     if (model.startsWith('custom:')) return 'custom';
     return 'claude';
   }
@@ -2901,6 +2907,35 @@ ${leadContent.slice(0, leadContextLimit)}
         return;
       }
 
+      if (stageHarness === 'prime') {
+        const fullPrompt = context ? `${context}\n\n${prompt}` : prompt;
+        const workDir = session.worktreePath || session.repoPath || session.sshConfig?.remoteWorkdir || projectPath;
+        for await (const event of getPrimeAgentService().streamMessage(
+          sessionId,
+          fullPrompt,
+          workDir,
+          stage.model,
+          session.sshConfig,
+          stagePolicy,
+        )) {
+          if (this.isQueryCancelled(sessionId, abortSignal)) return;
+          if (event.type === 'text_delta') emittedStageContent += event.content || '';
+          if (event.type === 'message_complete') {
+            const missing = getMissingFinalStageContent(event as StreamEvent);
+            if (missing) yield withStageSource({ type: 'text_delta', content: missing });
+            this.recordHarnessCompletion(sessionId, session, stage.model, event as StreamEvent, true, undefined, stage.tier, taskDomain);
+            return;
+          }
+          if (event.type === 'error') {
+            this.recordHarnessCompletion(sessionId, session, stage.model, undefined, false, event.error, stage.tier, taskDomain);
+            yield withStageSource({ type: 'text_delta', content: this.formatAutoBuildStageFailure() });
+            return;
+          }
+          yield withStageSource(event as StreamEvent);
+        }
+        return;
+      }
+
       this.recordHarnessCompletion(sessionId, session, stage.model, undefined, false, `${stageHarness} helper stages are not executable yet`, stage.tier, taskDomain);
       yield withStageSource({ type: 'text_delta', content: this.formatAutoBuildStageSkipped() });
     } catch (error) {
@@ -3098,8 +3133,18 @@ ${leadContent.slice(0, leadContextLimit)}
       {
         brief: z.string().describe('The complete design brief to hand to the design agent — what to design, style direction, content, constraints. Be specific; this becomes the design session\'s opening prompt.'),
       },
-      async (args) => {
-        try {
+      async (args) => this.activateDesignModeTool(sessionId, args.brief),
+    );
+
+    return createSdkMcpServer({
+      name: 'claudette-design',
+      version: '1.0.0',
+      tools: [designModeTool],
+    });
+  }
+
+  private async activateDesignModeTool(sessionId: string, brief: string) {
+    try {
           const currentSession = this.sessionStore.get(`sessions.${sessionId}`) as Session | undefined;
           const sshConfig = currentSession?.sshConfig;
           const cwd = currentSession?.worktreePath || currentSession?.repoPath || sshConfig?.remoteWorkdir;
@@ -3115,11 +3160,11 @@ ${leadContent.slice(0, leadContextLimit)}
           const activation = await designService.activateDesignMode({
             sessionId,
             sessionCwd: cwd,
-            sessionName: currentSession?.name || args.brief.slice(0, 60),
+            sessionName: currentSession?.name || brief.slice(0, 60),
             ssh: sshConfig?.remoteWorkdir
               ? { config: sshConfig, remoteWorkdir: sshConfig.remoteWorkdir }
               : undefined,
-          }, args.brief);
+          }, brief);
 
           // Switch the session view to the design session (full takeover)
           if (this.mainWindow) {
@@ -3152,14 +3197,6 @@ ${leadContent.slice(0, leadContextLimit)}
             isError: true,
           };
         }
-      }
-    );
-
-    return createSdkMcpServer({
-      name: 'claudette-design',
-      version: '1.0.0',
-      tools: [designModeTool],
-    });
   }
 
   // Get or create MCP server with browser snapshot tool for session
@@ -5985,9 +6022,16 @@ ${bundledPlaybook}`;
       // Validate and cast permission mode to SDK type
       const validModes = ['default', 'acceptEdits', 'bypassPermissions', 'plan', 'dontAsk'] as const;
       type SDKPermissionMode = typeof validModes[number];
-      const sdkPermissionMode: SDKPermissionMode = validModes.includes(effectivePermissionMode as SDKPermissionMode)
-        ? (effectivePermissionMode as SDKPermissionMode)
-        : 'acceptEdits';
+      // The renderer's Auto mode means that the active harness can complete the
+      // turn without stopping for tool approval. Native harnesses do not expose
+      // an `auto` permission value, so translate it to their unattended mode.
+      // Previously Auto fell through to acceptEdits, which made Claude Code wait
+      // forever on a Bash permission request that was easy to miss in the UI.
+      const sdkPermissionMode: SDKPermissionMode = effectivePermissionMode === 'auto'
+        ? 'bypassPermissions'
+        : validModes.includes(effectivePermissionMode as SDKPermissionMode)
+          ? (effectivePermissionMode as SDKPermissionMode)
+          : 'acceptEdits';
       let autoBuildLeadPermissionMode: SDKPermissionMode = sdkPermissionMode;
 
       // Store the initial permission mode for this session (can be updated mid-stream via GREP IT!)
@@ -6098,16 +6142,15 @@ ${bundledPlaybook}`;
       if (selectedModel === PARABLE_MODE_ID) {
         parableRuntime = parableService.prepareRuntime(sessionId);
         if (session.sshConfig) {
-          const remoteSkillDir = await sshService.syncLocalDirectoryToRemote(
+          const remotePreparation = await sshService.ensureRemoteParableRuntime(
             sessionId,
             session.sshConfig,
             parableRuntime.skillDir,
-            '~/.claude/skills/parable-build',
+            parableRuntime.subscriptionStatus.vendors,
+            parableService.getConfigText(),
           );
-          const remoteStatus = await sshService.getRemoteParableSubscriptionStatus(
-            sessionId,
-            session.sshConfig,
-          );
+          const remoteSkillDir = remotePreparation.skillDir;
+          const remoteStatus = remotePreparation.status;
           parableRuntime = {
             ...parableRuntime,
             skillDir: remoteSkillDir,
@@ -6121,6 +6164,15 @@ ${bundledPlaybook}`;
               PARABLE_SKILL_DIR: remoteSkillDir,
             },
           };
+        }
+        if (!parableRuntime.useSubscriptionLauncher) {
+          const missingProviders = parableRuntime.subscriptionStatus.vendors
+            .filter((vendor) => !parableRuntime!.subscriptionStatus.providers[vendor].present);
+          const detail = parableRuntime.subscriptionStatus.error
+            || (missingProviders.length > 0
+              ? `Connect or deselect these subscription pools in Settings > Parable: ${missingProviders.join(', ')}.`
+              : 'Finish Parable setup in Settings > Parable.');
+          throw new Error(`Parable cannot start: ${detail}`);
         }
         selectedModel = parableRuntime.brainModel;
         autoOrchestrationContext = withCascadeContext(parableRuntime.systemContext);
@@ -6267,10 +6319,11 @@ ${bundledPlaybook}`;
             if (!sandbox.supported) {
               const settings = this.store.get('settings', {}) as Record<string, unknown>;
               const routerConfig = (settings.autoRouterConfig || {}) as Record<string, unknown>;
+              const tierFallbackModel = routerConfig[`${routingDecision.tier}Model`];
               const fallbackModel = [
-                routerConfig.prePlanModel,
                 routerConfig.fallbackModel,
-                'claude-fable-5',
+                tierFallbackModel,
+                'claude-sonnet-5',
                 'claude-sonnet-4-6',
               ].find((candidate): candidate is string => (
                 typeof candidate === 'string' && candidate.startsWith('claude-')
@@ -6780,6 +6833,67 @@ ${bundledPlaybook}`;
           }
         } finally {
           await openCodeCleanup();
+        }
+        return;
+      }
+
+      // Route to Prime Agent for prime:* models. Prime Agent owns its native
+      // session and recursive subagents; Build supplies cross-harness context
+      // and renders its JSON event stream in the normal chat UI.
+      if (selectedModel?.startsWith('prime:')) {
+        const primeAgentService = getPrimeAgentService();
+        const workDir = session.worktreePath || session.repoPath || session.sshConfig?.remoteWorkdir || process.cwd();
+        let primeContext = '';
+        try {
+          primeContext = await this.buildUnifiedContextForHarness(
+            sessionId,
+            session,
+            'prime',
+            normalizedSupplementalMessages,
+            workDir,
+            autoOrchestrationContext,
+            prefetchedRoutingMessages,
+          );
+        } catch (error) {
+          console.warn('[Claude Service] Could not load messages for Prime Agent context:', error);
+        }
+        const handoffContext = [secureEnvContext, ensureCascadeContext(primeContext)].filter(Boolean).join('\n\n');
+        const baseMessage = handoffContext ? `${handoffContext}\n\n${userMessage}` : userMessage;
+        const { message: fullMessage, cleanup } = await this.prepareCliAttachments(
+          sessionId,
+          baseMessage,
+          workDir,
+          attachments,
+          session.sshConfig,
+        );
+        try {
+          const events = primeAgentService.streamMessage(
+            sessionId,
+            fullMessage,
+            workDir,
+            selectedModel,
+            session.sshConfig,
+            leadHarnessPolicy,
+          ) as AsyncIterable<StreamEvent>;
+          for await (const event of this.streamLeadWithAutoBuildStages(
+            events,
+            sessionId,
+            session,
+            autoOrchestrationPlan,
+            userMessage,
+            workDir,
+            normalizedSupplementalMessages,
+            autoOrchestrationContext,
+            sdkPermissionMode,
+            secureEnvContext,
+            selectedModel,
+            abortController.signal,
+            autoRoutedDomain,
+          )) {
+            yield event;
+          }
+        } finally {
+          await cleanup();
         }
         return;
       }
@@ -7310,8 +7424,21 @@ ${bundledPlaybook}`;
 
       // DesignMode is separate from browser automation and must always be
       // available so design requests can hand off to Build's embedded OD flow.
-      mcpServersConfig['claudette-design'] = this.getDesignMcpServer(sessionId);
-      console.log('[Claude Service] Design MCP tool enabled', session.sshConfig ? '(SSH session)' : '(local session)');
+      if (session.sshConfig) {
+        const designMcpPort = await designMcpHttpService.ensure(
+          sessionId,
+          (brief) => this.activateDesignModeTool(sessionId, brief),
+        );
+        await sshService.setupReverseTunnel(sessionId, session.sshConfig, designMcpPort);
+        mcpServersConfig['claudette-design'] = {
+          type: 'http',
+          url: `http://127.0.0.1:${designMcpPort}/mcp`,
+        };
+        console.log(`[Claude Service] Design MCP tool enabled over SSH bridge on port ${designMcpPort}`);
+      } else {
+        mcpServersConfig['claudette-design'] = this.getDesignMcpServer(sessionId);
+        console.log('[Claude Service] Design MCP tool enabled (local session)');
+      }
 
       // Browser tools are still conditional for SSH sessions to avoid loading
       // browser automation when the session has never used the browser panel.
@@ -7695,11 +7822,9 @@ Begin by creating the task structure now.
           permissionMode: cliPermissionMode,
           ...(requiresDangerFlag ? { allowDangerouslySkipPermissions: true } : {}),
           includePartialMessages: true,
-          // Build owns visual-design handoff through the session-scoped
-          // DesignMode tool. Claude Code's separate DesignSync capability can
-          // otherwise win tool search and silently write into a shared design
-          // system instead of opening the requested DesignMode workspace.
-          disallowedTools: ['DesignSync'],
+          // Keep Claude Code's native DesignSync tool available alongside
+          // Build's session-scoped DesignMode MCP. The system prompt explains
+          // their separate purposes so Claude can select the requested flow.
           // Use computed model — resolve custom:* IDs to actual API model names
           model: this.resolveCustomModelId(selectedModel),
           // 1M context is native for Sonnet 5, Fable 5, Opus 5, Opus 4.6, and Sonnet 4.6.
@@ -9333,12 +9458,14 @@ Begin by creating the task structure now.
         return;
       }
 
-      if (bridgeCommand === 'cursor' || bridgeCommand === 'gemini' || bridgeCommand === 'opencode') {
+      if (bridgeCommand === 'cursor' || bridgeCommand === 'gemini' || bridgeCommand === 'opencode' || bridgeCommand === 'prime-agent') {
         const recoveredEvents: AsyncIterable<StreamEvent> = bridgeCommand === 'cursor'
           ? getCursorCliService().replayDetachedAsChat(sessionId, attached.process, session.model) as AsyncIterable<StreamEvent>
           : bridgeCommand === 'gemini'
             ? getGeminiService().replayDetachedAsChat(sessionId, attached.process, session.model) as AsyncIterable<StreamEvent>
-            : getOpenCodeService().replayDetachedAsChat(sessionId, attached.process, session.model) as AsyncIterable<StreamEvent>;
+            : bridgeCommand === 'opencode'
+              ? getOpenCodeService().replayDetachedAsChat(sessionId, attached.process, session.model) as AsyncIterable<StreamEvent>
+              : getPrimeAgentService().replayDetachedAsChat(sessionId, attached.process, session.model, session.sshConfig) as AsyncIterable<StreamEvent>;
 
         for await (const chatEvent of recoveredEvents) {
           if (chatEvent.type === 'message_complete') recoveredCompletely = true;
@@ -9348,7 +9475,7 @@ Begin by creating the task structure now.
           await sshService.signalDetachedBridgeJobStdinEof(sessionId, session.sshConfig, attachedJobDir);
           await sshService.markDetachedBridgeJobRecovered(sessionId, session.sshConfig, attachedJobDir);
         } else if (!recoveredCompletely) {
-          const label = bridgeCommand === 'cursor' ? 'Cursor' : bridgeCommand === 'gemini' ? 'Gemini' : 'OpenCode';
+          const label = bridgeCommand === 'cursor' ? 'Cursor' : bridgeCommand === 'gemini' ? 'Gemini' : bridgeCommand === 'opencode' ? 'OpenCode' : 'Prime Agent';
           yield { type: 'error', error: `Recovered remote ${label} turn ended without a result.` };
         }
         return;
@@ -10184,6 +10311,7 @@ Begin by creating the task structure now.
    * Called from SESSION_DELETE handler only — never during streaming lifecycle.
    */
   cleanupSession(sessionId: string): void {
+    designMcpHttpService.stop(sessionId);
     // Abort active query if any
     const controller = this.activeQueries.get(sessionId);
     if (controller) {
@@ -10203,6 +10331,7 @@ Begin by creating the task structure now.
 
     // Clear OpenClaw conversation history
     openclawService.clearHistory(sessionId);
+    getPrimeAgentService().clearSession(sessionId);
 
     // Session-keyed maps
     this.sessionPermissionModes.delete(sessionId);
@@ -10245,6 +10374,7 @@ Begin by creating the task structure now.
   prepareFastStack(sessionId: string): void {
     codexService.clearThreadId(sessionId);
     getCursorCliService().clearChatId(sessionId);
+    getPrimeAgentService().clearSession(sessionId);
     this.resumeEmptyRetryAt.delete(sessionId);
     this.backgroundListeners.get(sessionId)?.abort();
     this.backgroundListeners.delete(sessionId);
@@ -10271,6 +10401,7 @@ Begin by creating the task structure now.
     getCursorCliService().cancel(sessionId);
     getGeminiService().cancel(sessionId);
     getOpenCodeService().cancel(sessionId);
+    getPrimeAgentService().cancel(sessionId);
 
     const session = (this.sessionStore.get(`sessions.${sessionId}`) as Session | undefined)
       || (this.sessionStore.get(`discoveredSessions.${sessionId}`) as Session | undefined);

@@ -1069,6 +1069,22 @@ class MCPService {
     await fs.writeFile(filePath, this.buildMergedCodexConfig(existing, servers, [...removeServerIds]), 'utf-8');
   }
 
+  /**
+   * Refresh Codex's global MCP config immediately before a local app-server
+   * starts. OAuth tokens can be invalidated by mcp-remote after Build's
+   * startup cache check; without this refresh, every new Codex process sees
+   * the stale server entry and opens another browser authorization flow.
+   */
+  async syncCodexHarnessConfig(): Promise<void> {
+    await this.prepareConfiguredRemoteAuth();
+    const { servers, removeServerIds } = this.getHarnessMcpSyncData();
+    await this.mergeCodexConfig(
+      path.join(os.homedir(), '.codex', 'config.toml'),
+      servers,
+      new Set(removeServerIds),
+    );
+  }
+
   private async writeOpenCodeConfig(filePath: string, baseConfigPath: string, servers: Record<string, MCPServerConfig>, removeServerIds: Set<string>): Promise<void> {
     let baseConfig = '';
     let existingBuildConfig = '';

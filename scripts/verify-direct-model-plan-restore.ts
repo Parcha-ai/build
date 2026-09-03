@@ -147,8 +147,8 @@ assert.match(
 
 assert.match(
   service,
-  /const sdkPermissionMode: SDKPermissionMode = validModes\.includes\(effectivePermissionMode as SDKPermissionMode\)\s*\?\s*\(effectivePermissionMode as SDKPermissionMode\)/,
-  'SDK permission mode must be derived from the effective permission mode',
+  /const sdkPermissionMode: SDKPermissionMode = effectivePermissionMode === 'auto'\s*\?\s*'bypassPermissions'\s*:\s*validModes\.includes\(effectivePermissionMode as SDKPermissionMode\)\s*\?\s*\(effectivePermissionMode as SDKPermissionMode\)/,
+  'SDK permission mode must translate Auto to unattended mode and otherwise use the effective permission mode',
 );
 assert.doesNotMatch(
   service,

@@ -292,6 +292,7 @@ function harnessFromModel(model: string): Harness {
   if (model.startsWith('cursor:')) return 'cursor';
   if (model.startsWith('gemini:')) return 'gemini';
   if (model.startsWith('opencode:')) return 'opencode';
+  if (model.startsWith('prime:')) return 'prime';
   if (model.startsWith('custom:')) return 'custom';
   return 'claude';
 }

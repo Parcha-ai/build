@@ -62,6 +62,7 @@ type RemoteCliCapabilities = {
   cursor: boolean;
   gemini: boolean;
   opencode: boolean;
+  prime: boolean;
 };
 
 type RemoteCliSetupCommand = {
@@ -90,7 +91,10 @@ const electronAPI = {
       cursor: ProviderStatus;
       gemini: ProviderStatus;
       opencode: ProviderStatus;
+      prime: ProviderStatus;
     }> => ipcRenderer.invoke(IPC_CHANNELS.AUTH_CHECK_PROVIDERS),
+    setupProvider: (provider: 'prime'): Promise<{ success: boolean; output: string; status: ProviderStatus }> =>
+      ipcRenderer.invoke(IPC_CHANNELS.AUTH_SETUP_PROVIDER, provider),
     onOAuthCallback: (callback: (data: { code: string }) => void) => {
       const handler = (_: IpcRendererEvent, data: { code: string }) => callback(data);
       ipcRenderer.on('auth:oauth-callback', handler);
@@ -147,6 +151,8 @@ const electronAPI = {
       ipcRenderer.invoke(IPC_CHANNELS.SESSION_GET, sessionId),
     update: (sessionId: string, updates: Partial<Session>): Promise<Session> =>
       ipcRenderer.invoke(IPC_CHANNELS.SESSION_UPDATE, sessionId, updates),
+    autoTitle: (sessionId: string, userMessage: string): Promise<void> =>
+      ipcRenderer.invoke(IPC_CHANNELS.SESSION_AUTO_TITLE, sessionId, userMessage),
     rewindAndFork: (sessionId: string, rewindToMessageId: string): Promise<Session> =>
       ipcRenderer.invoke(IPC_CHANNELS.SESSION_REWIND_FORK, sessionId, rewindToMessageId),
     createFork: (parentSessionId: string, forkPoint: string, initialMessage?: string): Promise<Session> =>
@@ -590,6 +596,8 @@ const electronAPI = {
       ipcRenderer.invoke(IPC_CHANNELS.APP_GET_VERSION),
     openExternal: (url: string): Promise<void> =>
       ipcRenderer.invoke(IPC_CHANNELS.APP_OPEN_EXTERNAL, url),
+    setPlanningLock: (active: boolean, calendarUrl?: string): Promise<void> =>
+      ipcRenderer.invoke(IPC_CHANNELS.APP_SET_PLANNING_LOCK, active, calendarUrl),
     openPath: (filePath: string): Promise<string> =>
       ipcRenderer.invoke(IPC_CHANNELS.APP_OPEN_PATH, filePath),
     getPath: (name: string): Promise<string> =>
@@ -640,6 +648,8 @@ const electronAPI = {
       ipcRenderer.invoke(IPC_CHANNELS.DOCKER_STATUS),
     getContainerStats: (containerId: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.DOCKER_CONTAINER_STATS, containerId),
+    getRemoteOverview: (config: SSHConfig) =>
+      ipcRenderer.invoke(IPC_CHANNELS.DOCKER_REMOTE_OVERVIEW, config),
   },
 
   // Dev Mode
@@ -899,6 +909,11 @@ const electronAPI = {
       setupWarning?: string;
       missingCliInstallCommands?: RemoteCliSetupCommand[];
     }> => ipcRenderer.invoke(IPC_CHANNELS.SSH_TEST_CONNECTION, config),
+    installCli: (config: SSHConfig, harness: keyof RemoteCliCapabilities): Promise<{
+      success: true;
+      output: string;
+      capabilities: RemoteCliCapabilities;
+    }> => ipcRenderer.invoke(IPC_CHANNELS.SSH_INSTALL_CLI, config, harness),
     createSession: (data: { name: string; sshConfig: SSHConfig; resumeSessionId?: string; parentSessionId?: string }): Promise<Session> =>
       ipcRenderer.invoke(IPC_CHANNELS.SSH_CREATE_SESSION, data),
     listResumeCandidates: (config: SSHConfig): Promise<SSHResumeCandidate[]> =>

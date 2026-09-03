@@ -22,6 +22,11 @@ export NODE_ENV=development
 # Add your custom setup commands below:
 `,
   autoStartContainer: true,
+  inAppBrowserUrlPatterns: [
+    '*.m.parcha.dev*',
+    'localhost:*',
+    '127.0.0.1:*',
+  ],
   // QMD semantic search - disabled by default, user must opt-in
   qmdEnabled: false,
   // Ultra Plan mode - disabled by default, user must opt-in
@@ -44,6 +49,9 @@ export NODE_ENV=development
   dailyReviewTime: '09:00',
   // Bedtime task review - enabled by default
   bedtimeTaskReviewEnabled: true,
+  eveningPlanningLockEnabled: true,
+  eveningPlanningLockTime: '22:30',
+  eveningPlanningCalendarUrl: 'https://calendar.google.com/calendar/u/0/r',
 };
 
 export class SettingsService {

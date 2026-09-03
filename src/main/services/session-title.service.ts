@@ -11,6 +11,8 @@ const settingsStore = new Store({ name: 'claudette-settings' }) as any;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const sessionTitleStore = new CachedStore({ name: getSessionStoreName() }) as any;
 const lastTitleUpdates = new Map<string, { at: number; signature: string }>();
+const pendingTitleGenerationSessionIds = new Set<string>();
+let rejectedCerebrasKey = '';
 
 const TITLE_STOP_WORDS = new Set([
   'a', 'an', 'and', 'are', 'as', 'at', 'be', 'but', 'by', 'can', 'could', 'did',
@@ -63,6 +65,10 @@ export function sanitizeSessionTitle(raw: string | null | undefined): string | n
   return cleaned.length > 56 ? `${cleaned.slice(0, 53).replace(/\s+\S*$/, '')}...` : cleaned;
 }
 
+function capTitleWords(title: string, maximum = 2): string {
+  return title.split(/\s+/).filter(Boolean).slice(0, maximum).join(' ');
+}
+
 export function getStoredSessionTitle(sessionId: string): string | null {
   return sanitizeSessionTitle(sessionTitleStore.get(`sessionNames.${sessionId}`) as string | undefined);
 }
@@ -99,13 +105,14 @@ function fallbackTitleFromMessage(message: string): string | null {
     .split(/\s+/)
     .map((word) => word.replace(/^[^a-zA-Z0-9+#.]+|[^a-zA-Z0-9+#.]+$/g, ''))
     .filter((word) => word && !TITLE_STOP_WORDS.has(word.toLowerCase()));
-  const title = (meaningful.length >= 2 ? meaningful : cleaned.split(/\s+/)).slice(0, 6).join(' ');
+  const title = (meaningful.length >= 2 ? meaningful : cleaned.split(/\s+/)).slice(0, 2).join(' ');
   return sanitizeSessionTitle(title.charAt(0).toUpperCase() + title.slice(1));
 }
 
 async function summarizeWithCerebras(userMessage: string, assistantMessage: string): Promise<string | null> {
   const apiKey = getCerebrasKey();
   if (!apiKey) return null;
+  if (apiKey === rejectedCerebrasKey) return null;
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 6000);
@@ -126,9 +133,9 @@ async function summarizeWithCerebras(userMessage: string, assistantMessage: stri
             role: 'system',
             content: [
               'Name an ongoing coding-agent session from its concrete work product.',
-              'Return only a concise title, 2 to 6 words, no quotes, no punctuation at the end.',
+              'Return only a concise title of one or two words, no quotes, no punctuation at the end.',
               'Do not copy the user request or its first sentence verbatim.',
-              'Prefer domain/object/action nouns such as "PR Merge Cleanup", "Inference Cost Query", or "Claude Resume Routing".',
+              'Prefer specific domain/object nouns such as "Merge Cleanup", "Cost Query", or "Resume Routing".',
               'Avoid generic words like fix, update, task, continue, work, thing, and session.',
             ].join(' '),
           },
@@ -143,16 +150,49 @@ async function summarizeWithCerebras(userMessage: string, assistantMessage: stri
       }),
     });
     if (!response.ok) {
-      console.warn('[SessionTitle] Cerebras title request failed:', response.status, await response.text().catch(() => ''));
+      const responseBody = await response.text().catch(() => '');
+      if (response.status === 401 || response.status === 403) {
+        rejectedCerebrasKey = apiKey;
+        console.warn('[SessionTitle] Cerebras credentials were rejected; using local titles until the key changes.');
+      } else {
+        console.warn('[SessionTitle] Cerebras title request failed:', response.status, responseBody);
+      }
       return null;
     }
     const data = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
-    return sanitizeSessionTitle(data.choices?.[0]?.message?.content);
+    const title = sanitizeSessionTitle(data.choices?.[0]?.message?.content);
+    return title ? sanitizeSessionTitle(capTitleWords(title)) : null;
   } catch (error) {
     console.warn('[SessionTitle] Cerebras title request failed:', error);
     return null;
   } finally {
     clearTimeout(timeout);
+  }
+}
+
+export async function updateInitialSessionTitle(params: {
+  sessionId: string;
+  session?: Session | null;
+  userMessage: string;
+  updateSession: UpdateSessionFn;
+}): Promise<void> {
+  const userMessage = params.userMessage.trim();
+  if (!userMessage || CONTINUATION_ONLY_MESSAGE_RE.test(userMessage)) return;
+  if (hasExistingSessionTitle(params.sessionId, params.session)) return;
+  if (pendingTitleGenerationSessionIds.has(params.sessionId)) return;
+  pendingTitleGenerationSessionIds.add(params.sessionId);
+  try {
+    const title = await summarizeWithCerebras(userMessage, '') || fallbackTitleFromMessage(userMessage);
+    if (!title || hasExistingSessionTitle(params.sessionId, params.session)) return;
+    const storedTitle = rememberAutoSessionTitle(params.sessionId, title, 'first-message');
+    if (!storedTitle) return;
+    await params.updateSession(params.sessionId, {
+      aiGeneratedName: storedTitle,
+      name: storedTitle,
+      autoTitleGeneratedAt: new Date().toISOString(),
+    });
+  } finally {
+    pendingTitleGenerationSessionIds.delete(params.sessionId);
   }
 }
 
@@ -167,6 +207,7 @@ export async function updateDynamicSessionTitle(params: {
   const assistantMessage = params.assistantMessage.trim();
   if (!userMessage || assistantMessage.length < 20) return;
   if (hasExistingSessionTitle(params.sessionId, params.session)) return;
+  if (pendingTitleGenerationSessionIds.has(params.sessionId)) return;
 
   const signature = `${userMessage.slice(-240)}\n${assistantMessage.slice(-240)}`;
   const last = lastTitleUpdates.get(params.sessionId);
@@ -174,17 +215,22 @@ export async function updateDynamicSessionTitle(params: {
   if (last && Date.now() - last.at < 20_000) return;
   lastTitleUpdates.set(params.sessionId, { at: Date.now(), signature });
 
-  const title = await summarizeWithCerebras(userMessage, assistantMessage)
-    || fallbackTitleFromMessage(userMessage);
-  if (!title) return;
-  if (hasExistingSessionTitle(params.sessionId, params.session)) return;
+  pendingTitleGenerationSessionIds.add(params.sessionId);
+  try {
+    const title = await summarizeWithCerebras(userMessage, assistantMessage)
+      || fallbackTitleFromMessage(userMessage);
+    if (!title) return;
+    if (hasExistingSessionTitle(params.sessionId, params.session)) return;
 
-  const generatedAt = new Date().toISOString();
-  const storedTitle = rememberAutoSessionTitle(params.sessionId, title, 'dynamic');
-  if (!storedTitle) return;
-  await params.updateSession(params.sessionId, {
-    aiGeneratedName: storedTitle,
-    name: storedTitle,
-    autoTitleGeneratedAt: generatedAt,
-  });
+    const generatedAt = new Date().toISOString();
+    const storedTitle = rememberAutoSessionTitle(params.sessionId, title, 'dynamic');
+    if (!storedTitle) return;
+    await params.updateSession(params.sessionId, {
+      aiGeneratedName: storedTitle,
+      name: storedTitle,
+      autoTitleGeneratedAt: generatedAt,
+    });
+  } finally {
+    pendingTitleGenerationSessionIds.delete(params.sessionId);
+  }
 }

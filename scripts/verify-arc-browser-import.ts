@@ -61,6 +61,10 @@ assert.match(preload, /importArcCookies: \(partitionId: string, profileId: strin
 assert.match(browserPreview, /partitionId=\{partitionId \|\| session\.id\}/);
 assert.match(browserPreview, /<form onSubmit=\{handleUrlSubmit\} className="min-w-0 flex-1">/);
 assert.match(browserPreview, /aria-label="More browser actions"/);
+assert.match(browserPreview, /showFullToolbarActions/);
+assert.match(browserPreview, /getBoundingClientRect\(\)\.width >= 520/);
+assert.match(browserPreview, /aria-label="Screenshot to chat"/);
+assert.match(browserPreview, /aria-label="Pop out browser"/);
 assert.match(browserPreview, /Clear browser data/);
 assert.match(arcImportMenu, /Copies cookies and sign-ins into this Build browser profile/);
 assert.match(arcImportMenu, /window\.electronAPI\.browser\.importArcCookies\(partitionId, profile\.id\)/);

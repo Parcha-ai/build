@@ -51,6 +51,26 @@ body {
   -webkit-app-region: no-drag;
 }
 
+/* A full-window planning lock must stay interactive even when it overlaps
+   Electron title-bar drag regions or another app surface. */
+.planning-lock-interactive,
+.planning-lock-interactive * {
+  -webkit-app-region: no-drag;
+}
+
+.planning-lock-interactive {
+  pointer-events: auto !important;
+  isolation: isolate;
+}
+
+/* Electron webviews have a separate guest input surface. A z-index overlay can
+   paint above one while the guest still receives the click. Remove the guest
+   from hit testing for the complete lifetime of the planning lock. */
+.planning-lock-active webview {
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+
 /* Code and pre styling */
 code, pre {
   font-family: 'JetBrains Mono', 'Menlo', 'Monaco', monospace;

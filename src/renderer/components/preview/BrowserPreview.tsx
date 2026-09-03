@@ -194,7 +194,19 @@ export default function BrowserPreview({
   const [automationIndicator, setAutomationIndicator] = useState<AutomationIndicator | null>(null);
   const [clickRipples, setClickRipples] = useState<Array<{ id: number; x: number; y: number }>>([]);
   const [isToolbarMenuOpen, setToolbarMenuOpen] = useState(false);
+  const [showFullToolbarActions, setShowFullToolbarActions] = useState(false);
+  const toolbarRef = useRef<HTMLDivElement>(null);
   const toolbarMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const toolbar = toolbarRef.current;
+    if (!toolbar) return undefined;
+    const update = () => setShowFullToolbarActions(toolbar.getBoundingClientRect().width >= 520);
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(toolbar);
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     if (!isToolbarMenuOpen) return undefined;
@@ -1562,6 +1574,7 @@ ${data.textContent ? `**Text Content:** "${data.textContent.slice(0, 100)}${data
     >
       {/* Toolbar */}
       <div
+        ref={toolbarRef}
         data-testid="browser-toolbar"
         className="h-10 flex flex-shrink-0 items-center gap-1 px-2 bg-claude-surface border-b border-claude-border"
       >
@@ -1636,7 +1649,29 @@ ${data.textContent ? `**Text Content:** "${data.textContent.slice(0, 100)}${data
         >
           <Target size={16} />
         </button>
-        <div ref={toolbarMenuRef} className="relative flex-shrink-0">
+        {showFullToolbarActions && (
+          <>
+            <button type="button" onClick={() => void captureViewport()} className="flex-shrink-0 p-1.5 rounded hover:bg-claude-bg transition-colors" title="Screenshot to chat" aria-label="Screenshot to chat">
+              <Camera size={16} />
+            </button>
+            <button type="button" onClick={() => void clearStorage()} className="flex-shrink-0 p-1.5 rounded text-red-300 hover:bg-claude-bg transition-colors" title="Clear browser data" aria-label="Clear browser data">
+              <Trash2 size={16} />
+            </button>
+            <button type="button" onClick={() => webviewRef.current?.openDevTools()} className="flex-shrink-0 p-1.5 rounded hover:bg-claude-bg transition-colors" title="Open DevTools" aria-label="Open DevTools">
+              <Code size={16} />
+            </button>
+            <button type="button" onClick={() => void window.electronAPI.app.openExternal(url)} className="flex-shrink-0 p-1.5 rounded hover:bg-claude-bg transition-colors" title="Open in system browser" aria-label="Open in system browser">
+              <ExternalLink size={16} />
+            </button>
+            <button type="button" onClick={() => void window.electronAPI.app.openBrowserWindow()} className="flex-shrink-0 p-1.5 rounded hover:bg-claude-bg transition-colors" title="Pop out browser" aria-label="Pop out browser">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="2" y="7" width="15" height="14" rx="2" />
+                <rect x="7" y="3" width="15" height="14" rx="2" />
+              </svg>
+            </button>
+          </>
+        )}
+        {!showFullToolbarActions && <div ref={toolbarMenuRef} className="relative flex-shrink-0">
           <button
             type="button"
             onClick={() => setToolbarMenuOpen((current) => !current)}
@@ -1698,7 +1733,7 @@ ${data.textContent ? `**Text Content:** "${data.textContent.slice(0, 100)}${data
               </button>
             </div>
           )}
-        </div>
+        </div>}
       </div>
 
       {/* Inspector mode banner */}

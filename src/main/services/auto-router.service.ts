@@ -23,6 +23,7 @@ import Store from 'electron-store';
 import { execFileSync } from 'child_process';
 import * as os from 'os';
 import * as path from 'path';
+import * as fs from 'fs';
 import { findUsableLocalExecutable, hasUsableLocalExecutable } from '../utils/local-executable';
 import {
   ZAI_GLM_CLAUDE_MODEL_PICKER_ID,
@@ -36,6 +37,7 @@ let cursorCliAvailableCache: boolean | undefined;
 let cursorCliAuthCache: { checkedAt: number; loggedIn: boolean } | undefined;
 let geminiCliAvailableCache: boolean | undefined;
 let openCodeCliAvailableCache: boolean | undefined;
+let primeAgentCliAvailableCache: boolean | undefined;
 let settingsObjectCache: { expiresAt: number; value: Record<string, unknown> } | undefined;
 
 const DEFAULT_CONFIG: AutoRouterConfig = {
@@ -275,6 +277,7 @@ interface RemoteCliCapabilities {
   cursor?: boolean;
   gemini?: boolean;
   opencode?: boolean;
+  prime?: boolean;
 }
 
 interface ModelAvailabilityOptions {
@@ -596,6 +599,7 @@ function harnessFromModel(model: string): Harness {
   if (model.startsWith('cursor:')) return 'cursor';
   if (model.startsWith('gemini:')) return 'gemini';
   if (model.startsWith('opencode:')) return 'opencode';
+  if (model.startsWith('prime:')) return 'prime';
   if (model.startsWith('custom:')) return 'custom';
   return 'claude';
 }
@@ -838,11 +842,26 @@ function hasOpenCodeRunner(): boolean {
   return openCodeCliAvailableCache;
 }
 
+function hasPrimeAgentRunner(): boolean {
+  if (primeAgentCliAvailableCache !== undefined) return primeAgentCliAvailableCache;
+  const home = os.homedir();
+  const installed = binaryExistsInPath(['prime-agent'], [
+    `${home}/.local/bin/prime-agent`,
+    `${home}/bin/prime-agent`,
+    '/usr/local/bin/prime-agent',
+    '/opt/homebrew/bin/prime-agent',
+  ]);
+  const authenticated = fs.existsSync(path.join(home, '.prime', 'agent', 'auth.json'));
+  primeAgentCliAvailableCache = installed && authenticated;
+  return primeAgentCliAvailableCache;
+}
+
 function hasRemoteCliForModel(model: string, capabilities?: RemoteCliCapabilities): boolean {
   if (model.startsWith('codex:')) return capabilities?.codex === true;
   if (model.startsWith('cursor:')) return capabilities?.cursor === true;
   if (model.startsWith('gemini:')) return capabilities?.gemini === true;
   if (model.startsWith('opencode:')) return capabilities?.opencode === true;
+  if (model.startsWith('prime:')) return capabilities?.prime === true;
   if (model.startsWith('custom:')) return true;
   if (model.startsWith('claude:') || model.startsWith('claude-') || !model.includes(':')) {
     return capabilities?.claude === true;
@@ -923,6 +942,10 @@ function hasConfiguredCredentialForModel(model: string, options?: ModelAvailabil
 
   if (model.startsWith('opencode:')) {
     return !!(settings.deepseekApiKey || process.env.DEEPSEEK_API_KEY) && (options?.isSSH ? true : hasOpenCodeRunner());
+  }
+
+  if (model.startsWith('prime:')) {
+    return options?.isSSH ? true : hasPrimeAgentRunner();
   }
 
   if (model.startsWith('custom:')) {
@@ -1408,6 +1431,7 @@ const HARNESS_REQUEST_PATTERNS: Record<Harness, RegExp> = {
   cursor: /\bcursor(?:\s+(?:agent|composer))?\b/i,
   gemini: /\bgemini\b/i,
   opencode: /\bopen\s*code\b|\bopencode\b/i,
+  prime: /\bprime(?:\s+agent)?\b/i,
   custom: /\bcustom\s+(?:model|harness|agent)\b/i,
 };
 
@@ -1420,6 +1444,7 @@ const HARNESS_NAME_PATTERN_SOURCES: Record<Harness, string> = {
   cursor: 'cursor(?:\\s+(?:agent|composer))?',
   gemini: 'gemini',
   opencode: '(?:open\\s*code|opencode)',
+  prime: 'prime(?:\\s+agent)?',
   custom: 'custom\\s+(?:model|harness|agent)',
 };
 
@@ -1783,7 +1808,7 @@ function canRunMutatingStages(permissionMode?: string): boolean {
 }
 
 function isExecutableDelegateHarness(harness: Harness): boolean {
-  return harness === 'codex' || harness === 'cursor' || harness === 'gemini' || harness === 'opencode';
+  return harness === 'codex' || harness === 'cursor' || harness === 'gemini' || harness === 'opencode' || harness === 'prime';
 }
 
 function pickDelegateStageModel(
@@ -2346,6 +2371,7 @@ function restoreWorkflowFailuresFromMetadata(sessionId: string, message: ChatMes
       failure.harness === 'cursor' ||
       failure.harness === 'gemini' ||
       failure.harness === 'opencode' ||
+      failure.harness === 'prime' ||
       failure.harness === 'custom'
     ) {
       restoreHarnessFailure(

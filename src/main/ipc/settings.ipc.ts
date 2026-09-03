@@ -2,6 +2,7 @@ import { IpcMain, app, shell, dialog, BrowserWindow } from 'electron';
 import { execFile } from 'child_process';
 import { IPC_CHANNELS } from '../../shared/constants/channels';
 import { SettingsService } from '../services/settings.service';
+import { planningLockService } from '../services/planning-lock.service';
 
 // Track the detached browser window
 let browserWindow: BrowserWindow | null = null;
@@ -49,6 +50,10 @@ export function registerSettingsHandlers(ipcMain: IpcMain): void {
       console.error('[Settings IPC] shell.openExternal failed, falling back to open command:', err);
       execFile('open', [url]);
     }
+  });
+
+  ipcMain.handle(IPC_CHANNELS.APP_SET_PLANNING_LOCK, async (event, active: boolean, calendarUrl?: string) => {
+    planningLockService.setActive(active, calendarUrl, BrowserWindow.fromWebContents(event.sender));
   });
 
   ipcMain.handle(IPC_CHANNELS.APP_OPEN_PATH, async (_, filePath: string) => {

@@ -2284,13 +2284,14 @@ function InputArea({ sessionId, disabled, systemInfo, isStreaming: isStreamingPr
             // Two-level menu: Harness → Models
 
             const groups: Record<string, typeof availableModels> = {};
-            const groupOrder = ['claude', 'cursor', 'codex', 'gemini', 'opencode', 'custom'];
+            const groupOrder = ['claude', 'cursor', 'codex', 'gemini', 'opencode', 'prime', 'custom'];
             const groupLabels: Record<string, string> = {
               claude: 'Claude',
               cursor: 'Cursor',
               codex: 'Codex',
               gemini: 'Gemini CLI',
               opencode: 'DeepSeek',
+              prime: 'Prime Agent',
               custom: 'Custom',
             };
 
@@ -2304,6 +2305,7 @@ function InputArea({ sessionId, disabled, systemInfo, isStreaming: isStreamingPr
               else if (model.id.startsWith('cursor:')) group = 'cursor';
               else if (model.id.startsWith('gemini:')) group = 'gemini';
               else if (model.id.startsWith('opencode:')) group = 'opencode';
+              else if (model.id.startsWith('prime:')) group = 'prime';
               else if (model.id.startsWith('custom:')) group = 'custom';
               if (!groups[group]) groups[group] = [];
               groups[group].push(model);
@@ -2329,6 +2331,7 @@ function InputArea({ sessionId, disabled, systemInfo, isStreaming: isStreamingPr
             else if (currentModel.startsWith('cursor:')) currentHarness = 'cursor';
             else if (currentModel.startsWith('gemini:')) currentHarness = 'gemini';
             else if (currentModel.startsWith('opencode:')) currentHarness = 'opencode';
+            else if (currentModel.startsWith('prime:')) currentHarness = 'prime';
             else if (currentModel.startsWith('custom:')) currentHarness = 'custom';
 
             const activeHarness = hoverHarness || currentHarness;

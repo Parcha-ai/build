@@ -7,6 +7,7 @@ import {
   Check,
   CheckSquare,
   ClipboardList,
+  Clock,
   GripVertical,
   Plus,
   Target,
@@ -17,6 +18,19 @@ import type { FocusTask } from '../../../shared/types';
 
 interface DailyReviewModalProps {
   onDismiss: () => void;
+  onOpenCalendarEvents?: (events: PlanningCalendarEvent[]) => Promise<void> | void;
+  title?: string;
+  description?: string;
+  lockMode?: boolean;
+  sessionDurationMinutes?: number;
+}
+
+export interface PlanningCalendarEvent {
+  taskId: string;
+  title: string;
+  date: string;
+  time: string;
+  durationMinutes: number;
 }
 
 type ReviewStep = 'plan' | 'commit';
@@ -27,6 +41,20 @@ const steps: Array<{ id: ReviewStep; label: string }> = [
 ];
 
 const staleTaskDays = 7;
+const calendarHours = Array.from({ length: 14 }, (_, index) => index + 7);
+
+const formatLocalDate = (date: Date) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+const tomorrowDate = () => {
+  const date = new Date();
+  date.setDate(date.getDate() + 1);
+  return formatLocalDate(date);
+};
 
 const getAgeDays = (task: FocusTask) => {
   const created = new Date(task.createdAt).getTime();
@@ -42,7 +70,14 @@ const cleanBrainDumpLine = (line: string) => {
     .trim();
 };
 
-export default function DailyReviewModal({ onDismiss }: DailyReviewModalProps) {
+export default function DailyReviewModal({
+  onDismiss,
+  onOpenCalendarEvents,
+  title = 'Morning Priority Reset',
+  description = 'Capture loose ends, clean up old work, rank the stack, then commit to the first move.',
+  lockMode = false,
+  sessionDurationMinutes = 0,
+}: DailyReviewModalProps) {
   const {
     tasks,
     isLoaded,
@@ -61,6 +96,37 @@ export default function DailyReviewModal({ onDismiss }: DailyReviewModalProps) {
   const [avoidNote, setAvoidNote] = useState('');
   const [draggedTaskId, setDraggedTaskId] = useState<string | null>(null);
   const [dragOverTaskId, setDragOverTaskId] = useState<string | null>(null);
+  const [calendarEvents, setCalendarEvents] = useState<PlanningCalendarEvent[]>([]);
+  const [calendarDropActive, setCalendarDropActive] = useState(false);
+  const [calendarTaskToPlaceId, setCalendarTaskToPlaceId] = useState<string | null>(null);
+  const timerStorageKey = `planning-session-start-${new Date().toDateString()}`;
+  const [sessionStartedAt, setSessionStartedAt] = useState<number | null>(() => {
+    if (!lockMode || sessionDurationMinutes <= 0) return Date.now();
+    const saved = Number(localStorage.getItem(timerStorageKey));
+    return Number.isFinite(saved) && saved > 0 ? saved : null;
+  });
+  const [remainingSeconds, setRemainingSeconds] = useState(sessionDurationMinutes * 60);
+
+  useEffect(() => {
+    if (!sessionStartedAt || sessionDurationMinutes <= 0) return;
+    const updateRemaining = () => {
+      const elapsed = Math.floor((Date.now() - sessionStartedAt) / 1000);
+      setRemainingSeconds(Math.max(0, sessionDurationMinutes * 60 - elapsed));
+    };
+    updateRemaining();
+    const timer = setInterval(updateRemaining, 1000);
+    return () => clearInterval(timer);
+  }, [sessionDurationMinutes, sessionStartedAt]);
+
+  const startSession = useCallback(() => {
+    const startedAt = Date.now();
+    localStorage.setItem(timerStorageKey, String(startedAt));
+    setSessionStartedAt(startedAt);
+    setRemainingSeconds(sessionDurationMinutes * 60);
+  }, [sessionDurationMinutes, timerStorageKey]);
+
+  const timerComplete = sessionDurationMinutes <= 0 || remainingSeconds === 0;
+  const formattedRemaining = `${String(Math.floor(remainingSeconds / 60)).padStart(2, '0')}:${String(remainingSeconds % 60).padStart(2, '0')}`;
 
   useEffect(() => {
     if (!isLoaded) {
@@ -202,8 +268,11 @@ export default function DailyReviewModal({ onDismiss }: DailyReviewModalProps) {
   const handleDragStart = useCallback((e: React.DragEvent, taskId: string) => {
     setDraggedTaskId(taskId);
     setDragOverTaskId(null);
-    e.dataTransfer.effectAllowed = 'move';
+    // The same gesture can reorder a task (move) or place a copy on the
+    // calendar timeline. Advertising both operations keeps native drops valid.
+    e.dataTransfer.effectAllowed = 'copyMove';
     e.dataTransfer.setData('text/plain', taskId);
+    e.dataTransfer.setData('application/x-build-task-id', taskId);
   }, []);
 
   const handleDragOver = useCallback((e: React.DragEvent, taskId: string) => {
@@ -216,6 +285,88 @@ export default function DailyReviewModal({ onDismiss }: DailyReviewModalProps) {
     setDraggedTaskId(null);
     setDragOverTaskId(null);
   }, []);
+
+  const scheduleTask = useCallback((taskId: string, requestedTime?: string) => {
+    const task = openTasks.find((candidate) => candidate.id === taskId);
+    if (!task) return;
+    setCalendarEvents((current) => {
+      if (current.some((event) => event.taskId === taskId)) {
+        if (!requestedTime) return current;
+        return current.map((event) => event.taskId === taskId ? { ...event, time: requestedTime } : event);
+      }
+      const minutesFromNine = current.length * 30;
+      const hour = 9 + Math.floor(minutesFromNine / 60);
+      const minute = minutesFromNine % 60;
+      return [...current, {
+        taskId,
+        title: task.title,
+        date: tomorrowDate(),
+        time: requestedTime || `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`,
+        durationMinutes: 30,
+      }];
+    });
+  }, [openTasks]);
+
+  const handleCalendarDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const taskId = e.dataTransfer.getData('application/x-build-task-id')
+      || draggedTaskId
+      || e.dataTransfer.getData('text/plain');
+    setCalendarDropActive(false);
+    setDraggedTaskId(null);
+    setDragOverTaskId(null);
+    const slot = (e.target as HTMLElement | null)?.closest<HTMLElement>('[data-planning-calendar-hour]');
+    const requestedHour = Number(slot?.dataset.planningCalendarHour);
+    if (taskId) {
+      scheduleTask(
+        taskId,
+        Number.isFinite(requestedHour) ? `${String(requestedHour).padStart(2, '0')}:00` : undefined,
+      );
+    }
+  }, [draggedTaskId, scheduleTask]);
+
+  const updateCalendarEvent = useCallback((taskId: string, patch: Partial<PlanningCalendarEvent>) => {
+    setCalendarEvents((current) => current.map((event) => (
+      event.taskId === taskId ? { ...event, ...patch } : event
+    )));
+  }, []);
+
+  const removeCalendarEvent = useCallback((taskId: string) => {
+    setCalendarEvents((current) => current.filter((event) => event.taskId !== taskId));
+  }, []);
+
+  // Electron can suppress native HTML drag events when a pointer crosses
+  // editable controls. Track the pointer as a fallback so the visible gesture
+  // always schedules the task on the slot where the user releases it.
+  useEffect(() => {
+    if (!draggedTaskId) return undefined;
+    const finishPointerDrag = (event: PointerEvent | MouseEvent) => {
+      const target = document.elementFromPoint(event.clientX, event.clientY) as HTMLElement | null;
+      const calendar = target?.closest<HTMLElement>('[data-planning-calendar-drop-zone]');
+      if (!calendar) {
+        setDraggedTaskId(null);
+        setDragOverTaskId(null);
+        return;
+      }
+      const slot = target?.closest<HTMLElement>('[data-planning-calendar-hour]');
+      const requestedHour = Number(slot?.dataset.planningCalendarHour);
+      scheduleTask(
+        draggedTaskId,
+        Number.isFinite(requestedHour) ? `${String(requestedHour).padStart(2, '0')}:00` : undefined,
+      );
+      setCalendarDropActive(false);
+      setCalendarTaskToPlaceId(null);
+      setDraggedTaskId(null);
+      setDragOverTaskId(null);
+    };
+    window.addEventListener('pointerup', finishPointerDrag, true);
+    window.addEventListener('mouseup', finishPointerDrag, true);
+    return () => {
+      window.removeEventListener('pointerup', finishPointerDrag, true);
+      window.removeEventListener('mouseup', finishPointerDrag, true);
+    };
+  }, [draggedTaskId, scheduleTask]);
 
   const handleDrop = useCallback((e: React.DragEvent, targetTaskId: string) => {
     e.preventDefault();
@@ -258,10 +409,13 @@ export default function DailyReviewModal({ onDismiss }: DailyReviewModalProps) {
     saveIntentAndDismiss(false, fallbackTopTaskTitle);
   }, [firstDraftTaskTitle, flushDraftTasks, hasDraftTasks, hasOpenTasks, saveIntentAndDismiss, topTask]);
 
-  const handleFinish = useCallback(() => {
+  const handleFinish = useCallback(async () => {
     if (!topTask || !canContinue) return;
+    if (calendarEvents.length > 0) {
+      await onOpenCalendarEvents?.(calendarEvents);
+    }
     saveIntentAndDismiss();
-  }, [canContinue, saveIntentAndDismiss, topTask]);
+  }, [calendarEvents, canContinue, onOpenCalendarEvents, saveIntentAndDismiss, topTask]);
 
   const goNext = useCallback(async () => {
     if (currentStep === 'plan') {
@@ -276,6 +430,22 @@ export default function DailyReviewModal({ onDismiss }: DailyReviewModalProps) {
   const goBack = useCallback(() => {
     setStepIndex((idx) => Math.max(0, idx - 1));
   }, []);
+
+  useEffect(() => {
+    if (!lockMode || !sessionStartedAt) return;
+    const handlePlanningShortcut = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || event.key !== 'Enter') return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (currentStep === 'plan' && canContinue) {
+        void goNext();
+      } else if (currentStep === 'commit' && canContinue) {
+        void handleFinish();
+      }
+    };
+    window.addEventListener('keydown', handlePlanningShortcut, true);
+    return () => window.removeEventListener('keydown', handlePlanningShortcut, true);
+  }, [canContinue, currentStep, goNext, handleFinish, lockMode, sessionStartedAt]);
 
   const renderTaskTitleInput = useCallback((task: FocusTask, className = '') => (
     <input
@@ -351,8 +521,43 @@ export default function DailyReviewModal({ onDismiss }: DailyReviewModalProps) {
     </div>
   ), [handleDeleteTask, handleMarkDone, openTasks, renderTaskTitleInput]);
 
+  // Keep this conditional return below every hook. Returning before the hook
+  // above makes the Start Planning click change the hook count and crashes React.
+  if (lockMode && !sessionStartedAt) {
+    return (
+      <div className="planning-lock-interactive fixed inset-0 bg-black/95 z-[100000] flex items-center justify-center p-4">
+        <div className="bg-claude-surface border-4 border-emerald-500/60 w-full max-w-xl p-8 text-center">
+          <CalendarDays size={42} className="text-emerald-400 mx-auto" strokeWidth={2.5} />
+          <h2 className="mt-5 text-2xl font-bold text-emerald-400 uppercase tracking-wider">{title}</h2>
+          <p className="mt-3 text-sm text-claude-text-secondary">{description}</p>
+          <div className="my-7 border border-emerald-500/40 bg-emerald-500/10 p-5">
+            <div className="text-4xl font-mono font-bold text-claude-text">15:00</div>
+            <div className="mt-2 text-[10px] font-mono uppercase tracking-wider text-emerald-300">
+              Protected planning time
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={startSession}
+            className="w-full px-6 py-3 bg-emerald-500 text-white text-sm font-mono font-bold uppercase hover:bg-emerald-400"
+            style={{ borderRadius: 0 }}
+          >
+            Start Planning
+          </button>
+          <p className="mt-3 text-[10px] font-mono text-claude-text-secondary">
+            Finish when your plan is ready. The timer is only a planning guide.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className="fixed inset-0 bg-black/90 z-[9999] flex items-center justify-center p-4">
+    <div
+      className={`planning-lock-interactive fixed inset-0 bg-black/90 ${lockMode ? 'z-[100000]' : 'z-[9999]'} flex items-center justify-center p-4`}
+      role="dialog"
+      aria-modal="true"
+    >
       <div className="bg-claude-surface border-4 border-emerald-500/60 w-full max-w-4xl max-h-[92vh] flex flex-col">
         <div className="px-6 py-5 border-b border-claude-border">
           <div className="flex items-start gap-4">
@@ -361,12 +566,17 @@ export default function DailyReviewModal({ onDismiss }: DailyReviewModalProps) {
             </div>
             <div className="flex-1 min-w-0">
               <h2 className="text-xl font-bold text-emerald-400 uppercase" style={{ letterSpacing: '0.08em' }}>
-                Morning Priority Reset
+                {title}
               </h2>
               <p className="text-xs text-claude-text-secondary mt-1">
-                Capture loose ends, clean up old work, rank the stack, then commit to the first move.
+                {description}
               </p>
             </div>
+            {lockMode && sessionDurationMinutes > 0 && (
+              <div className={`px-4 py-2 border font-mono text-lg font-bold ${timerComplete ? 'border-emerald-500 text-emerald-300' : 'border-claude-border text-claude-text-secondary'}`} title="Optional planning guide">
+                {timerComplete ? '00:00' : formattedRemaining}
+              </div>
+            )}
           </div>
 
           <div className="grid grid-cols-2 gap-2 mt-5">
@@ -471,6 +681,108 @@ export default function DailyReviewModal({ onDismiss }: DailyReviewModalProps) {
                     drag, edit, done, or drop only if needed
                   </span>
                 </div>
+                <div
+                  onDragEnter={(e) => { e.preventDefault(); setCalendarDropActive(true); }}
+                  onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; setCalendarDropActive(true); }}
+                  onDragLeave={(e) => {
+                    if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setCalendarDropActive(false);
+                  }}
+                  onDrop={handleCalendarDrop}
+                  className={`mb-3 border-2 border-dashed p-3 transition-colors ${
+                    calendarDropActive
+                      ? 'border-emerald-400 bg-emerald-500/15'
+                      : 'border-emerald-500/35 bg-emerald-500/5'
+                  }`}
+                  data-planning-calendar-drop-zone
+                >
+                  <div className="flex items-center gap-2">
+                    <CalendarDays size={15} className="text-emerald-400" />
+                    <div className="flex-1">
+                      <div className="text-xs font-mono uppercase text-emerald-300">Calendar plan</div>
+                      <div className="mt-0.5 text-[10px] font-mono text-claude-text-secondary">
+                        {calendarTaskToPlaceId
+                          ? 'Choose an hour below.'
+                          : 'Drag a task to an hour, or press Schedule and choose a time.'}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="mt-3 max-h-48 overflow-y-auto border border-claude-border/70 bg-claude-bg/60" data-planning-calendar-timeline>
+                    {calendarHours.map((hour) => {
+                      const eventsAtHour = calendarEvents.filter((event) => Number(event.time.split(':')[0]) === hour);
+                      const labelHour = hour === 12 ? '12 PM' : hour > 12 ? `${hour - 12} PM` : `${hour} AM`;
+                      return (
+                        <div
+                          key={hour}
+                          data-planning-calendar-hour={hour}
+                          onClick={() => {
+                            if (!calendarTaskToPlaceId) return;
+                            scheduleTask(calendarTaskToPlaceId, `${String(hour).padStart(2, '0')}:00`);
+                            setCalendarTaskToPlaceId(null);
+                          }}
+                          onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; }}
+                          className={`grid min-h-10 grid-cols-[54px_1fr] border-b border-claude-border/50 last:border-b-0 ${calendarTaskToPlaceId ? 'cursor-pointer hover:bg-emerald-500/10' : ''}`}
+                        >
+                          <div className="border-r border-claude-border/50 px-2 py-2 text-right text-[9px] font-mono text-claude-text-secondary">
+                            {labelHour}
+                          </div>
+                          <div className="flex min-w-0 flex-wrap items-center gap-1.5 px-2 py-1.5 transition-colors hover:bg-emerald-500/5">
+                            {eventsAtHour.length === 0 ? (
+                              <span className="text-[9px] font-mono text-claude-text-secondary/40">Drop task</span>
+                            ) : eventsAtHour.map((event) => (
+                              <div key={event.taskId} className="flex min-w-0 items-center gap-1 border border-emerald-500/40 bg-emerald-500/10 px-2 py-1 text-[9px] font-mono text-emerald-200">
+                                <span className="text-emerald-400">{event.time}</span>
+                                <span className="max-w-48 truncate">{event.title}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  {calendarEvents.length > 0 && (
+                    <div className="mt-3 space-y-2">
+                      {calendarEvents.map((event) => (
+                        <div key={event.taskId} className="grid grid-cols-[minmax(140px,1fr)_122px_90px_70px_28px] items-center gap-2 border border-emerald-500/25 bg-claude-bg/70 p-2">
+                          <div className="truncate text-[11px] font-mono text-claude-text" title={event.title}>{event.title}</div>
+                          <input
+                            type="date"
+                            value={event.date}
+                            onChange={(e) => updateCalendarEvent(event.taskId, { date: e.target.value })}
+                            className="min-w-0 border border-claude-border bg-claude-surface px-1.5 py-1 text-[10px] font-mono text-claude-text"
+                            aria-label={`Date for ${event.title}`}
+                          />
+                          <input
+                            type="time"
+                            value={event.time}
+                            onChange={(e) => updateCalendarEvent(event.taskId, { time: e.target.value })}
+                            className="min-w-0 border border-claude-border bg-claude-surface px-1.5 py-1 text-[10px] font-mono text-claude-text"
+                            aria-label={`Time for ${event.title}`}
+                          />
+                          <select
+                            value={event.durationMinutes}
+                            onChange={(e) => updateCalendarEvent(event.taskId, { durationMinutes: Number(e.target.value) })}
+                            className="min-w-0 border border-claude-border bg-claude-surface px-1 py-1 text-[10px] font-mono text-claude-text"
+                            aria-label={`Duration for ${event.title}`}
+                          >
+                            <option value={15}>15m</option>
+                            <option value={30}>30m</option>
+                            <option value={45}>45m</option>
+                            <option value={60}>1h</option>
+                            <option value={90}>90m</option>
+                          </select>
+                          <button
+                            type="button"
+                            onClick={() => removeCalendarEvent(event.taskId)}
+                            className="flex h-7 w-7 items-center justify-center border border-red-500/30 text-red-300 hover:bg-red-500/10"
+                            title="Remove from calendar plan"
+                          >
+                            <X size={12} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
                 <div className="border border-claude-border bg-claude-bg/50 max-h-[52vh] overflow-y-auto">
                   {openTasks.length === 0 ? (
                     <p className="px-3 py-4 text-xs text-claude-text-secondary font-mono">
@@ -497,6 +809,16 @@ export default function DailyReviewModal({ onDismiss }: DailyReviewModalProps) {
                           <div
                             draggable
                             onDragStart={(e) => handleDragStart(e, task.id)}
+                            onPointerDown={(e) => {
+                              if (e.button !== 0) return;
+                              setDraggedTaskId(task.id);
+                              setDragOverTaskId(null);
+                            }}
+                            onMouseDown={(e) => {
+                              if (e.button !== 0) return;
+                              setDraggedTaskId(task.id);
+                              setDragOverTaskId(null);
+                            }}
                             className="mt-1 cursor-grab text-claude-text-secondary/60 group-hover:text-emerald-300 flex-shrink-0"
                             title="Drag to reorder"
                           >
@@ -516,6 +838,23 @@ export default function DailyReviewModal({ onDismiss }: DailyReviewModalProps) {
                             </div>
                           </div>
                           <div className="flex flex-wrap items-center justify-end gap-1 flex-shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setCalendarTaskToPlaceId(task.id);
+                              }}
+                              className={`px-2 py-1 text-[10px] font-mono uppercase border ${
+                                calendarEvents.some((event) => event.taskId === task.id)
+                                  ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-300'
+                                  : 'border-claude-border text-claude-text-secondary hover:border-emerald-500/40 hover:text-emerald-300'
+                              }`}
+                              title="Add to calendar plan"
+                            >
+                              <Clock size={12} className="inline mr-1" />
+                              {calendarTaskToPlaceId === task.id
+                                ? 'Pick time'
+                                : calendarEvents.some((event) => event.taskId === task.id) ? 'Move' : 'Schedule'}
+                            </button>
                             <button
                               onClick={() => moveTask(task.id, -1)}
                               disabled={index === 0}
@@ -616,6 +955,7 @@ export default function DailyReviewModal({ onDismiss }: DailyReviewModalProps) {
           {stepIndex < steps.length - 1 ? (
             <div className="flex items-center gap-2">
               <button
+                type="button"
                 onClick={goNext}
                 disabled={!canContinue}
                 className="px-4 py-2 border border-claude-border text-claude-text text-xs font-mono font-bold uppercase hover:border-emerald-500 hover:text-emerald-300 disabled:opacity-30"
@@ -623,26 +963,34 @@ export default function DailyReviewModal({ onDismiss }: DailyReviewModalProps) {
               >
                 Set Intention
               </button>
-              <button
-                onClick={() => void handleAcceptCurrentStack()}
-                disabled={!canContinue}
-                className="px-5 py-2 bg-emerald-500 text-white text-xs font-mono font-bold uppercase hover:bg-emerald-400 disabled:opacity-30"
-                style={{ borderRadius: 0 }}
-              >
-                Accept Stack
-              </button>
+              {!lockMode && (
+                <button
+                  onClick={() => void handleAcceptCurrentStack()}
+                  disabled={!canContinue}
+                  className="px-5 py-2 bg-emerald-500 text-white text-xs font-mono font-bold uppercase hover:bg-emerald-400 disabled:opacity-30"
+                  style={{ borderRadius: 0 }}
+                >
+                  Accept Stack
+                </button>
+              )}
             </div>
           ) : (
             <button
+              type="button"
               onClick={handleFinish}
               disabled={!canContinue}
               className="px-5 py-2 bg-emerald-500 text-white text-xs font-mono font-bold uppercase hover:bg-emerald-400 disabled:opacity-30"
               style={{ borderRadius: 0 }}
             >
-              Start My Day
+              {lockMode ? 'Finish Planning' : 'Start My Day'}
             </button>
           )}
         </div>
+        {lockMode && (
+          <div className="px-6 pb-3 text-right text-[9px] font-mono uppercase text-claude-text-secondary">
+            Keyboard: {navigator.platform.toLowerCase().includes('mac') ? 'Command' : 'Ctrl'} + Enter
+          </div>
+        )}
       </div>
     </div>
   );
