@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { ChevronRight, ChevronDown, Folder, Plus, Zap, Loader2, Search, GitFork, Server, Star, Focus } from 'lucide-react';
+import { ChevronRight, ChevronDown, Plus, Loader2, Search, GitFork, Focus } from 'lucide-react';
 import { useSessionStore } from '../../stores/session.store';
 import SessionCard from './SessionCard';
 import NewSessionDialog from './NewSessionDialog';
@@ -56,6 +56,14 @@ export default function SessionList() {
   const [newSessionInitialPath, setNewSessionInitialPath] = useState<string>('');
   const [newSessionInitialName, setNewSessionInitialName] = useState<string>('');
   const [showAllRecentSessions, setShowAllRecentSessions] = useState(false);
+  const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set());
+  const toggleSection = useCallback((key: string) => {
+    setCollapsedSections(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  }, []);
   const [teleportSession, setTeleportSession] = useState<Session | null>(null);
   const [downloadSession, setDownloadSession] = useState<Session | null>(null);
 
@@ -332,14 +340,14 @@ export default function SessionList() {
   // Show loading state while scanning for sessions
   if (isLoadingSessions) {
     return (
-      <div className="p-6 flex flex-col items-center justify-center text-claude-text-secondary">
-        <div className="w-12 h-12 flex items-center justify-center mb-3 bg-claude-surface" style={{ borderRadius: 0 }}>
-          <Search size={20} className="text-claude-accent animate-pulse" />
+      <div className="p-6 flex flex-col items-center justify-center text-fg-4">
+        <div className="w-10 h-10 flex items-center justify-center mb-3 bg-ink-1 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)]">
+          <Search size={18} className="text-accent animate-pulse" />
         </div>
-        <div className="text-[10px] font-bold uppercase tracking-wider mb-1">
-          SCANNING SESSIONS
+        <div className="text-[11px] uppercase tracking-[0.04em] mb-1 text-fg-3">
+          Scanning sessions
         </div>
-        <div className="flex items-center gap-2 text-[10px]">
+        <div className="flex items-center gap-2 text-[11.5px]">
           <Loader2 size={10} className="animate-spin" />
           <span>Discovering Claude Code transcripts...</span>
         </div>
@@ -349,9 +357,9 @@ export default function SessionList() {
 
   if (sessions.length === 0) {
     return (
-      <div className="p-4 text-center text-claude-text-secondary text-sm">
+      <div className="p-4 text-center text-fg-4 text-[13px]">
         <p>No sessions yet.</p>
-        <p className="mt-1 text-xs">Click + to create one.</p>
+        <p className="mt-1 text-[11.5px] text-fg-5">Click + to create one.</p>
       </div>
     );
   }
@@ -363,10 +371,10 @@ export default function SessionList() {
         const focusSession = sessions.find(s => s.id === focusSessionId);
         if (!focusSession) return null;
         return (
-          <div className="mb-3 border-b border-green-500/30">
-            <div className="px-3 py-1.5 flex items-center gap-2">
-              <Focus size={12} className="text-green-400" />
-              <span className="text-[10px] font-bold text-green-400 uppercase tracking-wider">
+          <div className="mb-3 pb-1 border-b border-line">
+            <div className="px-2.5 py-1.5 flex items-center gap-1.5">
+              <Focus size={11} className="text-accent" />
+              <span className="text-[11px] text-fg-4 uppercase tracking-[0.04em]">
                 Focus
               </span>
             </div>
@@ -385,13 +393,15 @@ export default function SessionList() {
       {/* Starred Sessions section — SSH sessions grouped by remote folder */}
       {starredSessions.length > 0 && (
         <div className="mb-3">
-          <div className="px-3 py-1.5 flex items-center gap-2">
-            <Star size={12} className="text-amber-400" fill="currentColor" />
-            <span className="text-[10px] font-bold text-claude-text-secondary uppercase tracking-wider">
-              Starred
-            </span>
-          </div>
-          <div>
+          <button
+            onClick={() => toggleSection('starred')}
+            className="w-full px-2.5 py-1.5 flex items-center gap-1.5 text-[11px] text-fg-4 hover:text-fg-3 uppercase tracking-[0.04em] transition-colors"
+          >
+            <ChevronDown size={11} strokeWidth={2.4} className={`transition-transform ${collapsedSections.has('starred') ? '-rotate-90' : ''}`} />
+            <span>Starred</span>
+            <span className="ml-auto font-mono text-[10.5px] text-fg-5 normal-case">{starredSessions.length}</span>
+          </button>
+          {!collapsedSections.has('starred') && <div className="flex flex-col gap-[2px]">
             {starredSessions.map((session) => (
               <div
                 key={session.id}
@@ -440,7 +450,7 @@ export default function SessionList() {
                   setDraggedId(null);
                   setDragOverId(null);
                 }}
-                className={dragOverId === session.id ? 'border-t-2 border-claude-accent' : ''}
+                className={dragOverId === session.id ? 'border-t-2 border-accent' : ''}
               >
                 <SessionCard
                   session={session}
@@ -453,20 +463,22 @@ export default function SessionList() {
                 />
               </div>
             ))}
-          </div>
+          </div>}
         </div>
       )}
 
       {/* Recent Sessions section */}
       {recentSessions.length > 0 && (
         <div className="mb-3">
-          <div className="px-3 py-1.5 flex items-center gap-2">
-            <Zap size={12} className="text-amber-400" />
-            <span className="text-[10px] font-bold text-claude-text-secondary uppercase tracking-wider">
-              Recent {recentSessions.length > 5 && `(${recentSessions.length})`}
-            </span>
-          </div>
-          <div>
+          <button
+            onClick={() => toggleSection('recent')}
+            className="w-full px-2.5 py-1.5 flex items-center gap-1.5 text-[11px] text-fg-4 hover:text-fg-3 uppercase tracking-[0.04em] transition-colors"
+          >
+            <ChevronDown size={11} strokeWidth={2.4} className={`transition-transform ${collapsedSections.has('recent') ? '-rotate-90' : ''}`} />
+            <span>Recent</span>
+            <span className="ml-auto font-mono text-[10.5px] text-fg-5 normal-case">{recentSessions.length}</span>
+          </button>
+          {!collapsedSections.has('recent') && <div className="flex flex-col gap-[2px]">
             {recentSessions.slice(0, showAllRecentSessions ? undefined : 5).map((session) => (
               <SessionCard
                 key={session.id}
@@ -484,23 +496,21 @@ export default function SessionList() {
             {recentSessions.length > 5 && (
               <button
                 onClick={() => setShowAllRecentSessions(!showAllRecentSessions)}
-                className="w-full px-3 py-1.5 text-[10px] font-bold text-claude-accent hover:bg-claude-surface-hover transition-colors uppercase"
-                style={{ letterSpacing: '0.05em' }}
+                className="w-full h-7 px-2.5 text-left text-[11.5px] text-fg-4 hover:text-fg-2 hover:bg-claude-surface-hover transition-colors"
               >
-                {showAllRecentSessions ? '▲ SHOW LESS' : `▼ SHOW ${recentSessions.length - 5} MORE`}
+                {showAllRecentSessions ? 'Show less' : `Show ${recentSessions.length - 5} more`}
               </button>
             )}
-          </div>
+          </div>}
         </div>
       )}
 
       {/* Project folders section */}
       {sortedProjects.length > 0 && (
         <div>
-          <div className="px-3 py-1.5 flex items-center gap-2">
-            <Folder size={12} className="text-claude-text-secondary" />
-            <span className="text-[10px] font-bold text-claude-text-secondary uppercase tracking-wider">
-              All Projects
+          <div className="px-2.5 pt-3 pb-1.5 flex items-center gap-1.5">
+            <span className="text-[11px] text-fg-5 uppercase tracking-[0.04em]">
+              All projects
             </span>
           </div>
           {sortedProjects.map((project) => {
@@ -513,50 +523,38 @@ export default function SessionList() {
               <div key={project.path} className="mb-1">
                 {/* Project header */}
                 <div
-                  className={`w-full px-3 py-2 flex items-center gap-2 group hover:bg-claude-bg transition-colors ${
-                    hasActiveSession ? 'bg-claude-bg' : ''
+                  className={`w-full px-2.5 py-1.5 flex items-center gap-2 group hover:bg-claude-surface-hover transition-colors ${
+                    hasActiveSession ? 'text-fg-2' : ''
                   }`}
-                  style={{ borderRadius: 0 }}
                 >
                   <button
                     onClick={() => toggleProject(project.path)}
                     className="flex items-center gap-2 flex-1 min-w-0 text-left"
                   >
                     {isExpanded ? (
-                      <ChevronDown size={12} className="flex-shrink-0 text-claude-text-secondary" />
+                      <ChevronDown size={11} strokeWidth={2.4} className="flex-shrink-0 text-fg-4" />
                     ) : (
-                      <ChevronRight size={12} className="flex-shrink-0 text-claude-text-secondary" />
+                      <ChevronRight size={11} strokeWidth={2.4} className="flex-shrink-0 text-fg-4" />
                     )}
-                    {project.type === 'ssh' ? (
-                      <Server size={14} className="flex-shrink-0 text-cyan-400" />
-                    ) : (
-                      <Folder size={14} className="flex-shrink-0 text-claude-accent" />
+                    <span className={`flex-1 min-w-0 truncate text-[11px] uppercase tracking-[0.04em] ${hasActiveSession ? 'text-fg-2' : 'text-fg-4'}`}>
+                      {project.name}
+                    </span>
+                    {project.type === 'ssh' && (
+                      <span className="flex-shrink-0 text-[10px] px-1.5 py-px bg-claude-surface-hover text-fg-3">
+                        SSH{project.sshHost ? ` · ${project.sshHost}` : ''}
+                      </span>
                     )}
-                    <div className="flex-1 min-w-0">
-                      <span className="text-xs font-bold text-claude-text truncate block">
-                        {project.type === 'ssh' ? (
-                          <span className="flex items-center gap-1">
-                            <span className="text-cyan-400">⌘</span>
-                            {project.name}
-                          </span>
-                        ) : (
-                          project.name
-                        )}
-                      </span>
-                      <span className="text-[10px] text-claude-text-secondary">
-                        {project.type === 'ssh' && 'SSH Remote · '}
-                        {totalSessions} session{totalSessions !== 1 ? 's' : ''}
-                      </span>
-                    </div>
+                    <span className="flex-shrink-0 font-mono text-[10.5px] text-fg-5">
+                      {totalSessions}
+                    </span>
                   </button>
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
                       handleCreateSessionInFolder(project.path, project.name);
                     }}
-                    className="p-1 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-claude-surface text-claude-text-secondary hover:text-claude-accent"
+                    className="p-1 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-[#262626] text-fg-4 hover:text-fg"
                     title="New session in this folder"
-                    style={{ borderRadius: 0 }}
                   >
                     <Plus size={12} />
                   </button>
@@ -564,23 +562,23 @@ export default function SessionList() {
 
                 {/* Sessions and forks under this project */}
                 {isExpanded && (
-                  <div className="ml-6 relative">
+                  <div className="ml-3 relative flex flex-col gap-[2px]">
                     {/* Worktrees section - shown FIRST, flat list with tree branch lines */}
                     {project.forks.length > 0 && (() => {
                       const allWorktreeSessions = project.forks.flatMap(fork => fork.sessions);
                       return (
                         <div className="relative mb-2">
                           {/* Worktrees label */}
-                          <div className="px-2 py-1 flex items-center gap-2">
-                            <GitFork size={10} className="text-emerald-400" />
-                            <span className="text-[9px] font-bold text-emerald-400 uppercase tracking-wider">
+                          <div className="px-2 py-1 flex items-center gap-1.5">
+                            <GitFork size={10} className="text-fg-4" />
+                            <span className="text-[10.5px] text-fg-4 uppercase tracking-[0.04em]">
                               Worktrees
                             </span>
                           </div>
 
                           {/* Vertical line from label down through all sessions */}
                           <div
-                            className="absolute left-4 top-6 w-px bg-emerald-500/50"
+                            className="absolute left-4 top-6 w-px bg-line-strong"
                             style={{ height: `calc(100% - 24px)` }}
                           />
 
@@ -588,7 +586,7 @@ export default function SessionList() {
                           {allWorktreeSessions.map((session, idx) => (
                             <div key={session.id} className="relative">
                               {/* Horizontal branch line */}
-                              <div className="absolute left-4 top-4 w-3 h-px bg-emerald-500/50" />
+                              <div className="absolute left-4 top-4 w-3 h-px bg-line-strong" />
 
                               <div className="ml-5">
                                 <SessionCard

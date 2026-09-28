@@ -63,30 +63,30 @@ export function SessionPickerList({
   return (
     <div className="min-w-0">
       <div className="relative mb-2">
-        <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-claude-text-secondary" />
+        <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-fg-4" />
         <input
           value={query}
           onChange={(event) => setQuery(event.target.value)}
           placeholder="Search sessions, branches, or paths…"
-          className="w-full rounded border border-claude-border bg-claude-bg py-2 pl-8 pr-2 text-[11px] font-mono text-claude-text placeholder:text-claude-text-secondary/60 focus:border-cyan-500 focus:outline-none"
+          className="w-full border-0 bg-ink-3 py-2 pl-8 pr-2 text-[13px] text-fg shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] placeholder:text-fg-5 focus:outline-none focus:ring-1 focus:ring-accent/50"
           autoFocus={autoFocus}
         />
       </div>
 
-      <div className="max-h-60 space-y-1 overflow-y-auto pr-1">
+      <div className="max-h-60 space-y-px overflow-y-auto pr-1">
         <button
           type="button"
           onClick={() => onSelect({ external: true })}
-          className={`flex w-full items-center gap-2 rounded border px-2.5 py-2 text-left transition-colors ${
+          className={`flex w-full items-center gap-2 px-2.5 py-2 text-left transition-colors ${
             external
-              ? 'border-amber-400/60 bg-amber-400/10 text-amber-200'
-              : 'border-claude-border bg-claude-bg/60 text-claude-text hover:border-amber-400/40 hover:bg-amber-400/5'
+              ? 'bg-amber/10 text-amber shadow-[inset_0_0_0_1px_rgba(240,180,41,0.45)]'
+              : 'text-fg-2 hover:bg-claude-surface-hover'
           }`}
         >
           <Monitor size={13} className="shrink-0" />
           <span className="min-w-0 flex-1">
-            <span className="block text-[11px] font-semibold">Outside Build</span>
-            <span className="block truncate text-[9px] text-claude-text-secondary">Keep the timer in the menu bar without switching sessions</span>
+            <span className="block text-[13px] font-medium">Outside Build</span>
+            <span className="block truncate text-[11.5px] text-fg-4">Keep the timer in the menu bar without switching sessions</span>
           </span>
           {external && <Check size={13} className="shrink-0" />}
         </button>
@@ -100,33 +100,33 @@ export function SessionPickerList({
               type="button"
               key={session.id}
               onClick={() => onSelect({ sessionId: session.id, external: false })}
-              className={`flex w-full items-start gap-2 rounded border px-2.5 py-2 text-left transition-colors ${
+              className={`flex w-full items-start gap-2 px-2.5 py-2 text-left transition-colors ${
                 selected
-                  ? 'border-cyan-400/60 bg-cyan-400/10'
-                  : 'border-transparent hover:border-claude-border hover:bg-claude-bg'
+                  ? 'bg-claude-surface-hover'
+                  : 'hover:bg-claude-surface-hover'
               }`}
             >
-              <span className={`mt-1 h-1.5 w-1.5 shrink-0 rounded-full ${
-                activity === 'active' ? 'bg-green-400' : session.status === 'error' ? 'bg-red-400' : 'bg-claude-text-secondary/40'
+              <span className={`mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full ${
+                activity === 'active' ? 'bg-accent' : session.status === 'error' ? 'bg-diff-del' : 'bg-fg-5'
               }`} />
               <span className="min-w-0 flex-1">
-                <span className={`flex items-center gap-1 truncate text-[11px] font-semibold ${selected ? 'text-cyan-300' : 'text-claude-text'}`}>
-                  {session.isStarred && <Star size={9} className="shrink-0 fill-amber-300 text-amber-300" />}
-                  {session.parentSessionId && <GitFork size={9} className="shrink-0 text-violet-300" />}
+                <span className={`flex items-center gap-1 truncate text-[13px] font-medium ${selected ? 'text-fg' : 'text-fg-2'}`}>
+                  {session.isStarred && <Star size={9} className="shrink-0 fill-amber text-amber" />}
+                  {session.parentSessionId && <GitFork size={9} className="shrink-0 text-fg-4" />}
                   <span className="truncate">{getSessionDisplayName(session)}</span>
-                  {session.id === activeSessionId && <span className="shrink-0 text-[8px] uppercase text-green-400">current</span>}
+                  {session.id === activeSessionId && <span className="shrink-0 font-mono text-[10px] uppercase text-diff-add">current</span>}
                 </span>
-                <span className="mt-0.5 block truncate text-[9px] text-claude-text-secondary">
+                <span className="mt-0.5 block truncate font-mono text-[11px] text-fg-4">
                   {session.branch || 'no branch'}{path ? ` · ${path}` : ''}
                 </span>
               </span>
-              {selected && <Check size={13} className="mt-0.5 shrink-0 text-cyan-300" />}
+              {selected && <Check size={13} className="mt-0.5 shrink-0 text-accent" />}
             </button>
           );
         })}
 
         {orderedSessions.length === 0 && (
-          <div className="px-2 py-4 text-center text-[10px] font-mono text-claude-text-secondary">
+          <div className="px-2 py-4 text-center text-[12px] text-fg-4">
             No sessions match “{query}”
           </div>
         )}
@@ -169,18 +169,18 @@ export default function TaskSessionPicker({ selectedSessionId, external, onSelec
         onClick={() => setOpen((value) => !value)}
         className={`max-w-24 truncate transition-opacity ${
           external
-            ? 'text-amber-300 opacity-80 group-hover:opacity-100'
+            ? 'text-amber opacity-80 group-hover:opacity-100'
             : selectedSession
-              ? 'text-cyan-400 opacity-70 group-hover:opacity-100'
-              : 'text-claude-text-secondary opacity-0 hover:text-cyan-400 group-hover:opacity-100'
+              ? 'text-accent opacity-70 group-hover:opacity-100'
+              : 'text-fg-4 opacity-0 hover:text-accent group-hover:opacity-100'
         }`}
         title={label}
       >
         {external ? <Monitor size={10} /> : <Link2 size={10} />}
       </button>
       {open && (
-        <div className="absolute right-0 top-5 z-[90] w-80 rounded-md border border-claude-border bg-claude-surface p-2 shadow-2xl">
-          <div className="mb-2 px-0.5 text-[9px] font-bold uppercase tracking-wider text-claude-text-secondary">
+        <div className="absolute right-0 top-5 z-[90] w-80 bg-ink-2 p-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1),0_16px_40px_rgba(0,0,0,0.4)]">
+          <div className="mb-2 px-0.5 text-[11px] font-medium uppercase tracking-[0.04em] text-fg-4">
             Task focus location
           </div>
           <SessionPickerList

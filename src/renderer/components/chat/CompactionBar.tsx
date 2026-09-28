@@ -12,13 +12,13 @@ export default function CompactionBar({ status }: CompactionBarProps) {
   const isSmartCompact = status.smartCompact?.enabled;
 
   return (
-    <div className="h-1 w-full bg-claude-border/30 overflow-hidden">
+    <div className="h-[2px] w-full overflow-hidden bg-white/[0.04]">
       <div
         className="h-full"
         style={{
           background: isSmartCompact
-            ? 'linear-gradient(90deg, #8B5CF6, #6366F1, #3B82F6, #6366F1, #8B5CF6)'
-            : 'linear-gradient(90deg, #6366F1, #8B5CF6, #6366F1)',
+            ? 'linear-gradient(90deg, rgba(76,154,255,0) 0%, #4C9AFF 30%, #8DBBFF 50%, #4C9AFF 70%, rgba(76,154,255,0) 100%)'
+            : 'linear-gradient(90deg, rgba(76,154,255,0) 0%, #4C9AFF 50%, rgba(76,154,255,0) 100%)',
           backgroundSize: '200% 100%',
           animation: 'compactShimmer 1.5s linear infinite',
         }}
@@ -36,6 +36,6 @@ export default function CompactionBar({ status }: CompactionBarProps) {
 // Completion variant shown briefly after compaction
 export function CompactionComplete({ tokensSaved }: { tokensSaved?: number }) {
   return (
-    <div className="h-1 w-full bg-green-500/80" />
+    <div className="h-[2px] w-full bg-diff-add/80" />
   );
 }

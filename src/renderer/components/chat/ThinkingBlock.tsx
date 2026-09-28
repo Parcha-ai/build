@@ -83,51 +83,57 @@ export default function ThinkingBlock({ content, isStreaming, isCompacting, comp
     return lastLines.join('\n');
   })();
 
-  // Colors change based on compacting state and GStack mode
+  // Graphite: quiet single-line row. Accent (or GStack colour) only while live.
   const hasGStack = !isCompacting && gstackColor;
-  const accentColor = isCompacting ? 'text-blue-400' : hasGStack ? '' : 'text-purple-400';
-  const accentStyle = hasGStack ? { color: gstackColor } : undefined;
-  const dotColor = isCompacting ? 'bg-blue-500' : hasGStack ? '' : 'bg-purple-500';
+  const isLive = Boolean(isStreaming || isCompacting);
   const dotStyle = hasGStack ? { backgroundColor: gstackColor } : undefined;
-  const borderColor = isCompacting ? 'border-blue-500/30' : hasGStack ? '' : 'border-purple-500/30';
-  const borderStyle = hasGStack ? { borderLeftColor: `${gstackColor}4D` } : undefined; // 4D = 30% opacity
-  const label = isCompacting ? 'Compacting' : hasGStack ? `[${gstackLabel}] Thinking` : 'Thinking';
+  const labelStyle = hasGStack && !isLive ? { color: gstackColor } : undefined;
+  const baseLabel = isCompacting ? 'Compacting' : isStreaming ? 'Thinking' : 'Thought';
+  const label = hasGStack ? `[${gstackLabel}] ${baseLabel}` : baseLabel;
   const Icon = isCompacting ? Zap : Brain;
 
   return (
-    <div className="font-mono text-sm">
+    <div className="text-[12.5px]">
       {/* Header row - clickable */}
       <button
         onClick={() => setIsExpanded(!isExpanded)}
-        className="w-full flex items-center gap-2 py-0.5 hover:bg-claude-surface/50 transition-colors text-left"
+        className="flex max-w-full items-center gap-1.5 py-0.5 text-left text-fg-4 transition-colors hover:text-fg-3"
       >
         {/* Expand/collapse chevron */}
         {isExpanded ? (
-          <ChevronDown size={12} className={`${accentColor} flex-shrink-0`} style={accentStyle} />
+          <ChevronDown size={11} className="flex-shrink-0" />
         ) : (
-          <ChevronRight size={12} className={`${accentColor} flex-shrink-0`} style={accentStyle} />
+          <ChevronRight size={11} className="flex-shrink-0" />
         )}
 
-        {/* Status dot */}
-        <span
-          className={`w-2 h-2 rounded-full flex-shrink-0 ${dotColor} ${isStreaming || isCompacting ? 'animate-pulse' : ''}`}
-          style={dotStyle}
-        />
+        {/* Live status dot */}
+        {isLive ? (
+          <span
+            className="status-pulse h-[7px] w-[7px] flex-shrink-0 rounded-full bg-accent"
+            style={dotStyle}
+          />
+        ) : (
+          <Icon size={12} className="flex-shrink-0 text-fg-5" />
+        )}
 
-        {/* Icon and label */}
-        <Icon size={14} className={`${accentColor} flex-shrink-0`} style={accentStyle} />
-        <span className={`font-semibold ${accentColor}`} style={accentStyle}>{label}</span>
+        {/* Label */}
+        <span className={isLive ? 'text-shimmer font-medium' : ''} style={labelStyle}>{label}</span>
+
+        {/* Compaction telemetry */}
+        {isCompacting && isExpanded && compactionStatusLine && (
+          <span className="font-mono text-[11px] text-fg-5">{compactionStatusLine}</span>
+        )}
 
         {/* Loading spinner for active thinking/compacting */}
-        {(isStreaming || isCompacting) && (
-          <Loader2 size={12} className={`${accentColor} animate-spin flex-shrink-0`} style={accentStyle} />
+        {isLive && (
+          <Loader2 size={11} className="flex-shrink-0 animate-spin text-fg-5" />
         )}
       </button>
 
       {/* Preview (collapsed) - shows last 2-3 lines streaming in */}
       {!isExpanded && (content || isCompacting) && (
-        <div className={`ml-6 mt-1 p-2 bg-claude-surface/30 border-l-2 ${borderColor}`} style={borderStyle}>
-          <pre className="whitespace-pre-wrap text-xs text-claude-text-secondary/80 leading-relaxed overflow-hidden">
+        <div className="ml-[5px] mt-1 border-l border-line pl-3">
+          <pre className="max-h-[4.8em] overflow-hidden whitespace-pre-wrap font-sans text-[12px] leading-relaxed text-fg-5">
             {previewLines}
           </pre>
         </div>
@@ -137,10 +143,9 @@ export default function ThinkingBlock({ content, isStreaming, isCompacting, comp
       {isExpanded && (content || isCompacting) && (
         <div
           ref={expandedRef}
-          className={`ml-6 mt-1 p-2 bg-claude-surface/30 border-l-2 ${borderColor} max-h-64 overflow-y-auto scroll-smooth`}
-          style={borderStyle}
+          className="ml-[5px] mt-1 max-h-64 overflow-y-auto scroll-smooth border-l border-line pl-3"
         >
-          <pre className="whitespace-pre-wrap text-sm text-claude-text-secondary leading-relaxed overflow-x-auto">
+          <pre className="overflow-x-auto whitespace-pre-wrap font-sans text-[13px] leading-relaxed text-fg-4">
             {isCompacting
               ? `Compacting conversation... ${compactionStatusLine}\n\nSummarizing conversation context to optimize token usage...`
               : content

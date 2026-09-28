@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { forwardRef, useEffect, useImperativeHandle, useMemo, useState } from 'react';
 import { Copy, ExternalLink, Loader2, Mic, RadioTower, Volume2, X } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { useAudioStore } from '../../stores/audio.store';
@@ -15,6 +15,23 @@ interface VoiceComposerControlProps {
   active: boolean;
   disabled?: boolean;
   sessionId: string;
+  /** When false the Remote Agent button is not rendered inline (the composer
+   *  exposes it through its overflow menu via the imperative handle). */
+  showRemoteButton?: boolean;
+  onRemoteStateChange?: (state: VoiceComposerRemoteState) => void;
+}
+
+export interface VoiceComposerRemoteState {
+  /** Remote Agent can be deployed (SSH sessions only). */
+  available: boolean;
+  /** Remote Agent is live for this session. */
+  active: boolean;
+  busy: boolean;
+}
+
+export interface VoiceComposerControlHandle {
+  /** Same action as clicking the Remote Agent button. */
+  triggerRemoteVoice: () => void;
 }
 
 const BAR_SHAPES = [0.48, 0.76, 1, 0.7, 0.9, 0.64, 1, 0.76, 0.48];
@@ -110,7 +127,13 @@ const VoiceComposerPresence: React.FC<VoiceComposerPresenceProps> = ({
 };
 
 /** Small, pane-safe view of the singleton app-level realtime voice session. */
-export const VoiceComposerControl: React.FC<VoiceComposerControlProps> = ({ active, disabled = false, sessionId }) => {
+export const VoiceComposerControl = forwardRef<VoiceComposerControlHandle, VoiceComposerControlProps>(({
+  active,
+  disabled = false,
+  sessionId,
+  showRemoteButton = true,
+  onRemoteStateChange,
+}, ref) => {
   const isConnected = useAudioStore((state) => Boolean(state.voiceModeStates[APP_VOICE_SESSION_ID]?.isConnected));
   const isConnecting = useAudioStore((state) => Boolean(state.voiceModeStates[APP_VOICE_SESSION_ID]?.isConnecting));
   const isSpeaking = useAudioStore((state) => Boolean(state.voiceModeStates[APP_VOICE_SESSION_ID]?.isSpeaking));
@@ -206,6 +229,17 @@ export const VoiceComposerControl: React.FC<VoiceComposerControlProps> = ({ acti
 
   const remoteVoiceOwnsSession = remoteVoice.active && remoteVoice.sessionId === sessionId;
 
+  const triggerRemoteVoice = () => {
+    if (remoteVoiceOwnsSession && remoteVoice.url) setShowRemoteVoice((visible) => !visible);
+    else void deployRemoteVoice();
+  };
+
+  useImperativeHandle(ref, () => ({ triggerRemoteVoice }));
+
+  useEffect(() => {
+    onRemoteStateChange?.({ available: sessionIsSsh, active: remoteVoiceOwnsSession, busy: remoteVoiceBusy });
+  }, [onRemoteStateChange, sessionIsSsh, remoteVoiceOwnsSession, remoteVoiceBusy]);
+
   return (
     <div className={`build-voice-composer-control build-voice-presence ${presenceState}`}>
       {expanded && (
@@ -232,12 +266,9 @@ export const VoiceComposerControl: React.FC<VoiceComposerControlProps> = ({ acti
         {(isConnected || activeError) && <span className="build-voice-composer-toggle-dot" aria-hidden="true" />}
       </button>
 
-      <button
+      {showRemoteButton && <button
         type="button"
-        onClick={() => {
-          if (remoteVoiceOwnsSession && remoteVoice.url) setShowRemoteVoice((visible) => !visible);
-          else void deployRemoteVoice();
-        }}
+        onClick={triggerRemoteVoice}
         disabled={disabled || remoteVoiceBusy || !sessionIsSsh}
         className="build-voice-composer-toggle build-remote-voice-toggle"
         title={!sessionIsSsh
@@ -251,7 +282,7 @@ export const VoiceComposerControl: React.FC<VoiceComposerControlProps> = ({ acti
       >
         {remoteVoiceBusy ? <Loader2 size={15} className="animate-spin" /> : <RadioTower size={15} />}
         {remoteVoiceOwnsSession && <span className="build-voice-composer-toggle-dot" aria-hidden="true" />}
-      </button>
+      </button>}
 
       {showRemoteVoice && (
         <div className="build-remote-voice-popover" data-testid="remote-voice-popover">
@@ -299,4 +330,6 @@ export const VoiceComposerControl: React.FC<VoiceComposerControlProps> = ({ acti
       )}
     </div>
   );
-};
+});
+
+VoiceComposerControl.displayName = 'VoiceComposerControl';

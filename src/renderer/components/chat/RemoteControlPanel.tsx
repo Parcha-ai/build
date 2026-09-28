@@ -32,17 +32,17 @@ export default function RemoteControlPanel({ sessionId, url, startedAt }: Remote
   }, [startedAt]);
 
   return (
-    <div className="border-t border-black bg-white text-black font-mono" style={{ borderRadius: 0 }}>
+    <div className="mx-3 mb-1.5 bg-ink-1 text-fg shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)]" style={{ borderRadius: 0 }}>
       {/* Header */}
-      <div className="flex items-center justify-between px-3 py-1.5 border-b border-black/20 bg-black/5">
+      <div className="flex items-center justify-between px-3 py-1.5 border-b border-line">
         <div className="flex items-center gap-2">
-          <span className="text-[10px] font-bold uppercase tracking-wider text-black/50">REMOTE CONTROL</span>
-          <span className="inline-block w-2 h-2 bg-green-500 animate-pulse" style={{ borderRadius: 0 }} />
-          <span className="text-[10px] text-black/40">{elapsed}</span>
+          <span className="text-[11px] font-medium uppercase tracking-[0.04em] text-fg-4">REMOTE CONTROL</span>
+          <span className="inline-block w-[7px] h-[7px] rounded-full bg-diff-add animate-pulse" />
+          <span className="font-mono text-[10.5px] text-fg-5">{elapsed}</span>
         </div>
         <button
           onClick={handleStop}
-          className="px-2 py-0.5 text-[10px] font-bold uppercase bg-red-500/10 hover:bg-red-500/20 text-red-600 border border-red-500/30"
+          className="h-6 px-2 text-[11.5px] text-diff-del-text hover:bg-diff-del/10"
           style={{ borderRadius: 0 }}
         >
           STOP
@@ -52,33 +52,33 @@ export default function RemoteControlPanel({ sessionId, url, startedAt }: Remote
       {/* Content */}
       <div className="flex items-start gap-4 px-3 py-3">
         {/* QR Code */}
-        <div className="shrink-0 border border-black/20 p-1 bg-white">
+        <div className="shrink-0 p-1 bg-white">
           <QRCodeSVG value={url} size={96} level="M" />
         </div>
 
         {/* URL and actions */}
         <div className="flex-1 min-w-0">
-          <p className="text-[10px] text-black/40 uppercase font-bold mb-1">Scan QR code or open URL</p>
+          <p className="text-[11px] text-fg-4 uppercase tracking-[0.04em] font-medium mb-1.5">Scan QR code or open URL</p>
           <div className="flex items-center gap-1 mb-2">
-            <code className="text-xs text-black/70 truncate block flex-1 bg-black/5 px-2 py-1 border border-black/10">
+            <code className="font-mono text-[11.5px] text-fg-2 truncate block flex-1 bg-[#0B0B0B] px-2 py-1">
               {url}
             </code>
           </div>
           <div className="flex items-center gap-2">
             <button
               onClick={handleCopy}
-              className="flex items-center gap-1 px-2 py-1 text-[10px] font-bold uppercase bg-black/5 hover:bg-black/10 border border-black/20"
+              className="flex items-center gap-1.5 h-7 px-2.5 text-[12px] text-fg-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] hover:bg-white/[0.04] hover:text-fg"
               style={{ borderRadius: 0 }}
             >
-              <Copy size={10} />
+              <Copy size={12} />
               COPY
             </button>
             <button
               onClick={handleOpenExternal}
-              className="flex items-center gap-1 px-2 py-1 text-[10px] font-bold uppercase bg-black/5 hover:bg-black/10 border border-black/20"
+              className="flex items-center gap-1.5 h-7 px-2.5 text-[12px] text-fg-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] hover:bg-white/[0.04] hover:text-fg"
               style={{ borderRadius: 0 }}
             >
-              <ExternalLink size={10} />
+              <ExternalLink size={12} />
               OPEN
             </button>
           </div>

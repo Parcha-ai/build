@@ -457,27 +457,24 @@ export default function DailyReviewModal({
       onBlur={() => void commitTaskTitleDraft(task)}
       onKeyDown={(e) => handleTaskTitleKeyDown(e, task)}
       onMouseDown={(e) => e.stopPropagation()}
-      className={`w-full min-w-0 bg-transparent border-b border-transparent px-0 py-0.5 text-left focus:outline-none focus:border-emerald-500 ${className}`}
-      style={{ borderRadius: 0 }}
+      className={`w-full min-w-0 bg-transparent border-b border-transparent px-0 py-0.5 text-left focus:outline-none focus:border-accent/60 ${className}`}
     />
   ), [commitTaskTitleDraft, handleTaskTitleKeyDown, taskTitleDrafts]);
 
   const addTaskControl = (
-    <div className="flex items-center gap-2 border border-claude-border bg-claude-bg/50 px-3 py-2">
-      <Plus size={14} className="text-emerald-400 flex-shrink-0" />
+    <div className="flex items-center gap-2 bg-ink-3 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] px-3 py-1.5 focus-within:ring-1 focus-within:ring-accent/50">
+      <Plus size={14} className="text-fg-4 flex-shrink-0" />
       <input
         value={newTaskTitle}
         onChange={(e) => setNewTaskTitle(e.target.value)}
         onKeyDown={handleAddTaskKeyDown}
         placeholder="Add task..."
-        className="flex-1 min-w-0 bg-transparent text-xs font-mono text-claude-text placeholder:text-claude-text-secondary focus:outline-none"
-        style={{ borderRadius: 0 }}
+        className="flex-1 min-w-0 bg-transparent text-[13px] text-fg placeholder:text-fg-5 focus:outline-none"
       />
       <button
         onClick={() => void handleAddTask()}
         disabled={!newTaskTitle.trim()}
-        className="px-3 py-1.5 bg-emerald-500/20 text-emerald-300 text-[10px] font-mono uppercase hover:bg-emerald-500/30 disabled:opacity-30"
-        style={{ borderRadius: 0 }}
+        className="h-7 px-3 text-[12.5px] text-fg-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] hover:bg-claude-surface-hover disabled:opacity-40"
       >
         Add
       </button>
@@ -485,32 +482,32 @@ export default function DailyReviewModal({
   );
 
   const renderEditableOpenTaskList = useCallback((emptyText: string) => (
-    <div className="border border-claude-border bg-claude-bg/50">
+    <div className="bg-ink-1 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)]">
       {openTasks.length === 0 ? (
-        <p className="px-3 py-4 text-xs text-claude-text-secondary font-mono">
+        <p className="px-3 py-4 text-[13px] text-fg-4">
           {emptyText}
         </p>
       ) : (
         openTasks.map((task, index) => (
-          <div key={task.id} className="flex items-center gap-2 px-3 py-2 border-b border-claude-border last:border-b-0">
-            <div className={`w-6 h-6 border flex items-center justify-center text-[10px] font-mono flex-shrink-0 ${
-              index === 0 ? 'border-emerald-500 text-emerald-300' : 'border-claude-border text-claude-text-secondary'
+          <div key={task.id} className="flex items-center gap-2 px-3 py-2 border-b border-line last:border-b-0">
+            <div className={`w-6 h-6 flex items-center justify-center text-[11px] font-mono flex-shrink-0 ${
+              index === 0 ? 'bg-accent/10 text-accent-text shadow-[inset_0_0_0_1px_rgba(76,154,255,0.35)]' : 'text-fg-4 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)]'
             }`}>
               {index + 1}
             </div>
             <div className="flex-1 min-w-0">
-              {renderTaskTitleInput(task, 'text-xs font-mono text-claude-text')}
+              {renderTaskTitleInput(task, 'text-[13px] text-fg-2')}
             </div>
             <button
               onClick={() => handleMarkDone(task.id)}
-              className="p-1 border border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/10"
+              className="p-1 text-diff-add shadow-[inset_0_0_0_1px_rgba(63,185,80,0.35)] hover:bg-diff-add/10"
               title="Mark done"
             >
               <Check size={13} />
             </button>
             <button
               onClick={() => handleDeleteTask(task.id)}
-              className="p-1 border border-red-500/30 text-red-300 hover:bg-red-500/10"
+              className="p-1 text-diff-del shadow-[inset_0_0_0_1px_rgba(248,81,73,0.45)] hover:bg-diff-del/10"
               title="Drop task"
             >
               <X size={13} />
@@ -526,25 +523,24 @@ export default function DailyReviewModal({
   if (lockMode && !sessionStartedAt) {
     return (
       <div className="planning-lock-interactive fixed inset-0 bg-black/95 z-[100000] flex items-center justify-center p-4">
-        <div className="bg-claude-surface border-4 border-emerald-500/60 w-full max-w-xl p-8 text-center">
-          <CalendarDays size={42} className="text-emerald-400 mx-auto" strokeWidth={2.5} />
-          <h2 className="mt-5 text-2xl font-bold text-emerald-400 uppercase tracking-wider">{title}</h2>
-          <p className="mt-3 text-sm text-claude-text-secondary">{description}</p>
-          <div className="my-7 border border-emerald-500/40 bg-emerald-500/10 p-5">
-            <div className="text-4xl font-mono font-bold text-claude-text">15:00</div>
-            <div className="mt-2 text-[10px] font-mono uppercase tracking-wider text-emerald-300">
+        <div className="w-full max-w-xl p-8 text-center bg-ink-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1),0_16px_40px_rgba(0,0,0,0.4)]">
+          <CalendarDays size={40} className="text-accent mx-auto" strokeWidth={1.75} />
+          <h2 className="mt-5 text-[22px] font-semibold tracking-tight text-fg">{title}</h2>
+          <p className="mt-3 text-[14px] text-fg-3">{description}</p>
+          <div className="my-7 p-5 bg-ink-1 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)]">
+            <div className="text-4xl font-mono font-semibold text-fg">15:00</div>
+            <div className="mt-2 text-[11px] font-medium uppercase tracking-[0.04em] text-fg-4">
               Protected planning time
             </div>
           </div>
           <button
             type="button"
             onClick={startSession}
-            className="w-full px-6 py-3 bg-emerald-500 text-white text-sm font-mono font-bold uppercase hover:bg-emerald-400"
-            style={{ borderRadius: 0 }}
+            className="w-full h-9 px-6 bg-fg text-ink-0 text-[13px] font-semibold hover:bg-white"
           >
             Start Planning
           </button>
-          <p className="mt-3 text-[10px] font-mono text-claude-text-secondary">
+          <p className="mt-3 text-[12px] text-fg-4">
             Finish when your plan is ready. The timer is only a planning guide.
           </p>
         </div>
@@ -558,22 +554,22 @@ export default function DailyReviewModal({
       role="dialog"
       aria-modal="true"
     >
-      <div className="bg-claude-surface border-4 border-emerald-500/60 w-full max-w-4xl max-h-[92vh] flex flex-col">
-        <div className="px-6 py-5 border-b border-claude-border">
+      <div className="w-full max-w-4xl max-h-[92vh] flex flex-col bg-ink-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1),0_16px_40px_rgba(0,0,0,0.4)]">
+        <div className="px-6 py-5 border-b border-line">
           <div className="flex items-start gap-4">
-            <div className="w-11 h-11 bg-emerald-500/20 border-2 border-emerald-500 flex items-center justify-center flex-shrink-0">
-              <CalendarDays size={22} className="text-emerald-400" strokeWidth={3} />
+            <div className="w-11 h-11 bg-accent/10 shadow-[inset_0_0_0_1px_rgba(76,154,255,0.35)] flex items-center justify-center flex-shrink-0">
+              <CalendarDays size={22} className="text-accent-text" strokeWidth={2} />
             </div>
             <div className="flex-1 min-w-0">
-              <h2 className="text-xl font-bold text-emerald-400 uppercase" style={{ letterSpacing: '0.08em' }}>
+              <h2 className="text-[18px] font-semibold tracking-tight text-fg">
                 {title}
               </h2>
-              <p className="text-xs text-claude-text-secondary mt-1">
+              <p className="text-[13px] text-fg-3 mt-1">
                 {description}
               </p>
             </div>
             {lockMode && sessionDurationMinutes > 0 && (
-              <div className={`px-4 py-2 border font-mono text-lg font-bold ${timerComplete ? 'border-emerald-500 text-emerald-300' : 'border-claude-border text-claude-text-secondary'}`} title="Optional planning guide">
+              <div className={`px-4 py-2 font-mono text-lg font-semibold ${timerComplete ? 'text-diff-add shadow-[inset_0_0_0_1px_rgba(63,185,80,0.45)]' : 'text-fg-3 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)]'}`} title="Optional planning guide">
                 {timerComplete ? '00:00' : formattedRemaining}
               </div>
             )}
@@ -583,12 +579,12 @@ export default function DailyReviewModal({
             {steps.map((step, index) => (
               <div
                 key={step.id}
-                className={`h-9 border flex items-center justify-center gap-2 text-[10px] font-mono uppercase ${
+                className={`h-8 flex items-center justify-center gap-2 text-[12px] ${
                   index === stepIndex
-                    ? 'border-emerald-500 bg-emerald-500/15 text-emerald-300'
+                    ? 'bg-claude-surface-hover text-fg shadow-[inset_0_0_0_1px_rgba(76,154,255,0.5)]'
                     : index < stepIndex
-                      ? 'border-emerald-500/40 bg-emerald-500/5 text-emerald-500'
-                      : 'border-claude-border text-claude-text-secondary'
+                      ? 'text-fg-3 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)]'
+                      : 'text-fg-5 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)]'
                 }`}
               >
                 {index < stepIndex ? <Check size={12} /> : <span>{index + 1}</span>}
@@ -606,25 +602,23 @@ export default function DailyReviewModal({
 
                 <section>
                   <div className="flex items-center gap-2">
-                    <ClipboardList size={16} className="text-emerald-400" />
-                    <h3 className="text-xs font-mono uppercase text-claude-text">Capture</h3>
+                    <ClipboardList size={16} className="text-fg-4" />
+                    <h3 className="text-[13px] font-semibold tracking-tight text-fg">Capture</h3>
                   </div>
                   <textarea
                     value={brainDump}
                     onChange={(e) => setBrainDump(e.target.value)}
                     placeholder={"Paste loose loops, one per line"}
-                    className="mt-2 w-full h-24 px-3 py-3 bg-claude-bg border border-claude-border text-claude-text font-mono text-xs placeholder:text-claude-text-secondary focus:outline-none focus:border-emerald-500 resize-none"
-                    style={{ borderRadius: 0 }}
+                    className="mt-2 w-full h-24 px-3 py-3 bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-[13px] text-fg placeholder:text-fg-5 focus:outline-none focus:ring-1 focus:ring-accent/50 resize-none"
                   />
                   <div className="flex items-center justify-between mt-2">
-                    <span className="text-[10px] font-mono text-claude-text-secondary">
+                    <span className="text-[12px] text-fg-4">
                       {openTasks.length} open
                     </span>
                     <button
                       onClick={addBrainDumpTasks}
                       disabled={!brainDump.trim()}
-                      className="px-3 py-2 bg-emerald-500/20 text-emerald-300 text-xs font-mono uppercase hover:bg-emerald-500/30 disabled:opacity-30"
-                      style={{ borderRadius: 0 }}
+                      className="h-8 px-3 text-fg-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] hover:bg-claude-surface-hover text-[13px] disabled:opacity-40"
                     >
                       <Plus size={13} className="inline mr-1" />
                       Add lines
@@ -635,33 +629,33 @@ export default function DailyReviewModal({
                 <section>
                 <div className="flex items-center justify-between mb-2">
                   <div className="flex items-center gap-2">
-                    <CheckSquare size={15} className="text-emerald-400" />
-                    <h3 className="text-xs font-mono uppercase text-claude-text">Close</h3>
+                    <CheckSquare size={15} className="text-fg-4" />
+                    <h3 className="text-[13px] font-semibold tracking-tight text-fg">Close</h3>
                   </div>
                   {completedTasks.length > 0 && (
                     <button
                       onClick={clearCompletedTasks}
-                      className="px-2 py-1 text-[10px] font-mono uppercase text-red-300 hover:text-red-200 border border-red-500/30 hover:bg-red-500/10"
+                      className="h-7 px-2 text-[12px] text-diff-del shadow-[inset_0_0_0_1px_rgba(248,81,73,0.45)] hover:bg-diff-del/10"
                     >
                       Clear completed
                     </button>
                   )}
                 </div>
-                <div className="border border-claude-border bg-claude-bg/50 max-h-44 overflow-y-auto">
+                <div className="bg-ink-1 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)] max-h-44 overflow-y-auto">
                   {completedTasks.length === 0 ? (
-                    <p className="px-3 py-4 text-xs text-claude-text-secondary font-mono">
+                    <p className="px-3 py-4 text-[13px] text-fg-4">
                       No completed tasks to clear.
                     </p>
                   ) : (
                     completedTasks.map((task) => (
-                      <div key={task.id} className="flex items-center gap-2 px-3 py-2 border-b border-claude-border last:border-b-0">
-                        <CheckSquare size={13} className="text-emerald-500 flex-shrink-0" />
+                      <div key={task.id} className="flex items-center gap-2 px-3 py-2 border-b border-line last:border-b-0">
+                        <CheckSquare size={13} className="text-diff-add flex-shrink-0" />
                         <div className="flex-1 min-w-0">
-                          {renderTaskTitleInput(task, 'text-xs font-mono text-claude-text-secondary line-through')}
+                          {renderTaskTitleInput(task, 'text-[13px] text-fg-5 line-through')}
                         </div>
                         <button
                           onClick={() => deleteTask(task.id)}
-                          className="text-claude-text-secondary hover:text-red-400"
+                          className="text-fg-4 hover:text-diff-del"
                           title="Clear completed task"
                         >
                           <X size={13} />
@@ -675,9 +669,9 @@ export default function DailyReviewModal({
 
               <section>
                 <div className="flex items-center gap-2 mb-2">
-                  <AlertTriangle size={15} className="text-amber-400" />
-                  <h3 className="text-xs font-mono uppercase text-claude-text">Restack</h3>
-                  <span className="text-[10px] font-mono text-claude-text-secondary">
+                  <AlertTriangle size={15} className="text-amber" />
+                  <h3 className="text-[13px] font-semibold tracking-tight text-fg">Restack</h3>
+                  <span className="text-[12px] text-fg-4">
                     drag, edit, done, or drop only if needed
                   </span>
                 </div>
@@ -688,25 +682,25 @@ export default function DailyReviewModal({
                     if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setCalendarDropActive(false);
                   }}
                   onDrop={handleCalendarDrop}
-                  className={`mb-3 border-2 border-dashed p-3 transition-colors ${
+                  className={`mb-3 border border-dashed p-3 transition-colors ${
                     calendarDropActive
-                      ? 'border-emerald-400 bg-emerald-500/15'
-                      : 'border-emerald-500/35 bg-emerald-500/5'
+                      ? 'border-accent bg-accent/10'
+                      : 'border-line-strong bg-ink-1'
                   }`}
                   data-planning-calendar-drop-zone
                 >
                   <div className="flex items-center gap-2">
-                    <CalendarDays size={15} className="text-emerald-400" />
+                    <CalendarDays size={15} className="text-accent" />
                     <div className="flex-1">
-                      <div className="text-xs font-mono uppercase text-emerald-300">Calendar plan</div>
-                      <div className="mt-0.5 text-[10px] font-mono text-claude-text-secondary">
+                      <div className="text-[13px] font-semibold tracking-tight text-fg">Calendar plan</div>
+                      <div className="mt-0.5 text-[12px] text-fg-4">
                         {calendarTaskToPlaceId
                           ? 'Choose an hour below.'
                           : 'Drag a task to an hour, or press Schedule and choose a time.'}
                       </div>
                     </div>
                   </div>
-                  <div className="mt-3 max-h-48 overflow-y-auto border border-claude-border/70 bg-claude-bg/60" data-planning-calendar-timeline>
+                  <div className="mt-3 max-h-48 overflow-y-auto bg-ink-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)]" data-planning-calendar-timeline>
                     {calendarHours.map((hour) => {
                       const eventsAtHour = calendarEvents.filter((event) => Number(event.time.split(':')[0]) === hour);
                       const labelHour = hour === 12 ? '12 PM' : hour > 12 ? `${hour - 12} PM` : `${hour} AM`;
@@ -720,17 +714,17 @@ export default function DailyReviewModal({
                             setCalendarTaskToPlaceId(null);
                           }}
                           onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; }}
-                          className={`grid min-h-10 grid-cols-[54px_1fr] border-b border-claude-border/50 last:border-b-0 ${calendarTaskToPlaceId ? 'cursor-pointer hover:bg-emerald-500/10' : ''}`}
+                          className={`grid min-h-10 grid-cols-[54px_1fr] border-b border-line last:border-b-0 ${calendarTaskToPlaceId ? 'cursor-pointer hover:bg-accent/10' : ''}`}
                         >
-                          <div className="border-r border-claude-border/50 px-2 py-2 text-right text-[9px] font-mono text-claude-text-secondary">
+                          <div className="border-r border-line px-2 py-2 text-right text-[10.5px] font-mono text-fg-4">
                             {labelHour}
                           </div>
-                          <div className="flex min-w-0 flex-wrap items-center gap-1.5 px-2 py-1.5 transition-colors hover:bg-emerald-500/5">
+                          <div className="flex min-w-0 flex-wrap items-center gap-1.5 px-2 py-1.5 transition-colors hover:bg-claude-surface-hover">
                             {eventsAtHour.length === 0 ? (
-                              <span className="text-[9px] font-mono text-claude-text-secondary/40">Drop task</span>
+                              <span className="text-[11px] text-fg-5">Drop task</span>
                             ) : eventsAtHour.map((event) => (
-                              <div key={event.taskId} className="flex min-w-0 items-center gap-1 border border-emerald-500/40 bg-emerald-500/10 px-2 py-1 text-[9px] font-mono text-emerald-200">
-                                <span className="text-emerald-400">{event.time}</span>
+                              <div key={event.taskId} className="flex min-w-0 items-center gap-1 bg-accent/10 shadow-[inset_0_0_0_1px_rgba(76,154,255,0.35)] px-2 py-1 text-[11.5px] text-fg-2">
+                                <span className="font-mono text-accent-text">{event.time}</span>
                                 <span className="max-w-48 truncate">{event.title}</span>
                               </div>
                             ))}
@@ -742,26 +736,26 @@ export default function DailyReviewModal({
                   {calendarEvents.length > 0 && (
                     <div className="mt-3 space-y-2">
                       {calendarEvents.map((event) => (
-                        <div key={event.taskId} className="grid grid-cols-[minmax(140px,1fr)_122px_90px_70px_28px] items-center gap-2 border border-emerald-500/25 bg-claude-bg/70 p-2">
-                          <div className="truncate text-[11px] font-mono text-claude-text" title={event.title}>{event.title}</div>
+                        <div key={event.taskId} className="grid grid-cols-[minmax(140px,1fr)_122px_90px_70px_28px] items-center gap-2 p-2 bg-ink-1 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)]">
+                          <div className="truncate text-[13px] text-fg-2" title={event.title}>{event.title}</div>
                           <input
                             type="date"
                             value={event.date}
                             onChange={(e) => updateCalendarEvent(event.taskId, { date: e.target.value })}
-                            className="min-w-0 border border-claude-border bg-claude-surface px-1.5 py-1 text-[10px] font-mono text-claude-text"
+                            className="min-w-0 border-0 bg-ink-3 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] px-1.5 py-1 text-[12px] font-mono text-fg focus:outline-none focus:ring-1 focus:ring-accent/50"
                             aria-label={`Date for ${event.title}`}
                           />
                           <input
                             type="time"
                             value={event.time}
                             onChange={(e) => updateCalendarEvent(event.taskId, { time: e.target.value })}
-                            className="min-w-0 border border-claude-border bg-claude-surface px-1.5 py-1 text-[10px] font-mono text-claude-text"
+                            className="min-w-0 border-0 bg-ink-3 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] px-1.5 py-1 text-[12px] font-mono text-fg focus:outline-none focus:ring-1 focus:ring-accent/50"
                             aria-label={`Time for ${event.title}`}
                           />
                           <select
                             value={event.durationMinutes}
                             onChange={(e) => updateCalendarEvent(event.taskId, { durationMinutes: Number(e.target.value) })}
-                            className="min-w-0 border border-claude-border bg-claude-surface px-1 py-1 text-[10px] font-mono text-claude-text"
+                            className="min-w-0 border-0 bg-ink-3 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] px-1 py-1 text-[12px] font-mono text-fg focus:outline-none focus:ring-1 focus:ring-accent/50"
                             aria-label={`Duration for ${event.title}`}
                           >
                             <option value={15}>15m</option>
@@ -773,7 +767,7 @@ export default function DailyReviewModal({
                           <button
                             type="button"
                             onClick={() => removeCalendarEvent(event.taskId)}
-                            className="flex h-7 w-7 items-center justify-center border border-red-500/30 text-red-300 hover:bg-red-500/10"
+                            className="flex h-7 w-7 items-center justify-center text-diff-del shadow-[inset_0_0_0_1px_rgba(248,81,73,0.45)] hover:bg-diff-del/10"
                             title="Remove from calendar plan"
                           >
                             <X size={12} />
@@ -783,9 +777,9 @@ export default function DailyReviewModal({
                     </div>
                   )}
                 </div>
-                <div className="border border-claude-border bg-claude-bg/50 max-h-[52vh] overflow-y-auto">
+                <div className="bg-ink-1 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)] max-h-[52vh] overflow-y-auto">
                   {openTasks.length === 0 ? (
-                    <p className="px-3 py-4 text-xs text-claude-text-secondary font-mono">
+                    <p className="px-3 py-4 text-[13px] text-fg-4">
                       No open tasks yet.
                     </p>
                   ) : (
@@ -798,10 +792,10 @@ export default function DailyReviewModal({
                           onDragOver={(e) => handleDragOver(e, task.id)}
                           onDrop={(e) => handleDrop(e, task.id)}
                           onDragEnd={handleDragEnd}
-                          className={`group flex flex-wrap items-start gap-3 px-3 py-3 border-b border-claude-border last:border-b-0 transition-colors ${
-                            index < 3 ? 'bg-emerald-500/5' : ''
+                          className={`group flex flex-wrap items-start gap-3 px-3 py-3 border-b border-line last:border-b-0 transition-colors ${
+                            index < 3 ? 'bg-accent/[0.04]' : ''
                           } ${
-                            dragOverTaskId === task.id && draggedTaskId !== task.id ? 'outline outline-1 outline-emerald-500/70 bg-emerald-500/10' : ''
+                            dragOverTaskId === task.id && draggedTaskId !== task.id ? 'outline outline-1 outline-accent/70 bg-accent/10' : ''
                           } ${
                             draggedTaskId === task.id ? 'opacity-45' : ''
                           }`}
@@ -819,19 +813,19 @@ export default function DailyReviewModal({
                               setDraggedTaskId(task.id);
                               setDragOverTaskId(null);
                             }}
-                            className="mt-1 cursor-grab text-claude-text-secondary/60 group-hover:text-emerald-300 flex-shrink-0"
+                            className="mt-1 cursor-grab text-fg-5 group-hover:text-fg-2 flex-shrink-0"
                             title="Drag to reorder"
                           >
                             <GripVertical size={14} />
                           </div>
-                          <div className={`w-7 h-7 border flex items-center justify-center text-[10px] font-mono flex-shrink-0 ${
-                            index === 0 ? 'border-emerald-500 text-emerald-300' : 'border-claude-border text-claude-text-secondary'
+                          <div className={`w-7 h-7 flex items-center justify-center text-[11px] font-mono flex-shrink-0 ${
+                            index === 0 ? 'bg-accent/10 text-accent-text shadow-[inset_0_0_0_1px_rgba(76,154,255,0.35)]' : 'text-fg-4 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)]'
                           }`}>
                             {index + 1}
                           </div>
                           <div className="flex-1 min-w-[220px]">
-                            {renderTaskTitleInput(task, 'text-xs font-mono text-claude-text')}
-                            <div className={`text-[10px] font-mono mt-1 ${isStale ? 'text-amber-300' : 'text-claude-text-secondary'}`}>
+                            {renderTaskTitleInput(task, 'text-[13px] text-fg-2')}
+                            <div className={`text-[11.5px] mt-1 ${isStale ? 'text-amber' : 'text-fg-4'}`}>
                               {ageDays === 0 ? 'created today' : `${ageDays} day${ageDays === 1 ? '' : 's'} old`}
                               {isStale ? ' - stale' : ''}
                               {index === 0 ? ' - start here' : ''}
@@ -843,10 +837,10 @@ export default function DailyReviewModal({
                               onClick={() => {
                                 setCalendarTaskToPlaceId(task.id);
                               }}
-                              className={`px-2 py-1 text-[10px] font-mono uppercase border ${
+                              className={`h-7 px-2 text-[12px] ${
                                 calendarEvents.some((event) => event.taskId === task.id)
-                                  ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-300'
-                                  : 'border-claude-border text-claude-text-secondary hover:border-emerald-500/40 hover:text-emerald-300'
+                                  ? 'bg-accent/10 text-accent-text shadow-[inset_0_0_0_1px_rgba(76,154,255,0.35)]'
+                                  : 'text-fg-3 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] hover:bg-claude-surface-hover hover:text-fg'
                               }`}
                               title="Add to calendar plan"
                             >
@@ -858,7 +852,7 @@ export default function DailyReviewModal({
                             <button
                               onClick={() => moveTask(task.id, -1)}
                               disabled={index === 0}
-                              className="p-1 border border-claude-border text-claude-text-secondary hover:text-claude-text disabled:opacity-25"
+                              className="p-1 text-fg-3 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] hover:bg-claude-surface-hover hover:text-fg disabled:opacity-25"
                               title="Move up"
                             >
                               <ArrowUp size={13} />
@@ -866,20 +860,20 @@ export default function DailyReviewModal({
                             <button
                               onClick={() => moveTask(task.id, 1)}
                               disabled={index === openTasks.length - 1}
-                              className="p-1 border border-claude-border text-claude-text-secondary hover:text-claude-text disabled:opacity-25"
+                              className="p-1 text-fg-3 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] hover:bg-claude-surface-hover hover:text-fg disabled:opacity-25"
                               title="Move down"
                             >
                               <ArrowDown size={13} />
                             </button>
                             <button
                               onClick={() => handleMarkDone(task.id)}
-                              className="px-2 py-1 text-[10px] font-mono uppercase border border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/10"
+                              className="h-7 px-2 text-[12px] text-diff-add shadow-[inset_0_0_0_1px_rgba(63,185,80,0.35)] hover:bg-diff-add/10"
                             >
                               Done
                             </button>
                             <button
                               onClick={() => handleDeleteTask(task.id)}
-                              className="px-2 py-1 text-[10px] font-mono uppercase border border-red-500/30 text-red-300 hover:bg-red-500/10"
+                              className="h-7 px-2 text-[12px] text-diff-del shadow-[inset_0_0_0_1px_rgba(248,81,73,0.45)] hover:bg-diff-del/10"
                             >
                               Drop
                             </button>
@@ -895,59 +889,56 @@ export default function DailyReviewModal({
 
           {currentStep === 'commit' && (
             <div className="space-y-5">
-              <div className="border border-emerald-500/40 bg-emerald-500/10 p-4">
-                <div className="text-[10px] font-mono uppercase text-emerald-300 mb-2">First task</div>
+              <div className="bg-accent/[0.06] shadow-[inset_0_0_0_1px_rgba(76,154,255,0.35)] p-4">
+                <div className="text-[11px] font-medium uppercase tracking-[0.04em] text-accent-text mb-2">First task</div>
                 {topTask ? (
-                  renderTaskTitleInput(topTask, 'text-base font-mono text-claude-text')
+                  renderTaskTitleInput(topTask, 'text-[16px] font-medium text-fg')
                 ) : (
-                  <div className="text-base font-mono text-claude-text">No task selected</div>
+                  <div className="text-[16px] text-fg-4">No task selected</div>
                 )}
               </div>
               <section>
                 <div className="flex items-center gap-2 mb-2">
-                  <Target size={15} className="text-emerald-400" />
-                  <h3 className="text-xs font-mono uppercase text-claude-text">Priority stack</h3>
+                  <Target size={15} className="text-fg-4" />
+                  <h3 className="text-[13px] font-semibold tracking-tight text-fg">Priority stack</h3>
                 </div>
                 {renderEditableOpenTaskList('No open tasks selected.')}
               </section>
               <div>
-                <label className="block text-xs font-mono text-claude-text uppercase mb-2">
-                  What would make today successful? <span className="text-claude-text-secondary normal-case">(optional)</span>
+                <label className="block text-[11px] font-medium uppercase tracking-[0.04em] text-fg-4 mb-2">
+                  What would make today successful? <span className="text-fg-5 normal-case tracking-normal">(optional)</span>
                 </label>
                 <input
                   value={successNote}
                   onChange={(e) => setSuccessNote(e.target.value)}
-                  className="w-full px-3 py-2 bg-claude-bg border border-claude-border text-claude-text font-mono text-xs placeholder:text-claude-text-secondary focus:outline-none focus:border-emerald-500"
+                  className="w-full px-3 py-2 bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-[13px] text-fg placeholder:text-fg-5 focus:outline-none focus:ring-1 focus:ring-accent/50"
                   placeholder="One concrete outcome"
-                  style={{ borderRadius: 0 }}
                 />
               </div>
               <div>
-                <label className="block text-xs font-mono text-claude-text uppercase mb-2">
+                <label className="block text-[11px] font-medium uppercase tracking-[0.04em] text-fg-4 mb-2">
                   What should not steal the morning?
                 </label>
                 <input
                   value={avoidNote}
                   onChange={(e) => setAvoidNote(e.target.value)}
-                  className="w-full px-3 py-2 bg-claude-bg border border-claude-border text-claude-text font-mono text-xs placeholder:text-claude-text-secondary focus:outline-none focus:border-emerald-500"
+                  className="w-full px-3 py-2 bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-[13px] text-fg placeholder:text-fg-5 focus:outline-none focus:ring-1 focus:ring-accent/50"
                   placeholder="Optional distraction or trap"
-                  style={{ borderRadius: 0 }}
                 />
               </div>
             </div>
           )}
         </div>
 
-        <div className="px-6 py-4 border-t border-claude-border flex items-center gap-3">
+        <div className="px-6 py-4 border-t border-line flex items-center gap-3">
           <button
             onClick={goBack}
             disabled={stepIndex === 0}
-            className="px-4 py-2 border border-claude-border text-xs font-mono uppercase text-claude-text-secondary hover:text-claude-text disabled:opacity-25"
-            style={{ borderRadius: 0 }}
+            className="h-8 px-4 text-[13px] text-fg-3 hover:text-fg hover:bg-claude-surface-hover disabled:opacity-25"
           >
             Back
           </button>
-          <div className="flex-1 text-[10px] font-mono text-claude-text-secondary">
+          <div className="flex-1 text-[12px] text-fg-4">
             {!canContinue && currentStep === 'plan' && 'Add or keep at least one open task before continuing.'}
             {!canContinue && currentStep === 'commit' && 'Keep at least one open task before starting.'}
             {canContinue && currentStep === 'plan' && 'No changes needed? Accept the current order and close this immediately.'}
@@ -958,8 +949,7 @@ export default function DailyReviewModal({
                 type="button"
                 onClick={goNext}
                 disabled={!canContinue}
-                className="px-4 py-2 border border-claude-border text-claude-text text-xs font-mono font-bold uppercase hover:border-emerald-500 hover:text-emerald-300 disabled:opacity-30"
-                style={{ borderRadius: 0 }}
+                className="h-8 px-4 text-[13px] text-fg-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] hover:bg-claude-surface-hover disabled:opacity-40"
               >
                 Set Intention
               </button>
@@ -967,8 +957,7 @@ export default function DailyReviewModal({
                 <button
                   onClick={() => void handleAcceptCurrentStack()}
                   disabled={!canContinue}
-                  className="px-5 py-2 bg-emerald-500 text-white text-xs font-mono font-bold uppercase hover:bg-emerald-400 disabled:opacity-30"
-                  style={{ borderRadius: 0 }}
+                  className="h-8 px-5 bg-fg text-ink-0 text-[13px] font-semibold hover:bg-white disabled:opacity-40"
                 >
                   Accept Stack
                 </button>
@@ -979,15 +968,14 @@ export default function DailyReviewModal({
               type="button"
               onClick={handleFinish}
               disabled={!canContinue}
-              className="px-5 py-2 bg-emerald-500 text-white text-xs font-mono font-bold uppercase hover:bg-emerald-400 disabled:opacity-30"
-              style={{ borderRadius: 0 }}
+              className="h-8 px-5 bg-fg text-ink-0 text-[13px] font-semibold hover:bg-white disabled:opacity-40"
             >
               {lockMode ? 'Finish Planning' : 'Start My Day'}
             </button>
           )}
         </div>
         {lockMode && (
-          <div className="px-6 pb-3 text-right text-[9px] font-mono uppercase text-claude-text-secondary">
+          <div className="px-6 pb-3 text-right text-[10.5px] font-mono text-fg-5">
             Keyboard: {navigator.platform.toLowerCase().includes('mac') ? 'Command' : 'Ctrl'} + Enter
           </div>
         )}

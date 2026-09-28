@@ -53,18 +53,16 @@ export default function BrowserSessionTab({ tab, ownerSession, isActive, onActiv
         if (!isEditing && (event.key === 'Enter' || event.key === ' ')) onActivate();
       }}
       title={isEditing ? undefined : 'Double-click to rename browser tab'}
-      className={`group flex items-center gap-1.5 pl-3 pr-1 border-r border-claude-border transition-colors whitespace-nowrap cursor-pointer ${
-        compact ? 'h-8 text-[10px] font-mono font-bold uppercase' : 'py-2 text-xs font-mono'
+      className={`group flex items-center gap-1.5 pl-2.5 pr-1 transition-colors whitespace-nowrap cursor-pointer ${
+        compact ? 'h-7 text-[12px]' : 'h-7 text-[12.5px]'
       } ${
         isActive
-          ? 'bg-claude-bg text-claude-text'
-          : 'bg-claude-surface text-claude-text-secondary hover:bg-claude-bg/50'
+          ? 'bg-[#262626] text-fg'
+          : 'text-fg-4 hover:text-fg-2'
       }`}
-      style={compact ? { letterSpacing: '0.05em' } : undefined}
     >
       <div
-        className={`w-1.5 h-1.5 flex-shrink-0 ${ownerSession?.status === 'running' ? 'bg-green-500' : 'bg-gray-500'}`}
-        style={{ borderRadius: 0 }}
+        className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${ownerSession?.status === 'running' ? 'bg-diff-add' : 'bg-fg-5'}`}
       />
       {isEditing ? (
         <input
@@ -86,7 +84,7 @@ export default function BrowserSessionTab({ tab, ownerSession, isActive, onActiv
             }
           }}
           aria-label="Browser tab name"
-          className="w-[140px] min-w-0 bg-claude-surface border border-claude-accent px-1 py-0.5 text-inherit font-inherit outline-none normal-case"
+          className="w-[140px] min-w-0 bg-ink-3 border border-accent px-1 py-0.5 text-inherit font-inherit outline-none normal-case"
         />
       ) : (
         <span className={`truncate ${compact ? 'max-w-[140px]' : 'max-w-[120px]'}`}>{tab.name}</span>
@@ -97,7 +95,7 @@ export default function BrowserSessionTab({ tab, ownerSession, isActive, onActiv
           event.stopPropagation();
           closeBrowserTab(tab.id);
         }}
-        className="ml-1 p-0.5 text-claude-text-secondary opacity-0 group-hover:opacity-100 hover:text-claude-text"
+        className="ml-1 p-0.5 text-fg-5 opacity-0 group-hover:opacity-100 hover:text-fg hover:bg-white/10"
         title="Close browser tab"
         aria-label={`Close ${tab.name}`}
       >

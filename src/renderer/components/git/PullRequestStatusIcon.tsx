@@ -25,20 +25,20 @@ function getStatusPresentation(status: PullRequestStatus) {
   if (status.lifecycle === 'draft') {
     return {
       Icon: GitPullRequestDraft,
-      className: 'text-slate-400',
+      className: 'text-fg-4',
       label: `Draft PR #${status.number}`,
     };
   }
   if (status.lifecycle === 'iterating') {
     return {
       Icon: GitPullRequestArrow,
-      className: 'text-amber-400',
+      className: 'text-amber',
       label: `PR #${status.number} iterating · ${getIteratingReason(status)}`,
     };
   }
   return {
     Icon: GitPullRequest,
-    className: 'text-emerald-400',
+    className: 'text-diff-add',
     label: status.reviewDecision === 'APPROVED'
       ? `PR #${status.number} approved`
       : `PR #${status.number} ready for review`,
@@ -74,7 +74,7 @@ export default function PullRequestStatusIcon({
   if (result && !result.available) {
     return (
       <span
-        className={`inline-flex flex-shrink-0 items-center text-claude-text-secondary/40 ${className}`}
+        className={`inline-flex flex-shrink-0 items-center text-fg-5/60 ${className}`}
         title="PR status unavailable · authenticate GitHub CLI locally or on the remote host"
         aria-label="Pull request status unavailable"
       >

@@ -88,7 +88,7 @@ const CommandAutocomplete = forwardRef<CommandAutocompleteHandle, CommandAutocom
 
   return (
     <div
-      className="fixed bg-claude-surface border border-claude-border shadow-lg z-50 max-h-64 overflow-y-auto"
+      className="build-composer-menu fixed z-50 max-h-72 overflow-y-auto"
       style={{
         top: `${position.top}px`,
         left: `${position.left}px`,
@@ -105,23 +105,23 @@ const CommandAutocomplete = forwardRef<CommandAutocompleteHandle, CommandAutocom
         return (
           <button
             key={`${itemType}-${item.name}`}
-            className={`w-full px-3 py-2 text-left hover:bg-claude-accent/20 transition-colors flex items-start gap-2 ${
-              isSelected ? 'bg-claude-accent/20' : ''
+            className={`build-composer-menu-item !items-start ${
+              isSelected ? 'is-selected' : ''
             }`}
             onClick={() => onSelect(item)}
           >
-            <Icon size={16} className="text-claude-accent flex-shrink-0 mt-0.5" />
+            <Icon size={14} className={`flex-shrink-0 mt-0.5 ${isSelected ? 'text-accent-text' : 'text-fg-4'}`} />
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2">
-                <span className="font-mono text-sm text-claude-text">
+                <span className="font-mono text-[12.5px] text-fg">
                   {itemType === 'agent' ? `@agent-${item.name}` : `/${item.name}`}
                 </span>
-                <span className="text-xs text-claude-text-secondary">
+                <span className="font-mono text-[10.5px] text-fg-5">
                   ({item.scope || itemType})
                 </span>
               </div>
               {item.description && (
-                <p className="text-xs text-claude-text-secondary mt-1 truncate">
+                <p className="text-[11.5px] text-fg-3 mt-0.5 truncate">
                   {item.description}
                 </p>
               )}

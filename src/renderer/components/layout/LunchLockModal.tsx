@@ -24,17 +24,17 @@ export default function LunchLockModal({ onConfirm }: LunchLockModalProps) {
 
   return (
     <div className="fixed inset-0 bg-black/80 z-[9999] flex items-center justify-center">
-      <div className="bg-claude-surface border-4 border-amber-500 p-8 max-w-lg w-full mx-4">
+      <div className="bg-ink-2 shadow-[inset_0_0_0_1px_rgba(240,180,41,0.45),0_16px_40px_rgba(0,0,0,0.4)] p-8 max-w-lg w-full mx-4">
         {/* Header */}
         <div className="flex items-start gap-4 mb-6">
-          <div className="w-12 h-12 bg-amber-500/20 border-2 border-amber-500 flex items-center justify-center flex-shrink-0">
-            <AlertCircle size={24} className="text-amber-500" strokeWidth={3} />
+          <div className="w-12 h-12 bg-amber/10 shadow-[inset_0_0_0_1px_rgba(240,180,41,0.45)] flex items-center justify-center flex-shrink-0">
+            <AlertCircle size={24} className="text-amber" strokeWidth={2} />
           </div>
           <div className="flex-1">
-            <h2 className="text-2xl font-bold text-amber-500 mb-2 uppercase" style={{ letterSpacing: '0.1em' }}>
+            <h2 className="text-[18px] font-semibold tracking-tight text-fg mb-2">
               Lunch Break Required
             </h2>
-            <p className="text-sm text-claude-text-secondary">
+            <p className="text-[13px] text-fg-3">
               It is now 12:00. Per operational protocols, you must confirm your lunch intake before continuing work.
             </p>
           </div>
@@ -43,7 +43,7 @@ export default function LunchLockModal({ onConfirm }: LunchLockModalProps) {
         {/* Form */}
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label className="block text-xs font-bold text-claude-text mb-2 uppercase" style={{ letterSpacing: '0.05em' }}>
+            <label className="block text-[11px] font-medium text-fg-4 mb-2 uppercase tracking-[0.04em]">
               What did you have for lunch?
             </label>
             <input
@@ -54,26 +54,24 @@ export default function LunchLockModal({ onConfirm }: LunchLockModalProps) {
                 setError('');
               }}
               placeholder="e.g., Sandwich and coffee"
-              className="w-full px-4 py-3 bg-claude-bg border-2 border-claude-border text-claude-text font-mono focus:border-amber-500 focus:outline-none"
-              style={{ borderRadius: 0 }}
+              className="w-full px-3 py-2.5 bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-[13px] text-fg placeholder:text-fg-5 focus:outline-none focus:ring-1 focus:ring-accent/50"
               autoFocus
             />
             {error && (
-              <p className="text-xs text-red-400 mt-2">{error}</p>
+              <p className="text-[12px] text-diff-del mt-2">{error}</p>
             )}
           </div>
 
           <div className="flex gap-2">
             <button
               type="submit"
-              className="flex-1 px-6 py-3 bg-amber-500 text-black font-bold uppercase hover:bg-amber-400 transition-colors"
-              style={{ borderRadius: 0, letterSpacing: '0.1em' }}
+              className="flex-1 h-9 px-6 bg-fg text-ink-0 text-[13px] font-semibold hover:bg-white transition-colors"
             >
               Confirm Lunch
             </button>
           </div>
 
-          <p className="text-[10px] text-claude-text-secondary text-center" style={{ letterSpacing: '0.05em' }}>
+          <p className="text-[12px] text-fg-4 text-center">
             Note: You cannot dismiss this dialog until you confirm your lunch intake.
           </p>
         </form>

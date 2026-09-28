@@ -67,36 +67,35 @@ export default function MonitorBlock({ monitors, onStop }: MonitorBlockProps) {
       ? 'Waiting for events...'
       : 'Monitor idle';
 
-  const accentColor = activeCount > 0 ? 'text-amber-400' : 'text-claude-text-secondary';
-  const dotColor = activeCount > 0 ? 'bg-amber-500 animate-pulse' : 'bg-claude-text-secondary/50';
+  const dotColor = activeCount > 0 ? 'bg-accent status-pulse' : 'bg-fg-5';
 
   return (
-    <div className="font-mono text-sm">
+    <div className="overflow-hidden bg-ink-1 text-[12.5px] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)]">
       {/* Header row - clickable */}
       <button
         onClick={() => setIsExpanded(!isExpanded)}
-        className="w-full flex items-center gap-2 py-0.5 hover:bg-claude-surface/50 transition-colors text-left"
+        className="flex w-full items-center gap-2 px-3 py-[9px] text-left text-fg-3 transition-colors hover:bg-white/[0.03]"
         aria-label="Background agents and monitors"
       >
         {isExpanded ? (
-          <ChevronDown size={14} className="text-claude-text-secondary flex-shrink-0" />
+          <ChevronDown size={12} className="flex-shrink-0 text-fg-4" />
         ) : (
-          <ChevronRight size={14} className="text-claude-text-secondary flex-shrink-0" />
+          <ChevronRight size={12} className="flex-shrink-0 text-fg-4" />
         )}
-        <div className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${dotColor}`} />
-        <Activity size={14} className={`flex-shrink-0 ${accentColor}`} />
-        <span className={`text-xs font-bold uppercase flex-shrink-0 ${accentColor}`} style={{ letterSpacing: '0.05em' }}>
+        <div className={`h-[7px] w-[7px] flex-shrink-0 rounded-full ${dotColor}`} />
+        <Activity size={13} className="flex-shrink-0 text-fg-4" />
+        <span className="flex-shrink-0 font-medium capitalize text-fg-2">
           {activeCount > 0 ? activeSummary : 'Monitor'}
         </span>
         {activeCount > 0 && (
-          <span className="text-[10px] text-amber-400 uppercase flex-shrink-0" style={{ letterSpacing: '0.05em' }}>
+          <span className="flex-shrink-0 text-[11.5px] text-accent-text">
             running
           </span>
         )}
-        <span className="text-xs text-claude-text-secondary flex-shrink-0">
+        <span className="flex-shrink-0 font-mono text-[11px] text-fg-4">
           {totalEvents} event{totalEvents === 1 ? '' : 's'}
         </span>
-        <span className="text-xs text-claude-text-secondary truncate flex-1 ml-2">
+        <span className="ml-2 min-w-0 flex-1 truncate font-mono text-[11.5px] text-fg-5">
           {previewText}
         </span>
       </button>
@@ -105,27 +104,28 @@ export default function MonitorBlock({ monitors, onStop }: MonitorBlockProps) {
       {isExpanded && (
         <div
           ref={eventsRef}
-          className="mt-1 ml-4 space-y-2 max-h-64 overflow-y-auto border-l border-claude-border/50 pl-3"
+          className="max-h-64 space-y-2 overflow-y-auto border-t border-white/[0.05] px-3 py-2"
         >
           {monitors.map((monitor) => (
             <div key={monitor.id} className="space-y-0.5">
               {/* Monitor header */}
-              <div className="flex items-center gap-2 py-0.5 sticky top-0 bg-claude-surface/95 backdrop-blur">
+              <div className="sticky top-0 flex items-center gap-2 bg-ink-1 py-0.5">
                 <div
-                  className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
-                    monitor.active ? 'bg-amber-500 animate-pulse' : 'bg-claude-text-secondary/50'
+                  className={`h-1.5 w-1.5 flex-shrink-0 rounded-full ${
+                    monitor.active ? 'bg-accent status-pulse' : 'bg-fg-5'
                   }`}
                 />
-                <span className={`text-[9px] font-bold uppercase flex-shrink-0 ${
-                  inferMonitorKind(monitor) === 'subagent' ? 'text-purple-300' : 'text-amber-300'
-                }`} style={{ letterSpacing: '0.06em' }}>
+                <span
+                  className="flex-shrink-0 px-1 font-mono text-[9.5px] uppercase text-fg-3 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.16)]"
+                  style={{ letterSpacing: '0.04em' }}
+                >
                   {inferMonitorKind(monitor) === 'subagent' ? 'agent' : 'monitor'}
                 </span>
-                <span className="text-xs font-bold text-claude-text truncate flex-1">
+                <span className="flex-1 truncate text-[12.5px] font-medium text-fg">
                   {monitor.description}
                 </span>
                 {monitor.persistent && (
-                  <span className="text-[10px] text-amber-400 uppercase">persistent</span>
+                  <span className="font-mono text-[10px] uppercase text-fg-4">persistent</span>
                 )}
                 {monitor.active && onStop && (
                   <button
@@ -133,7 +133,7 @@ export default function MonitorBlock({ monitors, onStop }: MonitorBlockProps) {
                       e.stopPropagation();
                       onStop(monitor.id);
                     }}
-                    className="p-0.5 text-claude-text-secondary hover:text-red-400 transition-colors"
+                    className="p-0.5 text-fg-4 transition-colors hover:text-diff-del"
                     title="Stop monitor"
                   >
                     <Square size={12} />
@@ -143,13 +143,13 @@ export default function MonitorBlock({ monitors, onStop }: MonitorBlockProps) {
 
               {/* Events */}
               {monitor.events.length === 0 ? (
-                <div className="text-xs text-claude-text-secondary italic ml-3">
+                <div className="ml-3.5 text-[12px] text-fg-5">
                   No events yet...
                 </div>
               ) : (
                 monitor.events.map((event) => (
-                  <div key={event.id} className="text-xs text-claude-text ml-3 font-mono whitespace-pre-wrap break-all">
-                    <span className="text-claude-text-secondary mr-2">
+                  <div key={event.id} className="ml-3.5 whitespace-pre-wrap break-all font-mono text-[11.5px] leading-relaxed text-fg-3">
+                    <span className="mr-2 text-fg-5">
                       {new Date(event.timestamp).toLocaleTimeString('en-US', { hour12: false })}
                     </span>
                     {event.text}

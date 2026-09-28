@@ -186,7 +186,7 @@ export default function QuickSearch() {
         id: 'set-permission-accept-edits',
         label: 'Set Permission: Accept Edits',
         description: isCodexSession ? 'Codex can edit inside the workspace without prompting' : 'Auto-accept file edits from Claude',
-        icon: <Shield size={16} className="text-green-400" />,
+        icon: <Shield size={16} className="text-diff-add" />,
         category: 'agent' as const,
         shortcut: '⌘1',
         action: () => activeSessionId && setPermissionMode(activeSessionId, 'acceptEdits'),
@@ -195,7 +195,7 @@ export default function QuickSearch() {
         id: 'set-permission-default',
         label: 'Set Permission: Default',
         description: 'Ask for confirmation on file edits',
-        icon: <Shield size={16} className="text-yellow-400" />,
+        icon: <Shield size={16} className="text-amber" />,
         category: 'agent' as const,
         shortcut: '⌘2',
         action: () => activeSessionId && setPermissionMode(activeSessionId, 'default'),
@@ -204,7 +204,7 @@ export default function QuickSearch() {
         id: 'set-permission-plan',
         label: 'Set Permission: Plan Mode',
         description: isCodexSession ? 'Codex stays read-only and returns a plan' : 'Claude will only plan, not execute',
-        icon: <Shield size={16} className="text-blue-400" />,
+        icon: <Shield size={16} className="text-accent" />,
         category: 'agent' as const,
         shortcut: '⌘3',
         action: () => activeSessionId && setPermissionMode(activeSessionId, 'plan'),
@@ -285,7 +285,7 @@ export default function QuickSearch() {
         id: 'set-effort-low',
         label: 'Set Effort: Low',
         description: 'Fast & efficient - minimal thinking',
-        icon: <Brain size={16} className="text-gray-400" />,
+        icon: <Brain size={16} className="text-fg-4" />,
         category: 'agent',
         shortcut: '⌘⇧1',
         action: () => activeSessionId && setThinkingMode(activeSessionId, 'low'),
@@ -294,7 +294,7 @@ export default function QuickSearch() {
         id: 'set-effort-medium',
         label: 'Set Effort: Medium',
         description: 'Balanced - moderate thinking (10k tokens)',
-        icon: <Brain size={16} className="text-blue-400" />,
+        icon: <Brain size={16} className="text-fg-4" />,
         category: 'agent',
         shortcut: '⌘⇧2',
         action: () => activeSessionId && setThinkingMode(activeSessionId, 'medium'),
@@ -303,7 +303,7 @@ export default function QuickSearch() {
         id: 'set-effort-high',
         label: 'Set Effort: High',
         description: 'Full capability - deep thinking (default)',
-        icon: <Brain size={16} className="text-purple-400" />,
+        icon: <Brain size={16} className="text-fg-4" />,
         category: 'agent',
         shortcut: '⌘⇧3',
         action: () => activeSessionId && setThinkingMode(activeSessionId, 'high'),
@@ -312,7 +312,7 @@ export default function QuickSearch() {
         id: 'set-effort-max',
         label: 'Set Effort: Max',
         description: 'Maximum capability (Opus only)',
-        icon: <Zap size={16} className="text-pink-400" />,
+        icon: <Zap size={16} className="text-fg-4" />,
         category: 'agent',
         shortcut: '⌘⇧4',
         action: () => activeSessionId && setThinkingMode(activeSessionId, 'max'),
@@ -323,7 +323,7 @@ export default function QuickSearch() {
         id: 'git-commit',
         label: 'Git: Commit',
         description: 'Create a new commit',
-        icon: <GitBranch size={16} className="text-orange-400" />,
+        icon: <GitBranch size={16} className="text-fg-4" />,
         category: 'git',
         shortcut: '⌘⏎',
         action: () => {
@@ -335,7 +335,7 @@ export default function QuickSearch() {
         id: 'git-push',
         label: 'Git: Push',
         description: 'Push changes to remote',
-        icon: <GitBranch size={16} className="text-green-400" />,
+        icon: <GitBranch size={16} className="text-fg-4" />,
         category: 'git',
         shortcut: '⌘⇧U',
         action: () => {
@@ -347,7 +347,7 @@ export default function QuickSearch() {
         id: 'git-pull',
         label: 'Git: Pull',
         description: 'Pull changes from remote',
-        icon: <GitBranch size={16} className="text-blue-400" />,
+        icon: <GitBranch size={16} className="text-fg-4" />,
         category: 'git',
         shortcut: '⌘⇧D',
         action: () => {
@@ -488,7 +488,7 @@ export default function QuickSearch() {
           name: session.name,
           relativePath: getSessionLocation(session),
           detail: `${session.branch || 'no branch'} - ${sessionIds}`,
-          icon: <MessageSquare size={16} className={session.sshConfig ? 'text-cyan-400' : 'text-emerald-400'} />,
+          icon: <MessageSquare size={16} className={session.sshConfig ? 'text-accent' : 'text-fg-4'} />,
           shortcut: session.status,
         });
       });
@@ -538,7 +538,7 @@ export default function QuickSearch() {
           name: f.name,
           path: f.path,
           relativePath: f.relativePath,
-          icon: <FileText size={16} className="text-blue-400" />,
+          icon: <FileText size={16} className="text-fg-4" />,
         });
       });
     }
@@ -570,7 +570,7 @@ export default function QuickSearch() {
           relativePath: s.relativePath,
           detail: `${s.kind} - ${s.detail}`,
           lineNumber: s.lineNumber,
-          icon: <Hash size={16} className="text-purple-400" />,
+          icon: <Hash size={16} className="text-fg-4" />,
         }));
         setResults([...filteredResults, ...symbolResults]);
         setIsLoading(false);
@@ -691,13 +691,13 @@ export default function QuickSearch() {
   const getModeIndicator = () => {
     switch (searchMode) {
       case 'commands':
-        return <span className="text-xs text-purple-400 bg-purple-400/20 px-1.5 py-0.5 rounded">Commands</span>;
+        return <span className="font-mono text-[9.5px] uppercase text-fg-3 px-1.5 py-0.5 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.16)]">Commands</span>;
       case 'sessions':
-        return <span className="text-xs text-cyan-400 bg-cyan-400/20 px-1.5 py-0.5 rounded">Sessions</span>;
+        return <span className="font-mono text-[9.5px] uppercase text-fg-3 px-1.5 py-0.5 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.16)]">Sessions</span>;
       case 'symbols':
-        return <span className="text-xs text-blue-400 bg-blue-400/20 px-1.5 py-0.5 rounded">Symbols</span>;
+        return <span className="font-mono text-[9.5px] uppercase text-fg-3 px-1.5 py-0.5 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.16)]">Symbols</span>;
       case 'files':
-        return <span className="text-xs text-green-400 bg-green-400/20 px-1.5 py-0.5 rounded">Files</span>;
+        return <span className="font-mono text-[9.5px] uppercase text-fg-3 px-1.5 py-0.5 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.16)]">Files</span>;
       default:
         return null;
     }
@@ -707,13 +707,13 @@ export default function QuickSearch() {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center pt-[15vh] bg-black/50"
+      className="fixed inset-0 z-50 flex items-start justify-center pt-[15vh] bg-black/60"
       onClick={handleBackdropClick}
     >
-      <div className="w-[600px] max-w-[90vw] bg-claude-surface border border-claude-border shadow-2xl overflow-hidden">
+      <div className="w-[600px] max-w-[90vw] bg-ink-1 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1),0_12px_40px_rgba(0,0,0,0.45)] overflow-hidden">
         {/* Search input */}
-        <div className="flex items-center gap-3 px-4 py-3 border-b border-claude-border">
-          <Command size={18} className="text-claude-text-secondary flex-shrink-0" />
+        <div className="flex items-center gap-3 px-4 py-3 border-b border-line">
+          <Command size={16} className="text-fg-4 flex-shrink-0" />
           <input
             ref={inputRef}
             type="text"
@@ -721,19 +721,19 @@ export default function QuickSearch() {
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder={getPlaceholder()}
-            className="flex-1 bg-transparent text-claude-text text-sm font-mono outline-none placeholder:text-claude-text-secondary"
+            className="flex-1 bg-transparent text-fg text-[14px] outline-none placeholder:text-fg-5"
             autoComplete="off"
             autoCorrect="off"
             autoCapitalize="off"
             spellCheck={false}
           />
           {getModeIndicator()}
-          {isLoading && <Loader2 size={16} className="text-claude-accent animate-spin" />}
+          {isLoading && <Loader2 size={15} className="text-accent animate-spin" />}
           <button
             onClick={closeQuickSearch}
-            className="p-1 hover:bg-claude-bg rounded transition-colors"
+            className="w-7 h-7 flex items-center justify-center hover:bg-claude-surface-hover transition-colors"
           >
-            <X size={16} className="text-claude-text-secondary" />
+            <X size={15} className="text-fg-4" />
           </button>
         </div>
 
@@ -743,15 +743,15 @@ export default function QuickSearch() {
           className="max-h-[400px] overflow-y-auto"
         >
           {results.length === 0 ? (
-            <div className="px-4 py-8 text-center text-claude-text-secondary text-sm">
+            <div className="px-4 py-8 text-center text-fg-4 text-[13px]">
               {query.trim() ? 'No results found' : (
                 <div className="space-y-2">
                   <p>Type to search...</p>
-                  <div className="flex justify-center gap-4 text-xs">
-                    <span><kbd className="px-1 bg-claude-bg rounded">&gt;</kbd> commands</span>
-                    <span><kbd className="px-1 bg-claude-bg rounded">#</kbd> sessions</span>
-                    <span><kbd className="px-1 bg-claude-bg rounded">@</kbd> symbols</span>
-                    <span><kbd className="px-1 bg-claude-bg rounded">/</kbd> files</span>
+                  <div className="flex justify-center gap-4 font-mono text-[10.5px] text-fg-5">
+                    <span><kbd className="px-1 bg-ink-4 text-fg-3">&gt;</kbd> commands</span>
+                    <span><kbd className="px-1 bg-ink-4 text-fg-3">#</kbd> sessions</span>
+                    <span><kbd className="px-1 bg-ink-4 text-fg-3">@</kbd> symbols</span>
+                    <span><kbd className="px-1 bg-ink-4 text-fg-3">/</kbd> files</span>
                   </div>
                 </div>
               )}
@@ -761,36 +761,36 @@ export default function QuickSearch() {
               <button
                 key={result.id}
                 onClick={() => handleSelect(result)}
-                className={`w-full flex items-center gap-3 px-4 py-2 text-left transition-colors ${
+                className={`w-full min-h-[36px] flex items-center gap-3 px-4 py-1.5 text-left transition-colors ${
                   index === selectedIndex
-                    ? 'bg-claude-accent/20 text-claude-text'
-                    : 'text-claude-text-secondary hover:bg-claude-bg/50'
+                    ? 'bg-[#262626] text-fg'
+                    : 'text-fg-2 hover:bg-claude-surface-hover'
                 }`}
               >
                 <span className="flex-shrink-0">{result.icon}</span>
                 <div className="flex-1 min-w-0">
-                  <div className="font-mono text-sm truncate">
+                  <div className="text-[13px] truncate">
                     {result.name}
                   </div>
                   {result.detail && (
-                    <div className="text-xs text-claude-text-secondary truncate">
+                    <div className="text-[11.5px] text-fg-4 truncate">
                       {result.relativePath && `${result.relativePath} - `}
                       {result.detail}
                     </div>
                   )}
                   {!result.detail && result.relativePath && (
-                    <div className="text-xs text-claude-text-secondary truncate">
+                    <div className="font-mono text-[11px] text-fg-4 truncate">
                       {result.relativePath}
                     </div>
                   )}
                 </div>
                 {result.shortcut && (
-                  <span className="text-xs text-claude-text-secondary bg-claude-bg px-1.5 py-0.5 rounded">
+                  <span className="font-mono text-[10.5px] text-fg-3 bg-ink-4 px-1.5 py-0.5">
                     {result.shortcut}
                   </span>
                 )}
                 {result.lineNumber && (
-                  <span className="text-xs text-claude-text-secondary">
+                  <span className="font-mono text-[11px] text-fg-5">
                     :{result.lineNumber}
                   </span>
                 )}
@@ -800,11 +800,11 @@ export default function QuickSearch() {
         </div>
 
         {/* Footer with hints */}
-        <div className="px-4 py-2 border-t border-claude-border text-[10px] text-claude-text-secondary flex items-center gap-4">
-          <span><kbd className="px-1 bg-claude-bg rounded">↑↓</kbd> navigate</span>
-          <span><kbd className="px-1 bg-claude-bg rounded">↵</kbd> select</span>
-          <span><kbd className="px-1 bg-claude-bg rounded">tab</kbd> switch mode</span>
-          <span><kbd className="px-1 bg-claude-bg rounded">esc</kbd> close</span>
+        <div className="px-4 py-2 border-t border-line font-mono text-[10.5px] text-fg-5 flex items-center gap-4">
+          <span><kbd className="px-1 bg-ink-4 text-fg-3">↑↓</kbd> navigate</span>
+          <span><kbd className="px-1 bg-ink-4 text-fg-3">↵</kbd> select</span>
+          <span><kbd className="px-1 bg-ink-4 text-fg-3">tab</kbd> switch mode</span>
+          <span><kbd className="px-1 bg-ink-4 text-fg-3">esc</kbd> close</span>
         </div>
       </div>
     </div>

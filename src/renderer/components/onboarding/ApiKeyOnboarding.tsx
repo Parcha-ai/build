@@ -176,20 +176,20 @@ export default function ApiKeyOnboarding() {
   if (!isOnboardingOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
       <div
-        className="w-[520px] max-h-[90vh] overflow-y-auto bg-claude-surface border border-claude-border"
+        className="w-[520px] max-h-[90vh] overflow-y-auto bg-ink-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1),0_16px_40px_rgba(0,0,0,0.4)]"
         style={{ borderRadius: 0 }}
       >
         {/* Header */}
-        <div className="p-6 pb-4 border-b border-claude-border">
+        <div className="p-6 pb-4 border-b border-line">
           <div className="flex items-center gap-3 mb-1">
-            <img src={buildLogo} alt="Build" className="w-10 h-10 border border-claude-border" />
+            <img src={buildLogo} alt="Build" className="w-10 h-10 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)]" />
             <div>
-              <h2 className="text-lg font-mono font-bold text-claude-text">
+              <h2 className="text-[18px] font-semibold tracking-tight text-fg">
                 Welcome to Build
               </h2>
-              <p className="text-xs font-mono text-claude-text-secondary">
+              <p className="text-[13px] text-fg-3">
                 AI-powered development environment
               </p>
             </div>
@@ -304,7 +304,7 @@ export default function ApiKeyOnboarding() {
             <button
               onClick={handleContinue}
               disabled={!anyLoggedIn}
-              className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-claude-accent text-white font-mono text-sm uppercase tracking-wider hover:bg-claude-accent/80 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              className="w-full h-9 flex items-center justify-center gap-2 px-4 bg-fg text-ink-0 text-[13px] font-semibold hover:bg-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               style={{ borderRadius: 0 }}
             >
               <Check size={14} />
@@ -314,8 +314,8 @@ export default function ApiKeyOnboarding() {
         )}
 
         {/* Footer */}
-        <div className="px-6 py-3 bg-claude-bg/50 border-t border-claude-border">
-          <p className="text-[10px] font-mono text-claude-text-secondary text-center">
+        <div className="px-6 py-3 bg-ink-1 border-t border-line">
+          <p className="text-[12px] text-fg-4 text-center">
             {anyLoggedIn
               ? 'Build uses installed CLI credentials when available and tracks harness readiness locally.'
               : 'Sign in or add an API key to at least one agent to continue.'}
@@ -327,16 +327,16 @@ export default function ApiKeyOnboarding() {
 }
 
 function StatusBadge({ phaseActive, phaseDone, success }: { phaseActive: boolean; phaseDone: boolean; success: boolean }) {
-  if (phaseActive) return <Loader2 size={14} className="animate-spin text-claude-accent" />;
-  if (!phaseDone) return <div className="w-3.5 h-3.5 border border-claude-border" />;
+  if (phaseActive) return <Loader2 size={14} className="animate-spin text-accent" />;
+  if (!phaseDone) return <div className="w-3.5 h-3.5 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.16)]" />;
   if (success) return (
-    <div className="w-3.5 h-3.5 flex items-center justify-center bg-emerald-500/20 border border-emerald-500/60">
-      <Check size={10} className="text-emerald-400" strokeWidth={3} />
+    <div className="w-3.5 h-3.5 flex items-center justify-center bg-diff-add/15">
+      <Check size={10} className="text-diff-add" strokeWidth={3} />
     </div>
   );
   return (
-    <div className="w-3.5 h-3.5 flex items-center justify-center bg-amber-500/20 border border-amber-500/60">
-      <AlertCircle size={10} className="text-amber-400" />
+    <div className="w-3.5 h-3.5 flex items-center justify-center bg-amber/15">
+      <AlertCircle size={10} className="text-amber" />
     </div>
   );
 }
@@ -415,19 +415,19 @@ function ProviderRow({
   };
 
   return (
-    <div className="px-3 py-2.5 bg-claude-bg/40 border border-claude-border" style={{ borderRadius: 0 }}>
+    <div className="px-3 py-2.5 bg-ink-1 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)]">
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-2.5 min-w-0">
-          <div className="w-[18px] h-[18px] flex items-center justify-center text-claude-text-secondary">{icon}</div>
+          <div className="w-[18px] h-[18px] flex items-center justify-center text-fg-3">{icon}</div>
           <div className="min-w-0">
-            <span className="block text-sm font-mono text-claude-text truncate">{label}</span>
+            <span className="block text-[13px] font-medium text-fg truncate">{label}</span>
             {phaseDone && status.version && (
-              <span className="block text-[10px] font-mono text-claude-text-secondary truncate">{status.version}</span>
+              <span className="block font-mono text-[11px] text-fg-5 truncate">{status.version}</span>
             )}
           </div>
         </div>
         <div className="flex items-center gap-2 min-w-0">
-          <span className="text-xs font-mono text-claude-text-secondary truncate">
+          <span className="text-[12px] text-fg-3 truncate">
             {statusText}
           </span>
           <StatusBadge phaseActive={phaseActive} phaseDone={phaseDone} success={status.loggedIn} />
@@ -437,7 +437,7 @@ function ProviderRow({
       {needsSetup && (activeCommand || status.docsUrl) && (
         <div className="mt-2 flex items-center gap-2">
           {activeCommand && (
-            <code className="flex-1 min-w-0 px-2 py-1 bg-claude-surface border border-claude-border text-[10px] font-mono text-claude-text-secondary truncate">
+            <code className="flex-1 min-w-0 px-2 py-1 bg-ink-term shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)] text-[11px] font-mono text-fg-2 truncate">
               {activeCommand}
             </code>
           )}
@@ -447,7 +447,7 @@ function ProviderRow({
                 type="button"
                 onClick={() => void handleSetup()}
                 disabled={setupRunning}
-                className="flex items-center gap-1.5 px-2 py-1.5 border border-claude-accent/50 text-[10px] font-mono text-claude-accent hover:bg-claude-accent/10 disabled:opacity-50"
+                className="flex items-center gap-1.5 h-7 px-2 text-[12px] text-fg-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] hover:bg-claude-surface-hover disabled:opacity-40"
                 title={`Install ${label} inside Build`}
               >
                 {setupRunning ? <Loader2 size={12} className="animate-spin" /> : <Terminal size={12} />}
@@ -457,7 +457,7 @@ function ProviderRow({
               <button
                 type="button"
                 onClick={handleCopyCommand}
-                className="p-1.5 border border-claude-border text-claude-text-secondary hover:text-claude-text hover:bg-claude-surface"
+                className="p-1.5 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] text-fg-3 hover:text-fg hover:bg-claude-surface-hover"
                 title={needsAuth ? 'Copy login command' : 'Copy install command'}
               >
                 <Copy size={12} />
@@ -470,7 +470,7 @@ function ProviderRow({
               onClick={() => {
                 if (docsUrl) window.electronAPI.app?.openExternal?.(docsUrl);
               }}
-              className="p-1.5 border border-claude-border text-claude-text-secondary hover:text-claude-text hover:bg-claude-surface"
+              className="p-1.5 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] text-fg-3 hover:text-fg hover:bg-claude-surface-hover"
               title="Open setup docs"
             >
               <ExternalLink size={12} />
@@ -478,13 +478,13 @@ function ProviderRow({
           )}
         </div>
       )}
-      {setupError && <p className="mt-2 text-[10px] font-mono text-red-400">{setupError}</p>}
+      {setupError && <p className="mt-2 text-[12px] text-diff-del">{setupError}</p>}
 
       {canShowApiKey && !expanded && (
         <button
           type="button"
           onClick={() => setExpanded(true)}
-          className="mt-2 w-full flex items-center gap-1.5 text-[10px] font-mono text-claude-text-secondary hover:text-claude-text"
+          className="mt-2 w-full flex items-center gap-1.5 text-[12px] text-fg-3 hover:text-fg"
         >
           <Key size={10} />
           <span>Or add API key</span>
@@ -502,13 +502,13 @@ function ProviderRow({
                 onChange={(e) => setKeyValue(e.target.value)}
                 onKeyDown={(e) => { if (e.key === 'Enter' && keyValue.trim()) handleSaveKey(); }}
                 placeholder={apiKeyConfig.placeholder}
-                className="w-full px-2 py-1.5 pr-8 bg-claude-surface border border-claude-border text-xs font-mono text-claude-text placeholder:text-claude-text-secondary focus:outline-none focus:border-claude-accent"
+                className="w-full h-8 px-2 pr-8 bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-[12.5px] font-mono text-fg placeholder:text-fg-5 focus:outline-none focus:ring-1 focus:ring-accent/50"
                 style={{ borderRadius: 0 }}
               />
               <button
                 type="button"
                 onClick={() => setShowKey(!showKey)}
-                className="absolute right-1.5 top-1/2 -translate-y-1/2 p-0.5 text-claude-text-secondary hover:text-claude-text"
+                className="absolute right-1.5 top-1/2 -translate-y-1/2 p-0.5 text-fg-4 hover:text-fg"
               >
                 {showKey ? <EyeOff size={11} /> : <Eye size={11} />}
               </button>
@@ -517,7 +517,7 @@ function ProviderRow({
               type="button"
               onClick={handleSaveKey}
               disabled={!keyValue.trim() || saving}
-              className="px-2 py-1.5 text-[10px] font-mono font-bold uppercase bg-claude-accent text-white hover:bg-claude-accent/80 disabled:opacity-40"
+              className="h-8 px-3 text-[13px] font-semibold bg-fg text-ink-0 hover:bg-white disabled:opacity-40"
               style={{ borderRadius: 0 }}
             >
               {saving ? <Loader2 size={11} className="animate-spin" /> : 'Save'}
@@ -526,7 +526,7 @@ function ProviderRow({
           <button
             type="button"
             onClick={() => setExpanded(false)}
-            className="text-[10px] font-mono text-claude-text-secondary hover:text-claude-text"
+            className="text-[12px] text-fg-3 hover:text-fg"
           >
             <ChevronUp size={10} className="inline mr-0.5" />Hide
           </button>
@@ -547,13 +547,13 @@ function SessionScanRow({ icon, phaseActive, phaseDone }: { icon: React.ReactNod
   }, [phaseDone]);
 
   return (
-    <div className="flex items-center justify-between px-3 py-2.5 bg-claude-bg/40 border border-claude-border" style={{ borderRadius: 0 }}>
+    <div className="flex items-center justify-between px-3 py-2.5 bg-ink-1 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)]">
       <div className="flex items-center gap-2.5">
-        <div className="w-[18px] h-[18px] flex items-center justify-center text-claude-text-secondary">{icon}</div>
-        <span className="text-sm font-mono text-claude-text">Local sessions</span>
+        <div className="w-[18px] h-[18px] flex items-center justify-center text-fg-3">{icon}</div>
+        <span className="text-[13px] font-medium text-fg">Local sessions</span>
       </div>
       <div className="flex items-center gap-2">
-        <span className="text-xs font-mono text-claude-text-secondary">
+        <span className="text-[12px] text-fg-3">
           {phaseActive
             ? 'Scanning ~/.claude/projects...'
             : !phaseDone

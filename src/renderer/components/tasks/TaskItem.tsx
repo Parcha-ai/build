@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { GripVertical, X, Square, CheckSquare, Plus, ChevronDown, ChevronRight, Clock3 } from 'lucide-react';
+import { X, Square, CheckSquare, Check, Plus, ChevronDown, ChevronRight, Clock3 } from 'lucide-react';
 import type { FocusTask } from '../../../shared/types';
 import TaskSessionPicker from './TaskSessionPicker';
 
@@ -87,26 +87,28 @@ export default function TaskItem({
       onDragEnter={() => onDragEnter(task.id)}
       onDragLeave={onDragLeave}
       onDrop={(e) => onDrop(e, task.id)}
-      className={`group flex items-center gap-1.5 px-2 py-1 transition-colors ${
+      className={`group relative h-[22px] flex items-center gap-2 pl-2.5 pr-2 cursor-grab transition-colors ${
         isDragging ? 'opacity-30' : 'hover:bg-claude-surface-hover'
-      } ${isDragOver ? 'border-t-2 border-emerald-400' : ''} ${
-        isActive ? 'border-l-2 border-green-500 bg-green-500/5' : 'border-l-2 border-transparent'
+      } ${isDragOver ? 'shadow-[inset_0_2px_0_#4C9AFF]' : ''} ${
+        isActive ? 'bg-accent/5 shadow-[inset_2px_0_0_#4C9AFF]' : ''
       }`}
     >
-      {/* Drag handle */}
-      <div className="cursor-grab opacity-0 group-hover:opacity-40 transition-opacity flex-shrink-0">
-        <GripVertical size={10} className="text-claude-text-secondary" />
-      </div>
-
-      {/* Checkbox */}
+      {/* Checkbox — 14px square */}
       <button
         onClick={() => onToggleDone(task.id)}
-        className="flex-shrink-0 text-claude-text-secondary hover:text-claude-text transition-colors"
+        className="flex-shrink-0 flex items-center justify-center transition-colors"
+        title={isDone ? 'Mark as not done' : 'Mark as done'}
       >
         {isDone ? (
-          <CheckSquare size={14} className="text-green-500" />
+          <span className="w-3.5 h-3.5 flex items-center justify-center bg-[#333333] text-fg-3">
+            <Check size={10} strokeWidth={3} />
+          </span>
         ) : (
-          <Square size={14} />
+          <span
+            className={`w-3.5 h-3.5 block hover:shadow-[inset_0_0_0_1.5px_#808080] ${
+              isActive ? 'shadow-[inset_0_0_0_1.5px_#4C9AFF]' : 'shadow-[inset_0_0_0_1.5px_#4D4D4D]'
+            }`}
+          />
         )}
       </button>
 
@@ -114,7 +116,7 @@ export default function TaskItem({
       {(task.subtasks?.length || 0) > 0 && (
         <button
           onClick={(e) => { e.stopPropagation(); setShowSubtasks(!showSubtasks); }}
-          className="flex-shrink-0 text-claude-text-secondary hover:text-claude-text"
+          className="flex-shrink-0 text-fg-4 hover:text-fg-2"
         >
           {showSubtasks ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
         </button>
@@ -129,20 +131,21 @@ export default function TaskItem({
           onChange={(e) => setEditValue(e.target.value)}
           onBlur={handleSave}
           onKeyDown={handleKeyDown}
-          className="flex-1 min-w-0 bg-transparent text-xs font-mono text-claude-text focus:outline-none border-b border-claude-accent"
+          className="flex-1 min-w-0 h-[18px] bg-transparent text-[12.5px] text-fg focus:outline-none border-b border-accent"
         />
       ) : (
         <span
           onClick={() => setIsEditing(true)}
-          className={`flex-1 min-w-0 text-xs font-mono break-words cursor-text ${
+          title={task.title}
+          className={`flex-1 min-w-0 text-[12.5px] leading-[22px] truncate cursor-text ${
             isDone
-              ? 'line-through text-claude-text-secondary/50'
-              : 'text-claude-text'
+              ? 'line-through text-fg-5'
+              : 'text-fg-2'
           }`}
         >
           {task.title}
           {(task.subtasks?.length || 0) > 0 && (
-            <span className="ml-1 text-[9px] text-claude-text-secondary">
+            <span className="ml-1.5 font-mono text-[10.5px] text-fg-4">
               {(task.subtasks || []).filter(st => st.done).length}/{(task.subtasks || []).length}
             </span>
           )}
@@ -164,10 +167,10 @@ export default function TaskItem({
         <button
           type="button"
           onClick={() => onStartPomodoro(task.id)}
-          className={`shrink-0 transition-opacity ${
+          className={`shrink-0 transition-colors ${
             isActive
-              ? 'text-emerald-400 opacity-100'
-              : 'text-claude-text-secondary opacity-0 hover:text-emerald-400 group-hover:opacity-100'
+              ? 'text-accent'
+              : 'hidden group-hover:block text-fg-4 hover:text-fg-2'
           }`}
           title="Start Pomodoro for this task"
         >
@@ -178,7 +181,7 @@ export default function TaskItem({
       {/* Add subtask button */}
       <button
         onClick={(e) => { e.stopPropagation(); setAddingSubtask(true); setShowSubtasks(true); }}
-        className="flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity text-claude-text-secondary hover:text-emerald-400"
+        className="flex-shrink-0 hidden group-hover:block text-fg-4 hover:text-fg-2"
         title="Add subtask"
       >
         <Plus size={10} />
@@ -187,7 +190,8 @@ export default function TaskItem({
       {/* Delete button */}
       <button
         onClick={() => onDelete(task.id)}
-        className="flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity text-claude-text-secondary hover:text-red-400"
+        className="flex-shrink-0 hidden group-hover:block text-fg-4 hover:text-diff-del"
+        title="Delete task"
       >
         <X size={10} />
       </button>
@@ -195,25 +199,25 @@ export default function TaskItem({
 
     {/* Subtasks */}
     {showSubtasks && (task.subtasks?.length || addingSubtask) && (
-      <div className="ml-8 border-l border-claude-border/30 pl-2 pb-1">
+      <div className="ml-[17px] border-l border-line pl-2 pb-1">
         {(task.subtasks || []).map(st => (
           <div key={st.id} className="group/sub flex items-center gap-1.5 py-0.5">
             <button
               onClick={() => onToggleSubtask(task.id, st.id)}
-              className="flex-shrink-0 text-claude-text-secondary hover:text-claude-text"
+              className="flex-shrink-0 text-fg-4 hover:text-fg-2"
             >
               {st.done ? (
-                <CheckSquare size={11} className="text-green-500/70" />
+                <CheckSquare size={11} className="text-fg-4" />
               ) : (
                 <Square size={11} />
               )}
             </button>
-            <span className={`text-[11px] font-mono flex-1 ${st.done ? 'line-through text-claude-text-secondary/40' : 'text-claude-text-secondary'}`}>
+            <span className={`text-[11.5px] flex-1 ${st.done ? 'line-through text-fg-5' : 'text-fg-3'}`}>
               {st.title}
             </span>
             <button
               onClick={() => onDeleteSubtask(task.id, st.id)}
-              className="opacity-0 group-hover/sub:opacity-100 text-claude-text-secondary hover:text-red-400"
+              className="opacity-0 group-hover/sub:opacity-100 text-fg-4 hover:text-diff-del"
             >
               <X size={8} />
             </button>
@@ -242,7 +246,7 @@ export default function TaskItem({
               setAddingSubtask(false);
             }}
             placeholder="Subtask..."
-            className="w-full bg-transparent text-[11px] font-mono text-claude-text placeholder:text-claude-text-secondary/50 focus:outline-none border-b border-claude-border/30 focus:border-emerald-500 py-0.5"
+            className="w-full bg-transparent text-[11.5px] text-fg placeholder:text-fg-5 focus:outline-none border-b border-line focus:border-accent py-0.5"
             autoFocus
           />
         )}

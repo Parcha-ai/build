@@ -62,17 +62,17 @@ export default function AgentView() {
   }, [selectedId]);
 
   return (
-    <div className="flex flex-col h-full overflow-hidden font-mono">
+    <div className="flex flex-col h-full overflow-hidden bg-ink-2">
       {selectedSession ? (
         <>
           {/* Header */}
-          <div className="h-8 flex items-center px-3 bg-claude-surface/50 border-b border-claude-border flex-shrink-0">
-            <div className={`w-1.5 h-1.5 flex-shrink-0 mr-2 ${selectedSession.status === 'running' ? 'bg-green-500' : selectedSession.status === 'error' ? 'bg-red-500' : 'bg-gray-500'}`} style={{ borderRadius: 0 }} />
-            <span className="text-[11px] font-bold text-claude-text uppercase" style={{ letterSpacing: '0.05em' }}>
+          <div className="h-[52px] flex items-center gap-2.5 px-5 border-b border-line flex-shrink-0">
+            <div className={`w-[7px] h-[7px] flex-shrink-0 rounded-full ${selectedSession.status === 'running' ? 'bg-accent' : selectedSession.status === 'error' ? 'bg-diff-del' : 'shadow-[inset_0_0_0_1.5px_#666666]'}`} />
+            <span className="text-[14px] font-semibold tracking-[-0.02em] text-fg truncate">
               {getSessionDisplayName(selectedSession)}
             </span>
             {selectedSession.branch && (
-              <span className="text-[10px] text-claude-text-secondary ml-2 truncate">
+              <span className="font-mono text-[11.5px] text-fg-4 truncate">
                 {selectedSession.branch}
               </span>
             )}
@@ -80,10 +80,10 @@ export default function AgentView() {
               sessionId={selectedSession.id}
               branch={selectedSession.branch}
               size={11}
-              className="ml-1.5"
+              className=""
             />
             {selectedSession.status === 'error' && selectedSession.errorMessage && (
-              <span className="text-[9px] text-red-400 ml-auto truncate max-w-[50%]" title={selectedSession.errorMessage}>
+              <span className="text-[11.5px] text-diff-del-text ml-auto truncate max-w-[50%]" title={selectedSession.errorMessage}>
                 {selectedSession.errorMessage}
               </span>
             )}
@@ -108,7 +108,7 @@ export default function AgentView() {
 
           {/* Permission dialog */}
           {currentPermission && (
-            <div className="border-t border-claude-border px-2 py-1.5 bg-claude-surface">
+            <div className="border-t border-line px-2 py-1.5 bg-ink-2">
               <PermissionDialog
                 request={currentPermission}
                 onApprove={(modifiedInput, alwaysApprove) => approvePermission(selectedId!, modifiedInput, alwaysApprove)}
@@ -123,7 +123,7 @@ export default function AgentView() {
 
           {/* Question dialog */}
           {currentQuestion && (
-            <div className="border-t border-claude-border px-2 py-1.5 bg-claude-surface">
+            <div className="border-t border-line px-2 py-1.5 bg-ink-2">
               <QuestionDialog
                 request={currentQuestion}
                 onAnswer={(answers) => answerQuestion(selectedId!, answers)}
@@ -140,10 +140,10 @@ export default function AgentView() {
           />
         </>
       ) : (
-        <div className="flex-1 flex items-center justify-center text-claude-text-secondary">
+        <div className="flex-1 flex items-center justify-center text-fg-4">
           <div className="text-center">
-            <div className="text-[10px] font-bold uppercase mb-1" style={{ letterSpacing: '0.1em' }}>NO SESSION SELECTED</div>
-            <div className="text-[10px]">Select a session from the sidebar</div>
+            <div className="text-[11px] uppercase tracking-[0.04em] mb-1 text-fg-3">No session selected</div>
+            <div className="text-[12px] text-fg-5">Select a session from the sidebar</div>
           </div>
         </div>
       )}

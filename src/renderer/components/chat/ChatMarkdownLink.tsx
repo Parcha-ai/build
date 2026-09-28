@@ -46,7 +46,7 @@ export default function ChatMarkdownLink({ href = '', sessionId, children }: Cha
           console.error(`[Chat] Failed to open link ${href}:`, error);
         });
       }}
-      className={`${isLocal ? 'text-cyan-400 hover:text-cyan-300' : 'text-claude-accent'} underline hover:no-underline cursor-pointer`}
+      className={`${isLocal ? 'font-mono text-[0.92em]' : ''} text-accent-text hover:text-[#B5D3FF] underline decoration-[rgba(141,187,255,0.35)] underline-offset-2 hover:decoration-current cursor-pointer`}
       title={title}
     >
       {children}

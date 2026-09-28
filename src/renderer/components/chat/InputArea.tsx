@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo } from 'react';
-import { X, Image, FileCode, Target, File, Folder, Brain, Square, Code, Smartphone, RefreshCw, Paperclip, Workflow, MoreHorizontal } from 'lucide-react';
+import { X, Image, FileCode, Target, File, Folder, Brain, Square, Code, Smartphone, RefreshCw, Paperclip, Workflow, MoreHorizontal, Shield, ChevronDown, Check, Plus, ArrowUp, Lightbulb, RadioTower, Zap, FileType } from 'lucide-react';
 import { useSessionStore, type PermissionMode, type ThinkingMode, type EffortLevel, migrateThinkingMode, normalizePermissionModeForModel } from '../../stores/session.store';
 import { useUIStore } from '../../stores/ui.store';
 import { useAudioStore } from '../../stores/audio.store';
@@ -8,12 +8,11 @@ import CommandAutocomplete, { type CommandAutocompleteHandle } from './CommandAu
 import { MessageQueuePanel } from './MessageQueuePanel';
 import SecureInput from './SecureInput';
 import CompactionSwitchNotice from './CompactionSwitchNotice';
-import { VoiceComposerControl } from './VoiceComposerControl';
+import { VoiceComposerControl, type VoiceComposerControlHandle, type VoiceComposerRemoteState } from './VoiceComposerControl';
 import { AutoRouteBadge, formatHarnessModelLabel, inferHarnessFromModel } from './AutoRouteBadge';
 import { GSTACK_MODE_META } from '../../../shared/types';
 import { PARABLE_MODE_ID } from '../../../shared/config/parable';
 import { getBrowserPartitionId } from '../../../shared/utils/browser-partition';
-import { calculateVisibleToolbarActions } from '../../utils/toolbar-overflow';
 import { APP_VOICE_SESSION_ID } from '../../utils/voice-session-directory';
 
 // Permission mode config for UI - using terminal-style prompts
@@ -21,37 +20,37 @@ const PERMISSION_MODE_CONFIG: Record<PermissionMode, { prompt: string; label: st
   auto: {
     prompt: '⚡',
     label: 'AUTO',
-    color: 'text-cyan-400',
+    color: 'text-accent-text',
     description: 'Smart auto-approve — Claude decides when to ask',
   },
   acceptEdits: {
     prompt: '>>',
     label: 'ACCEPT EDITS',
-    color: 'text-green-400',
+    color: 'text-fg-2',
     description: 'Auto-accept edits',
   },
   default: {
     prompt: '>',
     label: 'ASK',
-    color: 'text-amber-400',
+    color: 'text-amber',
     description: 'Require approval',
   },
   bypassPermissions: {
     prompt: '>>>',
     label: 'BYPASS',
-    color: 'text-purple-400',
+    color: 'text-diff-del-text',
     description: 'Bypass all permissions — full autonomous',
   },
   plan: {
     prompt: '?',
     label: 'PLAN',
-    color: 'text-blue-400',
+    color: 'text-accent-text',
     description: 'Planning mode (no execution)',
   },
   dontAsk: {
     prompt: '#',
     label: 'DENY',
-    color: 'text-gray-500',
+    color: 'text-fg-4',
     description: "Don't ask (deny if not pre-approved)",
   },
 };
@@ -61,47 +60,56 @@ const EFFORT_LEVEL_CONFIG: Record<ThinkingMode, { label: string; color: string; 
   // Legacy values (for backward compatibility during migration)
   off: {
     label: 'LOW',
-    color: 'text-gray-400',
+    color: '',
     description: 'Fast & efficient - minimal thinking',
   },
   thinking: {
     label: 'MED',
-    color: 'text-blue-400',
+    color: '',
     description: 'Balanced - moderate thinking (10k tokens)',
   },
   ultrathink: {
     label: 'HIGH',
-    color: 'text-purple-400',
+    color: 'is-accent',
     description: 'Full capability - deep thinking (default)',
   },
   // New effort levels
   low: {
     label: 'LOW',
-    color: 'text-gray-400',
+    color: '',
     description: 'Fast & efficient - minimal thinking',
   },
   medium: {
     label: 'MED',
-    color: 'text-blue-400',
+    color: '',
     description: 'Balanced - moderate thinking (10k tokens)',
   },
   high: {
     label: 'HIGH',
-    color: 'text-purple-400',
+    color: 'is-accent',
     description: 'Full capability - deep thinking (default)',
   },
   xhigh: {
     label: 'XHIGH',
-    color: 'text-orange-400',
+    color: 'is-accent',
     description: 'Extended deep thinking - more thorough reasoning',
     opusOnly: true,
   },
   max: {
     label: 'MAX',
-    color: 'text-pink-400',
+    color: 'is-accent',
     description: 'Maximum capability (Opus only)',
     opusOnly: true,
   },
+};
+
+// Human-readable effort names for the composer pill (mockup: "Ultrathink").
+const EFFORT_DISPLAY_NAME: Record<string, string> = {
+  LOW: 'Low effort',
+  MED: 'Medium effort',
+  HIGH: 'High effort',
+  XHIGH: 'Extra-high effort',
+  MAX: 'Max effort',
 };
 
 interface SystemInfo {
@@ -126,9 +134,8 @@ type ExtensionScanResult = {
 };
 
 const EXTENSION_SCAN_CACHE_TTL_MS = 5 * 60 * 1000;
-const TOOLBAR_ACTION_COUNT = 6;
-const TOOLBAR_ACTION_WIDTH = 24;
-const TOOLBAR_GAP = 8;
+// Below this toolbar width the mode/effort pills drop their text labels.
+const TOOLBAR_COMPACT_WIDTH = 440;
 const extensionScanCache = new Map<string, {
   expiresAt: number;
   promise: Promise<ExtensionScanResult>;
@@ -197,43 +204,43 @@ function GStackLauncher({ sessionId, onClose }: { sessionId: string; onClose: ()
   return (
     <div
       ref={menuRef}
-      className="fixed w-72 bg-claude-surface border border-claude-border shadow-xl z-50 overflow-hidden"
+      className="build-composer-menu fixed w-72 z-50 overflow-hidden"
       style={{ bottom: '80px', maxHeight: 'calc(100vh - 120px)', borderRadius: 0 }}
     >
-      <div className="px-3 py-1.5 border-b border-claude-border flex items-center justify-between">
-        <span className="text-[10px] font-semibold text-claude-text-secondary uppercase tracking-wide">GStack Skills</span>
+      <div className="build-composer-menu-label flex items-center justify-between">
+        <span>GStack Skills</span>
         {isInstalled && (
-          <span className="text-[9px] text-green-400 font-mono">{skills.length} skills</span>
+          <span className="font-mono normal-case tracking-normal text-[10.5px] text-fg-5">{skills.length} skills</span>
         )}
       </div>
 
       {!isInstalled ? (
         <div className="p-3 text-center">
-          <p className="text-xs text-claude-text-secondary mb-2">
+          <p className="text-[12.5px] text-fg-3 mb-3">
             GStack is not installed. Install Garry Tan's Claude Code operating system?
           </p>
           <button
             onClick={handleInstall}
             disabled={isInstalling}
-            className="px-3 py-1.5 bg-purple-600 hover:bg-purple-500 text-white text-xs font-bold uppercase disabled:opacity-50"
-            style={{ borderRadius: 0, letterSpacing: '0.05em' }}
+            className="h-8 px-3 bg-fg text-ink-0 text-[12.5px] font-semibold hover:bg-white disabled:opacity-50"
+            style={{ borderRadius: 0 }}
           >
             {isInstalling ? 'Installing...' : 'Install GStack'}
           </button>
         </div>
       ) : (
-        <div className="py-0.5 max-h-[400px] overflow-y-auto">
+        <div className="max-h-[400px] overflow-y-auto">
           {grouped.map((group, gi) => (
             <div key={group.label}>
-              {gi > 0 && <div className="mx-2 my-0.5 border-t border-claude-border" />}
-              <div className="px-3 py-0.5">
-                <span className="text-[9px] font-semibold text-claude-text-secondary uppercase tracking-wider">{group.label}</span>
+              {gi > 0 && <div className="build-composer-menu-divider" />}
+              <div className="build-composer-menu-label">
+                {group.label}
               </div>
               {group.skills.map((skill) => (
                 <button
                   key={skill.id}
                   onClick={() => handleSelect(skill.id)}
-                  className="w-full px-3 py-1 flex items-center gap-2 hover:bg-white/5 transition-colors text-left"
+                  className="build-composer-menu-item !gap-2 !py-1.5"
                 >
                   <span
                     className="text-[9px] font-bold font-mono px-1 flex-shrink-0"
@@ -242,8 +249,8 @@ function GStackLauncher({ sessionId, onClose }: { sessionId: string; onClose: ()
                     {skill.shortName}
                   </span>
                   <div className="min-w-0">
-                    <span className="text-xs text-claude-text truncate block">/{skill.id}</span>
-                    <span className="text-[10px] text-claude-text-secondary truncate block">{skill.description}</span>
+                    <span className="font-mono text-[12px] text-fg truncate block">/{skill.id}</span>
+                    <span className="text-[11.5px] text-fg-3 truncate block">{skill.description}</span>
                   </div>
                 </button>
               ))}
@@ -396,11 +403,11 @@ function InputArea({ sessionId, disabled, systemInfo, isStreaming: isStreamingPr
 
   // GStack skill launcher
   const [showGStack, setShowGStack] = useState(false);
-  const [visibleToolbarActionCount, setVisibleToolbarActionCount] = useState(TOOLBAR_ACTION_COUNT);
+  const [isCompactToolbar, setIsCompactToolbar] = useState(false);
   const [showToolbarOverflow, setShowToolbarOverflow] = useState(false);
+  const [remoteVoiceStatus, setRemoteVoiceStatus] = useState<VoiceComposerRemoteState>({ available: false, active: false, busy: false });
+  const voiceControlRef = useRef<VoiceComposerControlHandle>(null);
   const toolbarRef = useRef<HTMLDivElement>(null);
-  const toolbarPrimaryRef = useRef<HTMLDivElement>(null);
-  const toolbarPinnedRef = useRef<HTMLDivElement>(null);
   const toolbarOverflowRef = useRef<HTMLDivElement>(null);
 
   // Message history state
@@ -525,50 +532,35 @@ function InputArea({ sessionId, disabled, systemInfo, isStreaming: isStreamingPr
   const hasQueuedMessages = effectiveQueuedCount > 0;
   const modeChangeDisabled = disabled || isSending || hasQueuedMessages;
 
+  // The toolbar now keeps only six inline controls; everything else lives in
+  // the always-present "⋯" menu. In narrow panes (command-center cells, split
+  // views) the pills collapse to icon-only instead of spilling actions.
   useLayoutEffect(() => {
     const toolbar = toolbarRef.current;
-    const primary = toolbarPrimaryRef.current;
-    const pinned = toolbarPinnedRef.current;
-    if (!toolbar || !primary || !pinned) return;
+    if (!toolbar) return;
 
     let animationFrame = 0;
-    const updateVisibleActions = () => {
+    const updateCompact = () => {
       cancelAnimationFrame(animationFrame);
       animationFrame = requestAnimationFrame(() => {
-        const nextCount = calculateVisibleToolbarActions({
-          toolbarWidth: toolbar.clientWidth,
-          primaryWidth: primary.scrollWidth,
-          pinnedWidth: pinned.offsetWidth,
-          actionCount: TOOLBAR_ACTION_COUNT,
-          actionWidth: TOOLBAR_ACTION_WIDTH,
-          gap: TOOLBAR_GAP,
-        });
-
-        setVisibleToolbarActionCount((current) => current === nextCount ? current : nextCount);
+        const next = toolbar.clientWidth > 0 && toolbar.clientWidth < TOOLBAR_COMPACT_WIDTH;
+        setIsCompactToolbar((current) => current === next ? current : next);
       });
     };
 
-    updateVisibleActions();
+    updateCompact();
     const resizeObserver = typeof ResizeObserver === 'undefined'
       ? null
-      : new ResizeObserver(updateVisibleActions);
+      : new ResizeObserver(updateCompact);
     resizeObserver?.observe(toolbar);
-    resizeObserver?.observe(primary);
-    resizeObserver?.observe(pinned);
-    window.addEventListener('resize', updateVisibleActions);
+    window.addEventListener('resize', updateCompact);
 
     return () => {
       cancelAnimationFrame(animationFrame);
       resizeObserver?.disconnect();
-      window.removeEventListener('resize', updateVisibleActions);
+      window.removeEventListener('resize', updateCompact);
     };
-  }, [isSending]);
-
-  useEffect(() => {
-    if (visibleToolbarActionCount === TOOLBAR_ACTION_COUNT) {
-      setShowToolbarOverflow(false);
-    }
-  }, [visibleToolbarActionCount]);
+  }, []);
 
   useEffect(() => {
     if (isSending || hasQueuedMessages) {
@@ -1822,23 +1814,25 @@ function InputArea({ sessionId, disabled, systemInfo, isStreaming: isStreamingPr
   const getAttachmentIcon = (attachment: Attachment) => {
     switch (attachment.type) {
       case 'dom_element':
-        return <Target size={12} className="text-blue-400" />;
+        return <Target size={12} className="text-fg-3" />;
       case 'image':
-        return <Image size={12} className="text-green-400" />;
+        return <Image size={12} className="text-fg-3" />;
       case 'mention':
         // Use the actual subType instead of guessing from the name
         if (attachment.subType === 'folder') {
-          return <Folder size={12} className="text-amber-400" />;
+          return <Folder size={12} className="text-fg-3" />;
         } else if (attachment.subType === 'symbol') {
-          return <Code size={12} className="text-purple-400" />;
+          return <Code size={12} className="text-fg-3" />;
         } else {
-          return <File size={12} className="text-cyan-400" />;
+          return <File size={12} className="text-fg-3" />;
         }
       default:
-        return <FileCode size={12} className="text-purple-400" />;
+        return <FileCode size={12} className="text-fg-3" />;
     }
   };
 
+  // Secondary controls that live in the always-present "⋯" menu. Toggles keep
+  // their state visible via a check in the menu and an accent dot on "⋯".
   const toolbarActions: Array<{
     id: string;
     label: string;
@@ -1847,11 +1841,12 @@ function InputArea({ sessionId, disabled, systemInfo, isStreaming: isStreamingPr
     onSelect: () => void;
     disabled?: boolean;
     active?: boolean;
-    activeClassName?: string;
+    meta?: string;
+    keepOpen?: boolean;
   }> = [
     {
       id: 'cascade',
-      label: cascadeActive ? 'Disable Cascade' : 'Enable Cascade',
+      label: 'Cascade workflow',
       title: cascadeActive
         ? `Cascade workflow is active for ${selectedModelLabel}. Click to disable.`
         : `Enable Cascade workflow for ${selectedModelLabel}. The selected model will not change.`,
@@ -1859,30 +1854,15 @@ function InputArea({ sessionId, disabled, systemInfo, isStreaming: isStreamingPr
       onSelect: () => setCascadeMode(sessionId, !cascadeActive),
       disabled: disabled || isSending,
       active: cascadeActive,
-      activeClassName: 'text-cyan-400 bg-cyan-500/10',
     },
     {
       id: 'gstack',
-      label: activeGStackMode ? `GStack: ${GSTACK_MODE_META[activeGStackMode]?.shortName || activeGStackMode}` : 'GStack Skills',
+      label: activeGStackMode ? `GStack: ${GSTACK_MODE_META[activeGStackMode]?.shortName || activeGStackMode}` : 'GStack skills',
       title: 'GStack Skills',
-      icon: (
-        <span className="relative text-xs font-bold font-mono leading-none" style={{ fontSize: '13px' }}>
-          G
-          {activeGStackMode && <span className="absolute -right-1 -top-1 h-1.5 w-1.5 rounded-full bg-green-400" />}
-        </span>
-      ),
+      icon: <span className="font-mono text-[12px] font-bold leading-none">G</span>,
       onSelect: () => setShowGStack((current) => !current),
       disabled,
-      active: Boolean(activeGStackMode || showGStack),
-      activeClassName: 'text-claude-text bg-white/5',
-    },
-    {
-      id: 'attach',
-      label: 'Attach files',
-      title: 'Attach files (or drag & drop)',
-      icon: <Paperclip size={14} />,
-      onSelect: () => fileInputRef.current?.click(),
-      disabled,
+      active: Boolean(activeGStackMode),
     },
     {
       id: 'inspect',
@@ -1892,7 +1872,28 @@ function InputArea({ sessionId, disabled, systemInfo, isStreaming: isStreamingPr
       onSelect: handleInspectElement,
       disabled,
       active: inspectorActive,
-      activeClassName: 'text-claude-accent bg-white/5',
+    },
+    {
+      id: 'html-mode',
+      label: 'HTML responses',
+      title: currentHtmlMode === 'html' ? 'HTML mode: Claude responds in styled HTML (click to switch to Markdown)' : 'Markdown mode (click to switch to HTML)',
+      icon: <FileType size={14} />,
+      onSelect: () => cycleHtmlRenderMode(sessionId),
+      disabled,
+      active: currentHtmlMode === 'html',
+      meta: currentHtmlMode === 'html' ? 'HTML' : 'MD',
+      keepOpen: true,
+    },
+    {
+      id: 'speed',
+      label: 'Fast mode',
+      title: fastMode ? 'Fast mode on (click for standard)' : 'Standard speed (click for fast mode)',
+      icon: <Zap size={14} />,
+      onSelect: () => toggleFastMode(),
+      disabled,
+      active: fastMode,
+      meta: fastMode ? 'FAST' : 'STD',
+      keepOpen: true,
     },
     {
       id: 'continue',
@@ -1916,21 +1917,33 @@ function InputArea({ sessionId, disabled, systemInfo, isStreaming: isStreamingPr
       },
       disabled,
       active: Boolean(remoteControl),
-      activeClassName: 'text-green-400 bg-green-500/10',
+    },
+    {
+      id: 'remote-voice',
+      label: remoteVoiceStatus.active ? 'Remote Agent (live)' : 'Deploy Remote Agent',
+      title: !remoteVoiceStatus.available
+        ? 'Remote Agent currently supports SSH sessions'
+        : remoteVoiceStatus.active
+          ? 'Remote Agent is live — show QR code and Tailnet URL'
+          : 'Deploy Remote Agent with voice and chat to this SSH session',
+      icon: <RadioTower size={14} />,
+      onSelect: () => voiceControlRef.current?.triggerRemoteVoice(),
+      disabled: disabled || remoteVoiceStatus.busy || !remoteVoiceStatus.available,
+      active: remoteVoiceStatus.active,
     },
   ];
 
-  const visibleToolbarActions = toolbarActions.slice(0, visibleToolbarActionCount);
-  const overflowToolbarActions = toolbarActions.slice(visibleToolbarActionCount);
+  const hasActiveHiddenToggle = toolbarActions.some((action) => action.active);
+  const canSubmit = !disabled && (message.trim().length > 0 || attachments.length > 0);
 
   return (
-    <>
+    <div className="build-composer-wrap">
       {/* Message Queue Panel */}
       <MessageQueuePanel sessionId={sessionId} />
 
       <div
         ref={containerRef}
-        className={`build-composer-shell px-4 relative font-mono border-t ${voiceComposerExpanded ? 'build-composer-voice-active' : ''} ${isDragging ? 'border-claude-accent bg-claude-accent/5' : 'border-claude-border'}`}
+        className={`build-composer-shell relative flex flex-col gap-2.5 ${voiceComposerExpanded ? 'build-composer-voice-active' : ''} ${isDragging ? 'is-dragging' : ''}`}
         data-voice-composer-active={voiceComposerExpanded || undefined}
         onDragOver={handleDragOver}
         onDragEnter={handleDragEnter}
@@ -1948,8 +1961,8 @@ function InputArea({ sessionId, disabled, systemInfo, isStreaming: isStreamingPr
 
         {/* Drag overlay */}
         {isDragging && (
-          <div className="absolute inset-0 z-50 flex items-center justify-center bg-claude-bg/80 border-2 border-dashed border-claude-accent pointer-events-none">
-            <div className="flex items-center gap-2 text-claude-accent font-mono text-sm">
+          <div className="absolute inset-0 z-50 flex items-center justify-center bg-ink-0/80 border border-dashed border-accent pointer-events-none">
+            <div className="flex items-center gap-2 text-accent-text font-mono text-[12px] tracking-[0.04em]">
               <Paperclip size={16} />
               <span>DROP FILES TO ATTACH</span>
             </div>
@@ -1967,12 +1980,12 @@ function InputArea({ sessionId, disabled, systemInfo, isStreaming: isStreamingPr
         )}
 
         {currentModel === 'auto' && autoRouteDecision?.planningGate?.action === 'start' && (
-          <div className="mb-2 flex items-center justify-between gap-3 border border-fuchsia-500/30 bg-fuchsia-500/10 px-3 py-2">
+          <div className="flex items-center justify-between gap-3 bg-accent/[0.08] px-3 py-2 shadow-[inset_0_0_0_1px_rgba(76,154,255,0.3)]">
             <div className="min-w-0">
-              <div className="text-[10px] font-mono font-bold uppercase tracking-wider text-fuchsia-400">
+              <div className="text-[11px] font-medium uppercase tracking-[0.04em] text-accent-text">
                 Pre-build 80/20 scope
               </div>
-              <div className="truncate text-[10px] text-claude-text-secondary" title={autoRouteDecision.planningGate.reason}>
+              <div className="truncate text-[11.5px] text-fg-3" title={autoRouteDecision.planningGate.reason}>
                 {autoRouteDecision.planningGate.reason}
               </div>
             </div>
@@ -1984,7 +1997,7 @@ function InputArea({ sessionId, disabled, systemInfo, isStreaming: isStreamingPr
                 }
                 await interruptAndSend(sessionId, '/build-now');
               })()}
-              className="flex-none border border-claude-border px-2 py-1 text-[9px] font-mono uppercase text-claude-text-secondary hover:border-amber-500/50 hover:text-amber-400"
+              className="flex-none h-7 px-2.5 text-[12px] text-fg-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] hover:bg-white/[0.04] hover:text-amber"
               title="Interrupt the scope pass and execute the original request with Auto Build's configured Execution model"
             >
               Build now anyway
@@ -1993,14 +2006,14 @@ function InputArea({ sessionId, disabled, systemInfo, isStreaming: isStreamingPr
         )}
 
         {currentModel === 'auto' && autoRouteDecision?.planningGate?.action === 'suggest' && (
-          <div className="mb-2 flex items-center justify-between gap-3 border border-purple-500/20 bg-purple-500/5 px-3 py-2">
-            <div className="min-w-0 truncate text-[10px] text-claude-text-secondary" title={autoRouteDecision.planningGate.reason}>
+          <div className="flex items-center justify-between gap-3 bg-ink-4/60 px-3 py-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)]">
+            <div className="min-w-0 truncate text-[12px] text-fg-3" title={autoRouteDecision.planningGate.reason}>
               This change may benefit from a quick 80/20 first-slice choice.
             </div>
             <button
               type="button"
               onClick={() => void interruptAndSend(sessionId, '/80-20-first')}
-              className="flex-none border border-purple-500/30 px-2 py-1 text-[9px] font-mono uppercase text-purple-400 hover:bg-purple-500/10"
+              className="flex-none h-7 px-2.5 text-[12px] text-accent-text bg-accent/[0.13] shadow-[inset_0_0_0_1px_rgba(76,154,255,0.35)] hover:bg-accent/20"
             >
               Run 80/20
             </button>
@@ -2034,12 +2047,12 @@ function InputArea({ sessionId, disabled, systemInfo, isStreaming: isStreamingPr
       )}
 
       {showPlanModeNudge && !showCommands && !showMentions && (
-        <div className="absolute bottom-full left-4 right-4 mb-2 bg-claude-surface border border-claude-border shadow-lg z-50 p-3">
+        <div className="build-composer-menu absolute bottom-full left-0 right-0 mb-2 z-50 !p-3">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start">
-            <Brain size={14} className="text-blue-400 mt-0.5 shrink-0" />
+            <Brain size={14} className="text-accent-text mt-0.5 shrink-0" />
             <div className="min-w-0 flex-1">
-              <div className="text-xs text-claude-text font-mono">This looks like planning or copy strategy.</div>
-              <div className="text-[11px] text-claude-text-secondary mt-1">
+              <div className="text-[13px] text-fg">This looks like planning or copy strategy.</div>
+              <div className="text-[11.5px] text-fg-3 mt-1">
                 Switch from {currentModelInfo.name} to Auto Build Plan before sending?
               </div>
             </div>
@@ -2047,21 +2060,21 @@ function InputArea({ sessionId, disabled, systemInfo, isStreaming: isStreamingPr
               <button
                 type="button"
                 onClick={() => void handleSubmit('switch-to-plan')}
-                className="px-2 py-1 text-[11px] font-mono bg-blue-500/15 text-blue-300 border border-blue-500/30 hover:bg-blue-500/25"
+                className="h-7 px-2.5 text-[12px] font-semibold bg-fg text-ink-0 hover:bg-white"
               >
                 Plan
               </button>
               <button
                 type="button"
                 onClick={() => void handleSubmit('keep-current')}
-                className="px-2 py-1 text-[11px] font-mono text-claude-text-secondary border border-claude-border hover:bg-claude-bg hover:text-claude-text"
+                className="h-7 px-2.5 text-[12px] text-fg-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] hover:bg-white/[0.04] hover:text-fg"
               >
                 No
               </button>
               <button
                 type="button"
                 onClick={() => void handleSubmit('suppress')}
-                className="px-2 py-1 text-[11px] font-mono text-claude-text-secondary border border-claude-border hover:bg-claude-bg hover:text-claude-text"
+                className="h-7 px-2.5 text-[12px] text-fg-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] hover:bg-white/[0.04] hover:text-fg"
               >
                 Don't ask again
               </button>
@@ -2074,21 +2087,19 @@ function InputArea({ sessionId, disabled, systemInfo, isStreaming: isStreamingPr
       {showHistory && messageHistory.length > 0 && (
         <div
           ref={historyDropdownRef}
-          className="absolute bottom-full left-0 right-0 mb-1 max-h-64 overflow-y-auto bg-claude-surface border border-claude-border shadow-lg z-50"
+          className="build-composer-menu absolute bottom-full left-0 right-0 mb-2 max-h-64 overflow-y-auto z-50"
           style={{ borderRadius: 0 }}
         >
-          <div className="px-3 py-1.5 text-xs text-claude-text-secondary font-mono border-b border-claude-border flex items-center justify-between">
-            <span>HISTORY</span>
-            <span className="text-[10px]">↑↓ navigate • Enter select • Esc close</span>
+          <div className="build-composer-menu-label flex items-center justify-between">
+            <span>History</span>
+            <span className="font-mono normal-case tracking-normal text-[10.5px] text-fg-5">↑↓ navigate • Enter select • Esc close</span>
           </div>
           {messageHistory.map((item, index) => (
             <button
               key={index}
               onClick={() => selectHistoryItem(item)}
-              className={`w-full text-left px-3 py-2 font-mono text-sm transition-colors ${
-                index === historyIndex
-                  ? 'bg-claude-accent/20 text-claude-text'
-                  : 'text-claude-text-secondary hover:bg-claude-bg hover:text-claude-text'
+              className={`build-composer-menu-item ${
+                index === historyIndex ? 'is-selected' : ''
               }`}
             >
               <div className="truncate">{item}</div>
@@ -2099,24 +2110,20 @@ function InputArea({ sessionId, disabled, systemInfo, isStreaming: isStreamingPr
 
       {/* Attachments - brutalist badges */}
       {attachments.length > 0 && (
-        <div className="flex flex-wrap gap-1.5 mb-2">
+        <div className="flex flex-wrap gap-1.5">
           {attachments.map((attachment, index) => (
             <div
               key={index}
-              className={`flex items-center gap-1.5 px-2 py-1 text-xs ${
-                attachment.type === 'mention'
-                  ? 'bg-claude-accent/20 border border-claude-accent/30'
-                  : 'bg-claude-bg border border-claude-border'
-              }`}
+              className="flex items-center gap-1.5 bg-ink-4 py-1 pl-1.5 pr-1 text-[12px] text-fg-2"
               style={{ borderRadius: 0 }}
             >
               {getAttachmentIcon(attachment)}
-              <span className="truncate max-w-[180px] font-mono text-xs text-claude-text">
+              <span className="truncate max-w-[180px] font-mono text-[11.5px] text-fg-2">
                 {attachment.name}
               </span>
               <button
                 onClick={() => removeAttachment(index)}
-                className="hover:bg-claude-bg p-0.5 text-claude-text-secondary"
+                className="p-0.5 text-fg-4 hover:bg-white/[0.06] hover:text-fg"
                 style={{ borderRadius: 0 }}
               >
                 <X size={10} />
@@ -2128,15 +2135,15 @@ function InputArea({ sessionId, disabled, systemInfo, isStreaming: isStreamingPr
 
       {/* Escape warning message */}
       {showEscapeWarning && (
-        <div className="mb-2 px-3 py-2 bg-amber-500/20 border border-amber-500/50 flex items-center gap-2 animate-fade-in">
-          <span className="text-amber-200 text-xs font-mono uppercase" style={{ letterSpacing: '0.05em' }}>
+        <div className="px-3 py-2 bg-amber/10 shadow-[inset_0_0_0_1px_rgba(240,180,41,0.45)] flex items-center gap-2 animate-fade-in">
+          <span className="text-amber text-[12.5px]">
             Press ESC again to stop Claudette
           </span>
         </div>
       )}
 
       {/* Input row - CLI style - always visible */}
-      <div className="flex flex-col gap-1">
+      <div className="flex flex-col gap-2.5">
         {/* Prompt + Input */}
         <div className="flex items-center gap-2">
           {/* Secure Input */}
@@ -2147,405 +2154,398 @@ function InputArea({ sessionId, disabled, systemInfo, isStreaming: isStreamingPr
               onChange={handleInputChange}
               onKeyDown={handleKeyDown}
               onPaste={handlePaste}
-              placeholder={disabled ? 'session inactive...' : isVoiceModeActive ? 'add context or type message...' : isSending ? `type to queue message${hasQueuedMessages ? ` (${effectiveQueuedCount} queued)` : ''}...` : 'type here... (@ to mention, drop or paste files)'}
+              placeholder={disabled ? 'Session inactive' : isVoiceModeActive ? 'Add context or type a message…' : isSending ? `Queue a follow-up — it lands when this turn ends${hasQueuedMessages ? ` (${effectiveQueuedCount} queued)` : ''}` : 'Message Build — @ to mention, drop or paste files'}
               disabled={disabled}
-              className={`w-full py-0 resize-none focus:outline-none disabled:opacity-40 disabled:cursor-not-allowed min-h-[24px] max-h-[200px] font-mono bg-transparent text-base text-claude-text placeholder:text-claude-text-secondary leading-6 caret-claude-accent ${
-                useAudioStore.getState().recordingStates[sessionId]?.isRecording ? 'border-l-2 border-red-500 pl-2' : ''
+              className={`w-full py-0.5 resize-none focus:outline-none disabled:opacity-40 disabled:cursor-not-allowed min-h-[24px] max-h-[200px] bg-transparent text-[14.5px] text-fg placeholder:text-fg-4 leading-6 caret-accent ${
+                useAudioStore.getState().recordingStates[sessionId]?.isRecording ? 'border-l-2 border-diff-del pl-2' : ''
               }`}
               rows={1}
             />
           </div>
         </div>
 
-        {/* Unified toolbar: mode/effort/model left, icons right */}
+        {/* Toolbar (Graphite): [+] [mode] [effort] [⋯] ······ [model ⌄] [mic] [send/stop] */}
         <div
           ref={toolbarRef}
-          className="flex min-w-0 items-center gap-2 text-[10px] text-claude-text-secondary font-mono"
-          style={{ letterSpacing: '0.03em' }}
+          className="build-composer-toolbar flex min-w-0 items-center gap-1.5 text-[12.5px] text-fg-3"
         >
-          <div ref={toolbarPrimaryRef} className="flex min-w-0 items-center gap-2">
-          {/* Left: mode */}
           <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={disabled}
+            className="build-composer-icon-btn"
+            title="Attach files (or drag & drop)"
+            aria-label="Attach files"
+          >
+            <Plus size={15} strokeWidth={2} />
+          </button>
+
+          <button
+            type="button"
             onClick={() => cyclePermissionMode(sessionId)}
             disabled={modeChangeDisabled}
-            className={`flex-none hover:opacity-80 transition-opacity disabled:opacity-40 text-[10px] ${modeConfig.color}`}
-            title={permissionModeTitle}
+            className={`build-composer-pill ${modeConfig.color}`}
+            title={`${permissionModeTitle} · ⇧Tab`}
+            aria-label={`Permission mode: ${modeConfig.label.toLowerCase()}`}
           >
-            {modeConfig.label}
+            <Shield size={13} strokeWidth={1.8} className="flex-none" />
+            {!isCompactToolbar && <span className="inline-block lowercase first-letter:uppercase">{modeConfig.label}</span>}
           </button>
 
-        {/* HTML render mode toggle */}
-        <div className="relative flex-none">
-          <button
-            onClick={() => cycleHtmlRenderMode(sessionId)}
-            disabled={disabled}
-            className={`flex items-center gap-0.5 hover:opacity-80 transition-opacity disabled:opacity-40 text-[10px] font-bold font-mono ${
-              currentHtmlMode === 'html' ? 'text-purple-400' : 'text-claude-text-secondary'
-            }`}
-            title={currentHtmlMode === 'html' ? 'HTML mode: Claude responds in styled HTML (click to switch to Markdown)' : 'Markdown mode (click to switch to HTML)'}
-            style={{ letterSpacing: '0.05em' }}
-          >
-            {currentHtmlMode === 'html' ? 'HTML' : 'MD'}
-          </button>
-        </div>
+          <div className="relative flex-none" ref={effortDropdownRef}>
+            <button
+              type="button"
+              onClick={() => setShowEffortDropdown(!showEffortDropdown)}
+              disabled={disabled}
+              className={`build-composer-pill ${effortConfig.color}`}
+              title={`${effortConfig.description} (click to change)`}
+              aria-label={EFFORT_DISPLAY_NAME[effortConfig.label] || effortConfig.label}
+            >
+              <Lightbulb size={13} strokeWidth={1.8} className="flex-none" />
+              {!isCompactToolbar && <span>{EFFORT_DISPLAY_NAME[effortConfig.label] || effortConfig.label}</span>}
+            </button>
+            {showEffortDropdown && (
+              <div className="build-composer-menu absolute bottom-full left-0 mb-2 z-50 min-w-56">
+                <div className="build-composer-menu-label">Effort</div>
+                {(['low', 'medium', 'high', 'max'] as EffortLevel[]).map((level) => {
+                  const config = EFFORT_LEVEL_CONFIG[level];
+                  const isOpus = currentModel.includes('opus');
+                  const isDisabled = config.opusOnly && !isOpus;
 
-        {/* Effort level selector */}
-        <div className="relative flex-none" ref={effortDropdownRef}>
-          <button
-            onClick={() => setShowEffortDropdown(!showEffortDropdown)}
-            disabled={disabled}
-            className={`flex items-center gap-1 hover:opacity-80 transition-opacity disabled:opacity-40 text-[10px] ${effortConfig.color}`}
-            title={`${effortConfig.description} (click to change)`}
-          >
-            <Brain size={10} />
-            <span>{effortConfig.label}</span>
-          </button>
-          {showEffortDropdown && (
-            <div className="absolute bottom-full left-0 mb-1 bg-claude-surface border border-claude-border shadow-lg z-50 min-w-48">
-              {(['low', 'medium', 'high', 'max'] as EffortLevel[]).map((level) => {
-                const config = EFFORT_LEVEL_CONFIG[level];
-                const isOpus = currentModel.includes('opus');
-                const isDisabled = config.opusOnly && !isOpus;
+                  return (
+                    <button
+                      key={level}
+                      onClick={() => {
+                        if (!isDisabled) {
+                          setThinkingMode(sessionId, level);
+                          setShowEffortDropdown(false);
+                        }
+                      }}
+                      disabled={isDisabled}
+                      className={`build-composer-menu-item ${
+                        level === migratedThinkingMode ? 'is-selected' : ''
+                      } ${isDisabled ? 'opacity-40 cursor-not-allowed' : ''}`}
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="font-mono text-[12px] text-fg">{config.label}</div>
+                        <div className="text-[11.5px] text-fg-3">
+                          {config.description}
+                          {isDisabled && ' (Opus only)'}
+                        </div>
+                      </div>
+                      {level === migratedThinkingMode && <Check size={14} strokeWidth={2.4} className="flex-none text-accent" />}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
 
-                return (
+          {/* Everything else lives here; always present. */}
+          <div ref={toolbarOverflowRef} className="relative flex-none">
+            <button
+              type="button"
+              onClick={() => setShowToolbarOverflow((current) => !current)}
+              data-testid="toolbar-overflow-toggle"
+              aria-expanded={showToolbarOverflow}
+              aria-haspopup="menu"
+              className={`build-composer-icon-btn is-ghost relative ${
+                showToolbarOverflow ? '!bg-white/[0.06] !text-fg' : ''
+              }`}
+              title={hasActiveHiddenToggle ? 'More actions (some are on)' : 'More actions'}
+              aria-label="More actions"
+            >
+              <MoreHorizontal size={15} />
+              {hasActiveHiddenToggle && <span className="build-composer-overflow-dot" aria-hidden="true" />}
+            </button>
+
+            {showToolbarOverflow && (
+              <div
+                role="menu"
+                className="build-composer-menu absolute bottom-full left-0 z-50 mb-2 min-w-60"
+              >
+                {toolbarActions.map((action) => (
                   <button
-                    key={level}
+                    key={action.id}
+                    type="button"
+                    role={action.meta || action.active !== undefined ? 'menuitemcheckbox' : 'menuitem'}
+                    aria-checked={action.active !== undefined ? Boolean(action.active) : undefined}
                     onClick={() => {
-                      if (!isDisabled) {
-                        setThinkingMode(sessionId, level);
-                        setShowEffortDropdown(false);
-                      }
+                      if (!action.keepOpen) setShowToolbarOverflow(false);
+                      action.onSelect();
                     }}
-                    disabled={isDisabled}
-                    className={`w-full text-left px-3 py-2 hover:bg-claude-bg transition-colors ${
-                      level === migratedThinkingMode ? 'bg-claude-bg text-claude-accent' : 'text-claude-text'
-                    } ${isDisabled ? 'opacity-40 cursor-not-allowed' : ''}`}
+                    disabled={action.disabled}
+                    data-testid={action.id === 'cascade' ? 'cascade-mode-toggle' : `toolbar-action-${action.id}`}
+                    title={action.title}
+                    className="build-composer-menu-item !py-1.5 !text-[12.5px]"
                   >
-                    <div className="font-mono text-xs">{config.label}</div>
-                    <div className="text-[10px] text-claude-text-secondary">
-                      {config.description}
-                      {isDisabled && ' (Opus only)'}
-                    </div>
+                    <span className={`flex h-4 w-4 flex-none items-center justify-center ${action.active ? 'text-accent-text' : 'text-fg-3'}`}>{action.icon}</span>
+                    <span className="flex-1">{action.label}</span>
+                    {action.meta && (
+                      <span className={`font-mono text-[10.5px] ${action.active ? 'text-accent-text' : 'text-fg-5'}`}>{action.meta}</span>
+                    )}
+                    {action.active && !action.meta && <Check size={14} strokeWidth={2.4} className="flex-none text-accent" />}
                   </button>
-                );
-              })}
-            </div>
-          )}
-        </div>
-        {/* Model selector - always visible */}
-        {/* Speed toggle */}
-        <span
-          onClick={() => { if (!disabled) toggleFastMode(); }}
-          className={`flex-none cursor-pointer hover:opacity-80 text-[10px] ${
-            fastMode ? 'text-amber-400' : 'text-claude-text-secondary'
-          }`}
-        >
-          {fastMode ? 'FAST' : 'STD'}
-        </span>
-        <div className="relative min-w-0" ref={modelDropdownRef}>
-          <button
-            onClick={() => setShowModelDropdown(!showModelDropdown)}
-            disabled={disabled}
-            className="flex min-w-0 max-w-full items-center gap-1.5 overflow-hidden text-[10px] text-claude-text-secondary hover:text-claude-text transition-colors disabled:opacity-40"
-            title={modelButtonTitle}
-          >
-            {currentModel === 'auto' ? (
-              autoRouteDecision ? (
-                <AutoRouteBadge
-                  tier={autoRouteDecision.tier}
-                  categoryId={autoRouteDecision.categoryId}
-                  categoryLabel={autoRouteDecision.categoryLabel}
-                  domain={autoRouteDecision.domain}
-                  resolvedHarness={actualActiveHarness || autoRouteDecision.resolvedHarness}
-                  modelLabel={actualActiveModelInfo?.name || autoRouteModelInfo?.name}
-                  compact={!isSending}
-                  planningGateAction={autoRouteDecision.planningGate?.action}
-                />
-              ) : (
-                <span className="text-[10px] font-mono">
-                  <span className="text-purple-400 font-bold">AUTO</span>
-                </span>
-              )
-            ) : currentModel === PARABLE_MODE_ID ? (
-              <span
-                className="inline-flex min-w-0 max-w-[220px] items-center gap-1.5 rounded border border-amber-500/30 bg-amber-500/15 px-2 py-0.5 text-[10px] font-mono text-amber-400"
+                ))}
+                {contextUsage && (
+                  <>
+                    <div className="build-composer-menu-divider" />
+                    <div
+                      className="flex items-center gap-2 px-2.5 py-1.5 text-[12px] text-fg-4"
+                      title={`${contextUsage.inputTokens.toLocaleString()} / ${contextUsage.contextWindowSize.toLocaleString()} tokens (${contextUsage.percentage}%)`}
+                    >
+                      <span className="flex-1">Context</span>
+                      <div className="h-1 w-12 overflow-hidden bg-white/10">
+                        <div
+                          className={`h-full ${
+                            contextUsage.percentage >= 75 ? 'bg-diff-del' :
+                            contextUsage.percentage >= 50 ? 'bg-amber' :
+                            'bg-accent'
+                          }`}
+                          style={{ width: `${Math.min(100, contextUsage.percentage)}%` }}
+                        />
+                      </div>
+                      <span className="font-mono text-[10.5px] tabular-nums">{contextUsage.percentage}%</span>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+
+          <div className="ml-auto flex min-w-0 items-center gap-1.5">
+            <div className="relative min-w-0" ref={modelDropdownRef}>
+              <button
+                type="button"
+                onClick={() => setShowModelDropdown(!showModelDropdown)}
+                disabled={disabled}
+                className="build-composer-text-btn min-w-0 max-w-full overflow-hidden"
                 title={modelButtonTitle}
               >
-                <span className="font-bold tracking-wider">PARABLE</span>
-                {isSending && (parableAgentLabel || (actualActiveModelLabel !== 'PARABLE' ? actualActiveModelLabel : undefined)) && (
-                  <span className="min-w-0 truncate opacity-70">{parableAgentLabel || actualActiveModelLabel}</span>
-                )}
-              </span>
-            ) : (
-              <span className="font-mono">{isSending && actualActiveModelLabel ? actualActiveModelLabel : selectedModelLabel}</span>
-            )}
-          </button>
-          {showModelDropdown && (() => {
-            // Two-level menu: Harness → Models
-
-            const groups: Record<string, typeof availableModels> = {};
-            const groupOrder = ['claude', 'cursor', 'codex', 'gemini', 'opencode', 'prime', 'custom'];
-            const groupLabels: Record<string, string> = {
-              claude: 'Claude',
-              cursor: 'Cursor',
-              codex: 'Codex',
-              gemini: 'Gemini CLI',
-              opencode: 'DeepSeek',
-              prime: 'Prime Agent',
-              custom: 'Custom',
-            };
-
-            const autoModel = availableModels.find(m => m.id === 'auto');
-            const parableModel = availableModels.find(m => m.id === PARABLE_MODE_ID);
-
-            for (const model of availableModels) {
-              if (model.id === 'auto' || model.id === PARABLE_MODE_ID) continue;
-              let group = 'claude';
-              if (model.id.startsWith('codex:')) group = 'codex';
-              else if (model.id.startsWith('cursor:')) group = 'cursor';
-              else if (model.id.startsWith('gemini:')) group = 'gemini';
-              else if (model.id.startsWith('opencode:')) group = 'opencode';
-              else if (model.id.startsWith('prime:')) group = 'prime';
-              else if (model.id.startsWith('custom:')) group = 'custom';
-              if (!groups[group]) groups[group] = [];
-              groups[group].push(model);
-            }
-
-            // Recently used: last 3
-            const recentIds: string[] = JSON.parse(localStorage.getItem('grep-recent-models') || '[]').slice(0, 3);
-            const recentModels = recentIds
-              .map(id => availableModels.find(m => m.id === id))
-              .filter((model): model is (typeof availableModels)[number] => Boolean(model) && model?.id !== 'auto' && model?.id !== PARABLE_MODE_ID);
-
-            const selectModel = (modelId: string) => {
-              setSelectedModel(sessionId, modelId);
-              setShowModelDropdown(false);
-              const recent = JSON.parse(localStorage.getItem('grep-recent-models') || '[]') as string[];
-              const updated = [modelId, ...recent.filter(id => id !== modelId)].slice(0, 5);
-              localStorage.setItem('grep-recent-models', JSON.stringify(updated));
-            };
-
-            // Workflow modes do not highlight a concrete executor harness.
-            let currentHarness = currentModel === 'auto' || currentModel === PARABLE_MODE_ID ? '' : 'claude';
-            if (currentModel.startsWith('codex:')) currentHarness = 'codex';
-            else if (currentModel.startsWith('cursor:')) currentHarness = 'cursor';
-            else if (currentModel.startsWith('gemini:')) currentHarness = 'gemini';
-            else if (currentModel.startsWith('opencode:')) currentHarness = 'opencode';
-            else if (currentModel.startsWith('prime:')) currentHarness = 'prime';
-            else if (currentModel.startsWith('custom:')) currentHarness = 'custom';
-
-            const activeHarness = hoverHarness || currentHarness;
-            const activeModels = groups[activeHarness] || [];
-
-            return (
-              <div className="absolute bottom-full left-0 mb-1 flex z-50">
-                {/* Level 1: Harness list */}
-                <div className="bg-claude-surface border border-claude-border shadow-lg min-w-32">
-                  {/* Auto Build mode — intelligent routing */}
-                  {autoModel && (
-                    <>
-                      <button
-                        onClick={() => selectModel('auto')}
-                        className={`w-full text-left px-3 py-1.5 flex items-center gap-2 transition-colors ${
-                          currentModel === 'auto' ? 'bg-purple-500/10 text-purple-400' : 'text-claude-text-secondary hover:bg-purple-500/5 hover:text-purple-300'
-                        }`}
-                      >
-                        <span className="font-mono text-xs font-bold">
-                          {currentModel === 'auto' && <span className="text-purple-400 mr-1">●</span>}
-                          Auto Build
-                        </span>
-                      </button>
-                    </>
+              {currentModel === 'auto' ? (
+                autoRouteDecision ? (
+                  <AutoRouteBadge
+                    tier={autoRouteDecision.tier}
+                    categoryId={autoRouteDecision.categoryId}
+                    categoryLabel={autoRouteDecision.categoryLabel}
+                    domain={autoRouteDecision.domain}
+                    resolvedHarness={actualActiveHarness || autoRouteDecision.resolvedHarness}
+                    modelLabel={actualActiveModelInfo?.name || autoRouteModelInfo?.name}
+                    compact={!isSending}
+                    planningGateAction={autoRouteDecision.planningGate?.action}
+                  />
+                ) : (
+                  <span className="font-mono text-[11px]">
+                    <span className="text-accent-text font-medium">AUTO</span>
+                  </span>
+                )
+              ) : currentModel === PARABLE_MODE_ID ? (
+                <span
+                  className="inline-flex min-w-0 max-w-[220px] items-center gap-1.5 bg-amber/10 px-2 py-0.5 text-[10px] font-mono uppercase text-amber shadow-[inset_0_0_0_1px_rgba(240,180,41,0.35)]"
+                  title={modelButtonTitle}
+                >
+                  <span className="font-bold tracking-wider">PARABLE</span>
+                  {isSending && (parableAgentLabel || (actualActiveModelLabel !== 'PARABLE' ? actualActiveModelLabel : undefined)) && (
+                    <span className="min-w-0 truncate opacity-70">{parableAgentLabel || actualActiveModelLabel}</span>
                   )}
-                  {/* Parable mode — Claude Code is the meta-harness */}
-                  {parableModel && (
-                    <button
-                      onClick={() => selectModel(PARABLE_MODE_ID)}
-                      className={`w-full text-left px-3 py-1.5 flex items-center gap-2 transition-colors ${
-                        currentModel === PARABLE_MODE_ID ? 'bg-amber-500/10 text-amber-400' : 'text-claude-text-secondary hover:bg-amber-500/5 hover:text-amber-300'
-                      }`}
-                    >
-                      <span className="font-mono text-xs font-bold">
-                        {currentModel === PARABLE_MODE_ID && <span className="text-amber-400 mr-1">●</span>}
-                        Parable
-                      </span>
-                    </button>
-                  )}
-                  {(autoModel || parableModel) && <div className="border-b border-claude-border/30 my-0.5" />}
-                  {/* Recently used quick-picks */}
-                  {recentModels.length > 0 && (
-                    <>
-                      <div className="px-3 py-1 text-[8px] font-bold text-claude-text-secondary uppercase tracking-wider bg-claude-bg/50">
-                        Recent
-                      </div>
-                      {recentModels.map(m => (
+                </span>
+              ) : (
+                <span className="min-w-0 truncate">{isSending && actualActiveModelLabel ? actualActiveModelLabel : selectedModelLabel}</span>
+              )}
+                <ChevronDown size={11} strokeWidth={2.4} className="flex-none text-fg-4" />
+              </button>
+            {showModelDropdown && (() => {
+              // Two-level menu: Harness → Models
+
+              const groups: Record<string, typeof availableModels> = {};
+              const groupOrder = ['claude', 'cursor', 'codex', 'gemini', 'opencode', 'prime', 'custom'];
+              const groupLabels: Record<string, string> = {
+                claude: 'Claude',
+                cursor: 'Cursor',
+                codex: 'Codex',
+                gemini: 'Gemini CLI',
+                opencode: 'DeepSeek',
+                prime: 'Prime Agent',
+                custom: 'Custom',
+              };
+
+              const autoModel = availableModels.find(m => m.id === 'auto');
+              const parableModel = availableModels.find(m => m.id === PARABLE_MODE_ID);
+
+              for (const model of availableModels) {
+                if (model.id === 'auto' || model.id === PARABLE_MODE_ID) continue;
+                let group = 'claude';
+                if (model.id.startsWith('codex:')) group = 'codex';
+                else if (model.id.startsWith('cursor:')) group = 'cursor';
+                else if (model.id.startsWith('gemini:')) group = 'gemini';
+                else if (model.id.startsWith('opencode:')) group = 'opencode';
+                else if (model.id.startsWith('prime:')) group = 'prime';
+                else if (model.id.startsWith('custom:')) group = 'custom';
+                if (!groups[group]) groups[group] = [];
+                groups[group].push(model);
+              }
+
+              // Recently used: last 3
+              const recentIds: string[] = JSON.parse(localStorage.getItem('grep-recent-models') || '[]').slice(0, 3);
+              const recentModels = recentIds
+                .map(id => availableModels.find(m => m.id === id))
+                .filter((model): model is (typeof availableModels)[number] => Boolean(model) && model?.id !== 'auto' && model?.id !== PARABLE_MODE_ID);
+
+              const selectModel = (modelId: string) => {
+                setSelectedModel(sessionId, modelId);
+                setShowModelDropdown(false);
+                const recent = JSON.parse(localStorage.getItem('grep-recent-models') || '[]') as string[];
+                const updated = [modelId, ...recent.filter(id => id !== modelId)].slice(0, 5);
+                localStorage.setItem('grep-recent-models', JSON.stringify(updated));
+              };
+
+              // Workflow modes do not highlight a concrete executor harness.
+              let currentHarness = currentModel === 'auto' || currentModel === PARABLE_MODE_ID ? '' : 'claude';
+              if (currentModel.startsWith('codex:')) currentHarness = 'codex';
+              else if (currentModel.startsWith('cursor:')) currentHarness = 'cursor';
+              else if (currentModel.startsWith('gemini:')) currentHarness = 'gemini';
+              else if (currentModel.startsWith('opencode:')) currentHarness = 'opencode';
+              else if (currentModel.startsWith('prime:')) currentHarness = 'prime';
+              else if (currentModel.startsWith('custom:')) currentHarness = 'custom';
+
+              const activeHarness = hoverHarness || currentHarness;
+              const activeModels = groups[activeHarness] || [];
+
+              return (
+                <div className="absolute bottom-full right-0 mb-2 flex items-end z-50">
+                  {/* Level 1: Harness list */}
+                  <div className="build-composer-menu min-w-40">
+                    {/* Auto Build mode — intelligent routing */}
+                    {autoModel && (
+                      <>
                         <button
-                          key={`recent-${m.id}`}
-                          onClick={() => selectModel(m.id)}
-                          className={`w-full text-left px-3 py-1 hover:bg-claude-bg text-[10px] font-mono ${
-                            m.id === currentModel ? 'text-claude-accent' : 'text-claude-text-secondary'
+                          onClick={() => selectModel('auto')}
+                          className={`build-composer-menu-item ${
+                            currentModel === 'auto' ? 'is-selected' : ''
                           }`}
                         >
-                          {m.name}
+                          <span className="flex-1">Auto Build</span>
+                          {currentModel === 'auto' && <Check size={14} strokeWidth={2.4} className="flex-none text-accent" />}
                         </button>
-                      ))}
-                      <div className="border-b border-claude-border/30 my-0.5" />
-                    </>
-                  )}
-                  {/* Harness options */}
-                  {groupOrder.map(key => {
-                    const models = groups[key];
-                    if (!models || models.length === 0) return null;
-                    const isActive = activeHarness === key;
-                    const hasCurrentModel = models.some(m => m.id === currentModel);
-                    return (
+                      </>
+                    )}
+                    {/* Parable mode — Claude Code is the meta-harness */}
+                    {parableModel && (
                       <button
-                        key={key}
-                        onMouseEnter={() => setHoverHarnessDebounced(key)}
-                        onClick={() => { if (hoverHarnessTimer.current) clearTimeout(hoverHarnessTimer.current); setHoverHarness(key); }}
-                        className={`w-full text-left px-3 py-1.5 flex items-center justify-between transition-colors ${
-                          isActive ? 'bg-claude-bg text-claude-text' : 'text-claude-text-secondary hover:bg-claude-bg/50'
+                        onClick={() => selectModel(PARABLE_MODE_ID)}
+                        className={`build-composer-menu-item ${
+                          currentModel === PARABLE_MODE_ID ? 'is-selected' : ''
                         }`}
                       >
-                        <span className="font-mono text-xs">
-                          {hasCurrentModel && <span className="text-claude-accent mr-1">●</span>}
-                          {groupLabels[key]}
-                        </span>
-                        <span className="text-[10px] text-claude-text-secondary">›</span>
+                        <span className="flex-1">Parable</span>
+                        {currentModel === PARABLE_MODE_ID && <Check size={14} strokeWidth={2.4} className="flex-none text-accent" />}
                       </button>
-                    );
-                  })}
-                </div>
-                {/* Level 2: Models for selected harness */}
-                <div className="bg-claude-surface border border-claude-border border-l-0 shadow-lg min-w-44 max-h-64 overflow-y-auto">
-                  <div className="px-3 py-1 text-[8px] font-bold text-claude-text-secondary uppercase tracking-wider bg-claude-bg/50 sticky top-0">
-                    {groupLabels[activeHarness]} Models
+                    )}
+                    {(autoModel || parableModel) && <div className="build-composer-menu-divider" />}
+                    {/* Recently used quick-picks */}
+                    {recentModels.length > 0 && (
+                      <>
+                        <div className="build-composer-menu-label">
+                          Recent
+                        </div>
+                        {recentModels.map(m => (
+                          <button
+                            key={`recent-${m.id}`}
+                            onClick={() => selectModel(m.id)}
+                            className={`build-composer-menu-item !py-1.5 !text-[12.5px] ${
+                              m.id === currentModel ? 'is-selected' : ''
+                            }`}
+                          >
+                            <span className="min-w-0 flex-1 truncate">{m.name}</span>
+                            {m.id === currentModel && <Check size={14} strokeWidth={2.4} className="flex-none text-accent" />}
+                          </button>
+                        ))}
+                        <div className="build-composer-menu-divider" />
+                      </>
+                    )}
+                    {/* Harness options */}
+                    {groupOrder.map(key => {
+                      const models = groups[key];
+                      if (!models || models.length === 0) return null;
+                      const isActive = activeHarness === key;
+                      const hasCurrentModel = models.some(m => m.id === currentModel);
+                      return (
+                        <button
+                          key={key}
+                          onMouseEnter={() => setHoverHarnessDebounced(key)}
+                          onClick={() => { if (hoverHarnessTimer.current) clearTimeout(hoverHarnessTimer.current); setHoverHarness(key); }}
+                          className={`build-composer-menu-item justify-between ${
+                            isActive ? 'is-selected' : ''
+                          }`}
+                        >
+                          <span className="flex items-center gap-2">
+                            {hasCurrentModel && <span className="h-1.5 w-1.5 flex-none rounded-full bg-accent" />}
+                            {groupLabels[key]}
+                          </span>
+                          <span className="text-[12px] text-fg-4">›</span>
+                        </button>
+                      );
+                    })}
                   </div>
-                  {activeModels.map(model => {
-                    const costTier = model.id.includes('opus') ? '$$$' : model.id.includes('haiku') ? '$' : '$$';
-                    const costColor = model.id.includes('opus') ? 'text-red-400' : model.id.includes('haiku') ? 'text-green-400' : 'text-amber-400';
-                    return (
-                    <button
-                      key={model.id}
-                      onClick={() => selectModel(model.id)}
-                      className={`w-full text-left px-3 py-1.5 hover:bg-claude-bg transition-colors ${
-                        model.id === currentModel ? 'bg-claude-bg text-claude-accent' : 'text-claude-text'
-                      }`}
-                    >
-                      <div className="font-mono text-xs flex items-center justify-between">
-                        <span>{model.name.replace(/ \(Cursor\)| \(Codex\)/, '')}</span>
-                        <span className={`text-[9px] ml-2 ${costColor}`}>{costTier}</span>
-                      </div>
-                    </button>
-                    );
-                  })}
+                  {/* Level 2: Models for selected harness */}
+                  <div className="build-composer-menu -ml-px min-w-52 max-h-72 overflow-y-auto">
+                    <div className="build-composer-menu-label sticky top-0 bg-ink-3">
+                      {groupLabels[activeHarness]} Models
+                    </div>
+                    {activeModels.map(model => {
+                      const costTier = model.id.includes('opus') ? '$$$' : model.id.includes('haiku') ? '$' : '$$';
+                      const costColor = 'text-fg-4';
+                      return (
+                      <button
+                        key={model.id}
+                        onClick={() => selectModel(model.id)}
+                        className={`build-composer-menu-item ${
+                          model.id === currentModel ? 'is-selected' : ''
+                        }`}
+                      >
+                        <span className="min-w-0 flex-1 truncate">{model.name.replace(/ \(Cursor\)| \(Codex\)/, '')}</span>
+                        <span className={`font-mono text-[10.5px] ${costColor}`}>{costTier}</span>
+                        {model.id === currentModel && <Check size={14} strokeWidth={2.4} className="flex-none text-accent" />}
+                      </button>
+                      );
+                    })}
+                  </div>
                 </div>
-              </div>
-            );
-          })()}
-        </div>
-        {/* Context usage indicator — pushed to far right */}
-        {contextUsage && (
-          <div className="flex flex-none items-center gap-1.5" title={`${contextUsage.inputTokens.toLocaleString()} / ${contextUsage.contextWindowSize.toLocaleString()} tokens (${contextUsage.percentage}%)`}>
-            <div className="w-16 h-1.5 bg-claude-border overflow-hidden" style={{ borderRadius: 0 }}>
-              <div
-                className={`h-full transition-all ${
-                  contextUsage.percentage >= 75 ? 'bg-red-500' :
-                  contextUsage.percentage >= 50 ? 'bg-amber-500' :
-                  'bg-claude-accent'
-                }`}
-                style={{ width: `${Math.min(100, contextUsage.percentage)}%` }}
-              />
+              );
+            })()}
             </div>
-            <span className={`text-[9px] tabular-nums ${
-              contextUsage.percentage >= 75 ? 'text-red-400' :
-              contextUsage.percentage >= 50 ? 'text-amber-400' :
-              'text-claude-text-secondary'
-            }`}>
-              {contextUsage.percentage}%
-            </span>
-          </div>
-        )}
 
-          </div>
+            <VoiceComposerControl
+              ref={voiceControlRef}
+              active={isActiveComposer}
+              disabled={disabled}
+              sessionId={sessionId}
+              showRemoteButton={false}
+              onRemoteStateChange={setRemoteVoiceStatus}
+            />
 
-          {/* Secondary actions collapse into an overflow menu as the pane narrows. */}
-          <div className="ml-auto flex flex-none items-center gap-2">
-            {visibleToolbarActions.map((action) => (
+            {/* Send and stop share one slot; stop wins while a turn is running. */}
+            {isSending ? (
               <button
-                key={action.id}
-                onClick={action.onSelect}
-                disabled={action.disabled}
-                data-testid={action.id === 'cascade' ? 'cascade-mode-toggle' : undefined}
-                aria-pressed={action.active || undefined}
-                className={`flex h-6 w-6 flex-none items-center justify-center transition-colors hover:bg-claude-bg hover:text-claude-accent disabled:cursor-not-allowed disabled:opacity-40 ${
-                  action.active
-                    ? action.activeClassName || 'text-claude-accent bg-white/5'
-                    : 'text-claude-text-secondary'
-                }`}
-                style={{ borderRadius: 0 }}
-                title={action.title}
-              >
-                {action.icon}
-              </button>
-            ))}
-
-            {overflowToolbarActions.length > 0 && (
-              <div ref={toolbarOverflowRef} className="relative flex h-6 w-6 flex-none items-center justify-center">
-                <button
-                  onClick={() => setShowToolbarOverflow((current) => !current)}
-                  data-testid="toolbar-overflow-toggle"
-                  aria-expanded={showToolbarOverflow}
-                  aria-haspopup="menu"
-                  className={`flex h-6 w-6 items-center justify-center transition-colors hover:bg-claude-bg hover:text-claude-accent ${
-                    showToolbarOverflow ? 'bg-white/5 text-claude-text' : 'text-claude-text-secondary'
-                  }`}
-                  style={{ borderRadius: 0 }}
-                  title="More toolbar actions"
-                >
-                  <MoreHorizontal size={15} />
-                </button>
-
-                {showToolbarOverflow && (
-                  <div
-                    role="menu"
-                    className="absolute bottom-full right-0 z-50 mb-1 min-w-48 border border-claude-border bg-claude-surface py-1 shadow-xl"
-                  >
-                    {overflowToolbarActions.map((action) => (
-                      <button
-                        key={action.id}
-                        role="menuitem"
-                        onClick={() => {
-                          setShowToolbarOverflow(false);
-                          action.onSelect();
-                        }}
-                        disabled={action.disabled}
-                        data-testid={action.id === 'cascade' ? 'cascade-mode-toggle' : undefined}
-                        className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] transition-colors hover:bg-claude-bg disabled:cursor-not-allowed disabled:opacity-40 ${
-                          action.active ? action.activeClassName || 'text-claude-accent' : 'text-claude-text'
-                        }`}
-                      >
-                        <span className="flex h-4 w-4 flex-none items-center justify-center">{action.icon}</span>
-                        <span>{action.label}</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-
-          {/* Stop remains pinned so it never enters overflow. */}
-          <div ref={toolbarPinnedRef} data-testid="toolbar-pinned-controls" className="flex flex-none items-center gap-2">
-            <VoiceComposerControl active={isActiveComposer} disabled={disabled} sessionId={sessionId} />
-            {isSending && (
-              <button
+                type="button"
                 onClick={handleStopStreaming}
-                className="flex h-6 w-6 flex-none items-center justify-center text-red-400 transition-colors hover:bg-claude-bg hover:text-red-300 animate-pulse"
-                style={{ borderRadius: 0 }}
+                className="build-composer-send"
                 title="Stop (ESC ESC)"
+                aria-label="Stop"
               >
-                <Square size={14} fill="currentColor" />
+                <Square size={12} fill="currentColor" strokeWidth={0} />
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => { void handleSubmit(); }}
+                disabled={!canSubmit}
+                className="build-composer-send"
+                title="Send (⏎)"
+                aria-label="Send"
+                data-testid="composer-send"
+              >
+                <ArrowUp size={16} strokeWidth={2.2} />
               </button>
             )}
           </div>
@@ -2559,7 +2559,25 @@ function InputArea({ sessionId, disabled, systemInfo, isStreaming: isStreamingPr
         </div>
       </div>
       </div>
-    </>
+
+      {/* Keybinding hints — mirror handleKeyDown: Enter sends (queues while a
+          turn runs), Shift+Enter is a newline, Cmd/Ctrl+Enter interrupts. */}
+      <div className="build-composer-hint" aria-hidden="true">
+        {isSending ? (
+          <>
+            <span>⏎ queue</span>
+            <span>⌘⏎ interrupt &amp; send</span>
+          </>
+        ) : (
+          <>
+            <span>⏎ send</span>
+            <span>⇧⏎ newline</span>
+          </>
+        )}
+        <span>/ commands</span>
+        <span>@ files</span>
+      </div>
+    </div>
   );
 }
 

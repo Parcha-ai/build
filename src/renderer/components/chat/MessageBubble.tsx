@@ -3,6 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { GitBranch, Image, Target, FileCode, Maximize2 } from 'lucide-react';
 import ToolCallCard from './ToolCallCard';
+import ToolRunGroup from './ToolRunGroup';
 import HtmlArtifactLink from './HtmlArtifactLink';
 import { SpeakerButton } from './SpeakerButton';
 import { useEditorStore } from '../../stores/editor.store';
@@ -75,7 +76,7 @@ function TextContentBlock({
         </div>
       )}
       <div
-        className="prose prose-invert max-w-none font-mono text-claude-text pr-12 break-words"
+        className="prose prose-invert max-w-none font-sans text-[14.5px] leading-[1.65] text-[#D4D4D4] pr-12 break-words"
         style={{ overflowWrap: 'anywhere' }}
       >
         <ReactMarkdown
@@ -87,17 +88,17 @@ function TextContentBlock({
 
               if (isBlock) {
                 return (
-                  <div className="overflow-hidden border border-claude-border my-2" style={{ borderRadius: 0 }}>
+                  <div className="not-prose my-3 overflow-hidden bg-[#0B0B0B] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)]">
                     {match && (
                       <div
-                        className="px-2 py-1 text-xs font-bold font-mono bg-claude-surface border-b border-claude-border text-claude-text-secondary"
-                        style={{ letterSpacing: '0.05em' }}
+                        className="px-3 py-1.5 font-mono text-[10.5px] uppercase text-fg-5 border-b border-white/[0.05]"
+                        style={{ letterSpacing: '0.04em' }}
                       >
                         {match[1].toUpperCase()}
                       </div>
                     )}
-                    <pre className="p-3 bg-claude-bg m-0 whitespace-pre-wrap break-words">
-                      <code className="text-sm font-mono text-claude-text" {...props}>
+                    <pre className="m-0 bg-transparent p-3 whitespace-pre-wrap break-words">
+                      <code className="font-mono text-[12.5px] leading-[1.6] text-fg-2" {...props}>
                         {children}
                       </code>
                     </pre>
@@ -123,8 +124,7 @@ function TextContentBlock({
                       e.stopPropagation();
                       openFile(filePath, lineNumber);
                     }}
-                    className="px-1 py-0.5 text-sm font-mono bg-claude-surface text-cyan-400 hover:text-cyan-300 hover:bg-claude-surface/80 cursor-pointer"
-                    style={{ borderRadius: 0 }}
+                    className="px-1 py-px font-mono text-[0.86em] bg-[#1E1E1E] text-accent-text hover:text-[#B5D3FF] hover:bg-[#262626] cursor-pointer"
                     title={`Open ${filePath}${lineNumber ? ` at line ${lineNumber}` : ''}`}
                   >
                     {fileName}
@@ -135,8 +135,7 @@ function TextContentBlock({
 
               return (
                 <code
-                  className="px-1 py-0.5 text-sm font-mono bg-claude-surface text-claude-accent"
-                  style={{ borderRadius: 0 }}
+                  className="px-1 py-px font-mono text-[0.86em] font-normal bg-[#1E1E1E] text-fg-2 before:content-none after:content-none"
                   {...props}
                 >
                   {children}
@@ -144,25 +143,25 @@ function TextContentBlock({
               );
             },
             p({ children }) {
-              return <p className="my-1 leading-relaxed">{children}</p>;
+              return <p className="my-2 leading-[1.65]">{children}</p>;
             },
             ul({ children }) {
-              return <ul className="my-1 ml-6 pl-0 list-disc list-outside">{children}</ul>;
+              return <ul className="my-2 ml-5 pl-0 list-disc list-outside marker:text-fg-5">{children}</ul>;
             },
             ol({ children }) {
-              return <ol className="my-1 ml-6 pl-0 list-decimal list-outside">{children}</ol>;
+              return <ol className="my-2 ml-5 pl-0 list-decimal list-outside marker:text-fg-5">{children}</ol>;
             },
             li({ children }) {
-              return <li className="my-0.5 ml-0 pl-1">{children}</li>;
+              return <li className="my-1 ml-0 pl-1">{children}</li>;
             },
             h1({ children }) {
-              return <h1 className="text-lg font-bold mt-3 mb-1">{children}</h1>;
+              return <h1 className="mt-5 mb-2 text-[18px] font-semibold tracking-[-0.02em] text-fg">{children}</h1>;
             },
             h2({ children }) {
-              return <h2 className="text-base font-bold mt-2 mb-1">{children}</h2>;
+              return <h2 className="mt-4 mb-1.5 text-[16px] font-semibold tracking-[-0.02em] text-fg">{children}</h2>;
             },
             h3({ children }) {
-              return <h3 className="text-sm font-bold mt-2 mb-1">{children}</h3>;
+              return <h3 className="mt-3 mb-1 text-[14.5px] font-semibold tracking-[-0.01em] text-fg">{children}</h3>;
             },
             a({ href, children }) {
               return (
@@ -173,13 +172,13 @@ function TextContentBlock({
             },
             blockquote({ children }) {
               return (
-                <blockquote className="border-l-2 border-claude-accent pl-3 my-2 text-claude-text-secondary">
+                <blockquote className="my-3 border-l-2 border-white/[0.14] pl-3 not-italic font-normal text-fg-3">
                   {children}
                 </blockquote>
               );
             },
             strong({ children }) {
-              return <strong className="font-bold text-claude-text">{children}</strong>;
+              return <strong className="font-semibold text-fg">{children}</strong>;
             },
             em({ children }) {
               return <em className="italic">{children}</em>;
@@ -187,31 +186,31 @@ function TextContentBlock({
             table({ children }) {
               return (
                 <div className="my-2 overflow-x-auto">
-                  <table className="min-w-full border border-claude-border" style={{ borderRadius: 0 }}>
+                  <table className="not-prose my-0 min-w-full border-collapse text-[13px] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)]">
                     {children}
                   </table>
                 </div>
               );
             },
             thead({ children }) {
-              return <thead className="bg-claude-surface">{children}</thead>;
+              return <thead className="bg-ink-1">{children}</thead>;
             },
             tbody({ children }) {
               return <tbody>{children}</tbody>;
             },
             tr({ children }) {
-              return <tr className="border-b border-claude-border">{children}</tr>;
+              return <tr className="border-b border-white/[0.07]">{children}</tr>;
             },
             th({ children }) {
               return (
-                <th className="px-3 py-2 text-left text-sm font-bold border-r border-claude-border last:border-r-0">
+                <th className="px-3 py-2 text-left text-[12.5px] font-semibold text-fg-2 border-r border-white/[0.07] last:border-r-0">
                   {children}
                 </th>
               );
             },
             td({ children }) {
               return (
-                <td className="px-3 py-2 text-sm border-r border-claude-border last:border-r-0">{children}</td>
+                <td className="px-3 py-2 text-[13px] text-[#D4D4D4] border-r border-white/[0.07] last:border-r-0">{children}</td>
               );
             },
           }}
@@ -227,8 +226,8 @@ function CollapsedToolSummary({ count }: { count: number }) {
   if (count <= 0) return null;
 
   return (
-    <div className="flex items-center gap-2 text-[11px] font-mono text-claude-text-secondary border-l-2 border-claude-border pl-2 py-1 bg-claude-surface/20">
-      <FileCode size={12} className="text-claude-text-secondary flex-shrink-0" />
+    <div className="flex items-center gap-2 py-1 text-[12px] text-fg-4">
+      <FileCode size={12} className="text-fg-5 flex-shrink-0" />
       <span>
         {count} historical tool call{count === 1 ? '' : 's'} collapsed
       </span>
@@ -268,16 +267,16 @@ function HistoricalAssistantSummary({
   onExpand: () => void;
 }) {
   return (
-    <div className="border-l-2 border-claude-border pl-3 py-2 bg-claude-surface/10 space-y-2">
+    <div className="space-y-2 border-l border-white/[0.07] py-1 pl-3">
       {preview ? (
         <p
-          className="whitespace-pre-wrap text-sm text-claude-text-secondary font-mono break-words"
+          className="whitespace-pre-wrap text-[13px] leading-[1.6] text-fg-4 break-words"
           style={{ overflowWrap: 'anywhere' }}
         >
           {preview}
         </p>
       ) : (
-        <p className="text-sm text-claude-text-secondary font-mono">
+        <p className="text-[13px] text-fg-4">
           Historical assistant response collapsed.
         </p>
       )}
@@ -286,10 +285,9 @@ function HistoricalAssistantSummary({
         <button
           type="button"
           onClick={onExpand}
-          className="px-2 py-1 text-[11px] font-mono font-bold text-claude-accent border border-claude-border hover:bg-claude-surface"
-          style={{ borderRadius: 0 }}
+          className="h-5 text-[11.5px] text-fg-4 underline-offset-2 hover:text-fg-2 hover:underline transition-colors"
         >
-          SHOW DETAILS
+          Show details
         </button>
       </div>
     </div>
@@ -376,19 +374,19 @@ function MessageBubble({
     && isHtmlResponse(assistantTextContent, { allowFragment: true });
 
   return (
-    <div className="flex gap-2 min-w-0">
+    <div className="group/msg flex gap-2 min-w-0">
       {/* Content */}
       <div className="flex-1 min-w-0">
         {isSystem ? (
           // System messages (setup output) - distinct styling with terminal look
-          <div className="border border-claude-border bg-claude-bg">
-            <div className="px-3 py-1.5 border-b border-claude-border bg-claude-surface flex items-center gap-2">
-              <span className="text-[10px] font-bold text-claude-text-secondary" style={{ letterSpacing: '0.1em' }}>
+          <div className="overflow-hidden bg-ink-1 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)]">
+            <div className="px-3 py-[9px] border-b border-white/[0.05] flex items-center gap-2">
+              <span className="text-[11px] uppercase text-fg-4" style={{ letterSpacing: '0.04em' }}>
                 SETUP OUTPUT
               </span>
             </div>
-            <div className="p-3 max-h-96 overflow-y-auto">
-              <div className="prose prose-invert max-w-none font-mono text-claude-text text-sm">
+            <div className="p-3 max-h-96 overflow-y-auto bg-[#0B0B0B]">
+              <div className="prose prose-invert max-w-none font-mono text-[12px] leading-[1.6] text-fg-3">
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>
                   {message.content || ''}
                 </ReactMarkdown>
@@ -396,21 +394,21 @@ function MessageBubble({
             </div>
           </div>
         ) : isUser ? (
-          // User messages - left border accent with subtle background
-          <div className="relative group border-l-2 border-blue-500 pl-3 py-1 bg-blue-500/5">
+          // User messages - right-aligned graphite bubble
+          <div className="flex justify-end">
+          <div className="relative group max-w-[440px] min-w-0 bg-[#262626] px-3.5 py-2.5">
             {/* Rewind button - appears on hover in top-right */}
             {showRewindButton && (
               <button
                 onClick={handleRewind}
                 disabled={isRewinding}
-                className="absolute top-0 right-0 p-1.5 opacity-0 group-hover:opacity-100 transition-opacity duration-200 text-claude-text-secondary hover:text-claude-accent hover:bg-claude-surface/50 disabled:opacity-50 disabled:cursor-not-allowed"
+                className="absolute top-1 right-full mr-1.5 p-1.5 opacity-0 group-hover:opacity-100 transition-opacity duration-200 text-fg-4 hover:text-fg hover:bg-white/[0.05] disabled:opacity-50 disabled:cursor-not-allowed"
                 title="Fork conversation from this point"
-                style={{ borderRadius: 0 }}
               >
                 <GitBranch size={14} className={isRewinding ? 'animate-pulse' : ''} />
               </button>
             )}
-            <p className="whitespace-pre-wrap text-claude-text font-mono text-base pr-8">
+            <p className="whitespace-pre-wrap break-words text-[14px] leading-[1.55] text-fg" style={{ overflowWrap: 'anywhere' }}>
               {message.content}
             </p>
             {message.attachments && message.attachments.length > 0 && (
@@ -422,19 +420,19 @@ function MessageBubble({
                   if (imageData) {
                     const src = imageData.startsWith('data:') ? imageData : `data:image/png;base64,${imageData}`;
                     return (
-                      <div key={index} className="border border-blue-500/20 overflow-hidden" style={{ borderRadius: 0 }}>
+                      <div key={index} className="overflow-hidden bg-ink-4">
                         <img
                           src={src}
                           alt={attachment.name}
-                          className="max-h-40 max-w-xs object-contain bg-black/20"
+                          className="max-h-40 max-w-xs object-contain bg-black/30"
                         />
-                        <div className="flex items-center gap-1.5 px-2 py-1 bg-blue-500/10 border-t border-blue-500/20">
+                        <div className="flex items-center gap-1.5 px-2 py-1">
                           {attachment.type === 'dom_element' ? (
-                            <Target size={10} className="text-blue-400 flex-shrink-0" />
+                            <Target size={10} className="text-fg-3 flex-shrink-0" />
                           ) : (
-                            <Image size={10} className="text-green-400 flex-shrink-0" />
+                            <Image size={10} className="text-fg-3 flex-shrink-0" />
                           )}
-                          <span className="truncate font-mono text-[10px] text-claude-text-secondary">
+                          <span className="truncate font-mono text-[11px] text-fg-2">
                             {attachment.name}
                           </span>
                         </div>
@@ -444,15 +442,14 @@ function MessageBubble({
                   return (
                     <div
                       key={index}
-                      className="flex items-center gap-1.5 px-2 py-1 text-xs bg-blue-500/10 border border-blue-500/20"
-                      style={{ borderRadius: 0 }}
+                      className="flex items-center gap-1.5 px-2 py-1 text-xs bg-ink-4"
                     >
                       {attachment.type === 'dom_element' ? (
-                        <Target size={12} className="text-blue-400" />
+                        <Target size={12} className="text-fg-3" />
                       ) : (
-                        <FileCode size={12} className="text-purple-400" />
+                        <FileCode size={12} className="text-fg-3" />
                       )}
-                      <span className="truncate max-w-[200px] font-mono text-xs text-claude-text-secondary">
+                      <span className="truncate max-w-[200px] font-mono text-[11.5px] text-fg-2">
                         {attachment.name}
                       </span>
                     </div>
@@ -461,13 +458,15 @@ function MessageBubble({
               </div>
             )}
           </div>
+          </div>
         ) : (
           // Assistant messages - render content blocks in order when available
-          <div className="space-y-2">
+          <div className="space-y-3">
             {/* Interrupted indicator */}
             {message.interrupted && (
-              <div className="flex items-center gap-2 px-2 py-1 bg-amber-500/10 border-l-2 border-amber-500 text-amber-400 text-xs font-mono">
-                <span style={{ letterSpacing: '0.05em' }}>INTERRUPTED</span>
+              <div className="inline-flex items-center gap-2 px-2 py-1 text-[11px] uppercase text-amber shadow-[inset_0_0_0_1px_rgba(240,180,41,0.35)]">
+                <span className="h-1.5 w-1.5 rounded-full bg-amber" />
+                <span style={{ letterSpacing: '0.04em' }}>INTERRUPTED</span>
               </div>
             )}
 
@@ -482,8 +481,7 @@ function MessageBubble({
                     title: firstLine && firstLine.length < 80 ? firstLine : undefined,
                   });
                 }}
-                className="flex items-center gap-1.5 px-2 py-1 text-[10px] font-mono text-claude-text-secondary hover:text-claude-accent border border-claude-border hover:border-claude-accent transition-colors bg-claude-surface/50"
-                style={{ borderRadius: 0 }}
+                className="flex h-6 items-center gap-1.5 px-2 text-[11px] text-fg-3 hover:text-fg shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] hover:bg-white/[0.04] transition-colors"
                 title="Open in side panel for easier reading"
               >
                 <Maximize2 size={10} />
@@ -512,6 +510,32 @@ function MessageBubble({
                 const renderedBlocks: React.ReactNode[] = [];
                 let renderedToolCards = 0;
                 let omittedToolCards = 0;
+                // Consecutive tool calls are buffered and flushed as one grouped card
+                // (a lone call keeps its standalone card). Rendering-only.
+                let pendingRun: { toolCall: ToolCall; blockIndex: number; agentId?: string; agentStyle?: React.CSSProperties }[] = [];
+                const flushRun = () => {
+                  if (pendingRun.length === 0) return;
+                  if (pendingRun.length === 1) {
+                    const { toolCall, blockIndex, agentStyle } = pendingRun[0];
+                    renderedBlocks.push(
+                      <div key={toolCall.id} style={agentStyle}>
+                        <ToolCallCard
+                          toolCall={toolCall}
+                          isLatestToolCall={isLatestMessage && blockIndex === message.contentBlocks!.length - 1}
+                          isStreaming={isStreaming}
+                          defaultCollapsed={collapseToolCardsByDefault}
+                        />
+                      </div>
+                    );
+                  } else {
+                    renderedBlocks.push(
+                      <div key={`run-${pendingRun[0].toolCall.id}`} style={pendingRun[0].agentStyle}>
+                        <ToolRunGroup toolCalls={pendingRun.map((entry) => entry.toolCall)} isLive={Boolean(isStreaming)} />
+                      </div>
+                    );
+                  }
+                  pendingRun = [];
+                };
 
                 message.contentBlocks!.forEach((block, blockIndex) => {
                   const isTeammate = !!block.agentId;
@@ -535,20 +559,14 @@ function MessageBubble({
                       return;
                     }
                     renderedToolCards += 1;
-                    renderedBlocks.push(
-                      <div key={toolCall.id} style={agentStyle}>
-                        <ToolCallCard
-                          toolCall={toolCall}
-                          isLatestToolCall={isLatestMessage && blockIndex === message.contentBlocks!.length - 1 && block.type === 'tool_use'}
-                          isStreaming={isStreaming}
-                          defaultCollapsed={collapseToolCardsByDefault}
-                        />
-                      </div>
-                    );
+                    // Teammate switches start a new run so agent colouring stays per-run
+                    if (pendingRun.length > 0 && pendingRun[0].agentId !== block.agentId) flushRun();
+                    pendingRun.push({ toolCall, blockIndex, agentId: block.agentId, agentStyle });
                   } else if (block.type === 'text' && block.text) {
                     if (shouldRenderAssistantTextAsHtml) {
                       return;
                     }
+                    flushRun();
                     renderedBlocks.push(
                       <div key={`text-${blockIndex}`} style={agentStyle}>
                         <TextContentBlock
@@ -565,23 +583,37 @@ function MessageBubble({
                   }
                 });
 
+                flushRun();
+
                 const unrenderedToolBlocks: React.ReactNode[] = [];
-                unrenderedToolCalls.forEach((toolCall, index) => {
+                const unrenderedVisible: ToolCall[] = [];
+                unrenderedToolCalls.forEach((toolCall) => {
                   if (renderedToolCards >= toolCardRenderLimit) {
                     omittedToolCards += 1;
                     return;
                   }
                   renderedToolCards += 1;
+                  unrenderedVisible.push(toolCall);
+                });
+                if (unrenderedVisible.length === 1) {
                   unrenderedToolBlocks.push(
                     <ToolCallCard
-                      key={`unrendered-tool-${toolCall.id}`}
-                      toolCall={toolCall}
-                      isLatestToolCall={isLatestMessage && index === unrenderedToolCalls.length - 1}
+                      key={`unrendered-tool-${unrenderedVisible[0].id}`}
+                      toolCall={unrenderedVisible[0]}
+                      isLatestToolCall={isLatestMessage}
                       isStreaming={isStreaming}
                       defaultCollapsed={collapseToolCardsByDefault}
                     />
                   );
-                });
+                } else if (unrenderedVisible.length > 1) {
+                  unrenderedToolBlocks.push(
+                    <ToolRunGroup
+                      key={`unrendered-run-${unrenderedVisible[0].id}`}
+                      toolCalls={unrenderedVisible}
+                      isLive={Boolean(isStreaming)}
+                    />
+                  );
+                }
 
                 return [
                   omittedToolCards > 0 ? <CollapsedToolSummary key="collapsed-tools" count={omittedToolCards} /> : null,
@@ -614,7 +646,9 @@ function MessageBubble({
               /* Fallback for messages without contentBlocks (backwards compat) */
               <>
                 {/* Tool calls execute (during action) */}
-                {toolCalls.slice(0, toolCardRenderLimit).map((toolCall, index) => (
+                {toolCalls.slice(0, toolCardRenderLimit).length > 1 ? (
+                  <ToolRunGroup toolCalls={toolCalls.slice(0, toolCardRenderLimit)} isLive={Boolean(isStreaming)} />
+                ) : toolCalls.slice(0, toolCardRenderLimit).map((toolCall, index) => (
                   <ToolCallCard
                     key={toolCall.id}
                     toolCall={toolCall}
@@ -643,7 +677,7 @@ function MessageBubble({
                     text={message.content}
                   />
                 </div>
-                <div className="prose prose-invert max-w-none font-mono text-claude-text pr-12 break-words" style={{ overflowWrap: 'anywhere' }}>
+                <div className="prose prose-invert max-w-none font-sans text-[14.5px] leading-[1.65] text-[#D4D4D4] pr-12 break-words" style={{ overflowWrap: 'anywhere' }}>
                   <ReactMarkdown
                   remarkPlugins={[remarkGfm]}
                   components={{
@@ -654,17 +688,17 @@ function MessageBubble({
 
                       if (isBlock) {
                         return (
-                          <div className="overflow-hidden border border-claude-border my-2" style={{ borderRadius: 0 }}>
+                          <div className="not-prose my-3 overflow-hidden bg-[#0B0B0B] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)]">
                             {match && (
                               <div
-                                className="px-2 py-1 text-xs font-bold font-mono bg-claude-surface border-b border-claude-border text-claude-text-secondary"
+                                className="px-3 py-1.5 font-mono text-[10.5px] uppercase text-fg-5 border-b border-white/[0.05]"
                                 style={{ letterSpacing: '0.05em' }}
                               >
                                 {match[1].toUpperCase()}
                               </div>
                             )}
-                            <pre className="p-3 bg-claude-bg m-0 whitespace-pre-wrap break-words">
-                              <code className="text-sm font-mono text-claude-text" {...props}>
+                            <pre className="m-0 bg-transparent p-3 whitespace-pre-wrap break-words">
+                              <code className="font-mono text-[12.5px] leading-[1.6] text-fg-2" {...props}>
                                 {children}
                               </code>
                             </pre>
@@ -691,8 +725,7 @@ function MessageBubble({
                               e.stopPropagation();
                               openFile(filePath, lineNumber);
                             }}
-                            className="px-1 py-0.5 text-sm font-mono bg-claude-surface text-cyan-400 hover:text-cyan-300 hover:bg-claude-surface/80 cursor-pointer"
-                            style={{ borderRadius: 0 }}
+                            className="px-1 py-px font-mono text-[0.86em] bg-[#1E1E1E] text-accent-text hover:text-[#B5D3FF] hover:bg-[#262626] cursor-pointer"
                             title={`Open ${filePath}${lineNumber ? ` at line ${lineNumber}` : ''}`}
                           >
                             {fileName}{lineNumber ? `:${lineNumber}` : ''}
@@ -702,8 +735,7 @@ function MessageBubble({
 
                       return (
                         <code
-                          className="px-1 py-0.5 text-sm font-mono bg-claude-surface text-claude-accent"
-                          style={{ borderRadius: 0 }}
+                          className="px-1 py-px font-mono text-[0.86em] font-normal bg-[#1E1E1E] text-fg-2 before:content-none after:content-none"
                           {...props}
                         >
                           {children}
@@ -712,27 +744,27 @@ function MessageBubble({
                     },
                     // Style paragraphs
                     p({ children }) {
-                      return <p className="my-1 leading-relaxed">{children}</p>;
+                      return <p className="my-2 leading-[1.65]">{children}</p>;
                     },
                     // Style lists
                     ul({ children }) {
-                      return <ul className="my-1 ml-6 pl-0 list-disc list-outside">{children}</ul>;
+                      return <ul className="my-2 ml-5 pl-0 list-disc list-outside marker:text-fg-5">{children}</ul>;
                     },
                     ol({ children }) {
-                      return <ol className="my-1 ml-6 pl-0 list-decimal list-outside">{children}</ol>;
+                      return <ol className="my-2 ml-5 pl-0 list-decimal list-outside marker:text-fg-5">{children}</ol>;
                     },
                     li({ children }) {
-                      return <li className="my-0.5 ml-0 pl-1">{children}</li>;
+                      return <li className="my-1 ml-0 pl-1">{children}</li>;
                     },
                     // Style headings
                     h1({ children }) {
-                      return <h1 className="text-lg font-bold mt-3 mb-1">{children}</h1>;
+                      return <h1 className="mt-5 mb-2 text-[18px] font-semibold tracking-[-0.02em] text-fg">{children}</h1>;
                     },
                     h2({ children }) {
-                      return <h2 className="text-base font-bold mt-2 mb-1">{children}</h2>;
+                      return <h2 className="mt-4 mb-1.5 text-[16px] font-semibold tracking-[-0.02em] text-fg">{children}</h2>;
                     },
                     h3({ children }) {
-                      return <h3 className="text-sm font-bold mt-2 mb-1">{children}</h3>;
+                      return <h3 className="mt-3 mb-1 text-[14.5px] font-semibold tracking-[-0.01em] text-fg">{children}</h3>;
                     },
                     // Style links
                     a({ href, children }) {
@@ -745,14 +777,14 @@ function MessageBubble({
                     // Style blockquotes
                     blockquote({ children }) {
                       return (
-                        <blockquote className="border-l-2 border-claude-accent pl-3 my-2 text-claude-text-secondary">
+                        <blockquote className="my-3 border-l-2 border-white/[0.14] pl-3 not-italic font-normal text-fg-3">
                           {children}
                         </blockquote>
                       );
                     },
                     // Style strong/bold
                     strong({ children }) {
-                      return <strong className="font-bold text-claude-text">{children}</strong>;
+                      return <strong className="font-semibold text-fg">{children}</strong>;
                     },
                     // Style emphasis/italic
                     em({ children }) {
@@ -762,31 +794,31 @@ function MessageBubble({
                     table({ children }) {
                       return (
                         <div className="my-2 overflow-x-auto">
-                          <table className="min-w-full border border-claude-border" style={{ borderRadius: 0 }}>
+                          <table className="not-prose my-0 min-w-full border-collapse text-[13px] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)]">
                             {children}
                           </table>
                         </div>
                       );
                     },
                     thead({ children }) {
-                      return <thead className="bg-claude-surface">{children}</thead>;
+                      return <thead className="bg-ink-1">{children}</thead>;
                     },
                     tbody({ children }) {
                       return <tbody>{children}</tbody>;
                     },
                     tr({ children }) {
-                      return <tr className="border-b border-claude-border">{children}</tr>;
+                      return <tr className="border-b border-white/[0.07]">{children}</tr>;
                     },
                     th({ children }) {
                       return (
-                        <th className="px-3 py-2 text-left text-sm font-bold border-r border-claude-border last:border-r-0">
+                        <th className="px-3 py-2 text-left text-[12.5px] font-semibold text-fg-2 border-r border-white/[0.07] last:border-r-0">
                           {children}
                         </th>
                       );
                     },
                     td({ children }) {
                       return (
-                        <td className="px-3 py-2 text-sm border-r border-claude-border last:border-r-0">
+                        <td className="px-3 py-2 text-[13px] text-[#D4D4D4] border-r border-white/[0.07] last:border-r-0">
                           {children}
                         </td>
                       );
@@ -802,26 +834,25 @@ function MessageBubble({
               </>
             )}
 
-            {!historicalCollapsed && toolOnlySummary && (
-              <div className="text-xs font-mono text-claude-text-secondary border-l-2 border-claude-border pl-2">
-                {toolOnlySummary}
-              </div>
-            )}
+            {/* The "Completed N tool call(s) without a final text response." note
+                (toolOnlySummary) is intentionally not rendered — it is noise. It
+                is still used as the historical-collapse preview fallback above. */}
           </div>
         )}
 
         {/* Timestamp - hide for tool-only messages to keep UI clean */}
         {!isToolOnlyMessage && (
           <div
-            className={`text-xs mt-1 font-mono text-claude-text-secondary ${isUser ? 'text-right' : ''}`}
+            className={`mt-1.5 font-mono text-[10.5px] text-fg-5 ${isUser ? 'text-right' : ''} ${
+              isStreaming || isLatestMessage ? '' : 'opacity-0 transition-opacity group-hover/msg:opacity-100'
+            }`}
           >
             {isStreaming ? (
-              <span className="flex items-center gap-1">
+              <span className="flex items-center gap-2 font-sans text-[12px]">
                 <span
-                  className="inline-block w-1.5 h-1.5 animate-pulse bg-claude-accent"
-                  style={{ borderRadius: 0 }}
+                  className="status-pulse inline-block h-[7px] w-[7px] rounded-full bg-accent"
                 />
-                <span style={{ letterSpacing: '0.05em' }}>TYPING...</span>
+                <span className="text-shimmer font-medium">Typing…</span>
               </span>
             ) : (
               <span style={{ letterSpacing: '0.02em' }}>{formatTime(message.timestamp)}</span>

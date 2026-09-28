@@ -1,4 +1,4 @@
-import React, { useEffect, useLayoutEffect, useState, useMemo, memo } from 'react';
+import React, { useEffect, useLayoutEffect, useState, useMemo, useRef, memo } from 'react';
 import { useAuthStore } from './stores/auth.store';
 import { useSessionStore } from './stores/session.store';
 import { useUIStore } from './stores/ui.store';
@@ -19,7 +19,7 @@ import BedtimeLockModal from './components/layout/BedtimeLockModal';
 import DailyReviewModal, { type PlanningCalendarEvent } from './components/tasks/DailyReviewModal';
 import PlanningLockErrorBoundary from './components/tasks/PlanningLockErrorBoundary';
 import BedtimeTaskReviewModal from './components/tasks/BedtimeTaskReviewModal';
-import { Terminal, Globe, PanelRight, Settings, PanelLeftClose, Monitor, AlertTriangle, Package, FileText, FileCode, ClipboardList, GitBranch, Plus, Activity } from 'lucide-react';
+import { Terminal, Globe, PanelRight, Settings, PanelLeft, PanelLeftClose, Monitor, AlertTriangle, Package, FileText, FileCode, ClipboardList, GitBranch, Plus, Activity, Code2, LayoutGrid, MoreHorizontal, Check } from 'lucide-react';
 import DockerHealthDashboard from './components/docker/DockerHealthDashboard';
 import OpenDesignIcon from './components/design/OpenDesignIcon';
 import { getBrowserPartitionId } from '../shared/utils/browser-partition';
@@ -270,40 +270,104 @@ const StatusBarClock = memo(function StatusBarClock({
 
   // Bedtime takes priority if both are active
   if (bedtime) {
-    let color = 'text-white';
-    if (bedtime.secondsUntil <= 60) color = 'text-red-500 font-bold';
-    else if (bedtime.secondsUntil <= 300) color = 'text-red-500 font-bold';
-    else if (bedtime.secondsUntil <= 1800) color = 'text-amber-500 font-bold';
-    else color = 'text-indigo-400 font-bold';
+    let color = 'text-fg-3';
+    if (bedtime.secondsUntil <= 60) color = 'text-diff-del font-medium';
+    else if (bedtime.secondsUntil <= 300) color = 'text-diff-del font-medium';
+    else if (bedtime.secondsUntil <= 1800) color = 'text-amber font-medium';
+    else color = 'text-accent-text font-medium';
 
     return (
-      <div className={`flex items-center gap-2 font-mono text-base ${color} transition-colors`}>
-        <span className="text-xs uppercase font-bold" style={{ letterSpacing: '0.1em' }}>BED IN</span>
-        <span className="font-bold tabular-nums" style={{ letterSpacing: '0.05em' }}>{bedtime.display}</span>
+      <div className={`flex items-center gap-2 text-[12.5px] ${color} transition-colors`}>
+        <span className="text-[11px] uppercase tracking-[0.04em]">Bed in</span>
+        <span className="font-mono text-[12px] tabular-nums">{bedtime.display}</span>
       </div>
     );
   }
 
   if (lunch) {
-    let color = 'text-white';
-    if (lunch.secondsUntil <= 60) color = 'text-red-500 font-bold';
-    else if (lunch.secondsUntil <= 300) color = 'text-red-500 font-bold';
-    else if (lunch.secondsUntil <= 1800) color = 'text-amber-500 font-bold';
+    let color = 'text-fg-3';
+    if (lunch.secondsUntil <= 60) color = 'text-diff-del font-medium';
+    else if (lunch.secondsUntil <= 300) color = 'text-diff-del font-medium';
+    else if (lunch.secondsUntil <= 1800) color = 'text-amber font-medium';
 
     return (
-      <div className={`flex items-center gap-2 font-mono text-base ${color} transition-colors`}>
-        <span className="text-xs uppercase font-bold" style={{ letterSpacing: '0.1em' }}>LUNCH IN</span>
-        <span className="font-bold tabular-nums" style={{ letterSpacing: '0.05em' }}>{lunch.display}</span>
+      <div className={`flex items-center gap-2 text-[12.5px] ${color} transition-colors`}>
+        <span className="text-[11px] uppercase tracking-[0.04em]">Lunch in</span>
+        <span className="font-mono text-[12px] tabular-nums">{lunch.display}</span>
       </div>
     );
   }
 
   return (
-    <div className="flex items-center gap-2 font-mono text-base text-white transition-colors">
-      <span className="font-bold tabular-nums" style={{ letterSpacing: '0.05em' }}>{normalTime}</span>
+    <div className="flex items-center gap-2 text-fg-2 transition-colors">
+      <span className="font-mono text-[12px] tabular-nums">{normalTime}</span>
     </div>
   );
 });
+
+// Segmented title-bar toggle: 28×24, active #262626
+const segBtn = (active: boolean) =>
+  `w-7 h-6 flex items-center justify-center transition-colors ${
+    active ? 'bg-[#262626] text-fg' : 'text-fg-4 hover:text-fg-2'
+  }`;
+
+interface TitleBarMenuItem {
+  label: string;
+  icon: React.ReactNode;
+  active: boolean;
+  onClick: () => void;
+}
+
+// Overflow "⋯" for the less-used panel toggles — keeps the segmented group compact.
+function TitleBarMoreMenu({ items }: { items: TitleBarMenuItem[] }) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const anyActive = items.some((item) => item.active);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  return (
+    <div ref={rootRef} className="relative">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className={`${segBtn(open)} relative`}
+        title="More panels & settings"
+      >
+        <MoreHorizontal size={14} />
+        {anyActive && !open && (
+          <span className="absolute top-[3px] right-[4px] w-[5px] h-[5px] rounded-full bg-accent" />
+        )}
+      </button>
+      {open && (
+        <div className="absolute right-0 top-[calc(100%+6px)] z-[100] w-52 py-1 bg-ink-3 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1),0_12px_40px_rgba(0,0,0,0.35)]">
+          {items.map((item) => (
+            <button
+              key={item.label}
+              onClick={() => { item.onClick(); setOpen(false); }}
+              className="w-full h-8 px-3 flex items-center gap-2.5 text-left text-[13px] text-fg-2 hover:bg-claude-surface-hover hover:text-fg transition-colors"
+            >
+              <span className={item.active ? 'text-accent' : 'text-fg-4'}>{item.icon}</span>
+              <span className="flex-1">{item.label}</span>
+              {item.active && <Check size={12} className="text-accent" />}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 // Main App component that requires Electron
 function ElectronApp() {
@@ -329,6 +393,8 @@ function ElectronApp() {
   const togglePlanPanel = useUIStore((s) => s.togglePlanPanel);
   const toggleHtmlPanel = useUIStore((s) => s.toggleHtmlPanel);
   const toggleGitPanel = useUIStore((s) => s.toggleGitPanel);
+  const isCommandCenterActive = useUIStore((s) => s.isCommandCenterActive);
+  const toggleCommandCenter = useUIStore((s) => s.toggleCommandCenter);
   const cycleSplitRatio = useUIStore((s) => s.cycleSplitRatio);
   const openSettings = useUIStore((s) => s.openSettings);
   const hasApiKey = useUIStore((s) => s.hasApiKey);
@@ -354,6 +420,39 @@ function ElectronApp() {
       openEditor();
     }
   };
+  // Design mode toggle — design always takes over the full space (chat included)
+  const toggleDesignMode = async () => {
+    const sid = useSessionStore.getState().activeSessionId;
+    if (!sid) return;
+    const ui = useUIStore.getState();
+    if (ui.sessionDesignTakeover[sid]) {
+      ui.setDesignTakeover(sid, false);
+      return;
+    }
+    const existing = ui.sessionDesignPanels[sid];
+    if (existing) {
+      ui.showDesignPanel(sid, existing, true);
+      return;
+    }
+    try {
+      const ws = await window.electronAPI.design.ensureWorkspace(sid);
+      useUIStore.getState().showDesignPanel(sid, { url: ws.panelUrl, workspaceDir: ws.workspaceDir }, true);
+    } catch (error) {
+      console.error('[App] Could not start design workspace:', error);
+      useUIStore.getState().toggleDesignPanel(); // fall back to panel empty-state (shows the error path)
+    }
+  };
+
+  // Title bar breadcrumb: ›_ <project> / <branch>
+  const titleSession = sessions.find((s) => s.id === activeSessionId);
+  const titleProject = (() => {
+    if (!titleSession) return '';
+    const raw = titleSession.sshConfig?.remoteWorkdir || titleSession.repoPath || titleSession.worktreePath || '';
+    const base = raw.replace(/\/+$/, '').split('/').filter(Boolean).pop();
+    return base || titleSession.name || '';
+  })();
+  const titleBranch = titleSession?.branch || '';
+
   const [isInitialized, setIsInitialized] = useState(false);
 
   // Clock and lunch/bedtime enforcement system
@@ -913,8 +1012,8 @@ function ElectronApp() {
     return (
       <div className="h-screen w-screen flex items-center justify-center bg-claude-bg">
         <div className="flex flex-col items-center gap-4">
-          <div className="w-12 h-12 border-4 border-claude-accent border-t-transparent rounded-full animate-spin" />
-          <p className="text-claude-text-secondary">Loading Build...</p>
+          <div className="w-8 h-8 border-2 border-accent border-t-transparent rounded-full animate-spin" />
+          <p className="text-[13px] text-fg-3">Loading Build...</p>
         </div>
       </div>
     );
@@ -929,152 +1028,113 @@ function ElectronApp() {
     <div className={`h-screen w-screen flex flex-col bg-claude-bg overflow-hidden ${showEveningPlanningLock ? 'planning-lock-active' : ''}`}>
       {/* Title bar with drag region and controls */}
       <div
-        className="h-8 bg-claude-surface border-b border-claude-border flex items-center justify-between"
+        className="titlebar-drag-region relative h-10 flex-shrink-0 bg-ink-0 border-b border-line flex items-center gap-3.5 pr-3.5"
         style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
       >
-        {/* Left: sidebar toggle + spacer for traffic lights */}
-        <div className="flex items-center h-full">
-          <div
-            className="pl-20 pr-2 flex items-center"
-            style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-          >
-            <button
-              onClick={toggleSidebar}
-              className={`p-1 transition-colors hover:text-claude-text ${
-                isSidebarOpen ? 'text-claude-text' : 'text-claude-text-secondary'
-              }`}
-              title="Toggle Sidebar"
-            >
-              <PanelLeftClose size={14} />
-            </button>
-          </div>
+        {/* Left: spacer for macOS traffic lights, then ›_ project / branch breadcrumb (draggable) */}
+        <div className="w-20 flex-shrink-0" />
+        <div className="flex-1 min-w-0 flex items-center">
+          {titleProject && (
+            <div className="max-w-[calc(50vw-150px)] min-w-0 pl-1 flex items-center gap-2 text-[12.5px] text-fg-3 pointer-events-none">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" className="text-fg flex-shrink-0">
+                <path d="m6 8 4 4-4 4" />
+                <path d="M13 16h5" />
+              </svg>
+              <span className="text-fg font-medium truncate flex-shrink-0 max-w-[45%]">{titleProject}</span>
+              {titleBranch && (
+                <>
+                  <span className="text-[#555555] flex-shrink-0">/</span>
+                  <span className="font-mono text-[12px] truncate">{titleBranch}</span>
+                </>
+              )}
+            </div>
+          )}
         </div>
 
-        {/* Center: Clock with lunch countdown — isolated component to avoid re-rendering entire app */}
+        {/* Center: Clock with lunch/bedtime countdown — isolated component to avoid re-rendering entire app */}
         <div className="absolute left-1/2 transform -translate-x-1/2 flex items-center">
           <StatusBarClock lunchReminderEnabled={lunchReminderEnabled} lunchTime={lunchTime} bedtimeReminderEnabled={bedtimeReminderEnabled} bedtimeTime={bedtimeTime} />
         </div>
 
-        {/* Right: panel toggle buttons */}
+        {/* Panel toggles — ONE segmented group */}
         <div
-          className="flex items-center gap-0.5 px-2"
+          className="titlebar-no-drag flex items-center gap-0.5 p-[3px] bg-[#181818] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.06)]"
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
         >
           <button
-            onClick={() => setDockerHealthOpen(true)}
-            className={`p-1 transition-colors hover:text-green-400 ${isDockerHealthOpen ? 'text-green-400' : 'text-claude-text-secondary'}`}
-            title="Docker Health"
+            onClick={toggleSidebar}
+            className={segBtn(isSidebarOpen)}
+            title="Toggle Sidebar"
           >
-            <Activity size={14} />
+            <PanelLeft size={14} />
           </button>
           <button
             onClick={toggleTerminalPanel}
-            className={`p-1 transition-colors hover:text-claude-text ${
-              isTerminalPanelOpen ? 'text-claude-text' : 'text-claude-text-secondary'
-            }`}
+            className={segBtn(isTerminalPanelOpen)}
             title="Toggle Terminal"
           >
             <Terminal size={14} />
           </button>
           <button
             onClick={toggleBrowserPanel}
-            className={`p-1 transition-colors hover:text-claude-text ${
-              isBrowserPanelOpen ? 'text-claude-text' : 'text-claude-text-secondary'
-            }`}
+            className={segBtn(isBrowserPanelOpen)}
             title="Toggle Browser"
           >
             <Globe size={14} />
           </button>
           <button
-            onClick={toggleExtensionsPanel}
-            className={`p-1 transition-colors hover:text-claude-text ${
-              isExtensionsPanelOpen ? 'text-claude-text' : 'text-claude-text-secondary'
-            }`}
-            title="Toggle Extensions"
-          >
-            <Package size={14} />
-          </button>
-          <button
-            onClick={togglePlanPanel}
-            className={`p-1 transition-colors hover:text-claude-text ${
-              isPlanPanelOpen ? 'text-claude-text' : 'text-claude-text-secondary'
-            }`}
-            title="Toggle Plan"
-          >
-            <ClipboardList size={14} />
-          </button>
-          <button
-            onClick={toggleHtmlPanel}
-            className={`p-1 transition-colors hover:text-claude-text ${
-              isHtmlPanelOpen ? 'text-claude-text' : 'text-claude-text-secondary'
-            }`}
-            title="Toggle HTML Preview"
-          >
-            <FileText size={14} />
-          </button>
-          <button
-            onClick={toggleEditorPanel}
-            className={`p-1 transition-colors hover:text-claude-text ${
-              isEditorOpen ? 'text-claude-text' : 'text-claude-text-secondary'
-            }`}
-            title="Toggle Editor (Files)"
-          >
-            <FileCode size={14} />
-          </button>
-          <button
             onClick={toggleGitPanel}
-            className={`p-1 transition-colors hover:text-claude-text ${
-              isGitPanelOpen ? 'text-claude-text' : 'text-claude-text-secondary'
-            }`}
+            className={segBtn(isGitPanelOpen)}
             title="Toggle Git"
           >
             <GitBranch size={14} />
           </button>
           <button
-            onClick={async () => {
-              const sid = useSessionStore.getState().activeSessionId;
-              if (!sid) return;
-              const ui = useUIStore.getState();
-              if (ui.sessionDesignTakeover[sid]) {
-                ui.setDesignTakeover(sid, false);
-                return;
-              }
-              // Design always takes over the full space (chat included)
-              const existing = ui.sessionDesignPanels[sid];
-              if (existing) {
-                ui.showDesignPanel(sid, existing, true);
-                return;
-              }
-              try {
-                const ws = await window.electronAPI.design.ensureWorkspace(sid);
-                useUIStore.getState().showDesignPanel(sid, { url: ws.panelUrl, workspaceDir: ws.workspaceDir }, true);
-              } catch (error) {
-                console.error('[App] Could not start design workspace:', error);
-                useUIStore.getState().toggleDesignPanel(); // fall back to panel empty-state (shows the error path)
-              }
-            }}
-            className={`p-1 transition-colors hover:text-pink-400 ${
-              isDesignTakeoverActive || isDesignPanelOpen ? 'text-pink-400' : 'text-claude-text-secondary'
-            }`}
+            onClick={toggleEditorPanel}
+            className={segBtn(isEditorOpen)}
+            title="Toggle Editor (Files)"
+          >
+            <Code2 size={14} />
+          </button>
+          <button
+            onClick={togglePlanPanel}
+            className={segBtn(isPlanPanelOpen)}
+            title="Toggle Plan"
+          >
+            <ClipboardList size={14} />
+          </button>
+          <button
+            onClick={toggleDesignMode}
+            className={segBtn(isDesignTakeoverActive || isDesignPanelOpen)}
             title="Toggle Design Mode"
           >
             <OpenDesignIcon size={15} />
           </button>
-          <button
-            onClick={cycleSplitRatio}
-            className="p-1 text-claude-text-secondary hover:text-claude-text transition-colors"
-            title="Cycle Split Layout"
-          >
-            <PanelRight size={14} />
-          </button>
-          <button
-            onClick={openSettings}
-            className="p-1 text-claude-text-secondary hover:text-claude-text transition-colors"
-            title="Settings"
-          >
-            <Settings size={14} />
-          </button>
+          <TitleBarMoreMenu
+            items={[
+              { label: 'Extensions', icon: <Package size={13} />, active: isExtensionsPanelOpen, onClick: toggleExtensionsPanel },
+              { label: 'HTML preview', icon: <FileText size={13} />, active: isHtmlPanelOpen, onClick: toggleHtmlPanel },
+              { label: 'Cycle split layout', icon: <PanelRight size={13} />, active: false, onClick: cycleSplitRatio },
+              { label: 'Docker health', icon: <Activity size={13} />, active: isDockerHealthOpen, onClick: () => setDockerHealthOpen(true) },
+              { label: 'Settings', icon: <Settings size={13} />, active: false, onClick: openSettings },
+            ]}
+          />
         </div>
+
+        {/* Command Center */}
+        <button
+          onClick={toggleCommandCenter}
+          className={`titlebar-no-drag h-[26px] px-2.5 flex items-center gap-1.5 text-[12px] transition-colors ${
+            isCommandCenterActive
+              ? 'bg-[#262626] text-fg shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)]'
+              : 'text-fg-2 hover:text-fg shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] hover:shadow-[inset_0_0_0_1px_rgba(255,255,255,0.18)]'
+          }`}
+          style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+          title="Command Center (Cmd+Shift+G)"
+        >
+          <LayoutGrid size={13} strokeWidth={1.8} />
+          Command Center
+        </button>
       </div>
 
       {/* Main layout */}
@@ -1195,7 +1255,7 @@ function BrowserOnlyApp() {
   if (!ready || !activeBrowserTab || !activeBrowserRuntimeSession) {
     return (
       <div className="h-screen w-screen flex items-center justify-center bg-claude-bg">
-        <p className="text-claude-text-secondary font-mono text-sm">Loading browser...</p>
+        <p className="text-fg-3 text-[13px]">Loading browser...</p>
       </div>
     );
   }
@@ -1206,7 +1266,7 @@ function BrowserOnlyApp() {
     <div className="h-screen w-screen flex flex-col bg-claude-bg">
       {/* Independent browser workspace tabs */}
       <div
-        className="h-8 bg-claude-surface border-b border-claude-border flex items-center"
+        className="h-8 bg-ink-0 border-b border-line flex items-center"
         style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
       >
         <div className="flex-1 flex items-center overflow-x-auto" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
@@ -1230,7 +1290,7 @@ function BrowserOnlyApp() {
                 fallbackOwner.lastBrowserUrl || `http://localhost:${fallbackOwner.ports?.web || 3000}`,
               );
             }}
-            className="h-8 px-2 text-claude-text-secondary hover:text-claude-text hover:bg-claude-bg/50"
+            className="h-8 px-2 text-fg-4 hover:text-fg hover:bg-claude-surface-hover"
             title="New browser tab"
           >
             <Plus size={13} />

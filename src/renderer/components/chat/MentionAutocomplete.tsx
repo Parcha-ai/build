@@ -114,15 +114,15 @@ export default function MentionAutocomplete({
 
   const getFileIcon = (file: FileEntry) => {
     if (file.type === 'folder') {
-      return <Folder size={12} className="text-amber-400" />;
+      return <Folder size={12} className="text-amber" />;
     }
-    const color = FILE_ICON_COLORS[file.extension || ''] || 'text-claude-text-secondary';
+    const color = FILE_ICON_COLORS[file.extension || ''] || 'text-fg-4';
     return <File size={12} className={color} />;
   };
 
   return (
     <div
-      className="absolute z-50 overflow-hidden font-mono bg-claude-surface border border-claude-border shadow-xl"
+      className="build-composer-menu absolute z-50 overflow-hidden !p-0"
       style={{
         top: position.top,
         left: position.left,
@@ -132,14 +132,14 @@ export default function MentionAutocomplete({
       }}
     >
       {/* Header - brutalist */}
-      <div className="flex items-center justify-between px-2.5 py-1.5 bg-claude-bg/50 border-b border-claude-border">
-        <div className="flex items-center gap-1.5 text-[10px] text-claude-text-secondary">
-          <Search size={10} />
-          <span style={{ letterSpacing: '0.05em' }}>SEARCH FILES & FOLDERS</span>
+      <div className="flex items-center justify-between px-3 pt-2 pb-1.5 border-b border-line">
+        <div className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-[0.04em] text-fg-4">
+          <Search size={11} />
+          <span>Search files & folders</span>
         </div>
         <button
           onClick={onClose}
-          className="p-0.5 hover:bg-claude-bg text-claude-text-secondary"
+          className="p-1 text-fg-4 hover:bg-white/[0.05] hover:text-fg"
           style={{ borderRadius: 0 }}
         >
           <X size={10} />
@@ -147,17 +147,17 @@ export default function MentionAutocomplete({
       </div>
 
       {/* Results */}
-      <div ref={listRef} className="overflow-y-auto max-h-[200px]">
+      <div ref={listRef} className="overflow-y-auto max-h-[200px] p-1.5">
         {isLoading ? (
           <div className="p-4 text-center">
-            <Loader2 size={14} className="animate-spin mx-auto mb-1 text-claude-accent" />
-            <span className="text-[10px] text-claude-text-secondary" style={{ letterSpacing: '0.05em' }}>
-              SEARCHING...
+            <Loader2 size={14} className="animate-spin mx-auto mb-1 text-accent" />
+            <span className="text-[12px] text-fg-4">
+              Searching…
             </span>
           </div>
         ) : files.length === 0 ? (
-          <div className="p-4 text-center text-[10px] text-claude-text-secondary" style={{ letterSpacing: '0.05em' }}>
-            {query ? 'NO MATCHES FOUND' : 'TYPE TO SEARCH...'}
+          <div className="p-4 text-center text-[12px] text-fg-4">
+            {query ? 'No matches found' : 'Type to search…'}
           </div>
         ) : (
           files.map((file, index) => (
@@ -172,22 +172,17 @@ export default function MentionAutocomplete({
                   displayName: file.relativePath,
                 })
               }
-              className={`w-full flex items-center gap-2 px-2.5 py-1.5 text-left transition-colors ${
-                index === selectedIndex
-                  ? 'bg-claude-accent/20 text-claude-text'
-                  : 'text-claude-text-secondary hover:bg-claude-bg'
+              className={`build-composer-menu-item !gap-2 !py-1.5 ${
+                index === selectedIndex ? 'is-selected' : ''
               }`}
-              style={{
-                borderLeft: index === selectedIndex ? '2px solid var(--claude-accent)' : '2px solid transparent',
-              }}
             >
               {getFileIcon(file)}
-              <span className="flex-1 truncate text-[11px]">
+              <span className="flex-1 truncate font-mono text-[11.5px]">
                 {file.relativePath}
               </span>
               <span
-                className="text-[9px] font-bold px-1 bg-claude-bg"
-                style={{ letterSpacing: '0.05em', borderRadius: 0 }}
+                className="font-mono text-[9.5px] uppercase px-1 text-fg-4 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)]"
+                style={{ borderRadius: 0 }}
               >
                 {file.type === 'folder' ? 'DIR' : 'FILE'}
               </span>
@@ -197,18 +192,18 @@ export default function MentionAutocomplete({
       </div>
 
       {/* Footer hint - brutalist */}
-      <div className="px-2.5 py-1.5 flex items-center gap-3 text-[9px] bg-claude-bg/50 border-t border-claude-border text-claude-text-secondary">
+      <div className="px-3 py-1.5 flex items-center gap-3.5 font-mono text-[10.5px] border-t border-line text-fg-5">
         <span className="flex items-center gap-1">
-          <kbd className="px-1 font-bold bg-claude-surface" style={{ borderRadius: 0 }}>↑↓</kbd>
-          <span>NAV</span>
+          <kbd className="text-fg-4" style={{ borderRadius: 0 }}>↑↓</kbd>
+          <span>nav</span>
         </span>
         <span className="flex items-center gap-1">
-          <kbd className="px-1 font-bold bg-claude-surface" style={{ borderRadius: 0 }}>↵</kbd>
-          <span>SELECT</span>
+          <kbd className="text-fg-4" style={{ borderRadius: 0 }}>↵</kbd>
+          <span>select</span>
         </span>
         <span className="flex items-center gap-1">
-          <kbd className="px-1 font-bold bg-claude-surface" style={{ borderRadius: 0 }}>ESC</kbd>
-          <span>CLOSE</span>
+          <kbd className="text-fg-4" style={{ borderRadius: 0 }}>esc</kbd>
+          <span>close</span>
         </span>
       </div>
     </div>

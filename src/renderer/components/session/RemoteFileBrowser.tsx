@@ -88,38 +88,38 @@ export default function RemoteFileBrowser({
   };
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-claude-bg border border-claude-border w-[600px] max-h-[80vh] flex flex-col">
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+      <div className="bg-ink-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1),0_16px_40px_rgba(0,0,0,0.4)] w-[600px] max-h-[80vh] flex flex-col">
         {/* Header */}
-        <div className="flex items-center justify-between p-3 border-b border-claude-border">
-          <h2 className="text-sm font-semibold text-claude-text">{directoryMode ? 'Select Remote Directory' : 'Browse Remote Files'}</h2>
+        <div className="flex items-center justify-between px-4 py-3 border-b border-line">
+          <h2 className="text-[16px] font-semibold tracking-tight text-fg">{directoryMode ? 'Select Remote Directory' : 'Browse Remote Files'}</h2>
           <button
             onClick={onClose}
-            className="p-1 hover:bg-claude-surface transition-colors"
+            className="p-1 hover:bg-claude-surface-hover transition-colors"
             title="Close"
           >
-            <X size={14} className="text-claude-text-secondary" />
+            <X size={14} className="text-fg-3" />
           </button>
         </div>
 
         {/* Navigation bar */}
-        <div className="flex items-center gap-2 p-2 border-b border-claude-border bg-claude-surface/30">
+        <div className="flex items-center gap-2 px-3 py-2 border-b border-line bg-ink-1">
           <button
             onClick={handleGoUp}
             disabled={currentPath === '/' || currentPath === '~'}
-            className="p-1 hover:bg-claude-surface transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+            className="p-1 hover:bg-claude-surface-hover transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
             title="Go up"
           >
-            <ChevronLeft size={14} className="text-claude-text-secondary" />
+            <ChevronLeft size={14} className="text-fg-3" />
           </button>
           <button
             onClick={handleGoHome}
-            className="p-1 hover:bg-claude-surface transition-colors"
+            className="p-1 hover:bg-claude-surface-hover transition-colors"
             title="Home directory"
           >
-            <Home size={14} className="text-claude-text-secondary" />
+            <Home size={14} className="text-fg-3" />
           </button>
-          <div className="flex-1 px-2 py-1 text-xs font-mono text-claude-text-secondary bg-claude-bg border border-claude-border">
+          <div className="flex-1 px-2 py-1 text-[12px] font-mono text-fg-2 bg-ink-3 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)]">
             {currentPath}
           </div>
         </div>
@@ -127,41 +127,41 @@ export default function RemoteFileBrowser({
         {/* File list */}
         <div className="flex-1 overflow-y-auto">
           {loading && (
-            <div className="p-4 text-center text-sm text-claude-text-secondary">
+            <div className="p-4 text-center text-[13px] text-fg-4">
               Loading...
             </div>
           )}
 
           {error && (
-            <div className="p-4 text-center text-sm text-red-400">
+            <div className="p-4 text-center text-[13px] text-diff-del">
               {error}
             </div>
           )}
 
           {!loading && !error && entries.length === 0 && (
-            <div className="p-4 text-center text-sm text-claude-text-secondary">
+            <div className="p-4 text-center text-[13px] text-fg-4">
               Empty directory
             </div>
           )}
 
           {!loading && !error && entries.length > 0 && (
-            <div className="divide-y divide-claude-border">
+            <div className="divide-y divide-line">
               {entries.map((entry, index) => (
                 <button
                   key={index}
                   onClick={() => handleEntryClick(entry)}
-                  className="w-full flex items-center gap-2 p-2 hover:bg-claude-surface/50 transition-colors text-left"
+                  className="w-full flex items-center gap-2 h-8 px-3 hover:bg-claude-surface-hover transition-colors text-left"
                 >
                   {entry.type === 'directory' ? (
-                    <Folder size={14} className="text-blue-400 flex-shrink-0" />
+                    <Folder size={14} className="text-fg-3 flex-shrink-0" />
                   ) : (
-                    <File size={14} className="text-claude-text-secondary flex-shrink-0" />
+                    <File size={14} className="text-fg-5 flex-shrink-0" />
                   )}
-                  <span className="text-xs font-mono text-claude-text flex-1 truncate">
+                  <span className="text-[12.5px] font-mono text-fg flex-1 truncate">
                     {entry.name}
                   </span>
                   {entry.type === 'directory' && (
-                    <span className="text-xs text-claude-text-secondary">›</span>
+                    <span className="text-[12px] text-fg-5">›</span>
                   )}
                 </button>
               ))}
@@ -170,15 +170,14 @@ export default function RemoteFileBrowser({
         </div>
 
         {/* Footer */}
-        <div className="p-2 border-t border-claude-border bg-claude-surface/30 flex items-center justify-between">
-          <p className="text-[10px] text-claude-text-secondary">
+        <div className="px-3 py-2 border-t border-line flex items-center justify-between gap-3">
+          <p className="text-[12px] text-fg-4">
             {directoryMode ? 'Navigate to a directory, then select it' : 'Click a file to select, or navigate through directories'}
           </p>
           {directoryMode && (
             <button
               onClick={() => onSelect(currentPath)}
-              className="px-3 py-1 text-[10px] font-bold bg-claude-accent hover:bg-claude-accent-hover text-white"
-              style={{ borderRadius: 0, letterSpacing: '0.05em' }}
+              className="h-8 px-3 shrink-0 bg-fg text-ink-0 text-[13px] font-semibold hover:bg-white"
             >
               SELECT THIS DIRECTORY
             </button>

@@ -43,29 +43,29 @@ export default function TerminalContainer({ session, compact }: TerminalContaine
 
     const terminal = new Terminal({
       theme: {
-        background: '#1a1a1a',
-        foreground: '#e4e4e4',
-        cursor: '#e4e4e4',
-        cursorAccent: '#1a1a1a',
-        selectionBackground: '#404040',
-        black: '#1a1a1a',
-        brightBlack: '#404040',
-        red: '#ef4444',
-        brightRed: '#f87171',
-        green: '#22c55e',
-        brightGreen: '#4ade80',
-        yellow: '#f59e0b',
-        brightYellow: '#fbbf24',
-        blue: '#3b82f6',
-        brightBlue: '#60a5fa',
+        background: '#0A0A0A',
+        foreground: '#EDEDED',
+        cursor: '#EDEDED',
+        cursorAccent: '#0A0A0A',
+        selectionBackground: 'rgba(76,154,255,0.32)',
+        black: '#0A0A0A',
+        brightBlack: '#666666',
+        red: '#F85149',
+        brightRed: '#FFA198',
+        green: '#3FB950',
+        brightGreen: '#7EE2A0',
+        yellow: '#F0B429',
+        brightYellow: '#F5C95C',
+        blue: '#4C9AFF',
+        brightBlue: '#8DBBFF',
         magenta: '#a855f7',
         brightMagenta: '#c084fc',
         cyan: '#06b6d4',
         brightCyan: '#22d3ee',
-        white: '#e4e4e4',
-        brightWhite: '#ffffff',
+        white: '#CFCFCF',
+        brightWhite: '#FFFFFF',
       },
-      fontFamily: 'JetBrains Mono, Menlo, Monaco, monospace',
+      fontFamily: '"Geist Mono", Menlo, Monaco, monospace',
       fontSize: 13,
       cursorBlink: true,
       cursorStyle: 'block',
@@ -150,31 +150,31 @@ export default function TerminalContainer({ session, compact }: TerminalContaine
 
   if (session.status !== 'running') {
     return (
-      <div className="h-full flex items-center justify-center bg-claude-bg text-claude-text-secondary">
+      <div className="h-full flex items-center justify-center bg-ink-term text-fg-4 text-[13px]">
         <p>Start the session to use the terminal</p>
       </div>
     );
   }
 
   return (
-    <div className="h-full flex flex-col bg-claude-bg">
+    <div className="h-full flex flex-col bg-ink-term shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)]">
       {/* Tab bar */}
-      <div className="h-9 flex items-center bg-claude-surface border-b border-claude-border">
-        <div className="flex-1 flex items-center overflow-x-auto">
+      <div className="h-8 flex items-center gap-1 px-1.5 border-b border-white/5 flex-shrink-0">
+        <div className="flex-1 flex items-center gap-0.5 overflow-x-auto">
           {tabs.map((tab) => (
             <button
               key={tab.id}
               onClick={() => setActiveTabId(tab.id)}
-              className={`h-full px-3 flex items-center gap-2 text-sm border-r border-claude-border transition-colors ${
+              className={`h-6 px-2 flex items-center gap-1.5 text-[11.5px] transition-colors ${
                 activeTabId === tab.id
-                  ? 'bg-claude-bg text-claude-text'
-                  : 'text-claude-text-secondary hover:text-claude-text hover:bg-claude-bg/50'
+                  ? 'bg-[#262626] text-fg'
+                  : 'text-fg-4 hover:text-fg-2'
               }`}
             >
               <span>{tab.name}</span>
               <button
                 onClick={(e) => closeTab(tab.id, e)}
-                className="p-0.5 rounded hover:bg-claude-border"
+                className="p-0.5 text-fg-5 hover:text-fg hover:bg-white/10"
               >
                 <X size={12} />
               </button>
@@ -183,10 +183,10 @@ export default function TerminalContainer({ session, compact }: TerminalContaine
         </div>
         <button
           onClick={createTerminal}
-          className="h-full px-2 text-claude-text-secondary hover:text-claude-text hover:bg-claude-bg/50 transition-colors"
+          className="w-6 h-6 flex items-center justify-center text-fg-4 hover:text-fg hover:bg-white/5 transition-colors"
           title="New terminal"
         >
-          <Plus size={16} />
+          <Plus size={14} />
         </button>
       </div>
 
@@ -203,10 +203,10 @@ export default function TerminalContainer({ session, compact }: TerminalContaine
         ))}
 
         {tabs.length === 0 && (
-          <div className="h-full flex items-center justify-center text-claude-text-secondary">
+          <div className="h-full flex items-center justify-center text-fg-3">
             <button
               onClick={createTerminal}
-              className="flex items-center gap-2 px-4 py-2 bg-claude-surface rounded-lg hover:bg-claude-border transition-colors"
+              className="flex items-center gap-2 h-8 px-3 text-[13px] text-fg-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] hover:bg-white/5 transition-colors"
             >
               <Plus size={16} />
               <span>New Terminal</span>

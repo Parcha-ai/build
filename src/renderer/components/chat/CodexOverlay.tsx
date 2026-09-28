@@ -27,9 +27,9 @@ function ToolCallCard({ toolCall }: { toolCall: CodexToolCall }) {
   const isFailed = toolCall.status === 'failed';
 
   const icon = toolCall.name === 'Bash' ? (
-    <Terminal size={12} className="text-green-400" />
+    <Terminal size={12} className="text-fg-4" />
   ) : (
-    <FileEdit size={12} className="text-blue-400" />
+    <FileEdit size={12} className="text-fg-4" />
   );
 
   const label = toolCall.name === 'Bash'
@@ -37,19 +37,19 @@ function ToolCallCard({ toolCall }: { toolCall: CodexToolCall }) {
     : toolCall.name;
 
   return (
-    <div className={`border ${isFailed ? 'border-red-500/30' : 'border-white/10'} bg-white/5 text-[11px] my-1`} style={{ borderRadius: 0 }}>
+    <div className={`my-1 bg-ink-1 text-[12px] ${isFailed ? 'shadow-[inset_0_0_0_1px_rgba(248,81,73,0.35)]' : 'shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)]'}`}>
       <button
         onClick={() => setExpanded(!expanded)}
-        className="flex items-center gap-1.5 w-full px-2 py-1 hover:bg-white/5 text-left"
+        className="flex items-center gap-2 w-full px-3 py-[7px] text-fg-5 hover:bg-white/[0.03] text-left"
       >
         {expanded ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
         {icon}
-        <span className="truncate flex-1 text-white/70 font-mono">{label}</span>
-        {isRunning && <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />}
-        {isFailed && <span className="text-red-400 text-[9px]">FAILED</span>}
+        <span className="truncate flex-1 text-fg font-mono text-[12px]">{label}</span>
+        {isRunning && <span className="status-pulse w-[7px] h-[7px] rounded-full bg-accent" />}
+        {isFailed && <span className="font-mono text-diff-del text-[10.5px]">FAILED</span>}
       </button>
       {expanded && toolCall.result && (
-        <pre className="px-2 py-1 text-[10px] text-white/50 border-t border-white/5 overflow-x-auto max-h-32 overflow-y-auto whitespace-pre-wrap">
+        <pre className="bg-[#0B0B0B] px-3 py-2 font-mono text-[11.5px] leading-[1.6] text-fg-4 border-t border-white/[0.05] overflow-x-auto max-h-32 overflow-y-auto whitespace-pre-wrap">
           {toolCall.result}
         </pre>
       )}
@@ -87,20 +87,19 @@ export default function CodexOverlay({
   };
 
   return (
-    <div className="border-t border-white/10 bg-[#1a1a1a] text-white font-mono max-h-80 flex flex-col" style={{ borderRadius: 0 }}>
+    <div className="border-t border-white/[0.06] bg-ink-3 text-fg-2 max-h-80 flex flex-col">
       {/* Header */}
-      <div className="flex items-center justify-between px-3 py-1.5 border-b border-white/10 bg-white/5 shrink-0">
+      <div className="flex items-center justify-between px-3 py-1.5 border-b border-white/[0.06] shrink-0">
         <div className="flex items-center gap-2">
-          <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-400">/CODEX</span>
-          <span className="text-xs text-white/30 truncate max-w-[300px]">{prompt}</span>
+          <span className="font-mono text-[10.5px] uppercase tracking-[0.04em] text-fg-3">/CODEX</span>
+          <span className="text-[12px] text-fg-4 truncate max-w-[300px]">{prompt}</span>
         </div>
         <div className="flex items-center gap-1">
           {isStreaming && (
             <button
               onClick={onCancel}
-              className="flex items-center gap-1 px-2 py-0.5 hover:bg-white/10 text-red-400/70 hover:text-red-400 text-[10px]"
+              className="flex items-center gap-1 px-2 py-0.5 hover:bg-white/[0.05] text-fg-4 hover:text-diff-del text-[11px]"
               title="Cancel (Esc)"
-              style={{ borderRadius: 0 }}
             >
               <Square size={10} />
               <span>Stop</span>
@@ -109,18 +108,16 @@ export default function CodexOverlay({
           {content && (
             <button
               onClick={handleCopy}
-              className="p-1 hover:bg-white/10 text-white/30 hover:text-white/60"
+              className="p-1 hover:bg-white/[0.05] text-fg-4 hover:text-fg"
               title="Copy response"
-              style={{ borderRadius: 0 }}
             >
               <Copy size={12} />
             </button>
           )}
           <button
             onClick={isStreaming ? onCancel : onDismiss}
-            className="p-1 hover:bg-white/10 text-white/30 hover:text-white/60"
+            className="p-1 hover:bg-white/[0.05] text-fg-4 hover:text-fg"
             title="Dismiss (Esc)"
-            style={{ borderRadius: 0 }}
           >
             <X size={14} />
           </button>
@@ -130,10 +127,10 @@ export default function CodexOverlay({
       {/* Thinking block (collapsible) */}
       {thinking && (
         <details className="border-b border-white/5">
-          <summary className="px-3 py-1 text-[10px] text-white/30 cursor-pointer hover:text-white/50">
+          <summary className="px-3 py-1 text-[11px] text-fg-5 cursor-pointer hover:text-fg-3">
             Reasoning...
           </summary>
-          <div className="px-3 py-1 text-[10px] text-white/20 max-h-20 overflow-y-auto whitespace-pre-wrap">
+          <div className="px-3 py-1 text-[11.5px] text-fg-5 max-h-20 overflow-y-auto whitespace-pre-wrap">
             {thinking}
           </div>
         </details>
@@ -149,18 +146,18 @@ export default function CodexOverlay({
       )}
 
       {/* Response content */}
-      <div className="flex-1 overflow-y-auto px-3 py-2 text-xs leading-relaxed">
+      <div className="flex-1 overflow-y-auto px-3 py-2 text-[13.5px] leading-[1.6]">
         {error ? (
-          <div className="text-red-400 text-xs">{error}</div>
+          <div className="text-diff-del-text text-[12.5px]">{error}</div>
         ) : content ? (
-          <div className="prose prose-sm prose-invert max-w-none [&_p]:my-1 [&_code]:bg-white/10 [&_code]:px-1 [&_code]:py-0.5 [&_code]:text-[11px] [&_pre]:bg-white/5 [&_pre]:p-2 [&_pre]:border [&_pre]:border-white/10">
+          <div className="prose prose-sm prose-invert max-w-none [&_p]:my-1 text-[#D4D4D4] [&_code]:bg-[#262626] [&_code]:px-1 [&_code]:py-px [&_code]:font-mono [&_code]:text-[12px] [&_code]:before:content-none [&_code]:after:content-none [&_pre]:bg-[#0B0B0B] [&_pre]:p-2.5 [&_pre]:rounded-none">
             <ReactMarkdown>{content}</ReactMarkdown>
           </div>
         ) : isStreaming ? (
-          <span className="text-white/30">Codex is thinking...</span>
+          <span className="text-shimmer">Codex is thinking...</span>
         ) : null}
         {isStreaming && content && (
-          <span className="inline-block w-1.5 h-3 bg-emerald-400/60 ml-0.5 animate-pulse" />
+          <span className="status-pulse ml-1 inline-block h-[7px] w-[7px] rounded-full bg-accent" />
         )}
       </div>
     </div>

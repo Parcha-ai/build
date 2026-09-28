@@ -16,9 +16,10 @@ html, body, #root {
 }
 
 body {
-  font-family: 'Inter', system-ui, -apple-system, sans-serif;
-  background-color: #1a1a1a;
-  color: #e4e4e4;
+  font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  background-color: #0F0F0F;
+  color: #EDEDED;
+  font-feature-settings: 'ss01', 'cv11';
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -30,16 +31,16 @@ body {
 }
 
 ::-webkit-scrollbar-track {
-  background: #1a1a1a;
+  background: transparent;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #404040;
-  border-radius: 4px;
+  background: #2B2B2B;
+  border-radius: 0;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #505050;
+  background: #3A3A3A;
 }
 
 /* Title bar drag region */
@@ -72,13 +73,40 @@ body {
 }
 
 /* Code and pre styling */
-code, pre {
-  font-family: 'JetBrains Mono', 'Menlo', 'Monaco', monospace;
+code, pre, kbd, samp {
+  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+::selection {
+  background: rgba(76, 154, 255, 0.32);
+}
+
+/* Graphite: text shimmer for live activity labels */
+@keyframes graphite-shimmer {
+  0% { background-position: -200px 0; }
+  100% { background-position: 200px 0; }
+}
+.text-shimmer {
+  background: linear-gradient(90deg, #808080 0%, #EDEDED 40%, #808080 80%);
+  background-size: 400px 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: graphite-shimmer 2.4s linear infinite;
+}
+
+/* Graphite: soft pulsing status dot */
+@keyframes graphite-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.45; transform: scale(0.8); }
+}
+.status-pulse {
+  animation: graphite-pulse 1.6s ease-in-out infinite;
 }
 
 /* Monaco editor overrides */
 .monaco-editor {
-  --vscode-editor-background: #1a1a1a !important;
+  --vscode-editor-background: #0F0F0F !important;
 }
 
 /* Xterm.js overrides */
@@ -155,44 +183,254 @@ code, pre {
  * the active composer. Only the tiny orb layers animate; the transcript and
  * the rest of the composer never receive high-frequency audio-level styles.
  */
+/* Composer column: centred and aligned with the 680px thread column. */
+.build-composer-wrap {
+  width: calc(100% - 24px);
+  max-width: 680px;
+  margin: 0 auto;
+  flex: none;
+}
+
+.build-composer-wrap > .build-composer-shell {
+  margin: 0;
+}
+
 .build-composer-shell {
-  padding-top: 0.5rem;
-  padding-bottom: 0.5rem;
-  transition: padding-top 220ms ease;
+  margin: 0 12px 12px;
+  padding: 12px 12px 10px 16px;
+  background: #1C1C1C;
+  color: #EDEDED;
+  font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1), 0 12px 40px rgba(0, 0, 0, 0.35);
+  transition: padding-top 220ms ease, box-shadow 160ms ease;
+}
+
+.build-composer-shell:focus-within {
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.16), 0 12px 40px rgba(0, 0, 0, 0.35);
+}
+
+.build-composer-shell.is-dragging {
+  box-shadow: inset 0 0 0 1px rgba(76, 154, 255, 0.6), 0 12px 40px rgba(0, 0, 0, 0.35);
+  background: #1A1F27;
 }
 
 .build-composer-shell.build-composer-voice-active {
   padding-top: 7rem;
 }
 
+/* Composer controls (Graphite): 30px outlined squares, pills, quiet text buttons. */
+.build-composer-icon-btn {
+  display: inline-flex;
+  height: 30px;
+  width: 30px;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  color: #A0A0A0;
+  background: transparent;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+  transition: color 140ms ease, background-color 140ms ease, box-shadow 140ms ease;
+}
+
+.build-composer-icon-btn.is-ghost {
+  box-shadow: none;
+}
+
+.build-composer-icon-btn:hover:not(:disabled) {
+  color: #EDEDED;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.build-composer-icon-btn.is-active {
+  color: #8DBBFF;
+  background: rgba(76, 154, 255, 0.13);
+  box-shadow: inset 0 0 0 1px rgba(76, 154, 255, 0.35);
+}
+
+.build-composer-icon-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.build-composer-pill {
+  display: inline-flex;
+  height: 30px;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  color: #CFCFCF;
+  font-size: 12.5px;
+  line-height: 1;
+  white-space: nowrap;
+  background: transparent;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+  transition: color 140ms ease, background-color 140ms ease;
+}
+
+.build-composer-pill:hover:not(:disabled) {
+  color: #EDEDED;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.build-composer-pill.is-accent {
+  color: #8DBBFF;
+  background: rgba(76, 154, 255, 0.13);
+  box-shadow: inset 0 0 0 1px rgba(76, 154, 255, 0.35);
+}
+
+.build-composer-pill.is-accent:hover:not(:disabled) {
+  color: #A9CCFF;
+  background: rgba(76, 154, 255, 0.18);
+}
+
+.build-composer-pill:disabled,
+.build-composer-text-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.build-composer-text-btn {
+  display: inline-flex;
+  height: 30px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  color: #CFCFCF;
+  font-size: 12.5px;
+  white-space: nowrap;
+  background: transparent;
+  transition: color 140ms ease, background-color 140ms ease;
+}
+
+.build-composer-text-btn:hover:not(:disabled) {
+  color: #EDEDED;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.build-composer-send {
+  display: inline-flex;
+  height: 32px;
+  width: 32px;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  color: #0F0F0F;
+  background: #EDEDED;
+  transition: background-color 140ms ease;
+}
+
+.build-composer-send:hover:not(:disabled) {
+  background: #FFFFFF;
+}
+
+.build-composer-send:disabled {
+  cursor: default;
+  opacity: 0.35;
+}
+
+/* Accent dot on "⋯" when any toggle hidden in the overflow menu is on. */
+.build-composer-overflow-dot {
+  position: absolute;
+  right: 5px;
+  top: 5px;
+  height: 5px;
+  width: 5px;
+  border-radius: 9999px;
+  background: #4C9AFF;
+}
+
+.build-composer-hint {
+  margin: 8px 0 12px;
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 14px;
+  user-select: none;
+  color: #666666;
+  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10.5px;
+}
+
+/* Popover menus anchored to the composer (model, effort, overflow, history, autocomplete). */
+.build-composer-menu {
+  background: #1C1C1C;
+  color: #EDEDED;
+  font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1), 0 16px 40px rgba(0, 0, 0, 0.4);
+  padding: 6px;
+}
+
+.build-composer-menu-label {
+  padding: 6px 10px 4px;
+  color: #808080;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.build-composer-menu-divider {
+  height: 1px;
+  margin: 4px 6px;
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.build-composer-menu-item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  color: #CFCFCF;
+  font-size: 13px;
+  text-align: left;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.build-composer-menu-item:hover:not(:disabled) {
+  color: #EDEDED;
+  background: #232323;
+}
+
+.build-composer-menu-item.is-selected {
+  color: #EDEDED;
+  background: #2B2B2B;
+}
+
+.build-composer-menu-item:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
 .build-voice-presence {
-  --voice-primary: 52, 211, 153;
-  --voice-secondary: 34, 211, 238;
+  --voice-primary: 76, 154, 255;
+  --voice-secondary: 141, 187, 255;
 }
 
 .build-voice-presence.is-idle {
-  --voice-primary: 148, 163, 184;
-  --voice-secondary: 100, 116, 139;
+  --voice-primary: 160, 160, 160;
+  --voice-secondary: 102, 102, 102;
 }
 
 .build-voice-presence.is-user-speaking {
-  --voice-primary: 52, 211, 153;
-  --voice-secondary: 96, 165, 250;
+  --voice-primary: 76, 154, 255;
+  --voice-secondary: 141, 187, 255;
 }
 
 .build-voice-presence.is-agent-speaking {
-  --voice-primary: 217, 119, 87;
-  --voice-secondary: 192, 132, 252;
+  --voice-primary: 141, 187, 255;
+  --voice-secondary: 237, 237, 237;
 }
 
 .build-voice-presence.is-connecting {
-  --voice-primary: 250, 204, 21;
-  --voice-secondary: 217, 119, 87;
+  --voice-primary: 240, 180, 41;
+  --voice-secondary: 160, 160, 160;
 }
 
 .build-voice-presence.is-error {
-  --voice-primary: 248, 113, 113;
-  --voice-secondary: 251, 146, 60;
+  --voice-primary: 248, 81, 73;
+  --voice-secondary: 255, 161, 152;
 }
 
 .build-voice-composer-orb,
@@ -206,29 +444,33 @@ code, pre {
 
 .build-voice-composer-control {
   display: flex;
-  height: 1.5rem;
-  width: 3.25rem;
+  height: 30px;
   flex: none;
   align-items: center;
   justify-content: center;
-  gap: 0.25rem;
+  gap: 2px;
 }
 
 .build-voice-composer-toggle {
   position: relative;
   display: flex;
-  height: 1.5rem;
-  width: 1.5rem;
+  height: 30px;
+  width: 30px;
   align-items: center;
   justify-content: center;
-  color: rgb(156 163 175);
+  color: #A0A0A0;
   transition: color 160ms ease, background-color 160ms ease;
 }
 
-.build-voice-composer-toggle:hover:not(:disabled),
-.build-voice-presence:not(.is-idle) .build-voice-composer-toggle {
+.build-voice-composer-toggle:hover:not(:disabled) {
+  color: #EDEDED;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.build-voice-presence:not(.is-idle) .build-voice-composer-toggle:not(.build-remote-voice-toggle) {
   color: rgb(var(--voice-primary));
-  background: rgba(var(--voice-primary), 0.08);
+  background: rgba(var(--voice-primary), 0.13);
+  box-shadow: inset 0 0 0 1px rgba(var(--voice-primary), 0.35);
 }
 
 .build-voice-composer-toggle:disabled {
@@ -238,38 +480,35 @@ code, pre {
 
 .build-voice-composer-toggle-dot {
   position: absolute;
-  right: 2px;
-  top: 2px;
-  height: 4px;
-  width: 4px;
+  right: 4px;
+  top: 4px;
+  height: 5px;
+  width: 5px;
   border-radius: 9999px;
   background: rgb(var(--voice-primary));
-  box-shadow: 0 0 7px rgba(var(--voice-primary), 0.9);
 }
 
 .build-remote-voice-toggle[aria-pressed="true"] {
-  color: rgb(73 214 154);
-  background: rgba(73, 214, 154, 0.09);
+  color: #8DBBFF;
+  background: rgba(76, 154, 255, 0.13);
+  box-shadow: inset 0 0 0 1px rgba(76, 154, 255, 0.35);
 }
 
 .build-remote-voice-toggle[aria-pressed="true"] .build-voice-composer-toggle-dot {
-  background: rgb(73 214 154);
-  box-shadow: 0 0 7px rgba(73, 214, 154, 0.9);
+  background: #3FB950;
 }
 
 .build-remote-voice-popover {
   position: absolute;
   z-index: 80;
   right: 0;
-  bottom: 2rem;
+  bottom: 2.5rem;
   width: min(28rem, calc(100vw - 2rem));
-  padding: 0.75rem;
-  border: 1px solid rgba(148, 163, 184, 0.24);
-  background: rgba(10, 12, 17, 0.97);
-  color: rgba(255, 255, 255, 0.82);
-  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.58), 0 0 24px rgba(73, 214, 154, 0.07);
-  backdrop-filter: blur(20px);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  padding: 14px;
+  background: #1C1C1C;
+  color: #CFCFCF;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1), 0 16px 40px rgba(0, 0, 0, 0.4);
+  font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
 }
 
 .build-remote-voice-popover-head {
@@ -277,46 +516,53 @@ code, pre {
   align-items: center;
   justify-content: space-between;
   gap: 0.75rem;
-  color: rgba(255, 255, 255, 0.9);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+  color: #EDEDED;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
 }
 
 .build-remote-voice-popover-head > div {
   display: flex;
   align-items: center;
-  gap: 0.45rem;
+  gap: 0.5rem;
 }
 
 .build-remote-voice-popover-head button {
   display: grid;
-  height: 1.35rem;
-  width: 1.35rem;
+  height: 24px;
+  width: 24px;
   place-items: center;
-  color: rgba(255, 255, 255, 0.42);
+  color: #808080;
+}
+
+.build-remote-voice-popover-head button:hover {
+  color: #EDEDED;
+  background: rgba(255, 255, 255, 0.05);
 }
 
 .build-remote-voice-status-dot {
   display: inline-block;
-  width: 6px;
-  height: 6px;
+  width: 7px;
+  height: 7px;
   border-radius: 9999px;
-  background: rgb(217 119 87);
-  box-shadow: 0 0 8px rgba(217, 119, 87, 0.6);
+  background: #F0B429;
 }
 
 .build-remote-voice-status-dot.is-live {
-  background: rgb(73 214 154);
-  box-shadow: 0 0 8px rgba(73, 214, 154, 0.72);
+  background: #3FB950;
 }
 
 .build-remote-voice-session,
 .build-remote-voice-note {
   margin-top: 0.55rem;
-  color: rgba(255, 255, 255, 0.38);
-  font-size: 9px;
+  color: #808080;
+  font-size: 11.5px;
+}
+
+.build-remote-voice-session {
+  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
 }
 
 .build-remote-voice-share {
@@ -333,9 +579,7 @@ code, pre {
   height: 8.5rem;
   place-items: center;
   overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.18);
   background: white;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.34);
 }
 
 .build-remote-voice-share-copy {
@@ -343,9 +587,9 @@ code, pre {
 }
 
 .build-remote-voice-scan-label {
-  color: rgba(255, 255, 255, 0.72);
-  font-size: 10px;
-  font-weight: 700;
+  color: #808080;
+  font-size: 11px;
+  font-weight: 500;
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
@@ -354,11 +598,11 @@ code, pre {
   display: block;
   margin-top: 0.5rem;
   overflow: hidden;
-  border: 1px solid rgba(73, 214, 154, 0.18);
-  padding: 0.45rem 0.5rem;
-  color: rgb(119 225 180);
-  background: rgba(73, 214, 154, 0.05);
-  font-size: 10px;
+  padding: 0.45rem 0.55rem;
+  color: #CFCFCF;
+  background: #0B0B0B;
+  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
   user-select: all;
@@ -367,31 +611,30 @@ code, pre {
 .build-remote-voice-actions {
   display: flex;
   align-items: center;
-  gap: 0.4rem;
-  margin-top: 0.55rem;
+  gap: 6px;
+  margin-top: 0.6rem;
 }
 
 .build-remote-voice-actions button {
   display: flex;
-  height: 1.75rem;
+  height: 28px;
   align-items: center;
-  gap: 0.3rem;
-  border: 1px solid rgba(148, 163, 184, 0.2);
-  padding: 0 0.55rem;
-  color: rgba(255, 255, 255, 0.68);
-  background: rgba(255, 255, 255, 0.035);
-  font-size: 9px;
-  text-transform: uppercase;
+  gap: 0.35rem;
+  padding: 0 10px;
+  color: #CFCFCF;
+  background: transparent;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14);
+  font-size: 12px;
 }
 
 .build-remote-voice-actions button:hover {
-  border-color: rgba(148, 163, 184, 0.42);
-  color: white;
+  color: #EDEDED;
+  background: rgba(255, 255, 255, 0.04);
 }
 
 .build-remote-voice-actions button.is-danger {
   margin-left: auto;
-  color: rgb(248 113 113);
+  color: #FFA198;
 }
 
 .build-remote-voice-popover-foot {
@@ -404,11 +647,13 @@ code, pre {
 
 .build-remote-voice-stop {
   flex: none;
-  color: rgb(248 113 113);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 9px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+  padding: 4px 8px;
+  color: #FFA198;
+  font-size: 12px;
+}
+
+.build-remote-voice-stop:hover {
+  background: rgba(248, 81, 73, 0.09);
 }
 
 @media (max-width: 480px) {
@@ -425,21 +670,21 @@ code, pre {
 .build-remote-voice-error {
   display: flex;
   align-items: center;
-  gap: 0.45rem;
+  gap: 0.5rem;
   margin-top: 0.7rem;
-  color: rgba(255, 255, 255, 0.48);
-  font-size: 9px;
+  color: #A0A0A0;
+  font-size: 12px;
 }
 
 .build-remote-voice-error {
-  color: rgb(248 113 113);
+  color: #FFA198;
   line-height: 1.5;
 }
 
 .build-voice-composer-stage {
   position: absolute;
   z-index: 20;
-  top: 0.55rem;
+  top: 0.75rem;
   left: 1rem;
   right: 1rem;
   height: 5.75rem;
@@ -459,11 +704,11 @@ code, pre {
 
 .build-voice-composer-label {
   overflow: hidden;
-  color: rgba(255, 255, 255, 0.92);
-  font-family: Inter, system-ui, sans-serif;
-  font-size: 11px;
+  color: #EDEDED;
+  font-family: 'Geist', system-ui, sans-serif;
+  font-size: 13px;
   font-weight: 600;
-  letter-spacing: 0.025em;
+  letter-spacing: -0.01em;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -472,9 +717,9 @@ code, pre {
   max-width: 17rem;
   margin-top: 0.2rem;
   overflow: hidden;
-  color: rgba(255, 255, 255, 0.46);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 9px;
+  color: #808080;
+  font-family: 'Geist', system-ui, sans-serif;
+  font-size: 11.5px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -491,20 +736,20 @@ code, pre {
   contain: strict;
   isolation: isolate;
   color: white;
-  background: radial-gradient(circle at 35% 28%, rgba(255, 255, 255, 0.2), rgba(var(--voice-primary), 0.08) 44%, rgba(2, 6, 23, 0.94) 78%);
+  background: radial-gradient(circle at 35% 28%, rgba(255, 255, 255, 0.12), rgba(var(--voice-primary), 0.06) 44%, #141414 78%);
   box-shadow:
-    0 0 0 1px rgba(var(--voice-primary), 0.4),
-    0 8px 28px rgba(0, 0, 0, 0.46),
-    0 0 32px rgba(var(--voice-primary), 0.24);
+    0 0 0 1px rgba(var(--voice-primary), 0.35),
+    0 8px 28px rgba(0, 0, 0, 0.45),
+    0 0 28px rgba(var(--voice-primary), 0.16);
   transition: box-shadow 180ms ease, filter 180ms ease;
 }
 
 .build-voice-presence:hover .build-voice-composer-orb {
   filter: brightness(1.12);
   box-shadow:
-    0 0 0 1px rgba(var(--voice-primary), 0.72),
+    0 0 0 1px rgba(var(--voice-primary), 0.6),
     0 8px 28px rgba(0, 0, 0, 0.5),
-    0 0 40px rgba(var(--voice-primary), 0.34);
+    0 0 36px rgba(var(--voice-primary), 0.24);
 }
 
 .build-voice-orb-glow {
@@ -546,8 +791,8 @@ code, pre {
   overflow: hidden;
   border: 1px solid rgba(255, 255, 255, 0.14);
   background:
-    linear-gradient(145deg, rgba(var(--voice-secondary), 0.3), rgba(var(--voice-primary), 0.18)),
-    rgba(2, 6, 23, 0.84);
+    linear-gradient(145deg, rgba(var(--voice-secondary), 0.22), rgba(var(--voice-primary), 0.14)),
+    #171717;
   box-shadow: inset 0 0 18px rgba(var(--voice-primary), 0.18);
 }
 
@@ -587,13 +832,11 @@ code, pre {
   align-items: center;
   justify-self: start;
   gap: 0.375rem;
-  border: 1px solid rgba(var(--voice-primary), 0.22);
-  border-radius: 0.5rem;
-  padding: 0.35rem 0.45rem;
-  color: rgba(255, 255, 255, 0.52);
-  border-color: rgba(var(--voice-primary), 0.22);
-  background: rgba(10, 13, 20, 0.82);
-  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.36), 0 0 18px rgba(var(--voice-primary), 0.08);
+  padding: 0 8px;
+  height: 28px;
+  color: #808080;
+  background: #1C1C1C;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1);
 }
 
 .build-voice-composer-picker select {
@@ -601,9 +844,9 @@ code, pre {
   max-width: 7.5rem;
   border: 0;
   background: transparent;
-  color: rgba(255, 255, 255, 0.78);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 9px;
+  color: #CFCFCF;
+  font-family: 'Geist', system-ui, sans-serif;
+  font-size: 12px;
   outline: none;
 }
 

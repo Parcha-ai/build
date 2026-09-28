@@ -25,7 +25,7 @@ export class VoiceModeErrorBoundary extends Component<Props, State> {
   public render() {
     if (!this.state.hasError) return this.props.children;
     return this.props.fallback || (
-      <div className="text-xs text-red-500">
+      <div className="text-[12px] text-diff-del-text">
         Voice mode error: {this.state.error?.message || 'Unknown error'}
       </div>
     );

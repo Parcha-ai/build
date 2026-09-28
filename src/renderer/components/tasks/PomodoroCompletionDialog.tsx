@@ -27,23 +27,23 @@ export default function PomodoroCompletionDialog({ onPlanNextSlot, onFinishTask 
   };
 
   return (
-    <div className="fixed inset-0 z-[210] flex items-center justify-center bg-black/65 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="pomodoro-complete-title">
-      <div className="w-full max-w-md rounded-lg border border-emerald-400/30 bg-claude-surface shadow-2xl">
+    <div className="fixed inset-0 z-[210] flex items-center justify-center bg-black/60 p-4" role="dialog" aria-modal="true" aria-labelledby="pomodoro-complete-title">
+      <div className="w-full max-w-md bg-ink-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1),0_16px_40px_rgba(0,0,0,0.4)]">
         <div className="p-5 text-center">
-          <CheckCircle2 size={30} className="mx-auto text-emerald-400" />
-          <h2 id="pomodoro-complete-title" className="mt-3 text-base font-semibold text-claude-text">Focus slot complete</h2>
-          <p className="mt-1 text-[11px] text-claude-text-secondary">Did you finish this outcome?</p>
-          <p className="mx-auto mt-3 max-w-sm rounded bg-claude-bg px-3 py-2 text-[12px] font-mono text-claude-text">
+          <CheckCircle2 size={30} className="mx-auto text-diff-add" />
+          <h2 id="pomodoro-complete-title" className="mt-3 text-[16px] font-semibold tracking-tight text-fg">Focus slot complete</h2>
+          <p className="mt-1 text-[13px] text-fg-3">Did you finish this outcome?</p>
+          <p className="mx-auto mt-3 max-w-sm bg-ink-1 px-3 py-2 text-[13px] text-fg-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)]">
             {pomodoroState.subtaskTitle}
           </p>
         </div>
 
-        <div className="grid gap-2 border-t border-claude-border p-3">
+        <div className="grid gap-2 border-t border-line p-3">
           <button
             type="button"
             disabled={working}
             onClick={() => void finishSlot(false)}
-            className="rounded bg-emerald-500 px-3 py-2 text-[11px] font-semibold text-black hover:bg-emerald-400 disabled:opacity-40"
+            className="h-8 bg-fg px-3 text-[13px] font-semibold text-ink-0 hover:bg-white disabled:opacity-40"
           >
             Done — plan the next slot
           </button>
@@ -51,7 +51,7 @@ export default function PomodoroCompletionDialog({ onPlanNextSlot, onFinishTask 
             type="button"
             disabled={working}
             onClick={() => void finishSlot(true)}
-            className="rounded border border-claude-border px-3 py-2 text-[11px] text-claude-text hover:bg-claude-bg disabled:opacity-40"
+            className="h-8 px-3 text-[13px] text-fg-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] hover:bg-claude-surface-hover disabled:opacity-40"
           >
             Task complete — move to the next task
           </button>
@@ -59,7 +59,7 @@ export default function PomodoroCompletionDialog({ onPlanNextSlot, onFinishTask 
             type="button"
             disabled={working}
             onClick={() => void restartPomodoro()}
-            className="flex items-center justify-center gap-1.5 rounded border border-claude-border px-3 py-2 text-[11px] text-claude-text hover:bg-claude-bg disabled:opacity-40"
+            className="flex items-center justify-center gap-1.5 h-8 px-3 text-[13px] text-fg-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] hover:bg-claude-surface-hover disabled:opacity-40"
           >
             <RotateCcw size={11} />
             Not yet — repeat this slot
@@ -68,7 +68,7 @@ export default function PomodoroCompletionDialog({ onPlanNextSlot, onFinishTask 
             type="button"
             disabled={working}
             onClick={() => void stopPomodoro()}
-            className="flex items-center justify-center gap-1.5 px-3 py-1 text-[10px] text-claude-text-secondary hover:text-red-400 disabled:opacity-40"
+            className="flex items-center justify-center gap-1.5 px-3 py-1 text-[12px] text-fg-4 hover:text-diff-del disabled:opacity-40"
           >
             <Square size={9} />
             Stop focusing

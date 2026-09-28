@@ -9,8 +9,6 @@ import {
   Clock,
   User,
   FileCode,
-  Plus,
-  Minus,
   RefreshCw,
   Upload,
   Download,
@@ -84,26 +82,26 @@ function GitExplorerContent({ session }: GitExplorerProps) {
 
   if (session.status !== 'running') {
     return (
-      <div className="h-full flex items-center justify-center bg-claude-bg text-claude-text-secondary">
+      <div className="h-full flex items-center justify-center bg-ink-1 text-fg-4 text-[13px]">
         <p>Start the session to view git</p>
       </div>
     );
   }
 
   return (
-    <div className="h-full flex flex-col bg-claude-bg">
+    <div className="h-full flex flex-col bg-ink-1">
       {/* Header */}
-      <div className="h-12 flex items-center justify-between px-4 border-b border-claude-border bg-claude-surface">
-        <div className="flex items-center gap-2">
-          <GitBranch size={18} className="text-claude-accent" />
-          <span className="font-medium font-mono">{status?.current || session.branch}</span>
+      <div className="h-11 flex items-center justify-between px-3 border-b border-line bg-ink-1">
+        <div className="flex items-center gap-2 min-w-0">
+          <GitBranch size={14} className="text-fg-4 flex-shrink-0" />
+          <span className="font-mono text-[12px] text-fg-2 truncate">{status?.current || session.branch}</span>
           {(status?.ahead ?? 0) > 0 && (
-            <span className="text-xs px-1.5 py-0.5 bg-green-500/20 text-green-500 rounded">
+            <span className="font-mono text-[11px] text-diff-add">
               ↑{status?.ahead}
             </span>
           )}
           {(status?.behind ?? 0) > 0 && (
-            <span className="text-xs px-1.5 py-0.5 bg-yellow-500/20 text-yellow-500 rounded">
+            <span className="font-mono text-[11px] text-amber">
               ↓{status?.behind}
             </span>
           )}
@@ -111,30 +109,30 @@ function GitExplorerContent({ session }: GitExplorerProps) {
         <div className="flex items-center gap-1">
           <button
             onClick={handlePull}
-            className="p-1.5 rounded hover:bg-claude-bg transition-colors"
+            className="w-7 h-7 flex items-center justify-center text-fg-4 hover:text-fg hover:bg-claude-surface-hover transition-colors"
             title="Pull"
           >
-            <Download size={16} />
+            <Download size={14} />
           </button>
           <button
             onClick={handlePush}
-            className="p-1.5 rounded hover:bg-claude-bg transition-colors"
+            className="w-7 h-7 flex items-center justify-center text-fg-4 hover:text-fg hover:bg-claude-surface-hover transition-colors"
             title="Push"
           >
-            <Upload size={16} />
+            <Upload size={14} />
           </button>
           <button
             onClick={handleRefresh}
-            className="p-1.5 rounded hover:bg-claude-bg transition-colors"
+            className="w-7 h-7 flex items-center justify-center text-fg-4 hover:text-fg hover:bg-claude-surface-hover transition-colors"
             title="Refresh"
           >
-            <RefreshCw size={16} />
+            <RefreshCw size={14} />
           </button>
         </div>
       </div>
 
       {/* Tabs */}
-      <div className="flex border-b border-claude-border bg-claude-surface">
+      <div className="flex items-center gap-1 px-3 py-1.5 border-b border-line bg-ink-1">
         <TabButton
           active={activeTab === 'history'}
           onClick={() => setActiveTab('history')}
@@ -201,10 +199,10 @@ function TabButton({
   return (
     <button
       onClick={onClick}
-      className={`flex items-center gap-1.5 px-4 py-2 text-sm transition-colors ${
+      className={`flex items-center gap-1.5 px-2.5 py-1 text-[12.5px] transition-colors ${
         active
-          ? 'text-claude-text border-b-2 border-claude-accent'
-          : 'text-claude-text-secondary hover:text-claude-text'
+          ? 'bg-[#262626] text-fg'
+          : 'text-fg-4 hover:text-fg-2'
       }`}
     >
       {icon}
@@ -226,7 +224,7 @@ function CommitHistory({
 }) {
   if (isLoading) {
     return (
-      <div className="p-4 text-claude-text-secondary text-center">
+      <div className="p-4 text-fg-4 text-[13px] text-center">
         Loading commits...
       </div>
     );
@@ -235,31 +233,31 @@ function CommitHistory({
   return (
     <div className="relative pl-6">
       {/* Timeline line */}
-      <div className="absolute left-4 top-0 bottom-0 w-0.5 bg-claude-border" />
+      <div className="absolute left-4 top-0 bottom-0 w-px bg-line-strong" />
 
       {commits.map((commit, index) => (
         <div
           key={commit.hash}
           onClick={() => onSelectCommit(selectedCommit === commit.hash ? null : commit.hash)}
-          className={`relative py-3 px-4 cursor-pointer transition-colors ${
+          className={`relative py-2.5 px-4 cursor-pointer transition-colors ${
             selectedCommit === commit.hash
-              ? 'bg-claude-accent/10'
-              : 'hover:bg-claude-surface'
+              ? 'bg-claude-surface-hover'
+              : 'hover:bg-claude-surface-hover'
           }`}
         >
           {/* Commit dot */}
-          <div className="absolute left-2.5 top-5 w-3 h-3 rounded-full bg-claude-accent border-2 border-claude-bg" />
+          <div className="absolute left-[13px] top-[17px] w-[7px] h-[7px] rounded-full bg-fg-4" />
 
           <div className="ml-4">
-            <div className="flex items-center gap-2 text-xs text-claude-text-secondary mb-1">
-              <code className="text-blue-400">{commit.hash.slice(0, 7)}</code>
+            <div className="flex items-center gap-2 font-mono text-[11px] text-fg-4 mb-1">
+              <code className="text-accent-text">{commit.hash.slice(0, 7)}</code>
               <span className="flex items-center gap-1">
                 <Clock size={12} />
                 {formatDate(commit.date)}
               </span>
             </div>
-            <p className="text-sm font-medium line-clamp-2">{commit.message}</p>
-            <div className="flex items-center gap-1 mt-1 text-xs text-claude-text-secondary">
+            <p className="text-[13px] text-fg line-clamp-2">{commit.message}</p>
+            <div className="flex items-center gap-1 mt-1 text-[11.5px] text-fg-4">
               <User size={12} />
               {commit.author}
             </div>
@@ -286,7 +284,7 @@ function BranchList({
     <div className="p-2">
       {localBranches.length > 0 && (
         <div className="mb-4">
-          <h4 className="text-xs font-semibold text-claude-text-secondary uppercase tracking-wider px-2 mb-2">
+          <h4 className="text-[11px] text-fg-4 uppercase tracking-[0.04em] px-2 mb-1.5">
             Local Branches
           </h4>
           {localBranches.map((branch) => (
@@ -302,7 +300,7 @@ function BranchList({
 
       {remoteBranches.length > 0 && (
         <div>
-          <h4 className="text-xs font-semibold text-claude-text-secondary uppercase tracking-wider px-2 mb-2">
+          <h4 className="text-[11px] text-fg-4 uppercase tracking-[0.04em] px-2 mb-1.5">
             Remote Branches
           </h4>
           {remoteBranches.map((branch) => (
@@ -332,16 +330,16 @@ function BranchItem({
     <button
       onClick={onCheckout}
       disabled={isCurrent}
-      className={`w-full flex items-center gap-2 px-2 py-1.5 rounded text-left text-sm transition-colors ${
+      className={`w-full h-8 flex items-center gap-2 px-2 text-left text-[13px] transition-colors ${
         isCurrent
-          ? 'bg-claude-accent/20 text-claude-accent'
-          : 'hover:bg-claude-surface'
+          ? 'bg-claude-surface-hover text-fg'
+          : 'text-fg-2 hover:bg-claude-surface-hover'
       }`}
     >
       <GitBranch size={14} />
-      <span className="font-mono">{branch.name}</span>
+      <span className="font-mono text-[12px] truncate">{branch.name}</span>
       {isCurrent && (
-        <span className="ml-auto text-xs bg-claude-accent/20 px-1.5 py-0.5 rounded">
+        <span className="ml-auto font-mono text-[9.5px] uppercase text-fg-3 px-1.5 py-0.5 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.16)]">
           current
         </span>
       )}
@@ -352,7 +350,7 @@ function BranchItem({
 function ChangesList({ files, diff }: { files: any[]; diff: string }) {
   if (files.length === 0) {
     return (
-      <div className="p-4 text-claude-text-secondary text-center">
+      <div className="p-4 text-fg-4 text-[13px] text-center">
         No changes
       </div>
     );
@@ -363,16 +361,16 @@ function ChangesList({ files, diff }: { files: any[]; diff: string }) {
       {files.map((file) => (
         <div
           key={file.path}
-          className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-claude-surface text-sm"
+          className="h-8 flex items-center gap-2 px-2 hover:bg-claude-surface-hover text-[13px]"
         >
           <StatusIcon status={file.status} />
-          <span className="font-mono truncate">{file.path}</span>
+          <span className="font-mono text-[12px] text-fg-2 truncate">{file.path}</span>
         </div>
       ))}
 
       {diff && (
-        <div className="mt-4 border-t border-claude-border pt-4">
-          <pre className="text-xs font-mono overflow-x-auto p-2 bg-claude-surface rounded">
+        <div className="mt-3 border-t border-line pt-3">
+          <pre className="text-[11.5px] leading-[1.6] font-mono text-fg-3 overflow-x-auto p-3 bg-[#0B0B0B]">
             {diff.slice(0, 2000)}
             {diff.length > 2000 && '...'}
           </pre>
@@ -385,13 +383,17 @@ function ChangesList({ files, diff }: { files: any[]; diff: string }) {
 function StatusIcon({ status }: { status: string }) {
   switch (status) {
     case 'added':
-      return <Plus size={14} className="text-green-500" />;
+      return <span className="w-3.5 flex-shrink-0 text-center font-mono text-[11px] font-medium text-diff-add" title="Added">A</span>;
     case 'deleted':
-      return <Minus size={14} className="text-red-500" />;
+      return <span className="w-3.5 flex-shrink-0 text-center font-mono text-[11px] font-medium text-diff-del" title="Deleted">D</span>;
     case 'modified':
-      return <FileCode size={14} className="text-yellow-500" />;
+      return <span className="w-3.5 flex-shrink-0 text-center font-mono text-[11px] font-medium text-amber" title="Modified">M</span>;
     default:
-      return <FileCode size={14} className="text-claude-text-secondary" />;
+      return (
+        <span className="w-3.5 flex-shrink-0 text-center font-mono text-[11px] font-medium text-fg-4" title={status}>
+          {(status || '?').charAt(0).toUpperCase()}
+        </span>
+      );
   }
 }
 
@@ -414,14 +416,14 @@ class GitPanelErrorBoundary extends React.Component<
   render() {
     if (this.state.error) {
       return (
-        <div className="h-full flex flex-col items-center justify-center gap-2 bg-claude-bg text-claude-text-secondary p-4">
-          <p className="text-sm">Git panel hit an error.</p>
-          <p className="text-xs font-mono text-red-400 text-center break-all">
+        <div className="h-full flex flex-col items-center justify-center gap-2 bg-ink-1 text-fg-3 p-4">
+          <p className="text-[13px]">Git panel hit an error.</p>
+          <p className="text-[11.5px] font-mono text-diff-del-text text-center break-all">
             {this.state.error.message}
           </p>
           <button
             onClick={() => this.setState({ error: null })}
-            className="mt-2 px-3 py-1.5 text-xs border border-claude-border rounded hover:bg-claude-surface"
+            className="mt-2 h-8 px-3 text-[12.5px] text-fg-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] hover:bg-white/5"
           >
             Retry
           </button>

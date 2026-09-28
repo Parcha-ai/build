@@ -17,7 +17,7 @@ import RemoteControlPanel from './RemoteControlPanel';
 import { SoundVisualization } from './SoundVisualization';
 import HistoryPanel from './HistoryPanel';
 import TokenDashboard from '../analytics/TokenDashboard';
-import { ArrowDown, History, GitBranch, Circle, ExternalLink, X } from 'lucide-react';
+import { ArrowDown, History, GitBranch, Circle, ExternalLink, X, ChevronDown } from 'lucide-react';
 import type { Session, ToolCall } from '../../../shared/types';
 import { GSTACK_MODE_META } from '../../../shared/types';
 import { canSendMessageToSession } from '../../utils/session-input';
@@ -91,15 +91,15 @@ function SessionGitInfo({ sessionId }: { sessionId: string }) {
   if (!gitInfo) return null;
 
   return (
-    <div className="flex items-center gap-1.5 flex-shrink-0">
+    <div className="flex min-w-0 items-center gap-2.5">
       {gitInfo.branch && (
-        <span className="flex items-center gap-1 text-[10px] text-claude-text-secondary font-mono">
-          <GitBranch size={10} />
-          {gitInfo.branch}
+        <span className="flex min-w-0 items-center gap-1.5 font-mono text-[11.5px] text-fg-3" title={gitInfo.branch}>
+          <GitBranch size={11} className="flex-shrink-0 text-fg-4" />
+          <span className="max-w-[200px] truncate">{gitInfo.branch}</span>
         </span>
       )}
       {gitInfo.isDirty && (
-        <span className="flex items-center gap-0.5 text-[10px] font-bold text-amber-400" title={`${gitInfo.changedFiles} changed file${gitInfo.changedFiles === 1 ? '' : 's'}`}>
+        <span className="flex items-center gap-1 font-mono text-[11px] text-amber" title={`${gitInfo.changedFiles} changed file${gitInfo.changedFiles === 1 ? '' : 's'}`}>
           <Circle size={6} fill="currentColor" />
           {gitInfo.changedFiles}
         </span>
@@ -111,7 +111,7 @@ function SessionGitInfo({ sessionId }: { sessionId: string }) {
               window.electronAPI?.app?.openExternal?.(gitInfo.prUrl);
             }
           }}
-          className="flex items-center gap-0.5 text-[10px] font-bold text-blue-400 hover:text-blue-300"
+          className="flex items-center gap-1 font-mono text-[11px] text-accent-text hover:text-[#B5D3FF]"
           title={gitInfo.prUrl || `PR #${gitInfo.prNumber}`}
         >
           PR #{gitInfo.prNumber}
@@ -125,6 +125,8 @@ function SessionGitInfo({ sessionId }: { sessionId: string }) {
 interface ChatContainerProps {
   session: Session;
   onClosePane?: () => void;
+  /** Session/fork tab segmented control rendered in the header row (primary pane only). */
+  headerTabs?: React.ReactNode;
 }
 
 // Stable empty arrays/objects to avoid reference changes when session data is missing
@@ -135,7 +137,7 @@ const EMPTY_QUEUE: never[] = [];
 const EMPTY_BG_TASKS: never[] = [];
 const EMPTY_MONITORS: never[] = [];
 
-export default function ChatContainer({ session, onClosePane }: ChatContainerProps) {
+export default function ChatContainer({ session, onClosePane, headerTabs }: ChatContainerProps) {
   // Per-session data selectors — only re-render when THIS session's data changes
   const sessionMessages = useSessionStore(useCallback((s) => s.messages[session.id] || EMPTY_MESSAGES, [session.id]));
   const isSessionStreaming = useSessionStore(useCallback((s) => s.isStreaming[session.id] || false, [session.id]));
@@ -634,37 +636,39 @@ export default function ChatContainer({ session, onClosePane }: ChatContainerPro
 
   return (
     <div className="flex-1 flex overflow-hidden min-w-0">
-    <div className={`flex-1 flex flex-col overflow-hidden font-mono bg-claude-bg min-w-0 ${reduceContinuousMotion ? 'reduce-continuous-motion' : ''}`}>
-      {/* Header - brutalist */}
-      <div className="h-10 border-b border-claude-border flex items-center justify-between px-4 bg-claude-surface/50">
-        <div className="flex items-center gap-2 min-w-0">
-          <h2 className="text-sm font-bold text-claude-text uppercase truncate" style={{ letterSpacing: '0.1em' }}>
+    <div className={`flex-1 flex flex-col overflow-hidden bg-ink-2 min-w-0 ${reduceContinuousMotion ? 'reduce-continuous-motion' : ''}`}>
+      {/* Header - graphite session header: ONE 52px row (title left; git + tabs + actions right) */}
+      <div className="h-[52px] flex-shrink-0 border-b border-white/[0.06] flex items-center gap-3 px-5">
+        <div className="flex min-w-0 flex-shrink items-center gap-2">
+          <h2 className="truncate text-[14px] font-semibold text-fg" style={{ letterSpacing: '-0.02em' }}>
             {getSessionDisplayName(session)}
           </h2>
+          <ChevronDown size={12} strokeWidth={2.2} className="flex-shrink-0 text-fg-4" />
           {session.status === 'running' && (
-            <span
-              className="px-1.5 py-0.5 text-xs font-bold uppercase bg-green-500/20 text-green-500 flex-shrink-0"
-              style={{ borderRadius: 0, letterSpacing: '0.05em' }}
-            >
-              ACTIVE
-            </span>
+            <span className="status-pulse h-[7px] w-[7px] flex-shrink-0 rounded-full bg-accent" title="Active" aria-label="Active" />
           )}
           {session.status === 'error' && (
             <span
-              className="px-1.5 py-0.5 text-xs font-bold uppercase bg-red-500/20 text-red-500 flex-shrink-0"
-              style={{ borderRadius: 0, letterSpacing: '0.05em' }}
+              className="flex-shrink-0 px-[5px] py-px font-mono text-[9.5px] uppercase text-diff-del shadow-[inset_0_0_0_1px_rgba(248,81,73,0.4)]"
+              style={{ letterSpacing: '0.04em' }}
             >
               ERROR
             </span>
           )}
-          <SessionGitInfo sessionId={session.id} />
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex-1" />
+
+        <div className="flex min-w-0 items-center gap-2.5">
+          <SessionGitInfo sessionId={session.id} />
+          {headerTabs}
+        </div>
+
+        <div className="flex items-center gap-1.5">
           {onClosePane && (
             <button
               onClick={onClosePane}
-              className="p-1.5 text-claude-text-secondary hover:text-claude-text hover:bg-claude-bg transition-colors"
+              className="flex h-7 w-7 items-center justify-center text-fg-4 hover:text-fg hover:bg-white/[0.05] transition-colors"
               title="Close split pane"
               aria-label="Close split pane"
             >
@@ -679,7 +683,7 @@ export default function ChatContainer({ session, onClosePane }: ChatContainerPro
                 variant="bars"
                 size="sm"
               />
-              <span className="text-xs text-blue-400 uppercase font-bold" style={{ letterSpacing: '0.05em' }}>
+              <span className="text-[11px] uppercase text-accent-text" style={{ letterSpacing: '0.04em' }}>
                 {isTTSPlaying ? 'SPEAKING' : 'THINKING'}
               </span>
             </div>
@@ -688,10 +692,10 @@ export default function ChatContainer({ session, onClosePane }: ChatContainerPro
           {/* History panel toggle */}
           <button
             onClick={toggleHistoryPanel}
-            className={`p-1.5 transition-colors ${
+            className={`flex h-7 w-7 items-center justify-center transition-colors ${
               isHistoryPanelOpen
-                ? 'text-orange-400 bg-orange-500/10'
-                : 'text-claude-text-secondary hover:text-claude-text'
+                ? 'bg-[#262626] text-fg'
+                : 'text-fg-4 hover:text-fg hover:bg-white/[0.05]'
             }`}
             title="Toggle history panel"
           >
@@ -702,20 +706,20 @@ export default function ChatContainer({ session, onClosePane }: ChatContainerPro
 
       {/* Error banner for sessions with error status */}
       {session.status === 'error' && (
-        <div className="p-4 bg-red-500/10 border-b border-red-500/30">
+        <div className="px-5 py-4 bg-[rgba(248,81,73,0.06)] border-b border-[rgba(248,81,73,0.25)]">
           <div className="flex items-start gap-3">
-            <div className="text-red-500 text-xl">⚠</div>
+            <div className="text-diff-del text-lg leading-none">⚠</div>
             <div className="flex-1">
-              <h3 className="text-sm font-bold text-red-400 mb-1">Session Creation Failed</h3>
+              <h3 className="mb-1 text-[14px] font-semibold tracking-[-0.02em] text-diff-del-text">Session Creation Failed</h3>
               {session.errorMessage ? (
                 <div className="mb-3">
-                  <p className="text-xs text-red-300/80 mb-2">Error details:</p>
-                  <pre className="text-[10px] text-red-300 bg-red-500/10 p-2 border border-red-500/20 overflow-x-auto whitespace-pre-wrap font-mono">
+                  <p className="mb-2 text-[12px] text-fg-3">Error details:</p>
+                  <pre className="overflow-x-auto whitespace-pre-wrap bg-[#0B0B0B] p-2.5 font-mono text-[11.5px] text-diff-del-text shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)]">
                     {session.errorMessage}
                   </pre>
                 </div>
               ) : (
-                <p className="text-xs text-red-300/80 mb-3">
+                <p className="mb-3 text-[12.5px] text-fg-3">
                   There was an error setting up this session. This usually happens when cloning a repository fails
                   (e.g., invalid URL, no access, or network issues).
                 </p>
@@ -728,8 +732,7 @@ export default function ChatContainer({ session, onClosePane }: ChatContainerPro
                       toggleTerminalPanel();
                     }
                   }}
-                  className="px-3 py-1.5 text-[10px] font-bold bg-red-500/20 hover:bg-red-500/30 text-red-400 border border-red-500/30"
-                  style={{ borderRadius: 0 }}
+                  className="h-[30px] px-3 text-[12px] font-semibold bg-[#EDEDED] text-[#0F0F0F] hover:bg-white transition-colors"
                 >
                   OPEN TERMINAL
                 </button>
@@ -741,8 +744,7 @@ export default function ChatContainer({ session, onClosePane }: ChatContainerPro
                     const { loadSessions } = useSessionStore.getState();
                     loadSessions();
                   }}
-                  className="px-3 py-1.5 text-[10px] font-bold bg-claude-bg hover:bg-claude-surface text-claude-text-secondary border border-claude-border"
-                  style={{ borderRadius: 0 }}
+                  className="h-[30px] px-3 text-[12px] text-fg-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] hover:bg-white/[0.04] transition-colors"
                 >
                   DELETE SESSION
                 </button>
@@ -773,48 +775,54 @@ export default function ChatContainer({ session, onClosePane }: ChatContainerPro
         {showScrollButton && (
           <button
             onClick={scrollToBottom}
-            className="absolute bottom-4 right-4 z-50 w-10 h-10 flex items-center justify-center bg-claude-accent text-white border border-claude-accent hover:bg-claude-accent/80 shadow-lg transition-all"
-            style={{ borderRadius: 0 }}
+            className="absolute bottom-4 right-4 z-50 w-8 h-8 flex items-center justify-center bg-ink-3 text-fg shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1),0_12px_40px_rgba(0,0,0,0.35)] hover:bg-[#262626] transition-colors"
             title="Scroll to bottom"
           >
-            <ArrowDown size={18} strokeWidth={2.5} />
+            <ArrowDown size={15} strokeWidth={2.2} />
           </button>
         )}
       </div>
 
       {/* Monitor section - above tasks (streaming background watches) */}
       {sessionMonitors.filter(m => m.active || m.persistent).length > 0 && (
-        <div className="border-t border-claude-border bg-claude-surface/30 px-4 py-2">
+        <div className="px-6 pt-2">
+          <div className="mx-auto w-full max-w-[680px]">
           <MonitorBlock
             monitors={sessionMonitors.filter(m => m.active || m.persistent)}
           />
+          </div>
         </div>
       )}
 
       {/* Tasks section - above thinking */}
       {currentTasks.length > 0 && (
-        <div className="border-t border-claude-border bg-claude-surface/30 px-4 py-2">
+        <div className="px-6 pt-2">
+          <div className="mx-auto w-full max-w-[680px]">
           <TasksBlock
             tasks={currentTasks}
             isStreaming={isSessionStreaming}
           />
+          </div>
         </div>
       )}
 
       {/* Background tasks section - between tasks and thinking */}
       {sessionBackgroundTasks.length > 0 && (
-        <div className="border-t border-claude-border bg-claude-surface/30 px-4 py-2">
+        <div className="px-6 pt-2">
+          <div className="mx-auto w-full max-w-[680px]">
           <BackgroundTasksBlock
             tasks={sessionBackgroundTasks}
             onStopTask={handleStopBackgroundTask}
             onViewOutput={handleViewOutput}
           />
+          </div>
         </div>
       )}
 
       {/* Active thinking/compacting section - separate from message history */}
       {((isSessionStreaming && thinkingContent) || (currentCompactionStatus?.isCompacting)) && (
-        <div className="border-t border-claude-border bg-claude-surface/30 px-4 py-2">
+        <div className="px-6 pt-2">
+          <div className="mx-auto w-full max-w-[680px]">
           <ThinkingBlock
             content={thinkingContent}
             isStreaming={isSessionStreaming && !!thinkingContent}
@@ -823,12 +831,14 @@ export default function ChatContainer({ session, onClosePane }: ChatContainerPro
             gstackColor={(() => { const mode = useSessionStore.getState().gstackMode[session.id]; return mode ? GSTACK_MODE_META[mode]?.color : undefined; })()}
             gstackLabel={(() => { const mode = useSessionStore.getState().gstackMode[session.id]; return mode ? GSTACK_MODE_META[mode]?.shortName : undefined; })()}
           />
+          </div>
         </div>
       )}
 
       {/* Permission request - prominent above input */}
       {currentPermissionRequest && (
-        <div className="border-t border-claude-border px-4 py-3 bg-claude-surface">
+        <div className="px-6 pt-3 pb-1">
+          <div className="mx-auto w-full max-w-[680px]">
           <PermissionDialog
             request={currentPermissionRequest}
             onApprove={(modifiedInput, alwaysApprove) => approvePermission(session.id, modifiedInput, alwaysApprove)}
@@ -839,17 +849,20 @@ export default function ChatContainer({ session, onClosePane }: ChatContainerPro
               approvePermission(session.id);
             }}
           />
+          </div>
         </div>
       )}
 
       {/* Question request - prominent above input */}
       {currentQuestionRequest && (
-        <div className="border-t border-claude-border px-4 py-3 bg-claude-surface">
+        <div className="px-6 pt-3 pb-1">
+          <div className="mx-auto w-full max-w-[680px]">
           <QuestionDialog
             request={currentQuestionRequest}
             onAnswer={(answers) => answerQuestion(session.id, answers)}
             onCancel={() => cancelQuestion(session.id)}
           />
+          </div>
         </div>
       )}
 
@@ -885,14 +898,14 @@ export default function ChatContainer({ session, onClosePane }: ChatContainerPro
 
     {/* History Panel - slides in from the right */}
     {isHistoryPanelOpen && (
-      <div className="w-80 shrink-0 border-l border-claude-border">
+      <div className="w-80 shrink-0 border-l border-white/[0.06]">
         <HistoryPanel sessionId={session.id} />
       </div>
     )}
 
     {/* Analytics Panel - slides in from the right */}
     {isAnalyticsPanelOpen && (
-      <div className="w-96 shrink-0 border-l border-claude-border">
+      <div className="w-96 shrink-0 border-l border-white/[0.06]">
         <TokenDashboard onClose={toggleAnalyticsPanel} />
       </div>
     )}

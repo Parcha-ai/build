@@ -129,21 +129,21 @@ export default function HistoryPanel({ sessionId }: HistoryPanelProps) {
   }, [sessionId, isStreaming, toggleHistoryPanel]);
 
   return (
-    <div className="flex flex-col h-full bg-claude-bg border-l border-claude-border font-mono">
+    <div className="flex flex-col h-full bg-ink-1">
       {/* Header */}
-      <div className="h-10 border-b border-claude-border flex items-center justify-between px-4 bg-claude-surface/50 shrink-0">
+      <div className="h-[52px] border-b border-white/[0.06] flex items-center justify-between px-4 shrink-0">
         <div className="flex items-center gap-2">
-          <History size={14} className="text-claude-text-secondary" />
-          <span className="text-xs font-bold text-claude-text uppercase" style={{ letterSpacing: '0.1em' }}>
-            HISTORY
+          <History size={14} className="text-fg-4" />
+          <span className="text-[14px] font-semibold text-fg" style={{ letterSpacing: '-0.02em' }}>
+            History
           </span>
-          <span className="text-[9px] text-claude-text-secondary">
+          <span className="font-mono text-[11px] text-fg-5">
             {userMessages.length} message{userMessages.length !== 1 ? 's' : ''}
           </span>
         </div>
         <button
           onClick={toggleHistoryPanel}
-          className="text-claude-text-secondary hover:text-claude-text p-1 transition-colors"
+          className="flex h-7 w-7 items-center justify-center text-fg-4 hover:text-fg hover:bg-white/[0.05] transition-colors"
         >
           <X size={14} />
         </button>
@@ -152,11 +152,11 @@ export default function HistoryPanel({ sessionId }: HistoryPanelProps) {
       {/* Message list */}
       <div className="flex-1 overflow-y-auto">
         {userMessages.length === 0 ? (
-          <div className="p-4 text-xs text-claude-text-secondary text-center">
+          <div className="p-4 text-[12px] text-fg-5 text-center">
             NO MESSAGES YET
           </div>
         ) : (
-          <div className="divide-y divide-claude-border/50">
+          <div className="divide-y divide-white/[0.05]">
             {userMessages.map((msg: ChatMessage) => {
               const isExpanded = expandedId === msg.id;
               const preview = previews[msg.id];
@@ -169,30 +169,30 @@ export default function HistoryPanel({ sessionId }: HistoryPanelProps) {
                   {/* Message row */}
                   <button
                     onClick={() => handleToggleExpand(msg.id)}
-                    className="w-full text-left px-4 py-2.5 hover:bg-claude-surface/30 transition-colors"
+                    className="w-full text-left px-4 py-2.5 hover:bg-[#1E1E1E] transition-colors"
                   >
                     <div className="flex items-start justify-between gap-2">
                       <div className="flex items-start gap-2 min-w-0 flex-1">
                         {isExpanded ? (
-                          <ChevronDown size={10} className="text-claude-text-secondary mt-1 shrink-0" />
+                          <ChevronDown size={11} className="text-fg-5 mt-1 shrink-0" />
                         ) : (
-                          <ChevronRight size={10} className="text-claude-text-secondary mt-1 shrink-0" />
+                          <ChevronRight size={11} className="text-fg-5 mt-1 shrink-0" />
                         )}
-                        <span className="text-[11px] text-claude-text break-words leading-relaxed">
+                        <span className="text-[12.5px] text-fg-2 break-words leading-[1.5]">
                           {truncateMessage(msg.content)}
                         </span>
                       </div>
-                      <span className="text-[9px] text-claude-text-secondary shrink-0 tabular-nums mt-0.5">
+                      <span className="font-mono text-[10.5px] text-fg-5 shrink-0 tabular-nums mt-0.5">
                         {formatTime(msg.timestamp)}
                       </span>
                     </div>
 
                     {/* Compact file preview (when loaded but not expanded) */}
                     {!isExpanded && hasFilePreview && (
-                      <div className="mt-1 ml-4 text-[9px] text-claude-text-secondary">
+                      <div className="mt-1 ml-[19px] font-mono text-[10.5px] text-fg-5">
                         {preview.filesChanged.length} file{preview.filesChanged.length !== 1 ? 's' : ''}{' '}
-                        <span className="text-green-500">+{preview.insertions}</span>{' '}
-                        <span className="text-red-500">-{preview.deletions}</span>
+                        <span className="text-diff-add">+{preview.insertions}</span>{' '}
+                        <span className="text-diff-del">-{preview.deletions}</span>
                       </div>
                     )}
                   </button>
@@ -202,7 +202,7 @@ export default function HistoryPanel({ sessionId }: HistoryPanelProps) {
                     <div className="px-4 pb-3 ml-4">
                       {/* File changes (only if preview available) */}
                       {isLoading && (
-                        <div className="flex items-center gap-2 text-[9px] text-claude-text-secondary py-1 mb-2">
+                        <div className="flex items-center gap-2 text-[11.5px] text-fg-4 py-1 mb-2">
                           <Loader2 size={10} className="animate-spin" />
                           CHECKING FILE CHANGES...
                         </div>
@@ -210,14 +210,14 @@ export default function HistoryPanel({ sessionId }: HistoryPanelProps) {
 
                       {hasFilePreview && (
                         <div className="mb-2">
-                          <div className="text-[9px] text-claude-text-secondary mb-1">
+                          <div className="font-mono text-[10.5px] text-fg-5 mb-1">
                             {preview.filesChanged.length} file{preview.filesChanged.length !== 1 ? 's' : ''}{' '}
-                            <span className="text-green-500">+{preview.insertions}</span>{' '}
-                            <span className="text-red-500">-{preview.deletions}</span>
+                            <span className="text-diff-add">+{preview.insertions}</span>{' '}
+                            <span className="text-diff-del">-{preview.deletions}</span>
                           </div>
                           <div className="space-y-0.5">
                             {preview.filesChanged.map((file: string) => (
-                              <div key={file} className="text-[9px] text-claude-text-secondary truncate pl-2 border-l border-claude-border">
+                              <div key={file} className="font-mono text-[11px] text-fg-4 truncate pl-2 border-l border-white/[0.07]">
                                 {file.split('/').pop() || file}
                               </div>
                             ))}
@@ -232,8 +232,7 @@ export default function HistoryPanel({ sessionId }: HistoryPanelProps) {
                           handleRewind(msg.id);
                         }}
                         disabled={isRewinding}
-                        className="flex items-center gap-1.5 px-2 py-1 text-[10px] font-bold uppercase bg-orange-500/20 text-orange-400 hover:bg-orange-500/30 border border-orange-500/30 transition-colors disabled:opacity-50"
-                        style={{ letterSpacing: '0.05em' }}
+                        className="flex h-[26px] items-center gap-1.5 px-2.5 text-[11.5px] text-fg-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] hover:bg-white/[0.04] hover:text-fg transition-colors disabled:opacity-50"
                       >
                         {isRewinding ? (
                           <Loader2 size={10} className="animate-spin" />

@@ -7,21 +7,69 @@ module.exports = {
   darkMode: 'class',
   theme: {
     extend: {
+      // Graphite design system (aj/design-refresh). Legacy claude-* names are
+      // kept as aliases so every existing class picks up the new palette.
       colors: {
-        'claude-bg': '#1a1a1a',
-        'claude-surface': '#242424',
-        'claude-border': '#333333',
-        'claude-text': '#f0f0f0',
-        'claude-text-secondary': '#d0d0d0',
-        'claude-accent': '#8B8DFF',
-        'claude-accent-hover': '#A5A7FF',
-        'claude-success': '#22c55e',
-        'claude-error': '#ef4444',
-        'claude-warning': '#f59e0b',
+        'claude-bg': '#0F0F0F',
+        'claude-surface': '#171717',
+        'claude-surface-hover': '#1E1E1E',
+        'claude-sidebar': '#141414',
+        'claude-border': '#262626',
+        'claude-text': '#EDEDED',
+        'claude-text-secondary': '#A0A0A0',
+        'claude-accent': '#4C9AFF',
+        'claude-accent-hover': '#8DBBFF',
+        'claude-success': '#3FB950',
+        'claude-error': '#F85149',
+        'claude-warning': '#F0B429',
+        ink: {
+          term: '#0A0A0A',
+          0: '#0F0F0F',
+          1: '#141414',
+          2: '#171717',
+          3: '#1C1C1C',
+          4: '#2B2B2B',
+        },
+        fg: {
+          DEFAULT: '#EDEDED',
+          2: '#CFCFCF',
+          3: '#A0A0A0',
+          4: '#808080',
+          5: '#666666',
+        },
+        line: {
+          DEFAULT: 'rgba(255,255,255,0.07)',
+          strong: 'rgba(255,255,255,0.14)',
+        },
+        accent: {
+          DEFAULT: '#4C9AFF',
+          text: '#8DBBFF',
+        },
+        diff: {
+          add: '#3FB950',
+          'add-text': '#7EE2A0',
+          del: '#F85149',
+          'del-text': '#FFA198',
+        },
+        amber: {
+          DEFAULT: '#F0B429',
+        },
+      },
+      // Square corners everywhere; only true circles (status dots) stay round.
+      borderRadius: {
+        none: '0',
+        sm: '0',
+        DEFAULT: '0',
+        md: '0',
+        lg: '0',
+        xl: '0',
+        '2xl': '0',
+        '3xl': '0',
+        full: '9999px',
       },
       fontFamily: {
-        mono: ['JetBrains Mono', 'Menlo', 'Monaco', 'monospace'],
-        sans: ['Inter', 'system-ui', 'sans-serif'],
+        mono: ['"Geist Mono"', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'],
+        sans: ['Geist', '-apple-system', 'BlinkMacSystemFont', 'system-ui', 'sans-serif'],
       },
       keyframes: {
         'sound-bar': {

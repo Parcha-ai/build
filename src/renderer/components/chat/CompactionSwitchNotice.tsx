@@ -71,36 +71,36 @@ export default function CompactionSwitchNotice({
   const canChooseFallback = !!notice.fallbackModel && notice.fallbackModel !== recommendedModel && !notice.handoffSelected;
 
   return (
-    <div className={`mb-2 border px-3 py-2 font-mono text-xs ${
+    <div className={`mb-2 bg-ink-1 px-3 py-2.5 text-[12.5px] text-fg-2 ${
       isCompacting
-        ? 'border-blue-500/40 bg-blue-500/10 text-blue-100'
-        : 'border-emerald-500/40 bg-emerald-500/10 text-emerald-100'
+        ? 'shadow-[inset_0_0_0_1px_rgba(76,154,255,0.35)]'
+        : 'shadow-[inset_0_0_0_1px_rgba(63,185,80,0.35)]'
     }`}>
       <div className="flex items-start gap-2">
         <div className="mt-0.5 flex-shrink-0">
           {isCompacting ? (
-            <Loader2 size={14} className="animate-spin text-blue-300" />
+            <Loader2 size={13} className="animate-spin text-accent" />
           ) : (
-            <CheckCircle2 size={14} className="text-emerald-300" />
+            <CheckCircle2 size={13} className="text-diff-add" />
           )}
         </div>
 
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <span className="font-semibold uppercase tracking-wide">
+            <span className="font-medium text-fg">
               {isCompacting ? 'Compacting' : 'Compaction Done'}
             </span>
             {isCompacting && (
-              <span className="text-[10px] text-blue-200/80">{elapsed}</span>
+              <span className="font-mono text-[11px] text-fg-5">{elapsed}</span>
             )}
             {!isCompacting && tokensSaved !== undefined && (
-              <span className="text-[10px] text-emerald-200/80">
+              <span className="font-mono text-[11px] text-diff-add">
                 Saved {tokensSaved.toLocaleString()} tokens
               </span>
             )}
           </div>
 
-          <div className="mt-1 leading-relaxed text-claude-text">
+          <div className="mt-1 leading-relaxed text-fg-3">
             {isCompacting ? (
               notice.handoffSelected ? (
                 <>
@@ -137,7 +137,7 @@ export default function CompactionSwitchNotice({
               {canChooseRecommended && (
                 <button
                   onClick={() => onHandoff(recommendedModel!)}
-                  className="inline-flex items-center gap-1 border border-emerald-400/40 bg-emerald-400/10 px-2 py-1 text-[11px] text-emerald-100 transition-colors hover:bg-emerald-400/20"
+                  className="inline-flex h-[26px] items-center gap-1.5 bg-[#EDEDED] px-2.5 text-[12px] font-semibold text-[#0F0F0F] transition-colors hover:bg-white"
                 >
                   <ArrowLeftRight size={11} />
                   Use {recommendedLabel}
@@ -146,7 +146,7 @@ export default function CompactionSwitchNotice({
               {canChooseFallback && (
                 <button
                   onClick={() => onHandoff(notice.fallbackModel!)}
-                  className="inline-flex items-center gap-1 border border-blue-400/40 bg-blue-400/10 px-2 py-1 text-[11px] text-blue-100 transition-colors hover:bg-blue-400/20"
+                  className="inline-flex h-[26px] items-center gap-1.5 px-2.5 text-[12px] text-fg-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] transition-colors hover:bg-white/[0.04] hover:text-fg"
                 >
                   <ArrowLeftRight size={11} />
                   Use {fallbackLabel}
@@ -155,7 +155,7 @@ export default function CompactionSwitchNotice({
               {notice.handoffSelected && (
                 <button
                   onClick={onSwitchBack}
-                  className="inline-flex items-center gap-1 border border-white/15 px-2 py-1 text-[11px] text-claude-text-secondary transition-colors hover:bg-white/5 hover:text-claude-text"
+                  className="inline-flex h-[26px] items-center gap-1.5 px-2.5 text-[12px] text-fg-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] transition-colors hover:bg-white/[0.04] hover:text-fg"
                 >
                   <ArrowLeftRight size={11} />
                   Keep {originalLabel}
@@ -163,7 +163,7 @@ export default function CompactionSwitchNotice({
               )}
               <button
                 onClick={onDismiss}
-                className="border border-white/15 px-2 py-1 text-[11px] text-claude-text-secondary transition-colors hover:bg-white/5 hover:text-claude-text"
+                className="h-[26px] px-2.5 text-[12px] text-fg-3 transition-colors hover:bg-white/[0.04] hover:text-fg"
               >
                 Hide
               </button>
@@ -173,7 +173,7 @@ export default function CompactionSwitchNotice({
 
         <button
           onClick={onDismiss}
-          className="flex-shrink-0 p-1 text-claude-text-secondary transition-colors hover:bg-white/5 hover:text-claude-text"
+          className="flex-shrink-0 p-1 text-fg-4 transition-colors hover:bg-white/[0.05] hover:text-fg"
           title="Dismiss"
         >
           <X size={12} />

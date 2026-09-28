@@ -613,8 +613,8 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
   const renderCommandList = () => {
     if (commands.length === 0) {
       return (
-        <div className="px-3 py-2 text-xs text-claude-text-secondary">
-          No commands found. Create <code className="bg-claude-bg px-1">.claude/commands/*.md</code>
+        <div className="px-3 py-2 text-[12px] text-fg-4">
+          No commands found. Create <code className="bg-ink-4 px-1 font-mono text-fg-2">.claude/commands/*.md</code>
         </div>
       );
     }
@@ -623,20 +623,20 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
       <button
         key={`${cmd.scope}-${cmd.name}`}
         onClick={() => handleItemClick(cmd)}
-        className={`w-full px-3 py-2 text-left hover:bg-claude-surface transition-colors ${
-          selectedItem === cmd ? 'bg-claude-surface' : ''
+        className={`w-full px-3 py-2 text-left hover:bg-claude-surface-hover transition-colors ${
+          selectedItem === cmd ? 'bg-claude-surface-hover' : ''
         }`}
       >
         <div className="flex items-center gap-2">
-          <span className="text-xs font-mono text-claude-accent">/{cmd.name}</span>
+          <span className="text-[12.5px] font-mono text-accent-text">/{cmd.name}</span>
           {cmd.scope === 'user' ? (
-            <User size={10} className="text-claude-text-secondary" />
+            <User size={10} className="text-fg-4" />
           ) : (
-            <FolderGit size={10} className="text-claude-text-secondary" />
+            <FolderGit size={10} className="text-fg-4" />
           )}
         </div>
         {cmd.description && (
-          <p className="text-xs text-claude-text-secondary mt-1 truncate">{cmd.description}</p>
+          <p className="text-[11.5px] text-fg-4 mt-0.5 truncate">{cmd.description}</p>
         )}
       </button>
     ));
@@ -645,8 +645,8 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
   const renderSkillList = () => {
     if (skills.length === 0) {
       return (
-        <div className="px-3 py-2 text-xs text-claude-text-secondary">
-          No skills found. Create <code className="bg-claude-bg px-1">.claude/skills/*/SKILL.md</code>
+        <div className="px-3 py-2 text-[12px] text-fg-4">
+          No skills found. Create <code className="bg-ink-4 px-1 font-mono text-fg-2">.claude/skills/*/SKILL.md</code>
         </div>
       );
     }
@@ -655,20 +655,20 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
       <button
         key={`${skill.scope}-${skill.name}`}
         onClick={() => handleItemClick(skill)}
-        className={`w-full px-3 py-2 text-left hover:bg-claude-surface transition-colors ${
-          selectedItem === skill ? 'bg-claude-surface' : ''
+        className={`w-full px-3 py-2 text-left hover:bg-claude-surface-hover transition-colors ${
+          selectedItem === skill ? 'bg-claude-surface-hover' : ''
         }`}
       >
         <div className="flex items-center gap-2">
-          <span className="text-xs font-mono text-purple-400">/{skill.name}</span>
+          <span className="text-[12.5px] font-mono text-fg">/{skill.name}</span>
           {skill.scope === 'user' ? (
-            <User size={10} className="text-claude-text-secondary" />
+            <User size={10} className="text-fg-4" />
           ) : (
-            <FolderGit size={10} className="text-claude-text-secondary" />
+            <FolderGit size={10} className="text-fg-4" />
           )}
         </div>
         {skill.description && (
-          <p className="text-xs text-claude-text-secondary mt-1 truncate">{skill.description}</p>
+          <p className="text-[11.5px] text-fg-4 mt-0.5 truncate">{skill.description}</p>
         )}
       </button>
     ));
@@ -677,8 +677,8 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
   const renderAgentList = () => {
     if (agents.length === 0) {
       return (
-        <div className="px-3 py-2 text-xs text-claude-text-secondary">
-          No agents found. Create <code className="bg-claude-bg px-1">.claude/agents/*.md</code>
+        <div className="px-3 py-2 text-[12px] text-fg-4">
+          No agents found. Create <code className="bg-ink-4 px-1 font-mono text-fg-2">.claude/agents/*.md</code>
         </div>
       );
     }
@@ -691,19 +691,19 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
         <div key={agentKey} className="relative group">
           <button
             onClick={() => handleItemClick(agent)}
-            className={`w-full px-3 py-2 pr-11 text-left hover:bg-claude-surface transition-colors ${
-              selectedItem === agent ? 'bg-claude-surface' : ''
+            className={`w-full px-3 py-2 pr-11 text-left hover:bg-claude-surface-hover transition-colors ${
+              selectedItem === agent ? 'bg-claude-surface-hover' : ''
             }`}
           >
             <div className="flex items-center gap-2">
-              <span className="text-xs font-mono text-claude-text">@agent-{agent.name}</span>
+              <span className="text-[12.5px] font-mono text-fg">@agent-{agent.name}</span>
               {agent.scope === 'user' ? (
-                <User size={10} className="text-claude-text-secondary" />
+                <User size={10} className="text-fg-4" />
               ) : (
-                <FolderGit size={10} className="text-claude-text-secondary" />
+                <FolderGit size={10} className="text-fg-4" />
               )}
             </div>
-            <p className="text-xs text-claude-text-secondary mt-1 truncate">{agent.description}</p>
+            <p className="text-[11.5px] text-fg-4 mt-0.5 truncate">{agent.description}</p>
           </button>
 
           <div
@@ -717,8 +717,8 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
               }}
               className={`p-1 transition-colors ${
                 isMenuOpen
-                  ? 'bg-claude-surface text-claude-text'
-                  : 'text-claude-text-secondary opacity-0 group-hover:opacity-100 hover:bg-claude-surface'
+                  ? 'bg-claude-surface-hover text-fg'
+                  : 'text-fg-4 opacity-0 group-hover:opacity-100 hover:bg-claude-surface-hover'
               }`}
               title="Agent actions"
             >
@@ -726,13 +726,13 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
             </button>
 
             {isMenuOpen && (
-              <div className="absolute right-0 top-full z-20 mt-1 min-w-48 border border-claude-border bg-claude-bg shadow-lg">
+              <div className="absolute right-0 top-full z-20 mt-1 min-w-48 bg-ink-3 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1),0_12px_32px_rgba(0,0,0,0.4)]">
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
                     handleExportAgentConfig(agent);
                   }}
-                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-claude-text hover:bg-claude-surface"
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-[13px] text-fg hover:bg-claude-surface-hover"
                 >
                   <Download size={13} />
                   Export agent config
@@ -748,7 +748,7 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
   const renderMcpServerList = () => {
     if (mcpServers.length === 0) {
       return (
-        <div className="px-3 py-2 text-xs text-claude-text-secondary">
+        <div className="px-3 py-2 text-[12px] text-fg-4">
           No MCP servers active. Install from the Marketplace tab.
         </div>
       );
@@ -758,28 +758,28 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
       <button
         key={server.id}
         onClick={() => handleItemClick(server)}
-        className={`w-full px-3 py-2 text-left hover:bg-claude-surface transition-colors ${
-          selectedItem === server ? 'bg-claude-surface' : ''
+        className={`w-full px-3 py-2 text-left hover:bg-claude-surface-hover transition-colors ${
+          selectedItem === server ? 'bg-claude-surface-hover' : ''
         }`}
       >
         <div className="flex items-center gap-2">
-          <span className="text-xs font-mono text-green-400">{server.name}</span>
+          <span className="text-[12.5px] font-mono text-fg">{server.name}</span>
           <span
             className={`w-1.5 h-1.5 rounded-full ${
               server.status === 'active'
-                ? 'bg-green-500'
+                ? 'bg-diff-add'
                 : server.status === 'error'
-                ? 'bg-red-500'
-                : 'bg-gray-500'
+                ? 'bg-diff-del'
+                : 'bg-fg-5'
             }`}
           />
           {server.type === 'sdk' && (
-            <span className="text-[10px] text-claude-text-secondary bg-claude-surface px-1">SDK</span>
+            <span className="font-mono text-[10px] uppercase text-fg-3 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.16)] px-1">SDK</span>
           )}
         </div>
-        <p className="text-xs text-claude-text-secondary mt-1 truncate">{server.description}</p>
+        <p className="text-[11.5px] text-fg-4 mt-0.5 truncate">{server.description}</p>
         {server.tools.length > 0 && (
-          <p className="text-[10px] text-claude-text-secondary mt-1">
+          <p className="text-[11.5px] text-fg-4 mt-1">
             {server.tools.length} tool{server.tools.length !== 1 ? 's' : ''}
           </p>
         )}
@@ -790,7 +790,7 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
   const renderPluginList = () => {
     if (plugins.length === 0) {
       return (
-        <div className="px-3 py-2 text-xs text-claude-text-secondary">
+        <div className="px-3 py-2 text-[12px] text-fg-4">
           No plugins installed. Browse the Marketplace tab to install plugins.
         </div>
       );
@@ -805,23 +805,23 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
         <button
           key={key}
           onClick={() => handleItemClick(plugin)}
-          className={`w-full px-3 py-2 text-left hover:bg-claude-surface transition-colors ${
-            selectedItem === plugin ? 'bg-claude-surface' : ''
+          className={`w-full px-3 py-2 text-left hover:bg-claude-surface-hover transition-colors ${
+            selectedItem === plugin ? 'bg-claude-surface-hover' : ''
           }`}
         >
           <div className="flex items-center gap-2">
-            <span className="text-xs font-mono text-purple-400">{plugin.name}</span>
+            <span className="text-[12.5px] font-mono text-fg">{plugin.name}</span>
             <span
               className={`w-1.5 h-1.5 rounded-full ${
-                plugin.enabled ? 'bg-green-500' : 'bg-gray-500'
+                plugin.enabled ? 'bg-diff-add' : 'bg-fg-5'
               }`}
               title={plugin.enabled ? 'Enabled' : 'Disabled'}
             />
-            <span className="text-[10px] text-claude-text-secondary bg-claude-surface px-1">
+            <span className="font-mono text-[10px] uppercase text-fg-3 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.16)] px-1">
               {plugin.scope}
             </span>
           </div>
-          <p className="text-xs text-claude-text-secondary mt-1 truncate">
+          <p className="text-[11.5px] text-fg-4 mt-0.5 truncate">
             {plugin.marketplace}
           </p>
         </button>
@@ -849,26 +849,26 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
       const isUninstalling = uninstallingPlugin === key;
 
       return (
-        <div className="flex-1 overflow-y-auto border-l border-claude-border">
+        <div className="flex-1 overflow-y-auto border-l border-line">
           <div className="p-4">
             {/* Header */}
             <div className="flex items-start justify-between mb-4">
               <div className="flex items-center gap-2">
-                <Package size={16} className="text-purple-400" />
+                <Package size={16} className="text-fg-3" />
                 <div>
-                  <h3 className="text-sm font-mono text-claude-text">{plugin.name}</h3>
+                  <h3 className="text-[15px] font-semibold tracking-tight text-fg">{plugin.name}</h3>
                   <div className="flex items-center gap-2 mt-1">
                     <span
-                      className={`text-xs px-1.5 py-0.5 ${
+                      className={`font-mono text-[10px] uppercase px-1.5 py-0.5 ${
                         plugin.enabled
-                          ? 'bg-green-500/20 text-green-400'
-                          : 'bg-gray-500/20 text-gray-400'
+                          ? 'bg-diff-add/10 text-diff-add-text'
+                          : 'text-fg-4 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.16)]'
                       }`}
                     >
                       {plugin.enabled ? 'enabled' : 'disabled'}
                     </span>
-                    <span className="text-xs text-claude-text-secondary">{plugin.scope}</span>
-                    <span className="text-xs text-claude-text-secondary">v{plugin.version}</span>
+                    <span className="text-[12px] text-fg-4">{plugin.scope}</span>
+                    <span className="text-[12px] text-fg-4">v{plugin.version}</span>
                   </div>
                 </div>
               </div>
@@ -877,10 +877,10 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
                 <button
                   onClick={() => handlePluginToggle(plugin)}
                   disabled={isToggling || isUninstalling}
-                  className={`flex items-center gap-1.5 px-2 py-1.5 text-xs font-mono transition-colors disabled:opacity-50 ${
+                  className={`flex items-center gap-1.5 h-8 px-2 text-[13px] transition-colors disabled:opacity-40 ${
                     plugin.enabled
-                      ? 'bg-gray-500/20 text-gray-400 hover:bg-gray-500/30'
-                      : 'bg-green-500/20 text-green-400 hover:bg-green-500/30'
+                      ? 'text-fg-3 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] hover:bg-claude-surface-hover hover:text-fg'
+                      : 'bg-diff-add/10 text-diff-add-text hover:bg-diff-add/20'
                   }`}
                   title={plugin.enabled ? 'Disable plugin' : 'Enable plugin'}
                 >
@@ -898,7 +898,7 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
                 <button
                   onClick={() => handlePluginUninstall(plugin)}
                   disabled={isToggling || isUninstalling}
-                  className="flex items-center gap-1.5 px-2 py-1.5 text-xs font-mono bg-red-500/20 text-red-400 hover:bg-red-500/30 transition-colors disabled:opacity-50"
+                  className="flex items-center gap-1.5 h-8 px-2 text-[13px] text-diff-del shadow-[inset_0_0_0_1px_rgba(248,81,73,0.45)] hover:bg-diff-del/10 transition-colors disabled:opacity-40"
                   title="Uninstall plugin"
                 >
                   {isUninstalling ? (
@@ -913,19 +913,19 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
 
             {/* Plugin ID */}
             <div className="mb-4">
-              <h4 className="text-xs font-mono text-claude-text-secondary uppercase mb-2">Plugin ID</h4>
-              <p className="text-sm font-mono text-claude-text">{plugin.id}</p>
+              <h4 className="text-[11px] font-medium uppercase tracking-[0.04em] text-fg-4 mb-2">Plugin ID</h4>
+              <p className="text-[13px] font-mono text-fg-2">{plugin.id}</p>
             </div>
 
             {/* Marketplace */}
             <div className="mb-4">
-              <h4 className="text-xs font-mono text-claude-text-secondary uppercase mb-2">Marketplace</h4>
-              <p className="text-sm text-claude-text">{plugin.marketplace}</p>
+              <h4 className="text-[11px] font-medium uppercase tracking-[0.04em] text-fg-4 mb-2">Marketplace</h4>
+              <p className="text-[13px] text-fg-2">{plugin.marketplace}</p>
             </div>
 
             {/* Info */}
-            <div className="p-3 bg-purple-500/10 border border-purple-500/30">
-              <p className="text-xs text-purple-400">
+            <div className="p-3 bg-accent/10 shadow-[inset_0_0_0_1px_rgba(76,154,255,0.3)]">
+              <p className="text-[13px] text-accent-text">
                 This plugin provides commands, skills, and agents that appear in their respective sections.
                 {plugin.enabled ? ' Currently enabled and available for use.' : ' Currently disabled - enable to use its features.'}
               </p>
@@ -945,7 +945,7 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
         <div className="space-y-4">
           {/* Server Name */}
           <div>
-            <label className="block text-[10px] font-bold font-mono text-claude-text-secondary uppercase mb-1.5" style={{ letterSpacing: '0.1em' }}>
+            <label className="block text-[11px] font-medium uppercase tracking-[0.04em] text-fg-4 mb-1.5">
               Server Name
             </label>
             {mcpIsNew ? (
@@ -954,12 +954,11 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
                 value={mcpEditName}
                 onChange={(e) => setMcpEditName(e.target.value)}
                 placeholder="my-mcp-server"
-                className="w-full px-3 py-2 bg-claude-surface border border-claude-border text-sm font-mono text-claude-text placeholder:text-claude-text-secondary focus:outline-none focus:border-green-500"
-                style={{ borderRadius: 0 }}
+                className="w-full px-3 py-2 bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-[13px] font-mono text-fg placeholder:text-fg-5 focus:outline-none focus:ring-1 focus:ring-accent/50"
                 disabled={mcpSaving}
               />
             ) : (
-              <p className="text-sm font-mono text-claude-text px-3 py-2 bg-claude-surface border border-claude-border" style={{ borderRadius: 0 }}>
+              <p className="text-[13px] font-mono text-fg-2 px-3 py-2 bg-ink-3 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)]">
                 {mcpEditName}
               </p>
             )}
@@ -967,31 +966,29 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
 
           {/* Type Selector */}
           <div>
-            <label className="block text-[10px] font-bold font-mono text-claude-text-secondary uppercase mb-1.5" style={{ letterSpacing: '0.1em' }}>
+            <label className="block text-[11px] font-medium uppercase tracking-[0.04em] text-fg-4 mb-1.5">
               Transport Type
             </label>
             <div className="flex gap-2">
               <button
                 onClick={() => setMcpEditType('stdio')}
                 disabled={mcpSaving}
-                className={`flex-1 px-3 py-2 text-xs font-mono border transition-colors ${
+                className={`flex-1 h-8 px-3 text-[13px] transition-colors ${
                   mcpEditType === 'stdio'
-                    ? 'bg-green-500/20 border-green-500 text-green-400'
-                    : 'bg-claude-surface border-claude-border text-claude-text-secondary hover:text-claude-text'
-                } disabled:opacity-50`}
-                style={{ borderRadius: 0 }}
+                    ? 'bg-claude-surface-hover text-fg shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)]'
+                    : 'text-fg-3 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)] hover:text-fg hover:bg-claude-surface-hover'
+                } disabled:opacity-40`}
               >
                 stdio
               </button>
               <button
                 onClick={() => setMcpEditType('url')}
                 disabled={mcpSaving}
-                className={`flex-1 px-3 py-2 text-xs font-mono border transition-colors ${
+                className={`flex-1 h-8 px-3 text-[13px] transition-colors ${
                   mcpEditType === 'url'
-                    ? 'bg-green-500/20 border-green-500 text-green-400'
-                    : 'bg-claude-surface border-claude-border text-claude-text-secondary hover:text-claude-text'
-                } disabled:opacity-50`}
-                style={{ borderRadius: 0 }}
+                    ? 'bg-claude-surface-hover text-fg shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)]'
+                    : 'text-fg-3 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)] hover:text-fg hover:bg-claude-surface-hover'
+                } disabled:opacity-40`}
               >
                 url / http
               </button>
@@ -1002,7 +999,7 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
           {mcpEditType === 'stdio' && (
             <>
               <div>
-                <label className="block text-[10px] font-bold font-mono text-claude-text-secondary uppercase mb-1.5" style={{ letterSpacing: '0.1em' }}>
+                <label className="block text-[11px] font-medium uppercase tracking-[0.04em] text-fg-4 mb-1.5">
                   Command
                 </label>
                 <input
@@ -1010,21 +1007,19 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
                   value={mcpEditCommand}
                   onChange={(e) => setMcpEditCommand(e.target.value)}
                   placeholder="npx"
-                  className="w-full px-3 py-2 bg-claude-surface border border-claude-border text-sm font-mono text-claude-text placeholder:text-claude-text-secondary focus:outline-none focus:border-green-500"
-                  style={{ borderRadius: 0 }}
+                  className="w-full px-3 py-2 bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-[13px] font-mono text-fg placeholder:text-fg-5 focus:outline-none focus:ring-1 focus:ring-accent/50"
                   disabled={mcpSaving}
                 />
               </div>
               <div>
-                <label className="block text-[10px] font-bold font-mono text-claude-text-secondary uppercase mb-1.5" style={{ letterSpacing: '0.1em' }}>
+                <label className="block text-[11px] font-medium uppercase tracking-[0.04em] text-fg-4 mb-1.5">
                   Arguments (one per line)
                 </label>
                 <textarea
                   value={mcpEditArgs}
                   onChange={(e) => setMcpEditArgs(e.target.value)}
                   placeholder={"-y\n@modelcontextprotocol/server-name"}
-                  className="w-full h-20 px-3 py-2 bg-claude-surface border border-claude-border text-sm font-mono text-claude-text placeholder:text-claude-text-secondary focus:outline-none focus:border-green-500 resize-none"
-                  style={{ borderRadius: 0 }}
+                  className="w-full h-20 px-3 py-2 bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-[13px] font-mono text-fg placeholder:text-fg-5 focus:outline-none focus:ring-1 focus:ring-accent/50 resize-none"
                   disabled={mcpSaving}
                   spellCheck={false}
                 />
@@ -1035,7 +1030,7 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
           {/* url fields */}
           {mcpEditType === 'url' && (
             <div>
-              <label className="block text-[10px] font-bold font-mono text-claude-text-secondary uppercase mb-1.5" style={{ letterSpacing: '0.1em' }}>
+              <label className="block text-[11px] font-medium uppercase tracking-[0.04em] text-fg-4 mb-1.5">
                 Server URL
               </label>
               <input
@@ -1043,8 +1038,7 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
                 value={mcpEditUrl}
                 onChange={(e) => setMcpEditUrl(e.target.value)}
                 placeholder="https://mcp.example.com/sse"
-                className="w-full px-3 py-2 bg-claude-surface border border-claude-border text-sm font-mono text-claude-text placeholder:text-claude-text-secondary focus:outline-none focus:border-green-500"
-                style={{ borderRadius: 0 }}
+                className="w-full px-3 py-2 bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-[13px] font-mono text-fg placeholder:text-fg-5 focus:outline-none focus:ring-1 focus:ring-accent/50"
                 disabled={mcpSaving}
               />
             </div>
@@ -1053,20 +1047,19 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
           {/* Environment Variables / Headers */}
           <div>
             <div className="flex items-center justify-between mb-1.5">
-              <label className="text-[10px] font-bold font-mono text-claude-text-secondary uppercase" style={{ letterSpacing: '0.1em' }}>
+              <label className="text-[11px] font-medium uppercase tracking-[0.04em] text-fg-4">
                 {mcpEditType === 'url' ? 'Headers' : 'Environment Variables'}
               </label>
               <button
                 onClick={() => setMcpEditEnv([...mcpEditEnv, { key: '', value: '' }])}
                 disabled={mcpSaving}
-                className="flex items-center gap-1 px-2 py-0.5 text-[10px] font-mono text-green-400 hover:bg-green-500/10 border border-green-500/30 transition-colors disabled:opacity-50"
-                style={{ borderRadius: 0 }}
+                className="flex items-center gap-1 h-6 px-2 text-[12px] text-fg-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] hover:bg-claude-surface-hover transition-colors disabled:opacity-40"
               >
                 <Plus size={10} /> Add
               </button>
             </div>
             {mcpEditEnv.length === 0 && (
-              <p className="text-xs text-claude-text-secondary font-mono px-3 py-2 bg-claude-surface border border-claude-border" style={{ borderRadius: 0 }}>
+              <p className="text-[12px] text-fg-4 px-3 py-2 bg-ink-1 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)]">
                 {mcpEditType === 'url'
                   ? 'No headers configured. Add API keys here.'
                   : 'No environment variables configured. Add API keys here.'}
@@ -1084,8 +1077,7 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
                       setMcpEditEnv(updated);
                     }}
                     placeholder="KEY_NAME"
-                    className="flex-1 px-2 py-1.5 bg-claude-surface border border-claude-border text-xs font-mono text-claude-text placeholder:text-claude-text-secondary focus:outline-none focus:border-green-500"
-                    style={{ borderRadius: 0 }}
+                    className="flex-1 px-2 py-1.5 bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-[12px] font-mono text-fg placeholder:text-fg-5 focus:outline-none focus:ring-1 focus:ring-accent/50"
                     disabled={mcpSaving}
                   />
                   <div className="flex-1 flex items-center gap-0">
@@ -1098,14 +1090,12 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
                         setMcpEditEnv(updated);
                       }}
                       placeholder="value"
-                      className="flex-1 min-w-0 px-2 py-1.5 bg-claude-surface border border-claude-border border-r-0 text-xs font-mono text-claude-text placeholder:text-claude-text-secondary focus:outline-none focus:border-green-500"
-                      style={{ borderRadius: 0 }}
+                      className="flex-1 min-w-0 px-2 py-1.5 bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-[12px] font-mono text-fg placeholder:text-fg-5 focus:outline-none focus:ring-1 focus:ring-accent/50"
                       disabled={mcpSaving}
                     />
                     <button
                       onClick={() => setMcpEnvVisible({ ...mcpEnvVisible, [i]: !mcpEnvVisible[i] })}
-                      className="px-1.5 py-1.5 bg-claude-surface border border-claude-border text-claude-text-secondary hover:text-claude-text transition-colors"
-                      style={{ borderRadius: 0 }}
+                      className="px-1.5 py-1.5 bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-fg-4 hover:text-fg transition-colors"
                       title={mcpEnvVisible[i] ? 'Hide value' : 'Show value'}
                     >
                       {mcpEnvVisible[i] ? <EyeOff size={12} /> : <Eye size={12} />}
@@ -1120,8 +1110,7 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
                       delete vis[i];
                       setMcpEnvVisible(vis);
                     }}
-                    className="px-1.5 py-1.5 text-red-400 hover:bg-red-500/10 transition-colors"
-                    style={{ borderRadius: 0 }}
+                    className="px-1.5 py-1.5 text-diff-del hover:bg-diff-del/10 transition-colors"
                     disabled={mcpSaving}
                     title="Remove variable"
                   >
@@ -1134,24 +1123,23 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
 
           {/* Save Result */}
           {mcpSaveResult && (
-            <div className={`flex items-start gap-2 p-3 ${mcpSaveResult.success ? 'bg-green-500/10 border border-green-500/30' : 'bg-red-500/10 border border-red-500/30'}`} style={{ borderRadius: 0 }}>
+            <div className={`flex items-start gap-2 p-3 ${mcpSaveResult.success ? 'bg-diff-add/10 shadow-[inset_0_0_0_1px_rgba(63,185,80,0.3)]' : 'bg-diff-del/10 shadow-[inset_0_0_0_1px_rgba(248,81,73,0.3)]'}`}>
               {mcpSaveResult.success ? (
-                <Check size={14} className="text-green-500 flex-shrink-0 mt-0.5" />
+                <Check size={14} className="text-diff-add flex-shrink-0 mt-0.5" />
               ) : (
-                <AlertCircle size={14} className="text-red-500 flex-shrink-0 mt-0.5" />
+                <AlertCircle size={14} className="text-diff-del flex-shrink-0 mt-0.5" />
               )}
-              <p className={`text-xs font-mono ${mcpSaveResult.success ? 'text-green-500' : 'text-red-500'}`}>
+              <p className={`text-[13px] ${mcpSaveResult.success ? 'text-diff-add-text' : 'text-diff-del-text'}`}>
                 {mcpSaveResult.message}
               </p>
             </div>
           )}
 
           {/* Action Buttons */}
-          <div className="flex items-center justify-between pt-2 border-t border-claude-border">
+          <div className="flex items-center justify-between pt-2 border-t border-line">
             <button
               onClick={handleMcpEditCancel}
-              className="px-3 py-1.5 text-xs font-mono text-claude-text-secondary hover:text-claude-text transition-colors"
-              style={{ borderRadius: 0 }}
+              className="h-8 px-3 text-[13px] text-fg-3 hover:text-fg hover:bg-claude-surface-hover transition-colors"
               disabled={mcpSaving}
             >
               Cancel
@@ -1159,8 +1147,7 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
             <button
               onClick={handleMcpSave}
               disabled={mcpSaving || !mcpEditName.trim()}
-              className="px-4 py-1.5 text-xs font-mono bg-green-600 text-white hover:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-              style={{ borderRadius: 0 }}
+              className="h-8 px-3 text-[13px] font-semibold bg-fg text-ink-0 hover:bg-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2"
             >
               {mcpSaving ? (
                 <>
@@ -1181,11 +1168,11 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
       // When showing the add dialog (no server selected)
       if (showMcpAddDialog && !server) {
         return (
-          <div className="flex-1 overflow-y-auto border-l border-claude-border">
+          <div className="flex-1 overflow-y-auto border-l border-line">
             <div className="p-4">
               <div className="flex items-center gap-2 mb-4">
-                <Server size={16} className="text-green-400" />
-                <h3 className="text-sm font-mono text-claude-text">Add MCP Server</h3>
+                <Server size={16} className="text-fg-3" />
+                <h3 className="text-[15px] font-semibold tracking-tight text-fg">Add MCP Server</h3>
               </div>
               {renderMcpConfigEditor()}
             </div>
@@ -1196,29 +1183,28 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
       // Existing server view
       if (server) {
         return (
-          <div className="flex-1 overflow-y-auto border-l border-claude-border">
+          <div className="flex-1 overflow-y-auto border-l border-line">
             <div className="p-4">
               {/* Header */}
               <div className="flex items-start justify-between mb-4">
                 <div className="flex items-center gap-2">
-                  <Server size={16} className="text-green-400" />
+                  <Server size={16} className="text-fg-3" />
                   <div>
-                    <h3 className="text-sm font-mono text-claude-text">{server.name}</h3>
+                    <h3 className="text-[15px] font-semibold tracking-tight text-fg">{server.name}</h3>
                     <div className="flex items-center gap-2 mt-1">
                       <span
-                        className={`text-xs px-1.5 py-0.5 ${
+                        className={`font-mono text-[10px] uppercase px-1.5 py-0.5 ${
                           server.status === 'active'
-                            ? 'bg-green-500/20 text-green-400'
+                            ? 'bg-diff-add/10 text-diff-add-text'
                             : server.status === 'error'
-                            ? 'bg-red-500/20 text-red-400'
-                            : 'bg-gray-500/20 text-gray-400'
+                            ? 'bg-diff-del/10 text-diff-del-text'
+                            : 'text-fg-4 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.16)]'
                         }`}
-                        style={{ borderRadius: 0 }}
                       >
                         {server.status}
                       </span>
-                      <span className="text-xs text-claude-text-secondary">{server.type}</span>
-                      <span className="text-xs text-claude-text-secondary">v{server.version}</span>
+                      <span className="text-[12px] text-fg-4">{server.type}</span>
+                      <span className="text-[12px] text-fg-4">v{server.version}</span>
                     </div>
                   </div>
                 </div>
@@ -1228,18 +1214,16 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
                     {!mcpEditMode && (
                       <button
                         onClick={() => handleMcpEdit(server.id)}
-                        className="p-1.5 hover:bg-claude-surface text-claude-text-secondary hover:text-green-400 transition-colors"
+                        className="p-1.5 hover:bg-claude-surface-hover text-fg-4 hover:text-fg transition-colors"
                         title="Edit configuration"
-                        style={{ borderRadius: 0 }}
                       >
                         <Edit3 size={14} />
                       </button>
                     )}
                     <button
                       onClick={() => handleMcpDelete(server.id)}
-                      className="p-1.5 hover:bg-claude-surface text-claude-text-secondary hover:text-red-400 transition-colors"
+                      className="p-1.5 hover:bg-claude-surface-hover text-fg-4 hover:text-diff-del transition-colors"
                       title="Remove server"
-                      style={{ borderRadius: 0 }}
                       disabled={mcpDeleting}
                     >
                       {mcpDeleting ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
@@ -1255,37 +1239,36 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
                 <>
                   {/* Description */}
                   <div className="mb-4">
-                    <h4 className="text-[10px] font-bold font-mono text-claude-text-secondary uppercase mb-2" style={{ letterSpacing: '0.1em' }}>Description</h4>
-                    <p className="text-sm text-claude-text">{server.description}</p>
+                    <h4 className="text-[11px] font-medium uppercase tracking-[0.04em] text-fg-4 mb-2">Description</h4>
+                    <p className="text-[13px] text-fg-2">{server.description}</p>
                   </div>
 
                   {/* Error Message */}
                   {server.errorMessage && (
-                    <div className="mb-4 p-3 bg-red-500/10 border border-red-500/30" style={{ borderRadius: 0 }}>
-                      <h4 className="text-[10px] font-bold font-mono text-red-400 uppercase mb-1" style={{ letterSpacing: '0.1em' }}>Error</h4>
-                      <p className="text-xs text-red-400">{server.errorMessage}</p>
+                    <div className="mb-4 p-3 bg-diff-del/10 shadow-[inset_0_0_0_1px_rgba(248,81,73,0.3)]">
+                      <h4 className="text-[11px] font-medium uppercase tracking-[0.04em] text-diff-del-text mb-1\">Error</h4>
+                      <p className="text-[13px] text-diff-del-text">{server.errorMessage}</p>
                     </div>
                   )}
 
                   {/* Tools */}
                   {server.tools.length > 0 && (
                     <div>
-                      <h4 className="text-[10px] font-bold font-mono text-claude-text-secondary uppercase mb-2" style={{ letterSpacing: '0.1em' }}>
+                      <h4 className="text-[11px] font-medium uppercase tracking-[0.04em] text-fg-4 mb-2">
                         Available Tools ({server.tools.length})
                       </h4>
                       <div className="space-y-2">
                         {server.tools.map((tool) => (
                           <div
                             key={tool.name}
-                            className="p-2 bg-claude-surface border border-claude-border"
-                            style={{ borderRadius: 0 }}
+                            className="p-2 bg-ink-1 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)]"
                           >
                             <div className="flex items-center gap-2">
-                              <Wrench size={12} className="text-claude-accent" />
-                              <span className="text-xs font-mono text-claude-text">{tool.name}</span>
+                              <Wrench size={12} className="text-fg-4" />
+                              <span className="text-[12px] font-mono text-fg">{tool.name}</span>
                             </div>
                             {tool.description && (
-                              <p className="text-xs text-claude-text-secondary mt-1 ml-5">
+                              <p className="text-[12px] text-fg-4 mt-1 ml-5">
                                 {tool.description}
                               </p>
                             )}
@@ -1306,19 +1289,19 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
     if (!selectedItem) return null;
 
     return (
-      <div className="flex-1 overflow-y-auto border-l border-claude-border">
+      <div className="flex-1 overflow-y-auto border-l border-line">
         <div className="p-4">
           {/* Header */}
           <div className="flex items-start justify-between mb-4">
             <div className="flex items-center gap-2">
-              {isCommand && <Terminal size={16} className="text-claude-accent" />}
-              {isSkill && <Sparkles size={16} className="text-purple-400" />}
-              {isAgent && <Bot size={16} className="text-blue-400" />}
+              {isCommand && <Terminal size={16} className="text-fg-3" />}
+              {isSkill && <Sparkles size={16} className="text-fg-3" />}
+              {isAgent && <Bot size={16} className="text-fg-3" />}
               <div>
-                <h3 className="text-sm font-mono text-claude-text">
+                <h3 className="text-[15px] font-semibold tracking-tight text-fg">
                   {isCommand ? `/${selectedItem.name}` : isAgent ? `@agent-${selectedItem.name}` : (selectedItem as Skill).name}
                 </h3>
-                <p className="text-xs text-claude-text-secondary mt-1">
+                <p className="text-[12px] text-fg-4 mt-1">
                   {(selectedItem as any).scope === 'user' ? 'User Global' : 'Project'}
                   {(isCommand || !isAgent) && ` • ${(selectedItem as Command | Skill).path}`}
                 </p>
@@ -1327,14 +1310,14 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
             <div className="flex items-center gap-1">
               <button
                 onClick={() => handleEditItem(selectedItem as Command | Skill | AgentDefinition)}
-                className="p-1 hover:bg-claude-surface text-claude-text-secondary hover:text-claude-accent"
+                className="p-1 hover:bg-claude-surface-hover text-fg-4 hover:text-fg"
                 title="Edit file"
               >
                 <Edit3 size={14} />
               </button>
               <button
                 onClick={() => copyToClipboard(isCommand ? `/${selectedItem.name}` : `@agent-${selectedItem.name}`)}
-                className="p-1 hover:bg-claude-surface text-claude-text-secondary"
+                className="p-1 hover:bg-claude-surface-hover text-fg-4"
                 title="Copy usage"
               >
                 <Copy size={14} />
@@ -1345,16 +1328,16 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
           {/* Description */}
           {(selectedItem as any).description && (
             <div className="mb-4">
-              <h4 className="text-xs font-mono text-claude-text-secondary uppercase mb-2">Description</h4>
-              <p className="text-sm text-claude-text">{(selectedItem as any).description}</p>
+              <h4 className="text-[11px] font-medium uppercase tracking-[0.04em] text-fg-4 mb-2">Description</h4>
+              <p className="text-[13px] text-fg-2">{(selectedItem as any).description}</p>
             </div>
           )}
 
           {/* Content */}
           {isCommand && (
             <div>
-              <h4 className="text-xs font-mono text-claude-text-secondary uppercase mb-2">Prompt</h4>
-              <pre className="text-xs text-claude-text bg-claude-surface p-3 overflow-x-auto font-mono whitespace-pre-wrap">
+              <h4 className="text-[11px] font-medium uppercase tracking-[0.04em] text-fg-4 mb-2">Prompt</h4>
+              <pre className="text-[12px] text-fg-2 bg-ink-term shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)] p-3 overflow-x-auto font-mono whitespace-pre-wrap">
                 {(selectedItem as Command).content}
               </pre>
             </div>
@@ -1362,8 +1345,8 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
 
           {isSkill && (
             <div>
-              <h4 className="text-xs font-mono text-claude-text-secondary uppercase mb-2">SKILL.md</h4>
-              <pre className="text-xs text-claude-text bg-claude-surface p-3 overflow-x-auto font-mono whitespace-pre-wrap max-h-96 overflow-y-auto">
+              <h4 className="text-[11px] font-medium uppercase tracking-[0.04em] text-fg-4 mb-2">SKILL.md</h4>
+              <pre className="text-[12px] text-fg-2 bg-ink-term shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)] p-3 overflow-x-auto font-mono whitespace-pre-wrap max-h-96 overflow-y-auto">
                 {(selectedItem as Skill).content}
               </pre>
             </div>
@@ -1371,16 +1354,16 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
 
           {isAgent && (
             <div>
-              <h4 className="text-xs font-mono text-claude-text-secondary uppercase mb-2">System Prompt</h4>
-              <pre className="text-xs text-claude-text bg-claude-surface p-3 overflow-x-auto font-mono whitespace-pre-wrap">
+              <h4 className="text-[11px] font-medium uppercase tracking-[0.04em] text-fg-4 mb-2">System Prompt</h4>
+              <pre className="text-[12px] text-fg-2 bg-ink-term shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)] p-3 overflow-x-auto font-mono whitespace-pre-wrap">
                 {(selectedItem as AgentDefinition).systemPrompt}
               </pre>
               {(selectedItem as AgentDefinition).disallowedTools && (
                 <div className="mt-4">
-                  <h4 className="text-xs font-mono text-claude-text-secondary uppercase mb-2">Disallowed Tools</h4>
+                  <h4 className="text-[11px] font-medium uppercase tracking-[0.04em] text-fg-4 mb-2">Disallowed Tools</h4>
                   <div className="flex flex-wrap gap-1">
                     {(selectedItem as AgentDefinition).disallowedTools!.map(tool => (
-                      <span key={tool} className="text-xs bg-red-500/20 text-red-400 px-2 py-1">
+                      <span key={tool} className="font-mono text-[11px] bg-diff-del/10 text-diff-del-text px-1.5 py-0.5">
                         {tool}
                       </span>
                     ))}
@@ -1391,9 +1374,9 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
           )}
 
           {/* Usage example */}
-          <div className="mt-6 p-3 bg-claude-bg border border-claude-border">
-            <h4 className="text-xs font-mono text-claude-text-secondary uppercase mb-2">Usage</h4>
-            <p className="text-xs text-claude-text font-mono">
+          <div className="mt-6 p-3 bg-ink-1 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)]">
+            <h4 className="text-[11px] font-medium uppercase tracking-[0.04em] text-fg-4 mb-2">Usage</h4>
+            <p className="text-[13px] text-fg font-mono">
               {isCommand && `Type /${selectedItem.name} in the input to use this command`}
               {isAgent && `Type @agent-${selectedItem.name} in your message to invoke this agent`}
               {isSkill && `Type /${(selectedItem as Skill).name} to invoke this skill`}
@@ -1407,9 +1390,9 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
   if (loading) {
     return (
       <div className="h-full flex items-center justify-center">
-        <div className="flex items-center gap-2 text-claude-text-secondary">
+        <div className="flex items-center gap-2 text-fg-4">
           <Loader2 size={16} className="animate-spin" />
-          <span className="text-sm">Loading extensions...</span>
+          <span className="text-[13px]">Loading extensions...</span>
         </div>
       </div>
     );
@@ -1418,13 +1401,13 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
   return (
     <div className="h-full flex flex-col">
       {/* Tab Bar */}
-      <div className="flex border-b border-claude-border flex-shrink-0">
+      <div className="flex border-b border-line flex-shrink-0">
         <button
           onClick={() => setActiveTab('installed')}
-          className={`flex items-center gap-2 px-4 py-2 text-sm font-mono transition-colors ${
+          className={`flex items-center gap-2 h-9 px-4 text-[13px] transition-colors ${
             activeTab === 'installed'
-              ? 'text-claude-text border-b-2 border-claude-accent bg-claude-surface/50'
-              : 'text-claude-text-secondary hover:text-claude-text'
+              ? 'text-fg border-b-2 border-accent bg-claude-surface-hover'
+              : 'text-fg-4 hover:text-fg'
           }`}
         >
           <FolderGit size={14} />
@@ -1432,10 +1415,10 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
         </button>
         <button
           onClick={() => setActiveTab('marketplace')}
-          className={`flex items-center gap-2 px-4 py-2 text-sm font-mono transition-colors ${
+          className={`flex items-center gap-2 h-9 px-4 text-[13px] transition-colors ${
             activeTab === 'marketplace'
-              ? 'text-claude-text border-b-2 border-claude-accent bg-claude-surface/50'
-              : 'text-claude-text-secondary hover:text-claude-text'
+              ? 'text-fg border-b-2 border-accent bg-claude-surface-hover'
+              : 'text-fg-4 hover:text-fg'
           }`}
         >
           <Store size={14} />
@@ -1447,22 +1430,22 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
       {activeTab === 'installed' ? (
         <div className="flex-1 flex overflow-hidden">
           {/* List Panel */}
-          <div className="w-80 border-r border-claude-border overflow-y-auto flex-shrink-0">
+          <div className="w-80 border-r border-line overflow-y-auto flex-shrink-0">
             {/* MCP Servers Section */}
-            <div className="border-b border-claude-border">
+            <div className="border-b border-line">
               <div className="flex items-center relative">
                 <button
                   onClick={() => toggleType('mcpServers')}
-                  className="flex-1 px-3 py-2 flex items-center gap-2 hover:bg-claude-surface transition-colors"
+                  className="flex-1 px-3 py-2 flex items-center gap-2 hover:bg-claude-surface-hover transition-colors"
                 >
                   {expandedType === 'mcpServers' ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                  <Server size={14} className="text-green-400" />
-                  <span className="text-sm font-mono text-claude-text">MCP Servers</span>
-                  <span className="text-xs text-claude-text-secondary">({mcpServers.length})</span>
+                  <Server size={14} className="text-fg-3" />
+                  <span className="text-[13px] font-medium text-fg">MCP Servers</span>
+                  <span className="font-mono text-[11px] text-fg-4">({mcpServers.length})</span>
                 </button>
                 <button
                   onClick={handleMcpAdd}
-                  className="px-2 py-2 hover:bg-claude-surface text-claude-text-secondary hover:text-green-400 transition-colors"
+                  className="px-2 py-2 hover:bg-claude-surface-hover text-fg-4 hover:text-fg transition-colors"
                   title="Add MCP server"
                 >
                   <Plus size={14} />
@@ -1472,20 +1455,20 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
             </div>
 
             {/* Plugins Section */}
-            <div className="border-b border-claude-border">
+            <div className="border-b border-line">
               <div className="flex items-center relative">
                 <button
                   onClick={() => toggleType('plugins')}
-                  className="flex-1 px-3 py-2 flex items-center gap-2 hover:bg-claude-surface transition-colors"
+                  className="flex-1 px-3 py-2 flex items-center gap-2 hover:bg-claude-surface-hover transition-colors"
                 >
                   {expandedType === 'plugins' ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                  <Package size={14} className="text-purple-400" />
-                  <span className="text-sm font-mono text-claude-text">Plugins</span>
-                  <span className="text-xs text-claude-text-secondary">({plugins.length})</span>
+                  <Package size={14} className="text-fg-3" />
+                  <span className="text-[13px] font-medium text-fg">Plugins</span>
+                  <span className="font-mono text-[11px] text-fg-4">({plugins.length})</span>
                 </button>
                 <button
                   onClick={() => setActiveTab('marketplace')}
-                  className="px-2 py-2 hover:bg-claude-surface text-claude-text-secondary hover:text-purple-400 transition-colors"
+                  className="px-2 py-2 hover:bg-claude-surface-hover text-fg-4 hover:text-fg transition-colors"
                   title="Browse plugin marketplace"
                 >
                   <Plus size={14} />
@@ -1495,20 +1478,20 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
             </div>
 
             {/* Commands Section */}
-            <div className="border-b border-claude-border">
+            <div className="border-b border-line">
               <div className="flex items-center relative">
                 <button
                   onClick={() => toggleType('commands')}
-                  className="flex-1 px-3 py-2 flex items-center gap-2 hover:bg-claude-surface transition-colors"
+                  className="flex-1 px-3 py-2 flex items-center gap-2 hover:bg-claude-surface-hover transition-colors"
                 >
                   {expandedType === 'commands' ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                  <Terminal size={14} className="text-claude-accent" />
-                  <span className="text-sm font-mono text-claude-text">Commands</span>
-                  <span className="text-xs text-claude-text-secondary">({commands.length})</span>
+                  <Terminal size={14} className="text-fg-3" />
+                  <span className="text-[13px] font-medium text-fg">Commands</span>
+                  <span className="font-mono text-[11px] text-fg-4">({commands.length})</span>
                 </button>
                 <button
                   onClick={() => setActiveTab('marketplace')}
-                  className="px-2 py-2 hover:bg-claude-surface text-claude-text-secondary hover:text-claude-accent transition-colors"
+                  className="px-2 py-2 hover:bg-claude-surface-hover text-fg-4 hover:text-fg transition-colors"
                   title="Browse plugins for more commands"
                 >
                   <Plus size={14} />
@@ -1518,23 +1501,23 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
             </div>
 
             {/* Skills Section */}
-            <div className="border-b border-claude-border">
+            <div className="border-b border-line">
               <div className="flex items-center relative">
                 <button
                   onClick={() => toggleType('skills')}
-                  className="flex-1 px-3 py-2 flex items-center gap-2 hover:bg-claude-surface transition-colors"
+                  className="flex-1 px-3 py-2 flex items-center gap-2 hover:bg-claude-surface-hover transition-colors"
                 >
                   {expandedType === 'skills' ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                  <Sparkles size={14} className="text-purple-400" />
-                  <span className="text-sm font-mono text-claude-text">Skills</span>
-                  <span className="text-xs text-claude-text-secondary">({skills.length})</span>
+                  <Sparkles size={14} className="text-fg-3" />
+                  <span className="text-[13px] font-medium text-fg">Skills</span>
+                  <span className="font-mono text-[11px] text-fg-4">({skills.length})</span>
                 </button>
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
                     setShowSkillMenu(!showSkillMenu);
                   }}
-                  className="px-2 py-2 hover:bg-claude-surface text-claude-text-secondary hover:text-purple-400 transition-colors"
+                  className="px-2 py-2 hover:bg-claude-surface-hover text-fg-4 hover:text-fg transition-colors"
                   title="Add skill"
                 >
                   <Plus size={14} />
@@ -1544,19 +1527,19 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
                 {showSkillMenu && (
                   <div
                     ref={skillMenuRef}
-                    className="absolute right-0 top-full mt-1 z-50 bg-claude-bg border border-claude-border shadow-lg min-w-48"
+                    className="absolute right-0 top-full mt-1 z-50 bg-ink-3 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1),0_12px_32px_rgba(0,0,0,0.4)] min-w-48"
                   >
                     <button
                       onClick={() => {
                         setShowSkillMenu(false);
                         setShowCreateDialog(true);
                       }}
-                      className="w-full px-3 py-2 flex items-center gap-2 hover:bg-claude-surface text-left transition-colors"
+                      className="w-full px-3 py-2 flex items-center gap-2 hover:bg-claude-surface-hover text-left transition-colors"
                     >
-                      <FileText size={14} className="text-purple-400" />
+                      <FileText size={14} className="text-fg-3" />
                       <div>
-                        <span className="text-sm text-claude-text">Create New Skill</span>
-                        <p className="text-xs text-claude-text-secondary">Write a skill from scratch</p>
+                        <span className="text-[13px] text-fg-2">Create New Skill</span>
+                        <p className="text-[12px] text-fg-4">Write a skill from scratch</p>
                       </div>
                     </button>
                     <button
@@ -1564,12 +1547,12 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
                         setShowSkillMenu(false);
                         setShowInstallDialog(true);
                       }}
-                      className="w-full px-3 py-2 flex items-center gap-2 hover:bg-claude-surface text-left transition-colors border-t border-claude-border"
+                      className="w-full px-3 py-2 flex items-center gap-2 hover:bg-claude-surface-hover text-left transition-colors border-t border-line"
                     >
-                      <Github size={14} className="text-claude-text-secondary" />
+                      <Github size={14} className="text-fg-4" />
                       <div>
-                        <span className="text-sm text-claude-text">Install from GitHub</span>
-                        <p className="text-xs text-claude-text-secondary">Clone a skill repository</p>
+                        <span className="text-[13px] text-fg-2">Install from GitHub</span>
+                        <p className="text-[12px] text-fg-4">Clone a skill repository</p>
                       </div>
                     </button>
                   </div>
@@ -1579,20 +1562,20 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
             </div>
 
             {/* Agents Section */}
-            <div className="border-b border-claude-border">
+            <div className="border-b border-line">
               <div className="flex items-center relative">
                 <button
                   onClick={() => toggleType('agents')}
-                  className="flex-1 px-3 py-2 flex items-center gap-2 hover:bg-claude-surface transition-colors"
+                  className="flex-1 px-3 py-2 flex items-center gap-2 hover:bg-claude-surface-hover transition-colors"
                 >
                   {expandedType === 'agents' ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                  <Bot size={14} className="text-blue-400" />
-                  <span className="text-sm font-mono text-claude-text">Agents</span>
-                  <span className="text-xs text-claude-text-secondary">({agents.length})</span>
+                  <Bot size={14} className="text-fg-3" />
+                  <span className="text-[13px] font-medium text-fg">Agents</span>
+                  <span className="font-mono text-[11px] text-fg-4">({agents.length})</span>
                 </button>
                 <button
                   onClick={() => setActiveTab('marketplace')}
-                  className="px-2 py-2 hover:bg-claude-surface text-claude-text-secondary hover:text-blue-400 transition-colors"
+                  className="px-2 py-2 hover:bg-claude-surface-hover text-fg-4 hover:text-fg transition-colors"
                   title="Browse plugins for more agents"
                 >
                   <Plus size={14} />
@@ -1608,8 +1591,8 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
           ) : (
             <div className="flex-1 flex items-center justify-center">
               <div className="text-center">
-                <Terminal size={48} className="mx-auto mb-4 text-claude-text-secondary opacity-50" />
-                <p className="text-sm text-claude-text-secondary">Select an extension to view details</p>
+                <Terminal size={48} className="mx-auto mb-4 text-fg-5" />
+                <p className="text-[13px] text-fg-3">Select an extension to view details</p>
               </div>
             </div>
           )}
@@ -1625,23 +1608,23 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
 
       {/* Install Skill Dialog */}
       {showInstallDialog && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-claude-bg border border-claude-border w-96 max-w-[90%]">
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+          <div className="bg-ink-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1),0_16px_40px_rgba(0,0,0,0.4)] w-96 max-w-[90%]">
             {/* Header */}
-            <div className="flex items-center justify-between px-4 py-3 border-b border-claude-border">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-line">
               <div className="flex items-center gap-2">
                 {installMode === 'github' ? (
-                  <Github size={16} className="text-claude-text-secondary" />
+                  <Github size={16} className="text-fg-4" />
                 ) : (
-                  <FileText size={16} className="text-claude-text-secondary" />
+                  <FileText size={16} className="text-fg-4" />
                 )}
-                <span className="text-sm font-mono text-claude-text">
+                <span className="text-[16px] font-semibold tracking-tight text-fg">
                   {installMode === 'github' ? 'Install from GitHub' : 'Upload Skill File'}
                 </span>
               </div>
               <button
                 onClick={handleCloseInstallDialog}
-                className="text-claude-text-secondary hover:text-claude-text transition-colors"
+                className="text-fg-4 hover:text-fg transition-colors"
                 disabled={installing}
               >
                 <X size={16} />
@@ -1655,11 +1638,11 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
                 <button
                   onClick={() => setInstallMode('github')}
                   disabled={installing}
-                  className={`flex-1 px-3 py-2 text-xs font-mono border transition-colors ${
+                  className={`flex-1 h-8 px-3 text-[13px] transition-colors ${
                     installMode === 'github'
-                      ? 'bg-purple-500/20 border-purple-500 text-purple-400'
-                      : 'bg-claude-surface border-claude-border text-claude-text-secondary hover:text-claude-text'
-                  } disabled:opacity-50`}
+                      ? 'bg-claude-surface-hover text-fg shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)]'
+                      : 'text-fg-3 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)] hover:text-fg hover:bg-claude-surface-hover'
+                  } disabled:opacity-40`}
                 >
                   <Github size={14} className="inline mr-1.5" />
                   GitHub
@@ -1667,11 +1650,11 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
                 <button
                   onClick={() => setInstallMode('file')}
                   disabled={installing}
-                  className={`flex-1 px-3 py-2 text-xs font-mono border transition-colors ${
+                  className={`flex-1 h-8 px-3 text-[13px] transition-colors ${
                     installMode === 'file'
-                      ? 'bg-purple-500/20 border-purple-500 text-purple-400'
-                      : 'bg-claude-surface border-claude-border text-claude-text-secondary hover:text-claude-text'
-                  } disabled:opacity-50`}
+                      ? 'bg-claude-surface-hover text-fg shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)]'
+                      : 'text-fg-3 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)] hover:text-fg hover:bg-claude-surface-hover'
+                  } disabled:opacity-40`}
                 >
                   <FileText size={14} className="inline mr-1.5" />
                   Local File
@@ -1681,7 +1664,7 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
               {/* GitHub Mode */}
               {installMode === 'github' && (
                 <div>
-                  <label className="block text-xs font-mono text-claude-text-secondary uppercase mb-2">
+                  <label className="block text-[11px] font-medium uppercase tracking-[0.04em] text-fg-4 mb-2">
                     GitHub Source
                   </label>
                   <input
@@ -1697,10 +1680,10 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
                       }
                     }}
                     placeholder="e.g., remotion-dev/skills"
-                    className="w-full px-3 py-2 bg-claude-surface border border-claude-border text-sm font-mono text-claude-text placeholder:text-claude-text-secondary focus:outline-none focus:border-purple-500"
+                    className="w-full px-3 py-2 bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-[13px] font-mono text-fg placeholder:text-fg-5 focus:outline-none focus:ring-1 focus:ring-accent/50"
                     disabled={installing}
                   />
-                  <p className="text-xs text-claude-text-secondary mt-1">
+                  <p className="text-[12px] text-fg-4 mt-1">
                     Enter a GitHub repo (user/repo) or full URL
                   </p>
                 </div>
@@ -1709,7 +1692,7 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
               {/* File Upload Mode */}
               {installMode === 'file' && (
                 <div>
-                  <label className="block text-xs font-mono text-claude-text-secondary uppercase mb-2">
+                  <label className="block text-[11px] font-medium uppercase tracking-[0.04em] text-fg-4 mb-2">
                     Skill File (.md or .skill)
                   </label>
                   <input
@@ -1729,25 +1712,25 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
                     <button
                       onClick={() => fileInputRef.current?.click()}
                       disabled={installing}
-                      className="w-full px-3 py-2 bg-claude-surface border border-claude-border text-sm font-mono text-claude-text hover:border-purple-500 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+                      className="w-full px-3 py-2 text-[13px] text-fg-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] hover:bg-claude-surface-hover transition-colors disabled:opacity-40 flex items-center justify-center gap-2"
                     >
                       <FileText size={14} />
                       {installFile ? installFile.name : 'Choose file...'}
                     </button>
                     {installFile && (
-                      <div className="flex items-center justify-between px-3 py-2 bg-purple-500/10 border border-purple-500/30">
-                        <span className="text-xs text-purple-400 font-mono">{installFile.name}</span>
+                      <div className="flex items-center justify-between px-3 py-2 bg-accent/10 shadow-[inset_0_0_0_1px_rgba(76,154,255,0.3)]">
+                        <span className="text-[12px] text-accent-text font-mono">{installFile.name}</span>
                         <button
                           onClick={() => setInstallFile(null)}
                           disabled={installing}
-                          className="text-purple-400 hover:text-purple-300 transition-colors"
+                          className="text-accent-text hover:text-fg transition-colors"
                         >
                           <X size={12} />
                         </button>
                       </div>
                     )}
                   </div>
-                  <p className="text-xs text-claude-text-secondary mt-1">
+                  <p className="text-[12px] text-fg-4 mt-1">
                     Select a skill file. The filename becomes the skill name (e.g., my-skill.md → my-skill)
                   </p>
                 </div>
@@ -1760,22 +1743,22 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
                   checked={installGlobal}
                   onChange={(e) => setInstallGlobal(e.target.checked)}
                   disabled={installing}
-                  className="accent-purple-500"
+                  className="accent-[#4C9AFF]"
                 />
-                <label htmlFor="installGlobal" className="text-xs text-claude-text-secondary">
+                <label htmlFor="installGlobal" className="text-[12px] text-fg-4">
                   Install globally (available in all projects)
                 </label>
               </div>
 
               {/* Result message */}
               {installResult && (
-                <div className={`flex items-start gap-2 p-3 ${installResult.success ? 'bg-green-500/10 border border-green-500/30' : 'bg-red-500/10 border border-red-500/30'}`}>
+                <div className={`flex items-start gap-2 p-3 ${installResult.success ? 'bg-diff-add/10 shadow-[inset_0_0_0_1px_rgba(63,185,80,0.3)]' : 'bg-diff-del/10 shadow-[inset_0_0_0_1px_rgba(248,81,73,0.3)]'}`}>
                   {installResult.success ? (
-                    <Check size={14} className="text-green-500 flex-shrink-0 mt-0.5" />
+                    <Check size={14} className="text-diff-add flex-shrink-0 mt-0.5" />
                   ) : (
-                    <AlertCircle size={14} className="text-red-500 flex-shrink-0 mt-0.5" />
+                    <AlertCircle size={14} className="text-diff-del flex-shrink-0 mt-0.5" />
                   )}
-                  <p className={`text-xs ${installResult.success ? 'text-green-500' : 'text-red-500'}`}>
+                  <p className={`text-[13px] ${installResult.success ? 'text-diff-add-text' : 'text-diff-del-text'}`}>
                     {installResult.message}
                   </p>
                 </div>
@@ -1783,10 +1766,10 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
             </div>
 
             {/* Footer */}
-            <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-claude-border">
+            <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-line">
               <button
                 onClick={handleCloseInstallDialog}
-                className="px-3 py-1.5 text-xs font-mono text-claude-text-secondary hover:text-claude-text transition-colors"
+                className="h-8 px-3 text-[13px] text-fg-3 hover:text-fg hover:bg-claude-surface-hover transition-colors"
                 disabled={installing}
               >
                 Cancel
@@ -1794,7 +1777,7 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
               <button
                 onClick={handleInstallSkill}
                 disabled={installing || (installMode === 'github' ? !installSource.trim() : !installFile)}
-                className="px-3 py-1.5 text-xs font-mono bg-purple-500 text-white hover:bg-purple-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                className="h-8 px-3 text-[13px] font-semibold bg-fg text-ink-0 hover:bg-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2"
               >
                 {installing ? (
                   <>
@@ -1815,17 +1798,17 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
 
       {/* Create Skill Dialog */}
       {showCreateDialog && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-claude-bg border border-claude-border w-[600px] max-w-[95%] max-h-[90%] flex flex-col">
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+          <div className="bg-ink-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1),0_16px_40px_rgba(0,0,0,0.4)] w-[600px] max-w-[95%] max-h-[90%] flex flex-col">
             {/* Header */}
-            <div className="flex items-center justify-between px-4 py-3 border-b border-claude-border flex-shrink-0">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-line flex-shrink-0">
               <div className="flex items-center gap-2">
-                <Sparkles size={16} className="text-purple-400" />
-                <span className="text-sm font-mono text-claude-text">Create New Skill</span>
+                <Sparkles size={16} className="text-fg-3" />
+                <span className="text-[16px] font-semibold tracking-tight text-fg">Create New Skill</span>
               </div>
               <button
                 onClick={handleCloseCreateDialog}
-                className="text-claude-text-secondary hover:text-claude-text transition-colors"
+                className="text-fg-4 hover:text-fg transition-colors"
                 disabled={creating}
               >
                 <X size={16} />
@@ -1836,7 +1819,7 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
             <div className="p-4 space-y-4 flex-1 overflow-y-auto">
               {/* Skill Name */}
               <div>
-                <label className="block text-xs font-mono text-claude-text-secondary uppercase mb-2">
+                <label className="block text-[11px] font-medium uppercase tracking-[0.04em] text-fg-4 mb-2">
                   Skill Name
                 </label>
                 <input
@@ -1850,10 +1833,10 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
                     }
                   }}
                   placeholder="my-skill-name"
-                  className="w-full px-3 py-2 bg-claude-surface border border-claude-border text-sm font-mono text-claude-text placeholder:text-claude-text-secondary focus:outline-none focus:border-purple-500"
+                  className="w-full px-3 py-2 bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-[13px] font-mono text-fg placeholder:text-fg-5 focus:outline-none focus:ring-1 focus:ring-accent/50"
                   disabled={creating}
                 />
-                <p className="text-xs text-claude-text-secondary mt-1">
+                <p className="text-[12px] text-fg-4 mt-1">
                   Use lowercase letters, numbers, hyphens, and underscores
                 </p>
               </div>
@@ -1867,10 +1850,10 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
                     checked={!newSkillGlobal}
                     onChange={() => setNewSkillGlobal(false)}
                     disabled={creating || !projectPath}
-                    className="accent-purple-500"
+                    className="accent-[#4C9AFF]"
                   />
-                  <FolderGit size={14} className="text-claude-text-secondary" />
-                  <span className="text-xs text-claude-text">Project</span>
+                  <FolderGit size={14} className="text-fg-4" />
+                  <span className="text-[13px] text-fg-2">Project</span>
                 </label>
                 <label className="flex items-center gap-2 cursor-pointer">
                   <input
@@ -1879,39 +1862,39 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
                     checked={newSkillGlobal}
                     onChange={() => setNewSkillGlobal(true)}
                     disabled={creating}
-                    className="accent-purple-500"
+                    className="accent-[#4C9AFF]"
                   />
-                  <User size={14} className="text-claude-text-secondary" />
-                  <span className="text-xs text-claude-text">Global (all projects)</span>
+                  <User size={14} className="text-fg-4" />
+                  <span className="text-[13px] text-fg-2">Global (all projects)</span>
                 </label>
               </div>
 
               {/* Skill Content Editor */}
               <div className="flex-1">
-                <label className="block text-xs font-mono text-claude-text-secondary uppercase mb-2">
+                <label className="block text-[11px] font-medium uppercase tracking-[0.04em] text-fg-4 mb-2">
                   SKILL.md Content
                 </label>
                 <textarea
                   value={newSkillContent}
                   onChange={(e) => setNewSkillContent(e.target.value)}
-                  className="w-full h-64 px-3 py-2 bg-claude-surface border border-claude-border text-sm font-mono text-claude-text placeholder:text-claude-text-secondary focus:outline-none focus:border-purple-500 resize-none"
+                  className="w-full h-64 px-3 py-2 bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-[13px] font-mono text-fg placeholder:text-fg-5 focus:outline-none focus:ring-1 focus:ring-accent/50 resize-none"
                   disabled={creating}
                   spellCheck={false}
                 />
-                <p className="text-xs text-claude-text-secondary mt-1">
+                <p className="text-[12px] text-fg-4 mt-1">
                   Define your skill's behavior and instructions using Markdown
                 </p>
               </div>
 
               {/* Result message */}
               {createResult && (
-                <div className={`flex items-start gap-2 p-3 ${createResult.success ? 'bg-green-500/10 border border-green-500/30' : 'bg-red-500/10 border border-red-500/30'}`}>
+                <div className={`flex items-start gap-2 p-3 ${createResult.success ? 'bg-diff-add/10 shadow-[inset_0_0_0_1px_rgba(63,185,80,0.3)]' : 'bg-diff-del/10 shadow-[inset_0_0_0_1px_rgba(248,81,73,0.3)]'}`}>
                   {createResult.success ? (
-                    <Check size={14} className="text-green-500 flex-shrink-0 mt-0.5" />
+                    <Check size={14} className="text-diff-add flex-shrink-0 mt-0.5" />
                   ) : (
-                    <AlertCircle size={14} className="text-red-500 flex-shrink-0 mt-0.5" />
+                    <AlertCircle size={14} className="text-diff-del flex-shrink-0 mt-0.5" />
                   )}
-                  <p className={`text-xs ${createResult.success ? 'text-green-500' : 'text-red-500'}`}>
+                  <p className={`text-[13px] ${createResult.success ? 'text-diff-add-text' : 'text-diff-del-text'}`}>
                     {createResult.message}
                   </p>
                 </div>
@@ -1919,10 +1902,10 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
             </div>
 
             {/* Footer */}
-            <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-claude-border flex-shrink-0">
+            <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-line flex-shrink-0">
               <button
                 onClick={handleCloseCreateDialog}
-                className="px-3 py-1.5 text-xs font-mono text-claude-text-secondary hover:text-claude-text transition-colors"
+                className="h-8 px-3 text-[13px] text-fg-3 hover:text-fg hover:bg-claude-surface-hover transition-colors"
                 disabled={creating}
               >
                 Cancel
@@ -1930,7 +1913,7 @@ export default function ExtensionsExplorer({ sessionId, projectPath }: Extension
               <button
                 onClick={handleCreateSkill}
                 disabled={creating || !newSkillName.trim()}
-                className="px-3 py-1.5 text-xs font-mono bg-purple-500 text-white hover:bg-purple-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                className="h-8 px-3 text-[13px] font-semibold bg-fg text-ink-0 hover:bg-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2"
               >
                 {creating ? (
                   <>

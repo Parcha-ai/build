@@ -592,16 +592,14 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
   return (
     <Dialog.Root open={isOpen} onOpenChange={(open) => !open && handleClose()}>
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 bg-black/50" />
+        <Dialog.Overlay className="fixed inset-0 bg-black/60" />
         <Dialog.Content
-          className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-w-lg font-mono bg-claude-surface border border-claude-border shadow-xl"
-          style={{ borderRadius: 0 }}
+          className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-w-lg bg-ink-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1),0_16px_40px_rgba(0,0,0,0.4)]"
         >
           {/* Header */}
-          <div className="flex items-center justify-between p-4 border-b border-claude-border">
+          <div className="flex items-center justify-between px-4 py-3 border-b border-line">
             <Dialog.Title
-              className="text-sm font-bold text-claude-text"
-              style={{ letterSpacing: '0.1em' }}
+              className="text-[16px] font-semibold tracking-tight text-fg"
             >
               {step === 'source' && 'NEW SESSION'}
               {step === 'repo' && 'SELECT REPOSITORY'}
@@ -613,8 +611,7 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
             </Dialog.Title>
             <Dialog.Close asChild>
               <button
-                className="p-1 hover:bg-claude-bg transition-colors text-claude-text-secondary"
-                style={{ borderRadius: 0 }}
+                className="p-1 hover:bg-claude-surface-hover hover:text-fg transition-colors text-fg-3"
               >
                 <X size={16} />
               </button>
@@ -625,17 +622,17 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
           <div className="p-4">
             {/* Live setup progress — shown for ANY step while creating (SSH, dev, teleport) */}
             {isCreating && (
-              <div className="p-3 mb-4 bg-claude-bg border border-claude-border">
+              <div className="p-3 mb-4 bg-ink-1 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)]">
                 <div className="flex items-center gap-2 mb-2">
-                  <Loader2 size={12} className="animate-spin text-cyan-400" />
-                  <span className="text-[10px] font-bold uppercase text-cyan-400" style={{ letterSpacing: '0.05em' }}>
+                  <Loader2 size={12} className="animate-spin text-accent" />
+                  <span className="text-[12.5px] font-medium text-fg-2">
                     {progressMessage || 'Starting...'}
                   </span>
                 </div>
                 {progressLog.length > 0 && (
-                  <div className="max-h-48 overflow-y-auto border-t border-claude-border pt-2 space-y-0.5">
+                  <div className="max-h-48 overflow-y-auto border-t border-line pt-2 space-y-0.5">
                     {progressLog.slice(-30).map((line, i) => (
-                      <div key={i} className="text-[10px] text-claude-text-secondary font-mono whitespace-pre-wrap break-all">
+                      <div key={i} className="text-[11px] text-fg-4 font-mono whitespace-pre-wrap break-all">
                         {line}
                       </div>
                     ))}
@@ -648,25 +645,24 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
               <>
                 {/* Source selection */}
                 <div className="space-y-3">
-                  <p className="text-xs text-claude-text-secondary mb-4" style={{ letterSpacing: '0.05em' }}>
+                  <p className="text-[13px] text-fg-3 mb-4">
                     Choose how you want to create your session
                   </p>
 
                   {/* GitHub option */}
                   <button
                     onClick={() => handleSelectSource('github')}
-                    className="w-full p-4 text-left hover:bg-claude-bg transition-colors border border-claude-border group"
-                    style={{ borderRadius: 0 }}
+                    className="w-full p-3 text-left bg-ink-1 hover:bg-claude-surface-hover transition-colors shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)] group"
                   >
                     <div className="flex items-start gap-3">
-                      <div className="p-2 bg-claude-bg group-hover:bg-claude-surface transition-colors">
-                        <Github size={20} className="text-claude-accent" />
+                      <div className="p-2 bg-ink-3 transition-colors">
+                        <Github size={20} className="text-fg-2" />
                       </div>
                       <div className="flex-1">
-                        <h4 className="text-sm font-bold text-claude-text mb-1">
+                        <h4 className="text-[14px] font-semibold text-fg mb-0.5">
                           GitHub Repository
                         </h4>
-                        <p className="text-xs text-claude-text-secondary">
+                        <p className="text-[12.5px] text-fg-3">
                           Clone a repository from your GitHub account
                         </p>
                       </div>
@@ -676,18 +672,17 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
                   {/* Local folder option */}
                   <button
                     onClick={() => handleSelectSource('local')}
-                    className="w-full p-4 text-left hover:bg-claude-bg transition-colors border border-claude-border group"
-                    style={{ borderRadius: 0 }}
+                    className="w-full p-3 text-left bg-ink-1 hover:bg-claude-surface-hover transition-colors shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)] group"
                   >
                     <div className="flex items-start gap-3">
-                      <div className="p-2 bg-claude-bg group-hover:bg-claude-surface transition-colors">
-                        <Folder size={20} className="text-claude-accent" />
+                      <div className="p-2 bg-ink-3 transition-colors">
+                        <Folder size={20} className="text-fg-2" />
                       </div>
                       <div className="flex-1">
-                        <h4 className="text-sm font-bold text-claude-text mb-1">
+                        <h4 className="text-[14px] font-semibold text-fg mb-0.5">
                           Local Folder
                         </h4>
-                        <p className="text-xs text-claude-text-secondary">
+                        <p className="text-[12.5px] text-fg-3">
                           Open an existing folder on your computer
                         </p>
                       </div>
@@ -697,18 +692,17 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
                   {/* SSH Remote option */}
                   <button
                     onClick={() => handleSelectSource('ssh')}
-                    className="w-full p-4 text-left hover:bg-claude-bg transition-colors border border-claude-border group"
-                    style={{ borderRadius: 0 }}
+                    className="w-full p-3 text-left bg-ink-1 hover:bg-claude-surface-hover transition-colors shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)] group"
                   >
                     <div className="flex items-start gap-3">
-                      <div className="p-2 bg-claude-bg group-hover:bg-claude-surface transition-colors">
-                        <Server size={20} className="text-blue-400" />
+                      <div className="p-2 bg-ink-3 transition-colors">
+                        <Server size={20} className="text-fg-2" />
                       </div>
                       <div className="flex-1">
-                        <h4 className="text-sm font-bold text-claude-text mb-1">
+                        <h4 className="text-[14px] font-semibold text-fg mb-0.5">
                           Remote SSH Server
                         </h4>
-                        <p className="text-xs text-claude-text-secondary">
+                        <p className="text-[12.5px] text-fg-3">
                           Connect to a remote machine via SSH
                         </p>
                       </div>
@@ -718,18 +712,17 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
                   {/* OpenClaw Gateway option */}
                   <button
                     onClick={() => handleSelectSource('openclaw')}
-                    className="w-full p-4 text-left hover:bg-claude-bg transition-colors border border-claude-border group"
-                    style={{ borderRadius: 0 }}
+                    className="w-full p-3 text-left bg-ink-1 hover:bg-claude-surface-hover transition-colors shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)] group"
                   >
                     <div className="flex items-start gap-3">
-                      <div className="p-2 bg-claude-bg group-hover:bg-claude-surface transition-colors">
-                        <Globe size={20} className="text-emerald-400" />
+                      <div className="p-2 bg-ink-3 transition-colors">
+                        <Globe size={20} className="text-fg-2" />
                       </div>
                       <div className="flex-1">
-                        <h4 className="text-sm font-bold text-claude-text mb-1">
+                        <h4 className="text-[14px] font-semibold text-fg mb-0.5">
                           OpenClaw Gateway
                         </h4>
-                        <p className="text-xs text-claude-text-secondary">
+                        <p className="text-[12.5px] text-fg-3">
                           Connect to an OpenClaw AI agent gateway
                         </p>
                       </div>
@@ -740,26 +733,25 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
                   <button
                     onClick={() => handleSelectSource('teleport')}
                     disabled={claudeCliInstalled === false}
-                    className={`w-full p-4 text-left transition-colors border border-claude-border group ${
+                    className={`w-full p-3 text-left transition-colors bg-ink-1 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)] group ${
                       claudeCliInstalled === false
-                        ? 'opacity-50 cursor-not-allowed bg-claude-bg'
-                        : 'hover:bg-claude-bg'
+                        ? 'opacity-50 cursor-not-allowed'
+                        : 'hover:bg-claude-surface-hover'
                     }`}
-                    style={{ borderRadius: 0 }}
                   >
                     <div className="flex items-start gap-3">
-                      <div className="p-2 bg-claude-bg group-hover:bg-claude-surface transition-colors">
-                        <Zap size={20} className={claudeCliInstalled === false ? 'text-claude-text-secondary' : 'text-amber-400'} />
+                      <div className="p-2 bg-ink-3 transition-colors">
+                        <Zap size={20} className={claudeCliInstalled === false ? 'text-fg-4' : 'text-fg-2'} />
                       </div>
                       <div className="flex-1">
-                        <h4 className="text-sm font-bold text-claude-text mb-1">
+                        <h4 className="text-[14px] font-semibold text-fg mb-0.5">
                           Teleport Session
                         </h4>
-                        <p className="text-xs text-claude-text-secondary">
+                        <p className="text-[12.5px] text-fg-3">
                           Import a session from claude.ai/code
                         </p>
                         {claudeCliInstalled === false && (
-                          <div className="mt-2 flex items-center gap-1.5 text-amber-400 text-[10px]">
+                          <div className="mt-2 flex items-center gap-1.5 text-amber text-[12px]">
                             <AlertTriangle size={12} />
                             <span>Claude Code CLI required</span>
                           </div>
@@ -770,12 +762,12 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
 
                   {/* Show CLI installation instructions if not installed */}
                   {claudeCliInstalled === false && (
-                    <div className="p-3 bg-amber-500/10 border border-amber-500/30">
-                      <p className="text-[10px] text-amber-400 leading-relaxed">
+                    <div className="p-3 bg-amber/10 shadow-[inset_0_0_0_1px_rgba(240,180,41,0.3)]">
+                      <p className="text-[12px] text-amber leading-relaxed">
                         <AlertTriangle size={12} className="inline mr-1.5" />
                         Teleport requires Claude Code CLI. Install it with:
                       </p>
-                      <code className="block mt-2 text-[10px] font-mono text-claude-text bg-claude-bg p-2 select-all">
+                      <code className="block mt-2 text-[11.5px] font-mono text-fg-2 bg-ink-term p-2 select-all">
                         npm install -g @anthropic-ai/claude-code
                       </code>
                     </div>
@@ -791,14 +783,13 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
               <>
                 {/* OpenClaw Gateway Config */}
                 <div className="space-y-4">
-                  <p className="text-xs text-claude-text-secondary" style={{ letterSpacing: '0.05em' }}>
+                  <p className="text-[13px] text-fg-3">
                     Connect to an OpenClaw AI agent gateway endpoint.
                   </p>
 
                   <div>
                     <label
-                      className="block text-[10px] font-bold mb-1.5 text-claude-text-secondary"
-                      style={{ letterSpacing: '0.1em' }}
+                      className="block text-[11px] font-medium uppercase tracking-[0.04em] mb-1.5 text-fg-4"
                     >
                       SESSION NAME (OPTIONAL)
                     </label>
@@ -807,15 +798,13 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
                       value={sessionName}
                       onChange={(e) => setSessionName(e.target.value)}
                       placeholder="OpenClaw"
-                      className="w-full px-3 py-2 text-sm focus:outline-none focus:border-claude-accent bg-claude-bg border border-claude-border text-claude-text"
-                      style={{ borderRadius: 0 }}
+                      className="w-full px-3 py-2 text-[13px] bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-fg placeholder:text-fg-5 focus:outline-none focus:ring-1 focus:ring-accent/50"
                     />
                   </div>
 
                   <div>
                     <label
-                      className="block text-[10px] font-bold mb-1.5 text-claude-text-secondary"
-                      style={{ letterSpacing: '0.1em' }}
+                      className="block text-[11px] font-medium uppercase tracking-[0.04em] mb-1.5 text-fg-4"
                     >
                       GATEWAY URL
                     </label>
@@ -824,19 +813,17 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
                       value={openclawGatewayUrl}
                       onChange={(e) => setOpenclawGatewayUrl(e.target.value)}
                       placeholder="http://myserver:18789"
-                      className="w-full px-3 py-2 text-sm font-mono focus:outline-none focus:border-claude-accent bg-claude-bg border border-claude-border text-claude-text"
-                      style={{ borderRadius: 0 }}
+                      className="w-full px-3 py-2 text-[13px] font-mono bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-fg placeholder:text-fg-5 focus:outline-none focus:ring-1 focus:ring-accent/50"
                       autoFocus
                     />
-                    <p className="text-[9px] text-claude-text-secondary mt-1">
+                    <p className="text-[11.5px] text-fg-4 mt-1">
                       The base URL of your OpenClaw gateway (e.g. http://localhost:18789)
                     </p>
                   </div>
 
                   <div>
                     <label
-                      className="block text-[10px] font-bold mb-1.5 text-claude-text-secondary"
-                      style={{ letterSpacing: '0.1em' }}
+                      className="block text-[11px] font-medium uppercase tracking-[0.04em] mb-1.5 text-fg-4"
                     >
                       GATEWAY PASSWORD
                     </label>
@@ -845,25 +832,24 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
                       value={openclawGatewayPassword}
                       onChange={(e) => setOpenclawGatewayPassword(e.target.value)}
                       placeholder="Bearer token for authentication"
-                      className="w-full px-3 py-2 text-sm font-mono focus:outline-none focus:border-claude-accent bg-claude-bg border border-claude-border text-claude-text"
-                      style={{ borderRadius: 0 }}
+                      className="w-full px-3 py-2 text-[13px] font-mono bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-fg placeholder:text-fg-5 focus:outline-none focus:ring-1 focus:ring-accent/50"
                     />
-                    <p className="text-[9px] text-claude-text-secondary mt-1">
+                    <p className="text-[11.5px] text-fg-4 mt-1">
                       The gateway password used for Bearer token authentication
                     </p>
                   </div>
 
                   {openclawError && (
-                    <div className="p-3 bg-red-500/20 border border-red-500/50">
-                      <p className="text-[10px] text-red-400 font-mono whitespace-pre-wrap">
+                    <div className="p-3 bg-diff-del/10 shadow-[inset_0_0_0_1px_rgba(248,81,73,0.35)]">
+                      <p className="text-[12px] text-diff-del-text font-mono whitespace-pre-wrap">
                         {openclawError}
                       </p>
                     </div>
                   )}
 
-                  <div className="p-3 bg-emerald-400/10 border border-emerald-400/30">
-                    <p className="text-[10px] text-claude-text-secondary leading-relaxed">
-                      <Globe size={12} className="inline mr-1 text-emerald-400" />
+                  <div className="p-3 bg-ink-1 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)]">
+                    <p className="text-[12px] text-fg-3 leading-relaxed">
+                      <Globe size={12} className="inline mr-1 text-fg-3" />
                       Messages will be streamed via the OpenAI-compatible /v1/chat/completions endpoint
                     </p>
                   </div>
@@ -873,14 +859,13 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
               <>
                 {/* Teleport Session UI */}
                 <div className="space-y-4">
-                  <p className="text-xs text-claude-text-secondary" style={{ letterSpacing: '0.05em' }}>
+                  <p className="text-[13px] text-fg-3">
                     Enter a session ID from claude.ai/code to import that conversation into Build.
                   </p>
 
                   <div>
                     <label
-                      className="block text-[10px] font-bold mb-1.5 text-claude-text-secondary"
-                      style={{ letterSpacing: '0.1em' }}
+                      className="block text-[11px] font-medium uppercase tracking-[0.04em] mb-1.5 text-fg-4"
                     >
                       SESSION ID
                     </label>
@@ -889,19 +874,17 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
                       value={teleportSessionId}
                       onChange={(e) => setTeleportSessionId(e.target.value)}
                       placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-                      className="w-full px-3 py-2 text-sm font-mono focus:outline-none focus:border-claude-accent bg-claude-bg border border-claude-border text-claude-text"
-                      style={{ borderRadius: 0 }}
+                      className="w-full px-3 py-2 text-[13px] font-mono bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-fg placeholder:text-fg-5 focus:outline-none focus:ring-1 focus:ring-accent/50"
                       autoFocus
                     />
-                    <p className="text-[9px] text-claude-text-secondary mt-1">
+                    <p className="text-[11.5px] text-fg-4 mt-1">
                       Find your session ID at claude.ai/code using /session-id
                     </p>
                   </div>
 
                   <div>
                     <label
-                      className="block text-[10px] font-bold mb-1.5 text-claude-text-secondary"
-                      style={{ letterSpacing: '0.1em' }}
+                      className="block text-[11px] font-medium uppercase tracking-[0.04em] mb-1.5 text-fg-4"
                     >
                       PROJECT DIRECTORY
                     </label>
@@ -911,27 +894,24 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
                         value={teleportDirectory}
                         readOnly
                         placeholder="Select project directory..."
-                        className="flex-1 px-3 py-2 text-sm font-mono focus:outline-none bg-claude-bg border border-claude-border text-claude-text cursor-pointer"
-                        style={{ borderRadius: 0 }}
+                        className="flex-1 px-3 py-2 text-[13px] font-mono bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-fg placeholder:text-fg-5 focus:outline-none focus:ring-1 focus:ring-accent/50 cursor-pointer"
                         onClick={handleSelectTeleportDirectory}
                       />
                       <button
                         onClick={handleSelectTeleportDirectory}
-                        className="px-4 py-2 text-[10px] font-bold bg-claude-bg hover:bg-claude-surface border border-claude-border text-claude-text"
-                        style={{ borderRadius: 0 }}
+                        className="px-3 text-[13px] text-fg-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] hover:bg-claude-surface-hover"
                       >
                         BROWSE
                       </button>
                     </div>
-                    <p className="text-[9px] text-claude-text-secondary mt-1">
+                    <p className="text-[11.5px] text-fg-4 mt-1">
                       The session will be teleported to this directory
                     </p>
                   </div>
 
                   <div>
                     <label
-                      className="block text-[10px] font-bold mb-1.5 text-claude-text-secondary"
-                      style={{ letterSpacing: '0.1em' }}
+                      className="block text-[11px] font-medium uppercase tracking-[0.04em] mb-1.5 text-fg-4"
                     >
                       SESSION NAME (OPTIONAL)
                     </label>
@@ -940,28 +920,27 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
                       value={sessionName}
                       onChange={(e) => setSessionName(e.target.value)}
                       placeholder="Imported Session"
-                      className="w-full px-3 py-2 text-sm focus:outline-none focus:border-claude-accent bg-claude-bg border border-claude-border text-claude-text"
-                      style={{ borderRadius: 0 }}
+                      className="w-full px-3 py-2 text-[13px] bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-fg placeholder:text-fg-5 focus:outline-none focus:ring-1 focus:ring-accent/50"
                     />
                   </div>
 
                   {teleportError && (
-                    <div className="p-3 bg-red-500/20 border border-red-500/50">
-                      <p className="text-[10px] text-red-400 font-mono whitespace-pre-wrap">
+                    <div className="p-3 bg-diff-del/10 shadow-[inset_0_0_0_1px_rgba(248,81,73,0.35)]">
+                      <p className="text-[12px] text-diff-del-text font-mono whitespace-pre-wrap">
                         {teleportError}
                       </p>
                     </div>
                   )}
 
-                  <div className="p-3 bg-amber-400/10 border border-amber-400/30">
-                    <p className="text-[10px] text-claude-text-secondary leading-relaxed">
-                      <Zap size={12} className="inline mr-1 text-amber-400" />
+                  <div className="p-3 bg-ink-1 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)]">
+                    <p className="text-[12px] text-fg-3 leading-relaxed">
+                      <Zap size={12} className="inline mr-1 text-amber" />
                       Teleported sessions will resume with full conversation history from claude.ai/code
                     </p>
                   </div>
 
                   {claudeCliVersion && (
-                    <div className="text-[9px] text-claude-text-secondary">
+                    <div className="text-[11.5px] font-mono text-fg-4">
                       Claude CLI: {claudeCliVersion}
                     </div>
                   )}
@@ -971,12 +950,11 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
               <>
                 {/* Manual URL input */}
                 <div
-                  className="mb-4 p-3 bg-claude-bg border border-claude-border"
+                  className="mb-4 p-3 bg-ink-1 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)]"
                   data-build-fix={GITHUB_REPO_UI_STABILITY_MARKER}
                 >
                   <label
-                    className="block text-[10px] font-bold mb-1.5 text-claude-text-secondary"
-                    style={{ letterSpacing: '0.1em' }}
+                    className="block text-[11px] font-medium uppercase tracking-[0.04em] mb-1.5 text-fg-4"
                   >
                     ENTER REPO URL
                   </label>
@@ -987,15 +965,13 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
                       onChange={(e) => setManualRepoUrl(e.target.value)}
                       onKeyDown={(e) => e.key === 'Enter' && handleManualRepoUrl()}
                       placeholder="https://github.com/owner/repo"
-                      className="flex-1 px-3 py-2 text-sm font-mono focus:outline-none focus:border-claude-accent bg-claude-surface border border-claude-border text-claude-text"
-                      style={{ borderRadius: 0 }}
+                      className="flex-1 px-3 py-2 text-[13px] font-mono bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-fg placeholder:text-fg-5 focus:outline-none focus:ring-1 focus:ring-accent/50"
                       autoFocus
                     />
                     <button
                       onClick={handleManualRepoUrl}
                       disabled={!manualRepoUrl.trim()}
-                      className="px-4 py-2 text-[10px] font-bold bg-claude-accent hover:bg-claude-accent-hover text-white disabled:opacity-40 disabled:cursor-not-allowed"
-                      style={{ borderRadius: 0 }}
+                      className="px-3 text-[13px] font-semibold bg-fg text-ink-0 hover:bg-white disabled:opacity-40 disabled:cursor-not-allowed"
                     >
                       USE
                     </button>
@@ -1004,39 +980,37 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
 
                 {/* Divider */}
                 <div className="flex items-center gap-3 mb-3">
-                  <div className="flex-1 h-px bg-claude-border" />
-                  <span className="text-[10px] text-claude-text-secondary">OR SELECT FROM LIST</span>
-                  <div className="flex-1 h-px bg-claude-border" />
+                  <div className="flex-1 h-px bg-line" />
+                  <span className="text-[11px] uppercase tracking-[0.04em] text-fg-4">OR SELECT FROM LIST</span>
+                  <div className="flex-1 h-px bg-line" />
                 </div>
 
                 {/* Search - brutalist */}
                 <div className="relative mb-3">
                   <Search
                     size={14}
-                    className="absolute left-3 top-1/2 -translate-y-1/2 text-claude-text-secondary"
+                    className="absolute left-3 top-1/2 -translate-y-1/2 text-fg-5"
                   />
                   <input
                     type="text"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
                     placeholder="Search repositories..."
-                    className="w-full pl-9 pr-4 py-2 text-sm focus:outline-none focus:border-claude-accent bg-claude-bg border border-claude-border text-claude-text"
-                    style={{ borderRadius: 0 }}
+                    className="w-full pl-9 pr-4 py-2 text-[13px] bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-fg placeholder:text-fg-5 focus:outline-none focus:ring-1 focus:ring-accent/50"
                   />
                 </div>
 
                 {/* Repo list - brutalist */}
                 <div className="max-h-[250px] overflow-y-auto space-y-0.5">
                   {repoListError && (
-                    <div className="p-3 mb-2 border border-red-500/50 bg-red-500/10">
-                      <p className="text-[10px] text-red-400 font-mono break-words">
+                    <div className="p-3 mb-2 bg-diff-del/10 shadow-[inset_0_0_0_1px_rgba(248,81,73,0.35)]">
+                      <p className="text-[12px] text-diff-del-text font-mono break-words">
                         {repoListError}
                       </p>
                       <button
                         type="button"
                         onClick={() => void loadGitHubRepos()}
-                        className="mt-2 px-3 py-1.5 text-[10px] font-bold bg-claude-bg hover:bg-claude-surface border border-claude-border text-claude-text"
-                        style={{ borderRadius: 0, letterSpacing: '0.05em' }}
+                        className="mt-2 h-7 px-3 text-[12.5px] text-fg-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] hover:bg-claude-surface-hover"
                       >
                         RETRY
                       </button>
@@ -1045,8 +1019,7 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
 
                   {isRepoListLoading && (
                     <div
-                      className="py-6 flex items-center justify-center gap-2 text-xs text-claude-text-secondary"
-                      style={{ letterSpacing: '0.05em' }}
+                      className="py-6 flex items-center justify-center gap-2 text-[13px] text-fg-4"
                     >
                       <Loader2 size={14} className="animate-spin" />
                       LOADING REPOSITORIES
@@ -1057,27 +1030,26 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
                     <button
                       key={`${repo.id}:${repo.fullName}`}
                       onClick={() => handleSelectRepo(repo)}
-                      className="w-full p-2.5 text-left hover:bg-claude-bg transition-colors group"
-                      style={{ borderRadius: 0 }}
+                      className="w-full px-2.5 py-2 text-left hover:bg-claude-surface-hover transition-colors group"
                     >
                       <div className="flex items-start gap-2">
                         {repo.private ? (
-                          <Lock size={14} className="mt-0.5 text-claude-text-secondary" />
+                          <Lock size={14} className="mt-0.5 text-fg-4" />
                         ) : (
-                          <Globe size={14} className="mt-0.5 text-claude-text-secondary" />
+                          <Globe size={14} className="mt-0.5 text-fg-4" />
                         )}
                         <div className="flex-1 min-w-0">
-                          <h4 className="text-xs font-bold truncate text-claude-text">
+                          <h4 className="text-[13px] font-medium truncate text-fg">
                             {repo.fullName}
                           </h4>
                           {repo.description && (
-                            <p className="text-[10px] truncate mt-0.5 text-claude-text-secondary">
+                            <p className="text-[11.5px] truncate mt-0.5 text-fg-4">
                               {repo.description}
                             </p>
                           )}
-                          <div className="flex items-center gap-1 mt-1 text-[10px] text-claude-text-secondary">
+                          <div className="flex items-center gap-1 mt-1 text-[11px] text-fg-5">
                             <GitBranch size={10} />
-                            <span>{repo.defaultBranch || 'main'}</span>
+                            <span className="font-mono">{repo.defaultBranch || 'main'}</span>
                           </div>
                         </div>
                       </div>
@@ -1086,18 +1058,16 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
 
                   {!isRepoListLoading && filteredRepos.length === 0 && (
                     <div
-                      className="py-6 px-4 text-center text-xs text-claude-text-secondary"
-                      style={{ letterSpacing: '0.05em' }}
+                      className="py-6 px-4 text-center text-[13px] text-fg-3"
                     >
                       {searchQuery.trim() ? 'NO REPOSITORIES FOUND' : 'NO GITHUB REPOSITORIES LOADED'}
-                      <p className="mt-2 text-[10px] normal-case" style={{ letterSpacing: 0 }}>
+                      <p className="mt-2 text-[12px] text-fg-4">
                         Use the repo URL field above, or refresh after connecting GitHub.
                       </p>
                       <button
                         type="button"
                         onClick={() => void loadGitHubRepos()}
-                        className="mt-3 px-3 py-1.5 text-[10px] font-bold bg-claude-bg hover:bg-claude-surface border border-claude-border text-claude-text"
-                        style={{ borderRadius: 0, letterSpacing: '0.05em' }}
+                        className="mt-3 h-7 px-3 text-[12.5px] text-fg-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] hover:bg-claude-surface-hover"
                       >
                         REFRESH
                       </button>
@@ -1111,8 +1081,7 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
                 <div className="space-y-4">
                   <div>
                     <label
-                      className="block text-[10px] font-bold mb-1.5 text-claude-text-secondary"
-                      style={{ letterSpacing: '0.1em' }}
+                      className="block text-[11px] font-medium uppercase tracking-[0.04em] mb-1.5 text-fg-4"
                     >
                       SESSION NAME
                     </label>
@@ -1121,15 +1090,13 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
                       value={sessionName}
                       onChange={(e) => setSessionName(e.target.value)}
                       placeholder="My Development Session"
-                      className="w-full px-3 py-2 text-sm focus:outline-none focus:border-claude-accent bg-claude-bg border border-claude-border text-claude-text"
-                      style={{ borderRadius: 0 }}
+                      className="w-full px-3 py-2 text-[13px] bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-fg placeholder:text-fg-5 focus:outline-none focus:ring-1 focus:ring-accent/50"
                     />
                   </div>
 
                   <div>
                     <label
-                      className="block text-[10px] font-bold mb-1.5 text-claude-text-secondary"
-                      style={{ letterSpacing: '0.1em' }}
+                      className="block text-[11px] font-medium uppercase tracking-[0.04em] mb-1.5 text-fg-4"
                     >
                       BRANCH
                     </label>
@@ -1143,31 +1110,29 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
                             setIsBranchDropdownOpen(newState);
                             if (!newState) setBranchFilter('');
                           }}
-                          className="w-full px-3 py-2 text-sm font-mono text-left flex items-center justify-between focus:outline-none focus:border-claude-accent bg-claude-bg border border-claude-border text-claude-text"
-                          style={{ borderRadius: 0 }}
+                          className="w-full px-3 py-2 text-[13px] font-mono text-left flex items-center justify-between bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-fg placeholder:text-fg-5 focus:outline-none focus:ring-1 focus:ring-accent/50"
                         >
                           <span className="flex items-center gap-2">
-                            <GitBranch size={14} className="text-claude-text-secondary" />
+                            <GitBranch size={14} className="text-fg-4" />
                             {branch || 'Select branch'}
                           </span>
-                          <ChevronDown size={14} className={`text-claude-text-secondary transition-transform ${isBranchDropdownOpen ? 'rotate-180' : ''}`} />
+                          <ChevronDown size={14} className={`text-fg-4 transition-transform ${isBranchDropdownOpen ? 'rotate-180' : ''}`} />
                         </button>
                         {isBranchDropdownOpen && (
-                          <div className="absolute z-50 w-full mt-1 bg-claude-surface border border-claude-border shadow-lg">
+                          <div className="absolute z-50 w-full mt-1 bg-ink-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1),0_16px_40px_rgba(0,0,0,0.4)]">
                             {/* Branch search input */}
-                            <div className="p-2 border-b border-claude-border">
+                            <div className="p-2 border-b border-line">
                               <div className="relative">
                                 <Search
                                   size={12}
-                                  className="absolute left-2 top-1/2 -translate-y-1/2 text-claude-text-secondary"
+                                  className="absolute left-2 top-1/2 -translate-y-1/2 text-fg-5"
                                 />
                                 <input
                                   type="text"
                                   value={branchFilter}
                                   onChange={(e) => setBranchFilter(e.target.value)}
                                   placeholder="Search branches..."
-                                  className="w-full pl-7 pr-2 py-1.5 text-xs font-mono focus:outline-none bg-claude-bg border border-claude-border text-claude-text"
-                                  style={{ borderRadius: 0 }}
+                                  className="w-full pl-7 pr-2 py-1.5 text-[12px] font-mono bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-fg placeholder:text-fg-5 focus:outline-none focus:ring-1 focus:ring-accent/50"
                                   autoFocus
                                   onClick={(e) => e.stopPropagation()}
                                 />
@@ -1185,19 +1150,19 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
                                       setIsBranchDropdownOpen(false);
                                       setBranchFilter('');
                                     }}
-                                    className={`w-full px-3 py-2 text-left text-sm font-mono flex items-center gap-2 hover:bg-claude-bg transition-colors ${
-                                      branch === b.name ? 'bg-claude-accent/20 text-claude-accent' : 'text-claude-text'
+                                    className={`w-full h-8 px-3 text-left text-[12.5px] font-mono flex items-center gap-2 hover:bg-claude-surface-hover transition-colors ${
+                                      branch === b.name ? 'bg-claude-surface-hover text-fg' : 'text-fg-2'
                                     }`}
                                   >
-                                    <GitBranch size={12} className={b.current ? 'text-green-400' : 'text-claude-text-secondary'} />
+                                    <GitBranch size={12} className={b.current ? 'text-diff-add' : 'text-fg-5'} />
                                     <span className="truncate">{b.name}</span>
                                     {b.current && (
-                                      <span className="ml-auto text-[9px] text-green-400 font-bold">CURRENT</span>
+                                      <span className="ml-auto px-1.5 py-px text-[10px] font-mono uppercase text-diff-add-text shadow-[inset_0_0_0_1px_rgba(63,185,80,0.35)]">CURRENT</span>
                                     )}
                                   </button>
                                 ))
                               ) : (
-                                <div className="px-3 py-4 text-center text-xs text-claude-text-secondary">
+                                <div className="px-3 py-4 text-center text-[12px] text-fg-4">
                                   No branches match "{branchFilter}"
                                 </div>
                               )}
@@ -1211,28 +1176,26 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
                         value={branch}
                         onChange={(e) => setBranch(e.target.value)}
                         placeholder="main"
-                        className="w-full px-3 py-2 text-sm font-mono focus:outline-none focus:border-claude-accent bg-claude-bg border border-claude-border text-claude-text"
-                        style={{ borderRadius: 0 }}
+                        className="w-full px-3 py-2 text-[13px] font-mono bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-fg placeholder:text-fg-5 focus:outline-none focus:ring-1 focus:ring-accent/50"
                       />
                     )}
                   </div>
 
                   <div
-                    className="p-3 bg-claude-bg border border-claude-border"
-                    style={{ borderRadius: 0 }}
+                    className="p-3 bg-ink-1 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)]"
                   >
-                    <div className="flex items-center gap-2 text-xs">
+                    <div className="flex items-center gap-2 text-[13px]">
                       {selectedRepo ? (
                         <>
-                          <Globe size={14} className="text-claude-text-secondary" />
-                          <span className="font-bold text-claude-text">
+                          <Globe size={14} className="text-fg-4" />
+                          <span className="font-medium text-fg">
                             {selectedRepo.fullName}
                           </span>
                         </>
                       ) : (
                         <>
-                          <Folder size={14} className="text-claude-text-secondary" />
-                          <span className="font-bold text-claude-text truncate">
+                          <Folder size={14} className="text-fg-4" />
+                          <span className="font-mono text-fg truncate">
                             {selectedFolder}
                           </span>
                         </>
@@ -1242,19 +1205,19 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
 
                   {/* Worktree option for git repos */}
                   {isGitRepo && selectedFolder && (
-                    <div className="p-3 bg-claude-bg/50 border border-claude-border">
+                    <div className="p-3 bg-ink-1 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)]">
                       <label className="flex items-start gap-3 cursor-pointer">
                         <input
                           type="checkbox"
                           checked={createWorktree}
                           onChange={(e) => setCreateWorktree(e.target.checked)}
-                          className="mt-0.5 w-4 h-4 accent-claude-accent"
+                          className="mt-0.5 w-4 h-4 accent-[#4C9AFF]"
                         />
                         <div>
-                          <div className="text-xs font-bold text-claude-text mb-1">
+                          <div className="text-[13px] font-medium text-fg mb-1">
                             Create Git Worktree
                           </div>
-                          <p className="text-[10px] text-claude-text-secondary leading-relaxed">
+                          <p className="text-[12px] text-fg-4 leading-relaxed">
                             Creates a new worktree for isolated work. Recommended for parallel development without affecting your main working directory.
                           </p>
                         </div>
@@ -1264,12 +1227,12 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
 
                   {/* Worktree setup configuration */}
                   {isGitRepo && selectedFolder && createWorktree && !hasExistingSetup && (
-                    <div className="p-3 bg-claude-bg border border-claude-border space-y-3">
+                    <div className="p-3 bg-ink-1 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)] space-y-3">
                       <div>
-                        <label className="block text-[10px] font-bold mb-2 text-claude-text-secondary" style={{ letterSpacing: '0.1em' }}>
+                        <label className="block text-[11px] font-medium uppercase tracking-[0.04em] mb-2 text-fg-4">
                           WORKTREE SETUP (OPTIONAL)
                         </label>
-                        <p className="text-[10px] text-claude-text-secondary mb-3 leading-relaxed">
+                        <p className="text-[12px] text-fg-4 mb-3 leading-relaxed">
                           Configure automated setup for this worktree. Saved to .claudette/ and runs on each new worktree.
                         </p>
                         <div className="space-y-2">
@@ -1279,9 +1242,9 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
                               name="worktree-setup"
                               checked={worktreeSetupType === 'none'}
                               onChange={() => setWorktreeSetupType('none')}
-                              className="w-3 h-3 accent-claude-accent"
+                              className="w-3 h-3 accent-[#4C9AFF]"
                             />
-                            <span className="text-xs text-claude-text">No Setup</span>
+                            <span className="text-[13px] text-fg-2">No Setup</span>
                           </label>
                           <label className="flex items-center gap-2 cursor-pointer">
                             <input
@@ -1289,9 +1252,9 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
                               name="worktree-setup"
                               checked={worktreeSetupType === 'script'}
                               onChange={() => setWorktreeSetupType('script')}
-                              className="w-3 h-3 accent-claude-accent"
+                              className="w-3 h-3 accent-[#4C9AFF]"
                             />
-                            <span className="text-xs text-claude-text">Shell Script</span>
+                            <span className="text-[13px] text-fg-2">Shell Script</span>
                           </label>
                           <label className="flex items-center gap-2 cursor-pointer">
                             <input
@@ -1299,16 +1262,16 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
                               name="worktree-setup"
                               checked={worktreeSetupType === 'instructions'}
                               onChange={() => setWorktreeSetupType('instructions')}
-                              className="w-3 h-3 accent-claude-accent"
+                              className="w-3 h-3 accent-[#4C9AFF]"
                             />
-                            <span className="text-xs text-claude-text">Instructions for Claude</span>
+                            <span className="text-[13px] text-fg-2">Instructions for Claude</span>
                           </label>
                         </div>
                       </div>
 
                       {worktreeSetupType === 'script' && (
                         <div>
-                          <label className="block text-[10px] font-bold mb-1.5 text-claude-text-secondary" style={{ letterSpacing: '0.1em' }}>
+                          <label className="block text-[11px] font-medium uppercase tracking-[0.04em] mb-1.5 text-fg-4">
                             SCRIPT PATH
                           </label>
                           <div className="flex gap-2">
@@ -1317,18 +1280,16 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
                               value={worktreeScriptPath}
                               onChange={(e) => setWorktreeScriptPath(e.target.value)}
                               placeholder="/path/to/setup.sh"
-                              className="flex-1 px-2 py-1.5 text-[10px] font-mono focus:outline-none focus:border-claude-accent bg-claude-surface border border-claude-border text-claude-text"
-                              style={{ borderRadius: 0 }}
+                              className="flex-1 px-2 py-1.5 text-[12px] font-mono bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-fg placeholder:text-fg-5 focus:outline-none focus:ring-1 focus:ring-accent/50"
                             />
                             <button
                               onClick={handleSelectScriptFile}
-                              className="px-3 py-1.5 text-[10px] font-bold bg-claude-bg hover:bg-claude-surface border border-claude-border text-claude-text"
-                              style={{ borderRadius: 0 }}
+                              className="px-3 text-[12.5px] text-fg-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] hover:bg-claude-surface-hover"
                             >
                               BROWSE
                             </button>
                           </div>
-                          <p className="text-[9px] text-claude-text-secondary mt-1">
+                          <p className="text-[11.5px] text-fg-4 mt-1">
                             Will be copied to .claudette/worktree-setup.sh
                           </p>
                         </div>
@@ -1336,7 +1297,7 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
 
                       {worktreeSetupType === 'instructions' && (
                         <div>
-                          <label className="block text-[10px] font-bold mb-1.5 text-claude-text-secondary" style={{ letterSpacing: '0.1em' }}>
+                          <label className="block text-[11px] font-medium uppercase tracking-[0.04em] mb-1.5 text-fg-4">
                             SETUP INSTRUCTIONS
                           </label>
                           <textarea
@@ -1344,10 +1305,9 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
                             onChange={(e) => setWorktreeInstructions(e.target.value)}
                             placeholder="Enter setup instructions for Claude to follow..."
                             rows={4}
-                            className="w-full px-2 py-1.5 text-[10px] font-mono focus:outline-none focus:border-claude-accent bg-claude-surface border border-claude-border text-claude-text resize-none"
-                            style={{ borderRadius: 0 }}
+                            className="w-full px-2 py-1.5 text-[12.5px] bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-fg placeholder:text-fg-5 focus:outline-none focus:ring-1 focus:ring-accent/50 resize-none"
                           />
-                          <p className="text-[9px] text-claude-text-secondary mt-1">
+                          <p className="text-[11.5px] text-fg-4 mt-1">
                             Will be saved to .claudette/worktree-setup.md
                           </p>
                         </div>
@@ -1357,19 +1317,19 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
 
                   {/* Show existing setup with options to view/edit/override */}
                   {isGitRepo && selectedFolder && createWorktree && hasExistingSetup && (
-                    <div className="p-3 bg-claude-bg border border-claude-border space-y-3">
+                    <div className="p-3 bg-ink-1 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)] space-y-3">
                       <div className="flex items-start justify-between">
                         <div className="flex items-center gap-2">
                           {existingSetupType === 'script' ? (
-                            <TerminalIcon size={14} className="text-claude-accent" />
+                            <TerminalIcon size={14} className="text-fg-3" />
                           ) : (
-                            <FileText size={14} className="text-purple-400" />
+                            <FileText size={14} className="text-fg-3" />
                           )}
                           <div>
-                            <span className="text-xs font-bold text-claude-text">
+                            <span className="text-[13px] font-medium text-fg">
                               Existing Worktree Setup
                             </span>
-                            <p className="text-[10px] text-claude-text-secondary">
+                            <p className="text-[11.5px] font-mono text-fg-4">
                               {existingSetupType === 'script' ? 'worktree-setup.sh' : 'worktree-setup.md'}
                             </p>
                           </div>
@@ -1377,14 +1337,14 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
                         <div className="flex items-center gap-1">
                           <button
                             onClick={() => setShowExistingSetup(!showExistingSetup)}
-                            className="p-1.5 hover:bg-claude-surface text-claude-text-secondary hover:text-claude-text transition-colors"
+                            className="p-1.5 hover:bg-claude-surface-hover text-fg-3 hover:text-fg transition-colors"
                             title={showExistingSetup ? 'Hide content' : 'View content'}
                           >
                             <Eye size={14} />
                           </button>
                           <button
                             onClick={() => window.electronAPI.app.openPath(existingSetupPath)}
-                            className="p-1.5 hover:bg-claude-surface text-claude-text-secondary hover:text-claude-accent transition-colors"
+                            className="p-1.5 hover:bg-claude-surface-hover text-fg-3 hover:text-fg transition-colors"
                             title="Edit in external editor"
                           >
                             <Edit3 size={14} />
@@ -1394,15 +1354,15 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
 
                       {/* Show existing setup content */}
                       {showExistingSetup && existingSetupContent && (
-                        <div className="bg-claude-surface border border-claude-border">
-                          <pre className="p-2 text-[10px] font-mono text-claude-text-secondary max-h-32 overflow-y-auto whitespace-pre-wrap">
+                        <div className="bg-ink-term shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)]">
+                          <pre className="p-2 text-[11px] font-mono text-fg-3 max-h-32 overflow-y-auto whitespace-pre-wrap">
                             {existingSetupContent}
                           </pre>
                         </div>
                       )}
 
                       {/* Override checkbox */}
-                      <label className="flex items-start gap-2 cursor-pointer pt-2 border-t border-claude-border">
+                      <label className="flex items-start gap-2 cursor-pointer pt-2 border-t border-line">
                         <input
                           type="checkbox"
                           checked={overrideExistingSetup}
@@ -1422,11 +1382,11 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
                               setWorktreeScriptPath('');
                             }
                           }}
-                          className="mt-0.5 w-3 h-3 accent-claude-accent"
+                          className="mt-0.5 w-3 h-3 accent-[#4C9AFF]"
                         />
                         <div>
-                          <span className="text-xs text-claude-text">Override existing setup</span>
-                          <p className="text-[9px] text-claude-text-secondary">
+                          <span className="text-[13px] text-fg-2">Override existing setup</span>
+                          <p className="text-[11.5px] text-fg-4">
                             Replace the current worktree setup with a new configuration
                           </p>
                         </div>
@@ -1434,7 +1394,7 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
 
                       {/* Override configuration UI */}
                       {overrideExistingSetup && (
-                        <div className="pt-3 border-t border-claude-border space-y-3">
+                        <div className="pt-3 border-t border-line space-y-3">
                           <div className="space-y-2">
                             <label className="flex items-center gap-2 cursor-pointer">
                               <input
@@ -1442,9 +1402,9 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
                                 name="worktree-setup-override"
                                 checked={worktreeSetupType === 'none'}
                                 onChange={() => setWorktreeSetupType('none')}
-                                className="w-3 h-3 accent-claude-accent"
+                                className="w-3 h-3 accent-[#4C9AFF]"
                               />
-                              <span className="text-xs text-claude-text">No Setup (remove existing)</span>
+                              <span className="text-[13px] text-fg-2">No Setup (remove existing)</span>
                             </label>
                             <label className="flex items-center gap-2 cursor-pointer">
                               <input
@@ -1452,9 +1412,9 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
                                 name="worktree-setup-override"
                                 checked={worktreeSetupType === 'script'}
                                 onChange={() => setWorktreeSetupType('script')}
-                                className="w-3 h-3 accent-claude-accent"
+                                className="w-3 h-3 accent-[#4C9AFF]"
                               />
-                              <span className="text-xs text-claude-text">Shell Script</span>
+                              <span className="text-[13px] text-fg-2">Shell Script</span>
                             </label>
                             <label className="flex items-center gap-2 cursor-pointer">
                               <input
@@ -1462,15 +1422,15 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
                                 name="worktree-setup-override"
                                 checked={worktreeSetupType === 'instructions'}
                                 onChange={() => setWorktreeSetupType('instructions')}
-                                className="w-3 h-3 accent-claude-accent"
+                                className="w-3 h-3 accent-[#4C9AFF]"
                               />
-                              <span className="text-xs text-claude-text">Instructions for Claude</span>
+                              <span className="text-[13px] text-fg-2">Instructions for Claude</span>
                             </label>
                           </div>
 
                           {worktreeSetupType === 'script' && (
                             <div>
-                              <label className="block text-[10px] font-bold mb-1.5 text-claude-text-secondary" style={{ letterSpacing: '0.1em' }}>
+                              <label className="block text-[11px] font-medium uppercase tracking-[0.04em] mb-1.5 text-fg-4">
                                 SCRIPT PATH
                               </label>
                               <div className="flex gap-2">
@@ -1479,13 +1439,11 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
                                   value={worktreeScriptPath}
                                   onChange={(e) => setWorktreeScriptPath(e.target.value)}
                                   placeholder="/path/to/setup.sh"
-                                  className="flex-1 px-2 py-1.5 text-[10px] font-mono focus:outline-none focus:border-claude-accent bg-claude-surface border border-claude-border text-claude-text"
-                                  style={{ borderRadius: 0 }}
+                                  className="flex-1 px-2 py-1.5 text-[12px] font-mono bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-fg placeholder:text-fg-5 focus:outline-none focus:ring-1 focus:ring-accent/50"
                                 />
                                 <button
                                   onClick={handleSelectScriptFile}
-                                  className="px-3 py-1.5 text-[10px] font-bold bg-claude-bg hover:bg-claude-surface border border-claude-border text-claude-text"
-                                  style={{ borderRadius: 0 }}
+                                  className="px-3 text-[12.5px] text-fg-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] hover:bg-claude-surface-hover"
                                 >
                                   BROWSE
                                 </button>
@@ -1495,7 +1453,7 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
 
                           {worktreeSetupType === 'instructions' && (
                             <div>
-                              <label className="block text-[10px] font-bold mb-1.5 text-claude-text-secondary" style={{ letterSpacing: '0.1em' }}>
+                              <label className="block text-[11px] font-medium uppercase tracking-[0.04em] mb-1.5 text-fg-4">
                                 SETUP INSTRUCTIONS
                               </label>
                               <textarea
@@ -1503,8 +1461,7 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
                                 onChange={(e) => setWorktreeInstructions(e.target.value)}
                                 placeholder="Enter setup instructions for Claude to follow..."
                                 rows={4}
-                                className="w-full px-2 py-1.5 text-[10px] font-mono focus:outline-none focus:border-claude-accent bg-claude-surface border border-claude-border text-claude-text resize-none"
-                                style={{ borderRadius: 0 }}
+                                className="w-full px-2 py-1.5 text-[12.5px] bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-fg placeholder:text-fg-5 focus:outline-none focus:ring-1 focus:ring-accent/50 resize-none"
                               />
                             </div>
                           )}
@@ -1515,8 +1472,8 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
 
                   {/* Error display */}
                   {createError && (
-                    <div className="p-3 bg-red-500/20 border border-red-500/50">
-                      <p className="text-[10px] text-red-400 font-mono whitespace-pre-wrap">
+                    <div className="p-3 bg-diff-del/10 shadow-[inset_0_0_0_1px_rgba(248,81,73,0.35)]">
+                      <p className="text-[12px] text-diff-del-text font-mono whitespace-pre-wrap">
                         {createError}
                       </p>
                     </div>
@@ -1529,12 +1486,11 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
 
           {/* Footer - hide for ssh-config as it has its own footer */}
           {step !== 'ssh-config' && (
-          <div className="flex items-center justify-between p-4 border-t border-claude-border">
+          <div className="flex items-center justify-between px-4 py-3 border-t border-line">
             {step === 'config' && !initialPath && (
               <button
                 onClick={() => setStep(selectedRepo ? 'repo' : 'source')}
-                className="px-3 py-1.5 text-[10px] font-bold hover:bg-claude-bg transition-colors text-claude-text-secondary"
-                style={{ letterSpacing: '0.05em', borderRadius: 0 }}
+                className="h-8 px-3 text-[13px] text-fg-3 hover:text-fg hover:bg-claude-surface-hover transition-colors"
               >
                 BACK
               </button>
@@ -1542,8 +1498,7 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
             {step === 'repo' && (
               <button
                 onClick={() => setStep('source')}
-                className="px-3 py-1.5 text-[10px] font-bold hover:bg-claude-bg transition-colors text-claude-text-secondary"
-                style={{ letterSpacing: '0.05em', borderRadius: 0 }}
+                className="h-8 px-3 text-[13px] text-fg-3 hover:text-fg hover:bg-claude-surface-hover transition-colors"
               >
                 BACK
               </button>
@@ -1551,8 +1506,7 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
             {step === 'openclaw-config' && (
               <button
                 onClick={() => setStep('source')}
-                className="px-3 py-1.5 text-[10px] font-bold hover:bg-claude-bg transition-colors text-claude-text-secondary"
-                style={{ letterSpacing: '0.05em', borderRadius: 0 }}
+                className="h-8 px-3 text-[13px] text-fg-3 hover:text-fg hover:bg-claude-surface-hover transition-colors"
               >
                 BACK
               </button>
@@ -1560,8 +1514,7 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
             {step === 'teleport' && (
               <button
                 onClick={() => setStep('source')}
-                className="px-3 py-1.5 text-[10px] font-bold hover:bg-claude-bg transition-colors text-claude-text-secondary"
-                style={{ letterSpacing: '0.05em', borderRadius: 0 }}
+                className="h-8 px-3 text-[13px] text-fg-3 hover:text-fg hover:bg-claude-surface-hover transition-colors"
               >
                 BACK
               </button>
@@ -1569,8 +1522,7 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
             <div className="ml-auto flex items-center gap-2">
               <Dialog.Close asChild>
                 <button
-                  className="px-3 py-1.5 text-[10px] font-bold hover:bg-claude-bg transition-colors text-claude-text-secondary"
-                  style={{ letterSpacing: '0.05em', borderRadius: 0 }}
+                  className="h-8 px-3 text-[13px] text-fg-3 hover:text-fg hover:bg-claude-surface-hover transition-colors"
                 >
                   CANCEL
                 </button>
@@ -1579,8 +1531,7 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
                 <button
                   onClick={handleCreate}
                   disabled={isCreating || !sessionName || !branch}
-                  className="px-4 py-1.5 text-[10px] font-bold text-white flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed bg-claude-accent hover:bg-claude-accent-hover"
-                  style={{ letterSpacing: '0.05em', borderRadius: 0 }}
+                  className="h-8 px-3 text-[13px] font-semibold bg-fg text-ink-0 hover:bg-white flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   {isCreating && <Loader2 size={12} className="animate-spin" />}
                   {isCreating ? 'CREATING...' : 'CREATE SESSION'}
@@ -1590,8 +1541,7 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
                 <button
                   onClick={handleOpenClawConnect}
                   disabled={isCreating || !openclawGatewayUrl.trim()}
-                  className="px-4 py-1.5 text-[10px] font-bold text-white flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed bg-emerald-500 hover:bg-emerald-600"
-                  style={{ letterSpacing: '0.05em', borderRadius: 0 }}
+                  className="h-8 px-3 text-[13px] font-semibold bg-fg text-ink-0 hover:bg-white flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   {isCreating && <Loader2 size={12} className="animate-spin" />}
                   {isCreating ? 'CONNECTING...' : 'CONNECT'}
@@ -1601,8 +1551,7 @@ export default function NewSessionDialog({ isOpen, onClose, initialPath, initial
                 <button
                   onClick={handleTeleport}
                   disabled={isCreating || !teleportSessionId.trim() || !teleportDirectory}
-                  className="px-4 py-1.5 text-[10px] font-bold text-white flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed bg-amber-500 hover:bg-amber-600"
-                  style={{ letterSpacing: '0.05em', borderRadius: 0 }}
+                  className="h-8 px-3 text-[13px] font-semibold bg-fg text-ink-0 hover:bg-white flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   {isCreating && <Loader2 size={12} className="animate-spin" />}
                   {isCreating ? 'TELEPORTING...' : 'TELEPORT SESSION'}

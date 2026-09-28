@@ -113,7 +113,7 @@ export default function ArcImportMenu({ partitionId, onImported }: ArcImportMenu
         ref={buttonRef}
         type="button"
         onClick={toggleMenu}
-        className={`p-1.5 rounded transition-colors ${open ? 'bg-claude-bg text-claude-accent' : 'hover:bg-claude-bg'}`}
+        className={`w-7 h-7 flex items-center justify-center transition-colors ${open ? 'bg-[rgba(76,154,255,0.13)] text-accent-text' : 'text-fg-4 hover:text-fg hover:bg-claude-surface-hover'}`}
         title="Import cookies and signed-in sessions from Arc"
         aria-label="Import cookies and signed-in sessions from Arc"
         aria-expanded={open}
@@ -125,13 +125,13 @@ export default function ArcImportMenu({ partitionId, onImported }: ArcImportMenu
         <div
           ref={popoverRef}
           data-testid="arc-import-menu"
-          className="fixed z-[10000] overflow-hidden rounded-lg border border-claude-border bg-claude-surface shadow-2xl"
+          className="fixed z-[10000] overflow-hidden bg-ink-1 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1),0_12px_40px_rgba(0,0,0,0.45)]"
           style={{ top: menuPosition.top, left: menuPosition.left, width: menuPosition.width }}
         >
-          <div className="flex items-start justify-between gap-3 border-b border-claude-border px-3 py-2.5">
+          <div className="flex items-start justify-between gap-3 border-b border-line px-3 py-2.5">
             <div>
-              <div className="text-sm font-medium text-claude-text">Import from Arc</div>
-              <div className="mt-0.5 text-[11px] leading-4 text-claude-text-secondary">
+              <div className="text-[13px] font-semibold tracking-[-0.01em] text-fg">Import from Arc</div>
+              <div className="mt-0.5 text-[11.5px] leading-4 text-fg-4">
                 Copies cookies and sign-ins into this Build browser profile. Arc stays unchanged.
               </div>
             </div>
@@ -139,7 +139,7 @@ export default function ArcImportMenu({ partitionId, onImported }: ArcImportMenu
               type="button"
               onClick={() => void loadProfiles()}
               disabled={loading || importingProfileId !== null}
-              className="rounded p-1 text-claude-text-secondary hover:bg-claude-bg hover:text-claude-text disabled:opacity-40"
+              className="p-1 text-fg-4 hover:bg-claude-surface-hover hover:text-fg disabled:opacity-40"
               title="Refresh Arc profiles"
               aria-label="Refresh Arc profiles"
             >
@@ -149,7 +149,7 @@ export default function ArcImportMenu({ partitionId, onImported }: ArcImportMenu
 
           <div className="max-h-64 overflow-y-auto p-2">
             {loading && profiles === null ? (
-              <div className="flex items-center justify-center gap-2 py-6 text-xs text-claude-text-secondary">
+              <div className="flex items-center justify-center gap-2 py-6 text-[12px] text-fg-4">
                 <Loader2 size={14} className="animate-spin" />
                 Finding Arc profiles…
               </div>
@@ -160,16 +160,16 @@ export default function ArcImportMenu({ partitionId, onImported }: ArcImportMenu
                   return (
                     <div
                       key={profile.id}
-                      className="flex items-center gap-3 rounded-md border border-claude-border/70 bg-claude-bg/40 px-2.5 py-2"
+                      className="flex items-center gap-3 bg-ink-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)] px-2.5 py-2"
                     >
                       <div className="min-w-0 flex-1">
-                        <div className="truncate text-xs font-medium text-claude-text">
+                        <div className="truncate text-[13px] font-medium text-fg">
                           {profile.name}
                           {profile.isDefault && (
-                            <span className="ml-1.5 text-[9px] uppercase tracking-wide text-claude-text-secondary">Default</span>
+                            <span className="ml-1.5 font-mono text-[9.5px] uppercase text-fg-3 px-1 py-px shadow-[inset_0_0_0_1px_rgba(255,255,255,0.16)]">Default</span>
                           )}
                         </div>
-                        <div className="text-[10px] text-claude-text-secondary">
+                        <div className="font-mono text-[11px] text-fg-4">
                           {profile.cookieCount.toLocaleString()} cookies
                         </div>
                       </div>
@@ -177,7 +177,7 @@ export default function ArcImportMenu({ partitionId, onImported }: ArcImportMenu
                         type="button"
                         onClick={() => void importProfile(profile)}
                         disabled={importingProfileId !== null}
-                        className="flex items-center gap-1 rounded bg-claude-accent px-2 py-1 text-[11px] font-medium text-white hover:opacity-90 disabled:opacity-50"
+                        className="flex items-center gap-1 h-7 bg-[#EDEDED] px-2.5 text-[12px] font-semibold text-[#0F0F0F] hover:bg-white disabled:opacity-50"
                       >
                         {importing && <Loader2 size={11} className="animate-spin" />}
                         {importing ? 'Importing' : 'Import'}
@@ -187,11 +187,11 @@ export default function ArcImportMenu({ partitionId, onImported }: ArcImportMenu
                 })}
               </div>
             ) : !error ? (
-              <div className="py-6 text-center text-xs text-claude-text-secondary">No Arc profiles found.</div>
+              <div className="py-6 text-center text-[12px] text-fg-4">No Arc profiles found.</div>
             ) : null}
 
             {result && (
-              <div className="mt-2 flex gap-2 rounded-md border border-green-500/30 bg-green-500/10 px-2.5 py-2 text-[11px] leading-4 text-green-300">
+              <div className="mt-2 flex gap-2 bg-[rgba(63,185,80,0.09)] shadow-[inset_0_0_0_1px_rgba(63,185,80,0.3)] px-2.5 py-2 text-[11.5px] leading-4 text-diff-add-text">
                 <CheckCircle2 size={14} className="mt-0.5 flex-shrink-0" />
                 <span>
                   Imported {result.imported.toLocaleString()} cookies from {result.profileName}.
@@ -202,7 +202,7 @@ export default function ArcImportMenu({ partitionId, onImported }: ArcImportMenu
             )}
 
             {error && (
-              <div className="mt-2 flex gap-2 rounded-md border border-red-500/30 bg-red-500/10 px-2.5 py-2 text-[11px] leading-4 text-red-300">
+              <div className="mt-2 flex gap-2 bg-[rgba(248,81,73,0.09)] shadow-[inset_0_0_0_1px_rgba(248,81,73,0.3)] px-2.5 py-2 text-[11.5px] leading-4 text-diff-del-text">
                 <AlertCircle size={14} className="mt-0.5 flex-shrink-0" />
                 <span>{error}</span>
               </div>

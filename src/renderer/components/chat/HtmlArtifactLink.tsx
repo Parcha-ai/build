@@ -35,12 +35,12 @@ export default function HtmlArtifactLink({
   }, [autoOpen, openArtifact]);
 
   return (
-    <div className="my-2 border border-purple-500/30 bg-purple-500/10 px-3 py-2 flex items-center justify-between gap-3">
+    <div className="my-2 flex items-center justify-between gap-3 bg-ink-1 px-3 py-[9px] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)]">
       <div className="flex items-center gap-2 min-w-0">
-        <Code2 size={14} className="text-purple-400 flex-shrink-0" />
+        <Code2 size={14} className="text-fg-3 flex-shrink-0" />
         <div className="min-w-0">
-          <div className="text-sm font-mono text-claude-text truncate">{title}</div>
-          <div className="text-[10px] font-mono text-claude-text-secondary">
+          <div className="text-[13px] font-medium text-fg truncate">{title}</div>
+          <div className="font-mono text-[11px] text-fg-5">
             {html.length.toLocaleString()} chars
           </div>
         </div>
@@ -48,9 +48,8 @@ export default function HtmlArtifactLink({
       <button
         onClick={openArtifact}
         disabled={!sessionId}
-        className="flex items-center gap-1.5 px-2 py-1 text-xs font-mono font-bold text-purple-300 border border-purple-500/40 hover:bg-purple-500/20 disabled:opacity-50 disabled:cursor-not-allowed flex-shrink-0"
+        className="flex h-[26px] flex-shrink-0 items-center gap-1.5 px-2.5 text-[12px] text-fg-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] transition-colors hover:bg-white/[0.04] hover:text-fg disabled:cursor-not-allowed disabled:opacity-50"
         title="Open HTML preview"
-        style={{ borderRadius: 0 }}
       >
         <PanelRight size={13} />
         Open Preview

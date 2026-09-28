@@ -248,6 +248,12 @@ export default function MainContent() {
 
   const handleSessionSplitDragOver = useCallback((event: React.DragEvent<HTMLDivElement>) => {
     if (!event.dataTransfer.types.includes(SESSION_TAB_DRAG_TYPE)) return;
+    // Tabs now live in the chat header (right side) — hovering the tab strip is
+    // reorder territory, not the split-right drop zone.
+    if ((event.target as HTMLElement | null)?.closest?.('[data-session-tab-strip]')) {
+      setIsSessionSplitDropActive(false);
+      return;
+    }
     const bounds = event.currentTarget.getBoundingClientRect();
     const isRightDropZone = event.clientX >= bounds.left + bounds.width * 0.55;
     if (!isRightDropZone) {
@@ -261,6 +267,10 @@ export default function MainContent() {
 
   const handleSessionSplitDrop = useCallback((event: React.DragEvent<HTMLDivElement>) => {
     if (!activeSession || !activeSessionGroupId) return;
+    if ((event.target as HTMLElement | null)?.closest?.('[data-session-tab-strip]')) {
+      setIsSessionSplitDropActive(false);
+      return;
+    }
     const droppedSessionId = event.dataTransfer.getData(SESSION_TAB_DRAG_TYPE);
     const droppedSession = sessions.find((session) => session.id === droppedSessionId);
     if (
@@ -429,23 +439,23 @@ export default function MainContent() {
   const activeDesignPanel = sessionDesignPanels[activeSession.id];
   const designOverlay = activeDesignPanel ? (
     <div
-      className={`absolute z-30 flex flex-col bg-claude-bg ${
+      className={`absolute z-30 flex flex-col bg-ink-0 ${
         designTakeoverActive
           ? 'inset-0'
           : 'w-px h-px overflow-hidden opacity-0 pointer-events-none bottom-0 right-0'
       }`}
       aria-hidden={!designTakeoverActive}
     >
-      <div className="h-9 flex items-center justify-between px-3 border-b border-claude-border bg-claude-surface flex-shrink-0">
+      <div className="h-10 flex items-center justify-between px-3 border-b border-line bg-ink-0 flex-shrink-0">
         <button
           onClick={() => setDesignTakeover(activeSession.id, false)}
-          className="flex items-center gap-1.5 text-sm text-claude-text-secondary hover:text-claude-text"
+          className="flex items-center gap-1.5 h-[26px] px-2.5 text-[12px] text-fg-2 hover:text-fg shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] hover:bg-claude-surface-hover"
           title="Return to the coding session — design keeps running and context syncs back automatically"
         >
           <ArrowLeft size={14} />
           Back to coding session
         </button>
-        <span className="text-xs text-claude-text-secondary truncate">
+        <span className="text-[12px] text-fg-4 truncate">
           Design session — {getSessionDisplayName(activeSession)}
         </span>
       </div>
@@ -468,7 +478,7 @@ export default function MainContent() {
         {/* Primary content - chat or setup progress */}
         {/* In mobile browser mode, use flex-grow to take remaining space */}
         <div
-          className="flex flex-col overflow-hidden min-w-0 transition-all duration-200"
+          className="flex flex-col overflow-hidden min-w-0 bg-ink-2 transition-all duration-200"
           style={{
             flexBasis: hasSidePanel ? flexBasis.main : '100%',
             flexShrink: 1,
@@ -483,7 +493,6 @@ export default function MainContent() {
             <SetupProgress session={activeSession} progress={activeSetupProgress} />
           ) : (
             <>
-              <ForkTabs sessionId={activeSession.id} />
               <div
                 ref={chatSplitAreaRef}
                 className="flex-1 min-h-0 flex overflow-hidden relative"
@@ -492,11 +501,14 @@ export default function MainContent() {
                 onDrop={handleSessionSplitDrop}
               >
                 <div className="flex-1 min-w-0 flex overflow-hidden">
-                  <ChatContainer session={activeSession} />
+                  <ChatContainer
+                    session={activeSession}
+                    headerTabs={<ForkTabs sessionId={activeSession.id} variant="inline" />}
+                  />
                 </div>
                 {splitSession && (
                   <>
-                    <div className="w-px flex-shrink-0 bg-claude-border shadow-[0_0_0_1px_rgba(255,255,255,0.025)]" />
+                    <div className="w-px flex-shrink-0 bg-line" />
                     <div className="flex-1 min-w-0 flex overflow-hidden">
                       <ChatContainer
                         session={splitSession}
@@ -508,8 +520,8 @@ export default function MainContent() {
                   </>
                 )}
                 {isSessionSplitDropActive && (
-                  <div className="absolute z-40 top-1 bottom-1 right-1 w-[calc(50%_-_0.25rem)] pointer-events-none border-2 border-claude-accent bg-claude-accent/10 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.08)] flex items-center justify-center">
-                    <div className="px-3 py-2 bg-claude-surface border border-claude-accent text-[11px] font-mono font-bold uppercase tracking-wider text-claude-accent">
+                  <div className="absolute z-40 top-1 bottom-1 right-1 w-[calc(50%_-_0.25rem)] pointer-events-none shadow-[inset_0_0_0_1.5px_#4C9AFF] bg-accent/10 flex items-center justify-center">
+                    <div className="px-3 py-1.5 bg-ink-3 shadow-[inset_0_0_0_1px_rgba(76,154,255,0.35)] text-[12px] font-medium text-accent-text">
                       Split right
                     </div>
                   </div>
@@ -524,8 +536,8 @@ export default function MainContent() {
           <>
             {/* Resize handle with split toggle button */}
             <div
-              className={`w-1 flex flex-col items-center bg-claude-border hover:w-4 transition-all group cursor-col-resize ${
-                isPanelResizing ? 'w-4 bg-claude-accent' : ''
+              className={`w-px flex flex-col items-center bg-line hover:w-4 hover:bg-claude-surface-hover transition-all group cursor-col-resize ${
+                isPanelResizing ? 'w-4 bg-accent/40' : ''
               }`}
               onMouseDown={handlePanelResizeMouseDown}
             >
@@ -537,7 +549,7 @@ export default function MainContent() {
                   setPanelSplitPercent(null); // Reset any custom drag ratio
                   toggleViewportMode();
                 }}
-                className="p-0.5 my-1 rounded hover:bg-claude-surface-hover text-claude-text-secondary hover:text-claude-accent transition-colors opacity-0 group-hover:opacity-100"
+                className="p-0.5 my-1 hover:bg-[#262626] text-fg-4 hover:text-fg transition-colors opacity-0 group-hover:opacity-100"
                 title={getViewportTooltip()}
               >
                 {getViewportIcon()}
@@ -545,7 +557,7 @@ export default function MainContent() {
 
               {/* Drag handle visual */}
               <div className="flex-1 flex items-center justify-center opacity-0 group-hover:opacity-100">
-                <GripVertical size={8} className="text-claude-text-secondary" />
+                <GripVertical size={8} className="text-fg-4" />
               </div>
             </div>
 
@@ -553,7 +565,7 @@ export default function MainContent() {
             {/* In mobile mode with only browser panel, use fixed width for mobile device frame */}
             <div
               data-voice-capture-region="side-panel"
-              className="flex overflow-hidden bg-claude-surface transition-all duration-200"
+              className="flex overflow-hidden bg-ink-1 transition-all duration-200"
               style={{
                 flexBasis: (viewportMode === 'mobile' && isBrowserPanelOpen && !isGitPanelOpen && !isEditorOpen && !isExtensionsPanelOpen && !isPlanPanelOpen && !isHtmlPanelOpen && !isMarkdownPanelOpen)
                   ? '420px'  // 375px device + padding + border
@@ -567,7 +579,7 @@ export default function MainContent() {
                 {/* Browser panel — independent from chat/session tab selection. */}
                 {isBrowserPanelOpen && (
                   <div className={`flex flex-col overflow-hidden ${isGitPanelOpen || isEditorOpen ? 'flex-1' : 'h-full'}`}>
-                    <div className="h-10 flex items-center justify-between border-b border-claude-border bg-claude-surface">
+                    <div className="h-10 flex-shrink-0 flex items-center justify-between border-b border-line bg-ink-1">
                       <div className="flex-1 flex items-center overflow-x-auto">
                         {browserTabsForPartition.map((tab) => (
                           <BrowserSessionTab
@@ -582,30 +594,30 @@ export default function MainContent() {
                           type="button"
                           onClick={() => createTabForSession()}
                           disabled={!chatTargetSession}
-                          className="h-full px-2 text-claude-text-secondary hover:text-claude-text hover:bg-claude-bg/50 disabled:opacity-30"
+                          className="h-full px-2 text-fg-4 hover:text-fg hover:bg-claude-surface-hover disabled:opacity-30"
                           title="New browser tab"
                           aria-label="New browser tab"
                         >
                           <Plus size={13} />
                         </button>
                         {viewportMode === 'mobile' && (
-                          <span className="ml-2 text-xs text-purple-400 font-medium whitespace-nowrap">
+                          <span className="ml-2 font-mono text-[11px] text-fg-4 whitespace-nowrap">
                             375 × {mobileBrowserHeight}
                           </span>
                         )}
                       </div>
                       <button
                         onClick={toggleBrowserPanel}
-                        className="p-1 mx-2 rounded hover:bg-claude-bg text-claude-text-secondary hover:text-claude-text flex-shrink-0"
+                        className="w-7 h-7 mx-2 flex items-center justify-center hover:bg-claude-surface-hover text-fg-4 hover:text-fg flex-shrink-0"
                       >
                         <X size={14} />
                       </button>
                     </div>
                     {/* Browser content area - centred mobile viewport when in mobile mode */}
-                    <div className={`flex-1 overflow-hidden relative ${viewportMode === 'mobile' ? 'bg-gray-900 flex flex-col items-center pt-4' : ''}`}>
+                    <div className={`flex-1 overflow-hidden relative ${viewportMode === 'mobile' ? 'bg-ink-0 flex flex-col items-center pt-4' : ''}`}>
                       {/* Mobile device frame when in mobile mode, full size in desktop mode */}
                       <div
-                        className={`${viewportMode === 'mobile' ? 'relative rounded-xl overflow-hidden shadow-2xl border-4 border-gray-700' : 'absolute inset-0'}`}
+                        className={`${viewportMode === 'mobile' ? 'relative overflow-hidden shadow-[0_0_0_4px_#2B2B2B,0_12px_40px_rgba(0,0,0,0.45)]' : 'absolute inset-0'}`}
                         style={viewportMode === 'mobile' ? { width: 375, height: mobileBrowserHeight } : undefined}
                       >
                         {/* Persist every tab's URL, but keep only the visible tab's
@@ -635,13 +647,13 @@ export default function MainContent() {
                       {/* Vertical resize handle for mobile browser - only in mobile mode */}
                       {viewportMode === 'mobile' && (
                         <div
-                          className={`w-[375px] h-3 mt-1 flex items-center justify-center cursor-row-resize rounded-b-lg hover:bg-gray-700 transition-colors ${
-                            isMobileBrowserResizing ? 'bg-claude-accent' : 'bg-gray-800'
+                          className={`w-[375px] h-3 mt-1 flex items-center justify-center cursor-row-resize hover:bg-ink-4 transition-colors ${
+                            isMobileBrowserResizing ? 'bg-accent' : 'bg-ink-3'
                           }`}
                           onMouseDown={handleMobileBrowserResizeMouseDown}
                           title="Drag to resize mobile browser height"
                         >
-                          <GripHorizontal size={12} className="text-gray-500" />
+                          <GripHorizontal size={12} className="text-fg-5" />
                         </div>
                       )}
                     </div>
@@ -650,17 +662,17 @@ export default function MainContent() {
 
                 {/* Horizontal divider when both panels open */}
                 {isBrowserPanelOpen && isGitPanelOpen && (
-                  <div className="h-px bg-claude-border" />
+                  <div className="h-px bg-line" />
                 )}
 
                 {/* Git panel */}
                 {isGitPanelOpen && (
                   <div className={`flex flex-col overflow-hidden ${isBrowserPanelOpen ? 'h-[300px]' : isEditorOpen ? 'h-[200px]' : 'h-full'}`}>
-                    <div className="h-10 flex items-center justify-between px-3 border-b border-claude-border bg-claude-surface">
-                      <span className="text-sm font-medium">Git Explorer</span>
+                    <div className="h-[52px] flex-shrink-0 flex items-center justify-between px-3 border-b border-line bg-ink-1">
+                      <span className="text-[12.5px] px-2.5 py-[5px] bg-[#262626] text-fg">Git Explorer</span>
                       <button
                         onClick={toggleGitPanel}
-                        className="p-1 rounded hover:bg-claude-bg text-claude-text-secondary hover:text-claude-text"
+                        className="w-7 h-7 flex items-center justify-center hover:bg-claude-surface-hover text-fg-4 hover:text-fg"
                       >
                         <X size={14} />
                       </button>
@@ -673,7 +685,7 @@ export default function MainContent() {
 
                 {/* Horizontal divider when editor is with other panels */}
                 {isEditorOpen && (isBrowserPanelOpen || isGitPanelOpen) && (
-                  <div className="h-px bg-claude-border" />
+                  <div className="h-px bg-line" />
                 )}
 
                 {/* Editor panel */}
@@ -687,14 +699,14 @@ export default function MainContent() {
                 {isExtensionsPanelOpen && !isBrowserPanelOpen && (
                   <>
                     {(isGitPanelOpen || isEditorOpen) && (
-                      <div className="h-px bg-claude-border" />
+                      <div className="h-px bg-line" />
                     )}
                     <div className={`flex flex-col overflow-hidden ${(isGitPanelOpen || isEditorOpen) ? 'flex-1' : 'h-full'}`}>
-                      <div className="h-10 flex items-center justify-between px-3 border-b border-claude-border bg-claude-surface">
-                        <span className="text-sm font-medium">Extensions</span>
+                      <div className="h-[52px] flex-shrink-0 flex items-center justify-between px-3 border-b border-line bg-ink-1">
+                        <span className="text-[12.5px] px-2.5 py-[5px] bg-[#262626] text-fg">Extensions</span>
                         <button
                           onClick={toggleExtensionsPanel}
-                          className="p-1 rounded hover:bg-claude-bg text-claude-text-secondary hover:text-claude-text"
+                          className="w-7 h-7 flex items-center justify-center hover:bg-claude-surface-hover text-fg-4 hover:text-fg"
                         >
                           <X size={14} />
                         </button>
@@ -710,7 +722,7 @@ export default function MainContent() {
                 {isPlanPanelOpen && !isBrowserPanelOpen && (
                   <>
                     {(isGitPanelOpen || isEditorOpen || isExtensionsPanelOpen) && (
-                      <div className="h-px bg-claude-border" />
+                      <div className="h-px bg-line" />
                     )}
                     <div className={`flex flex-col overflow-hidden ${(isGitPanelOpen || isEditorOpen || isExtensionsPanelOpen) ? 'flex-1' : 'h-full'}`}>
                       <PlanPanel />
@@ -722,7 +734,7 @@ export default function MainContent() {
                 {isHtmlPanelOpen && !isBrowserPanelOpen && (
                   <>
                     {(isGitPanelOpen || isEditorOpen || isExtensionsPanelOpen || isPlanPanelOpen) && (
-                      <div className="h-px bg-claude-border" />
+                      <div className="h-px bg-line" />
                     )}
                     <div className={`flex flex-col overflow-hidden ${(isGitPanelOpen || isEditorOpen || isExtensionsPanelOpen || isPlanPanelOpen) ? 'flex-1' : 'h-full'}`}>
                       <HtmlArtifactPanel sessionId={artifactTargetSessionId} />
@@ -734,7 +746,7 @@ export default function MainContent() {
                 {isMarkdownPanelOpen && !isBrowserPanelOpen && (
                   <>
                     {(isGitPanelOpen || isEditorOpen || isExtensionsPanelOpen || isPlanPanelOpen || isHtmlPanelOpen) && (
-                      <div className="h-px bg-claude-border" />
+                      <div className="h-px bg-line" />
                     )}
                     <div className={`flex flex-col overflow-hidden ${(isGitPanelOpen || isEditorOpen || isExtensionsPanelOpen || isPlanPanelOpen || isHtmlPanelOpen) ? 'flex-1' : 'h-full'}`}>
                       <MarkdownResponsePanel sessionId={artifactTargetSessionId} />
@@ -748,7 +760,7 @@ export default function MainContent() {
                 {isDesignPanelOpen && !isBrowserPanelOpen && !activeDesignPanel && (
                   <>
                     {(isGitPanelOpen || isEditorOpen || isExtensionsPanelOpen || isPlanPanelOpen || isHtmlPanelOpen || isMarkdownPanelOpen) && (
-                      <div className="h-px bg-claude-border" />
+                      <div className="h-px bg-line" />
                     )}
                     <div className={`flex flex-col overflow-hidden ${(isGitPanelOpen || isEditorOpen || isExtensionsPanelOpen || isPlanPanelOpen || isHtmlPanelOpen || isMarkdownPanelOpen) ? 'flex-1' : 'h-full'}`}>
                       <DesignPanel sessionId={activeSession.id} />
@@ -759,17 +771,17 @@ export default function MainContent() {
 
               {/* Vertical divider between browser and extensions */}
               {isExtensionsPanelOpen && isBrowserPanelOpen && (
-                <div className="w-px bg-claude-border" />
+                <div className="w-px bg-line" />
               )}
 
               {/* Extensions panel - right side pane when browser is open */}
               {isExtensionsPanelOpen && isBrowserPanelOpen && (
-                <div className="w-[300px] flex flex-col overflow-hidden border-l border-claude-border">
-                  <div className="h-10 flex items-center justify-between px-3 border-b border-claude-border bg-claude-surface">
-                    <span className="text-sm font-medium">Extensions</span>
+                <div className="w-[300px] flex flex-col overflow-hidden border-l border-line">
+                  <div className="h-[52px] flex-shrink-0 flex items-center justify-between px-3 border-b border-line bg-ink-1">
+                    <span className="text-[12.5px] px-2.5 py-[5px] bg-[#262626] text-fg">Extensions</span>
                     <button
                       onClick={toggleExtensionsPanel}
-                      className="p-1 rounded hover:bg-claude-bg text-claude-text-secondary hover:text-claude-text"
+                      className="w-7 h-7 flex items-center justify-center hover:bg-claude-surface-hover text-fg-4 hover:text-fg"
                     >
                       <X size={14} />
                     </button>
@@ -791,18 +803,18 @@ export default function MainContent() {
         <>
           {/* Terminal resize handle */}
           <div
-            className={`h-1 hover:h-1.5 bg-claude-border hover:bg-claude-accent cursor-row-resize flex items-center justify-center transition-all ${
-              isTerminalResizing ? 'h-1.5 bg-claude-accent' : ''
+            className={`h-px hover:h-1 bg-line hover:bg-accent cursor-row-resize flex items-center justify-center transition-all ${
+              isTerminalResizing ? 'h-1 bg-accent' : ''
             }`}
             onMouseDown={handleTerminalResizeMouseDown}
           >
-            <GripVertical size={12} className="text-claude-text-secondary opacity-0 hover:opacity-100 rotate-90" />
+            <GripVertical size={12} className="text-fg-4 opacity-0 hover:opacity-100 rotate-90" />
           </div>
 
           {/* Terminal container with dynamic height */}
           <div
             data-voice-capture-region="terminal-panel"
-            className="border-t border-claude-border"
+            className="border-t border-line bg-ink-term"
             style={{ height: terminalHeight || 250 }}
           >
             <TerminalContainer session={activeSession} compact />

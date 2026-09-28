@@ -45,88 +45,74 @@ export default function TasksBlock({ tasks, isStreaming }: TasksBlockProps) {
     return `${completedTasks}/${totalTasks} tasks completed`;
   })();
 
-  // Colors - green accent for tasks
-  const accentColor = 'text-green-400';
-  const dotColor = inProgressTask ? 'bg-amber-500' : completedTasks === totalTasks ? 'bg-green-500' : 'bg-green-500';
-  const borderColor = 'border-green-500/30';
+  const CARD = 'bg-ink-1 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)] overflow-hidden';
 
   return (
-    <div className="font-mono text-sm">
+    <div className={`${CARD} text-[12.5px]`}>
       {/* Header row - clickable */}
       <button
         onClick={() => setIsExpanded(!isExpanded)}
-        className="w-full flex items-center gap-2 py-0.5 hover:bg-claude-surface/50 transition-colors text-left"
+        className="flex w-full items-center gap-2 px-3 py-[9px] text-left text-fg-3 transition-colors hover:bg-white/[0.03]"
       >
         {/* Expand/collapse chevron */}
         {isExpanded ? (
-          <ChevronDown size={12} className={`${accentColor} flex-shrink-0`} />
+          <ChevronDown size={12} className="flex-shrink-0 text-fg-4" />
         ) : (
-          <ChevronRight size={12} className={`${accentColor} flex-shrink-0`} />
+          <ChevronRight size={12} className="flex-shrink-0 text-fg-4" />
         )}
 
         {/* Status dot */}
         <span
-          className={`w-2 h-2 rounded-full flex-shrink-0 ${dotColor} ${inProgressTask && isStreaming ? 'animate-pulse' : ''}`}
+          className={`h-[7px] w-[7px] flex-shrink-0 rounded-full ${
+            inProgressTask ? `bg-accent ${isStreaming ? 'status-pulse' : ''}` : 'bg-diff-add'
+          }`}
         />
 
         {/* Icon and label */}
-        <ListTodo size={14} className={`${accentColor} flex-shrink-0`} />
-        <span className={`font-semibold ${accentColor}`}>
-          Tasks ({completedTasks}/{totalTasks})
-        </span>
+        <ListTodo size={13} className="flex-shrink-0 text-fg-4" />
+        <span className="font-medium text-fg-2">Tasks</span>
+        <span className="font-mono text-[11.5px] text-fg-4">{completedTasks}/{totalTasks}</span>
+
+        {/* Collapsed preview inline */}
+        {!isExpanded && (
+          <span className={`min-w-0 flex-1 truncate ${
+            inProgressTask ? 'text-fg-2' : completedTasks === totalTasks ? 'text-diff-add' : 'text-fg-4'
+          }`}>
+            {previewText}
+          </span>
+        )}
 
         {/* Loading spinner for active tasks while streaming */}
         {inProgressTask && isStreaming && (
-          <Loader2 size={12} className="text-amber-400 animate-spin flex-shrink-0" />
+          <Loader2 size={12} className="ml-auto flex-shrink-0 animate-spin text-accent" />
         )}
       </button>
-
-      {/* Preview (collapsed) - shows current active task or progress */}
-      {!isExpanded && (
-        <div className={`ml-6 mt-1 p-2 bg-claude-surface/30 border-l-2 ${borderColor}`}>
-          <div className="flex items-center gap-2 text-xs text-claude-text-secondary/80">
-            {inProgressTask ? (
-              <>
-                <Clock size={12} className="text-amber-400 animate-pulse flex-shrink-0" />
-                <span className="text-amber-400">{previewText}</span>
-              </>
-            ) : completedTasks === totalTasks ? (
-              <>
-                <CheckCircle2 size={12} className="text-green-500 flex-shrink-0" />
-                <span className="text-green-500">{previewText}</span>
-              </>
-            ) : (
-              <span>{previewText}</span>
-            )}
-          </div>
-        </div>
-      )}
 
       {/* Expanded content - fixed height with scroll */}
       {isExpanded && (
         <div
           ref={expandedRef}
-          className={`ml-6 mt-1 p-2 bg-claude-surface/30 border-l-2 ${borderColor} max-h-64 overflow-y-auto scroll-smooth`}
+          className="max-h-64 overflow-y-auto scroll-smooth border-t border-white/[0.05] px-3 pb-2.5 pt-2 pl-8"
         >
           <div className="space-y-1.5">
             {tasks.map((task) => (
-              <div key={task.id} className="flex items-start gap-2 text-xs">
+              <div key={task.id} className="flex items-start gap-2 text-[12.5px]">
                 {/* Status icon */}
                 {task.status === 'completed' ? (
-                  <CheckCircle2 size={14} className="text-green-500 flex-shrink-0 mt-0.5" />
+                  <CheckCircle2 size={13} className="mt-0.5 flex-shrink-0 text-diff-add" />
                 ) : task.status === 'in_progress' ? (
-                  <Clock size={14} className="text-amber-500 flex-shrink-0 mt-0.5 animate-pulse" />
+                  <Clock size={13} className="mt-0.5 flex-shrink-0 animate-pulse text-accent" />
                 ) : (
-                  <Circle size={14} className="text-claude-text-secondary flex-shrink-0 mt-0.5" />
+                  <Circle size={13} className="mt-0.5 flex-shrink-0 text-fg-5" />
                 )}
 
                 {/* Task text */}
                 <span className={
                   task.status === 'completed'
-                    ? 'text-claude-text-secondary line-through'
+                    ? 'text-fg-5 line-through'
                     : task.status === 'in_progress'
-                      ? 'text-amber-400'
-                      : 'text-claude-text'
+                      ? 'text-fg'
+                      : 'text-fg-3'
                 }>
                   {task.status === 'in_progress' && task.activeForm
                     ? task.activeForm

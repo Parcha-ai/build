@@ -15,6 +15,10 @@ export default function CommandCenterGrid() {
   const setFocused = useUIStore((s) => s.setCommandCenterFocusedSession);
 
   const [showPicker, setShowPicker] = useState(false);
+  // Read-only maps for the header summary line
+  const isStreamingMap = useSessionStore((s) => s.isStreaming);
+  const pendingPermissionMap = useSessionStore((s) => s.pendingPermission);
+  const pendingQuestionMap = useSessionStore((s) => s.pendingQuestion);
 
   // Auto-focus the first cell if nothing is focused
   useEffect(() => {
@@ -82,6 +86,17 @@ export default function CommandCenterGrid() {
     setShowPicker(false);
   }, [addToCommandCenter]);
 
+  const summary = useMemo(() => {
+    let running = 0;
+    let waiting = 0;
+    for (const cell of gridCells) {
+      const ids = cell.forks.map(f => f.id);
+      if (ids.some(id => pendingPermissionMap[id] || pendingQuestionMap[id])) waiting++;
+      else if (ids.some(id => isStreamingMap[id])) running++;
+    }
+    return { total: gridCells.length, running, waiting };
+  }, [gridCells, isStreamingMap, pendingPermissionMap, pendingQuestionMap]);
+
   // Total items including the "+" add button
   const totalItems = gridCells.length + 1;
   const numColumns = Math.ceil(totalItems / 2);
@@ -100,15 +115,31 @@ export default function CommandCenterGrid() {
 
   return (
     <div
-      className={`flex-1 flex flex-col overflow-hidden ${isDragOver ? 'ring-2 ring-claude-accent ring-inset' : ''}`}
+      className={`flex-1 flex flex-col overflow-hidden bg-ink-0 ${isDragOver ? 'ring-2 ring-accent ring-inset' : ''}`}
       onDragOver={(e) => { e.preventDefault(); setIsDragOver(true); }}
       onDragLeave={() => setIsDragOver(false)}
       onDrop={handleDrop}
     >
+      {/* Header — title + live summary */}
+      <div className="flex items-end gap-4 px-8 pt-7 pb-5 flex-shrink-0">
+        <div className="min-w-0">
+          <div className="text-[22px] leading-[1.2] font-semibold tracking-[-0.02em] text-fg">
+            Command Center
+          </div>
+          {summary.total > 0 && (
+            <div className="text-[13.5px] text-fg-3 mt-1.5">
+              {summary.total} {summary.total === 1 ? 'session' : 'sessions'}
+              {' · '}{summary.running} running
+              {summary.waiting > 0 && <> · <span className="text-amber">{summary.waiting} waiting on you</span></>}
+            </div>
+          )}
+        </div>
+      </div>
+
       {/* Grid container — wrapper div with explicit width for horizontal scroll */}
-      <div className="flex-1 overflow-x-auto overflow-y-hidden p-2">
+      <div className="flex-1 overflow-x-auto overflow-y-hidden px-8 pb-6 pt-1">
         <div
-          className="h-full gap-2"
+          className="h-full gap-3.5"
           style={{
             display: 'grid',
             gridTemplateRows: '1fr 1fr',
@@ -130,50 +161,49 @@ export default function CommandCenterGrid() {
 
         {/* Add button cell */}
         <div
-          className="flex items-center justify-center border border-dashed border-claude-border hover:border-claude-text-secondary/40 cursor-pointer transition-colors min-w-[400px] relative"
+          className="flex items-center justify-center border border-dashed border-line-strong hover:border-fg-5 hover:bg-white/[0.02] cursor-pointer transition-colors min-w-[400px] relative"
           style={{ borderRadius: 0 }}
           onClick={() => setShowPicker(!showPicker)}
         >
-          <div className="flex flex-col items-center gap-2 text-claude-text-secondary">
-            <Plus size={24} />
-            <span className="text-[10px] font-bold uppercase" style={{ letterSpacing: '0.1em' }}>
-              Add Session
+          <div className="flex flex-col items-center gap-2 text-fg-4">
+            <Plus size={20} />
+            <span className="text-[13px] font-medium">
+              Add session
             </span>
           </div>
 
           {/* Session picker dropdown */}
           {showPicker && availableSessions.length > 0 && (
             <div
-              className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-64 max-h-64 overflow-y-auto bg-claude-surface border border-claude-border shadow-xl z-50"
-              style={{ borderRadius: 0 }}
+              className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-72 max-h-72 overflow-y-auto bg-ink-1 z-50"
+              style={{ borderRadius: 0, boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.1), 0 12px 40px rgba(0,0,0,0.45)' }}
               onClick={(e) => e.stopPropagation()}
             >
-              <div className="px-2 py-1.5 border-b border-claude-border">
-                <span className="text-[10px] font-bold text-claude-text-secondary uppercase" style={{ letterSpacing: '0.1em' }}>
-                  Select Session
+              <div className="px-3 py-2 border-b border-line">
+                <span className="text-[11px] text-fg-4 uppercase tracking-[0.04em]">
+                  Select session
                 </span>
               </div>
               {availableSessions.map(s => (
                 <button
                   key={s.id}
                   onClick={() => handleAddSession(s.id)}
-                  className="w-full text-left px-3 py-2 hover:bg-claude-bg transition-colors border-b border-claude-border/50"
+                  className="w-full text-left px-3 py-2 hover:bg-claude-surface-hover transition-colors"
                 >
                   <div className="flex items-center gap-2">
                     <div
-                      className={`w-1.5 h-1.5 flex-shrink-0 ${
-                        s.status === 'running' ? 'bg-green-500' : 'bg-gray-500'
+                      className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+                        s.status === 'running' ? 'bg-diff-add' : 'bg-fg-5'
                       }`}
-                      style={{ borderRadius: 0 }}
                     />
-                    <span className="text-xs font-bold text-claude-text truncate">
+                    <span className="text-[13px] text-fg truncate">
                       {getSessionDisplayName(s)}
                     </span>
                     {s.isStarred && (
-                      <span className="text-amber-400 text-[10px]">&#9733;</span>
+                      <span className="text-amber text-[10px]">&#9733;</span>
                     )}
                   </div>
-                  <div className="text-[10px] text-claude-text-secondary mt-0.5 pl-3.5 truncate">
+                  <div className="font-mono text-[11px] text-fg-4 mt-0.5 pl-3.5 truncate">
                     {s.branch}
                   </div>
                 </button>

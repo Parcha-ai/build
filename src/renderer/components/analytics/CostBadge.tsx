@@ -80,10 +80,10 @@ export default function CostBadge() {
   const extraUsage = tierConfig ? Math.max(0, monthCost - tierConfig.monthlyIncludedUsd) : 0;
 
   const costColor = isOverLimit
-    ? 'text-red-400'
+    ? 'text-diff-del'
     : isNearLimit
-    ? 'text-amber-400'
-    : 'text-claude-text-secondary';
+    ? 'text-amber'
+    : 'text-fg-4';
 
   return (
     <div
@@ -91,14 +91,14 @@ export default function CostBadge() {
       onMouseEnter={() => setShowTooltip(true)}
       onMouseLeave={() => setShowTooltip(false)}
     >
-      <span className={costColor} style={{ letterSpacing: '0.05em' }}>
+      <span className={costColor}>
         {formatCost(sessionCost.totalCost)}
       </span>
-      <span className="text-claude-text-secondary" style={{ letterSpacing: '0.05em' }}>
+      <span className="text-fg-4">
         ({formatTokens(sessionCost.totalTokens)})
       </span>
       {sessionCost.savingsVsBaseline > 0 && (
-        <span className="text-green-400" style={{ letterSpacing: '0.05em' }}>
+        <span className="text-diff-add">
           saved {formatCost(sessionCost.savingsVsBaseline)}
         </span>
       )}
@@ -106,30 +106,29 @@ export default function CostBadge() {
       {/* Tooltip with full cost breakdown */}
       {showTooltip && (
         <div
-          className="absolute bottom-full right-0 mb-2 w-80 p-3 bg-claude-surface border border-claude-border shadow-lg text-[11px] font-mono z-50"
-          style={{ borderRadius: 0 }}
+          className="absolute bottom-full right-0 mb-2 w-80 p-3 bg-ink-1 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1),0_12px_40px_rgba(0,0,0,0.45)] text-[11px] font-mono z-50"
         >
-          <div className="font-bold text-claude-text mb-2" style={{ letterSpacing: '0.05em' }}>
+          <div className="font-sans text-[11px] uppercase tracking-[0.04em] text-fg-4 mb-2">
             SESSION COST
           </div>
           <div className="space-y-1">
             <div className="flex justify-between">
-              <span className="text-claude-text-secondary">This session:</span>
-              <span className="text-claude-text">{formatCost(sessionCost.totalCost)}</span>
+              <span className="text-fg-4">This session:</span>
+              <span className="text-fg">{formatCost(sessionCost.totalCost)}</span>
             </div>
             <div className="flex justify-between">
-              <span className="text-claude-text-secondary">Tokens used:</span>
-              <span className="text-claude-text">{formatTokens(sessionCost.totalTokens)}</span>
+              <span className="text-fg-4">Tokens used:</span>
+              <span className="text-fg">{formatTokens(sessionCost.totalTokens)}</span>
             </div>
             <div className="flex justify-between">
-              <span className="text-claude-text-secondary">Turns:</span>
-              <span className="text-claude-text">{sessionCost.turnCount}</span>
+              <span className="text-fg-4">Turns:</span>
+              <span className="text-fg">{sessionCost.turnCount}</span>
             </div>
             <div className="flex justify-between">
-              <span className="text-claude-text-secondary">Most expensive route:</span>
-              <span className="text-claude-text">{formatCost(sessionCost.baselineCost)}</span>
+              <span className="text-fg-4">Most expensive route:</span>
+              <span className="text-fg">{formatCost(sessionCost.baselineCost)}</span>
             </div>
-            <div className="flex justify-between text-green-400">
+            <div className="flex justify-between text-diff-add">
               <span>Saved:</span>
               <span>{formatCost(sessionCost.savingsVsBaseline)}</span>
             </div>
@@ -137,16 +136,16 @@ export default function CostBadge() {
 
           {sessionCost.byHarness.length > 0 && (
             <>
-              <div className="border-t border-claude-border my-2" />
-              <div className="font-bold text-claude-text mb-2" style={{ letterSpacing: '0.05em' }}>
+              <div className="border-t border-line my-2" />
+              <div className="font-sans text-[11px] uppercase tracking-[0.04em] text-fg-4 mb-2">
                 BY HARNESS
               </div>
               <div className="space-y-1">
                 {sessionCost.byHarness.map((h) => (
                   <div key={h.harness} className="grid grid-cols-[1fr_auto_auto] gap-2">
-                    <span className="text-claude-text-secondary">{formatHarness(h.harness)}</span>
-                    <span className="text-claude-text">{formatCost(h.cost)}</span>
-                    <span className="text-green-400">{h.savings > 0 ? `-${formatCost(h.savings)}` : ''}</span>
+                    <span className="text-fg-4">{formatHarness(h.harness)}</span>
+                    <span className="text-fg">{formatCost(h.cost)}</span>
+                    <span className="text-diff-add">{h.savings > 0 ? `-${formatCost(h.savings)}` : ''}</span>
                   </div>
                 ))}
               </div>

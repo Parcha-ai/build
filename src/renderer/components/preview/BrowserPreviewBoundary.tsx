@@ -29,12 +29,12 @@ export default class BrowserPreviewBoundary extends React.Component<BrowserPrevi
   render(): React.ReactNode {
     if (!this.state.error) return this.props.children;
     return (
-      <div className="h-full w-full flex flex-col items-center justify-center gap-3 bg-claude-bg p-6 text-center">
-        <p className="text-xs font-mono text-red-400">Browser tab failed to initialize.</p>
+      <div className="h-full w-full flex flex-col items-center justify-center gap-3 bg-ink-1 p-6 text-center">
+        <p className="text-[13px] text-diff-del-text">Browser tab failed to initialize.</p>
         <button
           type="button"
           onClick={() => this.setState({ error: null })}
-          className="border border-claude-border px-3 py-1.5 text-xs font-mono text-claude-text hover:bg-claude-surface"
+          className="h-8 px-3 text-[12.5px] text-fg-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] hover:bg-white/5"
         >
           Retry browser tab
         </button>

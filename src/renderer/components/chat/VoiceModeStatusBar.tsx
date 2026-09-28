@@ -25,7 +25,7 @@ export const VoiceModeStatusBar: React.FC<VoiceModeStatusBarProps> = ({ sessionI
   if (!voiceState?.isConnected) return null;
 
   const waveActive = voiceState.isSpeaking || voiceState.isUserSpeaking || voiceState.audioLevel > 0.04;
-  const waveColor = voiceState.isSpeaking ? 'bg-claude-accent' : 'bg-green-400';
+  const waveColor = voiceState.isSpeaking ? 'bg-accent-text' : 'bg-accent';
 
   return (
     <div className="flex min-w-0 max-w-[36rem] items-center gap-2">
@@ -36,7 +36,7 @@ export const VoiceModeStatusBar: React.FC<VoiceModeStatusBarProps> = ({ sessionI
         {Array.from({ length: 12 }, (_, index) => (
           <span
             key={index}
-            className={`build-voice-wave-bar h-[11px] w-[2px] rounded-full ${waveColor}`}
+            className={`build-voice-wave-bar h-[11px] w-[2px] ${waveColor}`}
             style={{ animationDelay: `${-index * 57}ms` }}
           />
         ))}
@@ -45,26 +45,26 @@ export const VoiceModeStatusBar: React.FC<VoiceModeStatusBarProps> = ({ sessionI
       <div className="min-w-0 flex-1 overflow-hidden">
         {voiceState.agentResponse ? (
           <div className="hide-scrollbar overflow-x-auto" ref={statusScrollRef}>
-            <span className={`inline-block max-w-64 truncate whitespace-nowrap font-mono text-[10px] ${
-              voiceState.isSpeaking ? 'grep-speaking-shimmer' : 'text-claude-text'
+            <span className={`inline-block max-w-64 truncate whitespace-nowrap text-[12px] ${
+              voiceState.isSpeaking ? 'grep-speaking-shimmer' : 'text-fg-2'
             }`}>
               {voiceState.agentResponse}
             </span>
           </div>
         ) : voiceState.isSpeaking ? (
-          <span className="grep-speaking-shimmer block font-mono text-[10px] text-claude-accent">Speaking…</span>
+          <span className="grep-speaking-shimmer block text-[12px] text-accent-text">Speaking…</span>
         ) : voiceState.transcript ? (
           <div className="hide-scrollbar overflow-x-auto" ref={statusScrollRef}>
-            <span className="inline-block max-w-64 truncate whitespace-nowrap font-mono text-[10px] text-green-400">
+            <span className="inline-block max-w-64 truncate whitespace-nowrap text-[12px] text-fg">
               {voiceState.transcript}
             </span>
           </div>
         ) : (
-          <span className="block font-mono text-[10px] text-green-400/70">Listening…</span>
+          <span className="block text-[12px] text-fg-4">Listening…</span>
         )}
       </div>
 
-      <label className="flex flex-shrink-0 items-center gap-1 font-mono text-[9px] uppercase tracking-wider text-claude-text-secondary">
+      <label className="flex flex-shrink-0 items-center gap-1.5 text-[11px] uppercase tracking-[0.04em] text-fg-4">
         <span>Voice</span>
         <select
           aria-label="Realtime voice"
@@ -73,7 +73,7 @@ export const VoiceModeStatusBar: React.FC<VoiceModeStatusBarProps> = ({ sessionI
             const realtimeVoice = event.target.value as RealtimeVoiceOption;
             void updateSettings({ realtimeVoice });
           }}
-          className="max-w-20 border border-claude-border bg-claude-bg px-1 py-0.5 font-mono text-[9px] normal-case tracking-normal text-claude-text focus:border-claude-accent focus:outline-none"
+          className="max-w-24 bg-ink-3 px-1.5 py-0.5 text-[11.5px] normal-case tracking-normal text-fg-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] focus:shadow-[inset_0_0_0_1px_rgba(76,154,255,0.6)] focus:outline-none"
           title="Change realtime voice"
         >
           {REALTIME_VOICE_OPTIONS.map((voice) => (
@@ -100,7 +100,7 @@ export const VoiceModeStatusBar: React.FC<VoiceModeStatusBarProps> = ({ sessionI
         .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
         .hide-scrollbar::-webkit-scrollbar { display: none; }
         .grep-speaking-shimmer {
-          background: linear-gradient(90deg, #d97757 0%, #f5a88f 45%, #d97757 100%);
+          background: linear-gradient(90deg, #4C9AFF 0%, #CFE2FF 45%, #4C9AFF 100%);
           background-size: 200% 100%;
           -webkit-background-clip: text;
           background-clip: text;
