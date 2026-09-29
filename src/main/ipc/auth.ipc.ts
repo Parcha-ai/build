@@ -231,6 +231,36 @@ async function checkOpenCodeCli(): Promise<ProviderStatus> {
   };
 }
 
+async function checkPrimeAgentCli(): Promise<ProviderStatus> {
+  const home = realUserHome();
+  const cli = await resolveCli(['prime-agent'], [
+    path.join(home, '.local', 'bin', 'prime-agent'),
+    path.join(home, 'bin', 'prime-agent'),
+    '/usr/local/bin/prime-agent',
+    '/opt/homebrew/bin/prime-agent',
+  ]);
+  let authenticated = false;
+  try {
+    const auth = JSON.parse(await fs.readFile(path.join(home, '.prime', 'agent', 'auth.json'), 'utf8')) as Record<string, unknown>;
+    authenticated = Object.keys(auth).length > 0;
+  } catch {
+    authenticated = false;
+  }
+  return {
+    installed: cli.installed,
+    loggedIn: cli.installed && authenticated,
+    method: authenticated ? 'cli' : undefined,
+    detail: cli.installed
+      ? authenticated ? 'Prime Agent installed and connected' : 'CLI installed; open Prime Agent and use /login'
+      : undefined,
+    path: cli.path,
+    version: cli.version,
+    installCommand: 'curl -fsSL https://app.primeintellect.ai/prime-agent/install.sh | sh',
+    loginCommand: 'prime-agent',
+    docsUrl: 'https://github.com/PrimeIntellect-ai/prime-agent',
+  };
+}
+
 export function registerAuthHandlers(ipcMain: IpcMain): void {
   ipcMain.handle(IPC_CHANNELS.AUTH_LOGIN, async () => {
     try {
@@ -294,13 +324,37 @@ export function registerAuthHandlers(ipcMain: IpcMain): void {
   });
 
   ipcMain.handle(IPC_CHANNELS.AUTH_CHECK_PROVIDERS, async () => {
-    const [claude, codex, cursor, gemini, opencode] = await Promise.all([
+    const [claude, codex, cursor, gemini, opencode, prime] = await Promise.all([
       checkClaudeCli(),
       checkCodexCli(),
       checkCursorCli(),
       checkGeminiCli(),
       checkOpenCodeCli(),
+      checkPrimeAgentCli(),
     ]);
-    return { claude, codex, cursor, gemini, opencode };
+    return { claude, codex, cursor, gemini, opencode, prime };
+  });
+
+  ipcMain.handle(IPC_CHANNELS.AUTH_SETUP_PROVIDER, async (_event, provider: string) => {
+    if (provider !== 'prime') {
+      throw new Error(`In-app setup is not available for ${provider}.`);
+    }
+    const command = 'curl -fsSL https://app.primeintellect.ai/prime-agent/install.sh | sh';
+    try {
+      const { stdout, stderr } = await execFileAsync('/bin/sh', ['-lc', command], {
+        timeout: 10 * 60 * 1000,
+        maxBuffer: 4 * 1024 * 1024,
+        env: process.env,
+      });
+      return {
+        success: true,
+        output: `${stdout || ''}${stderr || ''}`.trim(),
+        status: await checkPrimeAgentCli(),
+      };
+    } catch (error) {
+      const failure = error as Error & { stdout?: string; stderr?: string };
+      const detail = `${failure.stdout || ''}${failure.stderr || ''}`.trim() || failure.message;
+      throw new Error(`Prime Agent installation failed: ${detail}`);
+    }
   });
 }

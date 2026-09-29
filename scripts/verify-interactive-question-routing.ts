@@ -50,6 +50,16 @@ assert.match(
   /sendInteractiveRendererEvent\(sessionId, IPC_CHANNELS\.CLAUDE_PLAN_APPROVAL_REQUEST, request\)/,
   'plan approval gates must use the same session-bound renderer path',
 );
+assert.doesNotMatch(
+  claudeService,
+  /Question response timeout|Plan approval response timeout/,
+  'interactive questions and plans must not expire on a wall-clock timer',
+);
+assert.match(
+  claudeService,
+  /for \(const \[reqId, pending\] of this\.pendingPlanApprovals\.entries\(\)\)[\s\S]*?pending\.reject\(new Error\('Query cancelled'\)\)/,
+  'cancelling a turn must explicitly settle any pending plan approval',
+);
 
 const bindings = claudeIpc.match(/claudeService\.setSessionRenderer\(sessionId, senderContents\);/g) || [];
 const cleanups = claudeIpc.match(/claudeService\.clearSessionRenderer\(sessionId, senderContents\);/g) || [];

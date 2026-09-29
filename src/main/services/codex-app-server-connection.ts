@@ -13,6 +13,26 @@ export interface CodexAppServerMessage {
   };
 }
 
+/**
+ * App-server multiplexes root and delegated-agent turns over one connection.
+ * Item notifications expose the owning turn directly, while turn lifecycle
+ * notifications carry it on the nested turn object.
+ */
+export function getCodexAppServerMessageTurnId(
+  message: CodexAppServerMessage,
+): string | undefined {
+  const directTurnId = message.params?.turnId;
+  if (typeof directTurnId === 'string') return directTurnId;
+
+  const turn = message.params?.turn;
+  if (turn && typeof turn === 'object') {
+    const nestedTurnId = (turn as Record<string, unknown>).id;
+    if (typeof nestedTurnId === 'string') return nestedTurnId;
+  }
+
+  return undefined;
+}
+
 interface PendingRequest {
   resolve: (result: Record<string, unknown>) => void;
   reject: (error: Error) => void;
@@ -97,6 +117,10 @@ export class CodexAppServerConnection {
     if (queued) return Promise.resolve(queued);
     if (this.closed) return Promise.resolve(null);
     return new Promise((resolve) => this.notificationWaiters.push(resolve));
+  }
+
+  isWritable(): boolean {
+    return !this.closed && !this.input.writableEnded && !this.input.destroyed;
   }
 
   endInput(): void {

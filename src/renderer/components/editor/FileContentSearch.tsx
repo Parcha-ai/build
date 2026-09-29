@@ -210,7 +210,7 @@ export default function FileContentSearch() {
         acc.push(part);
         if (i < matches.length) {
           acc.push(
-            <span key={i} className="bg-amber-500/40 text-amber-200 rounded-sm px-0.5">
+            <span key={i} className="bg-[rgba(240,180,41,0.28)] text-[#FFE3A3] px-0.5">
               {matches[i]}
             </span>
           );
@@ -230,13 +230,13 @@ export default function FileContentSearch() {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center pt-[10vh] bg-black/50"
+      className="fixed inset-0 z-50 flex items-start justify-center pt-[10vh] bg-black/60"
       onClick={handleBackdropClick}
     >
-      <div className="w-[700px] max-w-[90vw] bg-claude-surface border border-claude-border shadow-2xl overflow-hidden flex flex-col max-h-[70vh]">
+      <div className="w-[700px] max-w-[90vw] bg-ink-1 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1),0_12px_40px_rgba(0,0,0,0.45)] overflow-hidden flex flex-col max-h-[70vh]">
         {/* Search input row */}
-        <div className="flex items-center gap-2 px-4 py-3 border-b border-claude-border">
-          <Search size={16} className="text-claude-text-secondary flex-shrink-0" />
+        <div className="flex items-center gap-2 px-4 py-3 border-b border-line">
+          <Search size={15} className="text-fg-4 flex-shrink-0" />
           <input
             ref={inputRef}
             type="text"
@@ -244,7 +244,7 @@ export default function FileContentSearch() {
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder="Search in files..."
-            className="flex-1 bg-transparent text-claude-text text-sm font-mono outline-none placeholder:text-claude-text-secondary"
+            className="flex-1 bg-transparent text-fg text-[14px] font-mono outline-none placeholder:text-fg-5"
             autoComplete="off"
             autoCorrect="off"
             autoCapitalize="off"
@@ -254,8 +254,8 @@ export default function FileContentSearch() {
           {/* Option toggles */}
           <button
             onClick={() => setCaseSensitive(!caseSensitive)}
-            className={`p-1 rounded transition-colors ${
-              caseSensitive ? 'bg-claude-accent/30 text-claude-accent' : 'text-claude-text-secondary hover:text-claude-text'
+            className={`w-7 h-7 flex items-center justify-center transition-colors ${
+              caseSensitive ? 'bg-[rgba(76,154,255,0.13)] text-accent-text' : 'text-fg-4 hover:text-fg hover:bg-claude-surface-hover'
             }`}
             title="Match Case (Aa)"
           >
@@ -263,8 +263,8 @@ export default function FileContentSearch() {
           </button>
           <button
             onClick={() => setWholeWord(!wholeWord)}
-            className={`p-1 rounded transition-colors ${
-              wholeWord ? 'bg-claude-accent/30 text-claude-accent' : 'text-claude-text-secondary hover:text-claude-text'
+            className={`w-7 h-7 flex items-center justify-center transition-colors ${
+              wholeWord ? 'bg-[rgba(76,154,255,0.13)] text-accent-text' : 'text-fg-4 hover:text-fg hover:bg-claude-surface-hover'
             }`}
             title="Whole Word (Ab|)"
           >
@@ -272,23 +272,23 @@ export default function FileContentSearch() {
           </button>
           <button
             onClick={() => setUseRegex(!useRegex)}
-            className={`p-1 rounded transition-colors ${
-              useRegex ? 'bg-claude-accent/30 text-claude-accent' : 'text-claude-text-secondary hover:text-claude-text'
+            className={`w-7 h-7 flex items-center justify-center transition-colors ${
+              useRegex ? 'bg-[rgba(76,154,255,0.13)] text-accent-text' : 'text-fg-4 hover:text-fg hover:bg-claude-surface-hover'
             }`}
             title="Use Regular Expression (.*)"
           >
             <Regex size={16} />
           </button>
 
-          {isSearching && <Loader2 size={16} className="text-claude-accent animate-spin" />}
-          <button onClick={closeFileSearch} className="p-1 hover:bg-claude-bg rounded transition-colors">
-            <X size={16} className="text-claude-text-secondary" />
+          {isSearching && <Loader2 size={15} className="text-accent animate-spin" />}
+          <button onClick={closeFileSearch} className="w-7 h-7 flex items-center justify-center hover:bg-claude-surface-hover transition-colors">
+            <X size={15} className="text-fg-4" />
           </button>
         </div>
 
         {/* Results summary */}
         {query.trim() && !isSearching && (
-          <div className="px-4 py-1.5 text-xs text-claude-text-secondary border-b border-claude-border font-mono">
+          <div className="px-4 py-1.5 text-[11px] text-fg-4 border-b border-line font-mono">
             {totalMatches > 0
               ? `${totalMatches} result${totalMatches !== 1 ? 's' : ''} in ${totalFiles} file${totalFiles !== 1 ? 's' : ''}`
               : 'No results found'}
@@ -298,13 +298,13 @@ export default function FileContentSearch() {
         {/* Results list */}
         <div ref={resultsRef} className="flex-1 overflow-y-auto">
           {!query.trim() && (
-            <div className="px-4 py-8 text-center text-claude-text-secondary text-sm font-mono">
+            <div className="px-4 py-8 text-center text-fg-4 text-[13px]">
               Type to search file contents...
             </div>
           )}
 
           {query.trim() && !isSearching && results.length === 0 && (
-            <div className="px-4 py-8 text-center text-claude-text-secondary text-sm font-mono">
+            <div className="px-4 py-8 text-center text-fg-4 text-[13px]">
               No results found
             </div>
           )}
@@ -317,21 +317,21 @@ export default function FileContentSearch() {
                   key={`file-${item.filePath}`}
                   data-index={index}
                   onClick={() => handleSelect(item)}
-                  className={`w-full flex items-center gap-2 px-3 py-1.5 text-left transition-colors ${
+                  className={`w-full h-8 flex items-center gap-2 px-3 text-left transition-colors ${
                     index === selectedIndex
-                      ? 'bg-claude-accent/20 text-claude-text'
-                      : 'text-claude-text-secondary hover:bg-claude-bg/50'
+                      ? 'bg-[#262626] text-fg'
+                      : 'text-fg-3 hover:bg-claude-surface-hover'
                   }`}
                 >
                   {isCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
-                  <FileText size={14} className="text-blue-400 flex-shrink-0" />
-                  <span className="text-sm font-mono font-medium text-claude-text truncate">
+                  <FileText size={14} className="text-fg-4 flex-shrink-0" />
+                  <span className="text-[13px] font-medium text-fg truncate">
                     {item.fileName}
                   </span>
-                  <span className="text-xs font-mono text-claude-text-secondary truncate flex-1">
+                  <span className="text-[11.5px] font-mono text-fg-4 truncate flex-1">
                     {item.relativePath}
                   </span>
-                  <span className="text-xs font-mono text-claude-text-secondary bg-claude-bg px-1.5 py-0.5 rounded flex-shrink-0">
+                  <span className="text-[10.5px] font-mono text-fg-3 bg-ink-4 px-1.5 py-0.5 flex-shrink-0">
                     {item.matchCount}
                   </span>
                 </button>
@@ -343,16 +343,16 @@ export default function FileContentSearch() {
                 key={`match-${item.filePath}-${item.lineNumber}`}
                 data-index={index}
                 onClick={() => handleSelect(item)}
-                className={`w-full flex items-center gap-2 pl-10 pr-3 py-1 text-left transition-colors ${
+                className={`w-full h-7 flex items-center gap-2 pl-10 pr-3 text-left transition-colors ${
                   index === selectedIndex
-                    ? 'bg-claude-accent/20 text-claude-text'
-                    : 'text-claude-text-secondary hover:bg-claude-bg/50'
+                    ? 'bg-[#262626] text-fg'
+                    : 'text-fg-3 hover:bg-claude-surface-hover'
                 }`}
               >
-                <span className="text-xs font-mono text-claude-text-secondary w-8 text-right flex-shrink-0 tabular-nums">
+                <span className="text-[11px] font-mono text-fg-5 w-8 text-right flex-shrink-0 tabular-nums">
                   {item.lineNumber}
                 </span>
-                <span className="text-sm font-mono truncate">
+                <span className="text-[12.5px] font-mono truncate">
                   {highlightMatch(item.lineContent || '', query)}
                 </span>
               </button>
@@ -361,12 +361,12 @@ export default function FileContentSearch() {
         </div>
 
         {/* Footer hints */}
-        <div className="px-4 py-2 border-t border-claude-border text-[10px] text-claude-text-secondary flex items-center gap-4">
-          <span><kbd className="px-1 bg-claude-bg rounded">↑↓</kbd> navigate</span>
-          <span><kbd className="px-1 bg-claude-bg rounded">↵</kbd> open / toggle</span>
-          <span><kbd className="px-1 bg-claude-bg rounded">esc</kbd> close</span>
+        <div className="px-4 py-2 border-t border-line font-mono text-[10.5px] text-fg-5 flex items-center gap-4">
+          <span><kbd className="px-1 bg-ink-4 text-fg-3">↑↓</kbd> navigate</span>
+          <span><kbd className="px-1 bg-ink-4 text-fg-3">↵</kbd> open / toggle</span>
+          <span><kbd className="px-1 bg-ink-4 text-fg-3">esc</kbd> close</span>
           <span className="flex-1" />
-          <span className="text-claude-text-secondary/50">⌘⇧F</span>
+          <span className="text-fg-5">⌘⇧F</span>
         </div>
       </div>
     </div>

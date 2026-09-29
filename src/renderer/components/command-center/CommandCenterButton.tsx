@@ -9,16 +9,17 @@ export default function CommandCenterButton() {
   return (
     <button
       onClick={toggle}
-      className={`w-full flex items-center gap-2 px-3 py-2 text-[10px] font-bold transition-colors border-b border-claude-border ${
+      className={`w-full h-8 flex items-center gap-2 px-3 text-[13px] transition-colors border-b border-line ${
         isActive
-          ? 'bg-claude-accent/20 text-claude-accent'
-          : 'text-claude-text-secondary hover:bg-claude-bg hover:text-claude-text'
+          ? 'bg-[rgba(76,154,255,0.13)] text-accent-text'
+          : 'text-fg-3 hover:bg-claude-surface-hover hover:text-fg'
       }`}
-      style={{ letterSpacing: '0.1em', borderRadius: 0 }}
+      style={{ borderRadius: 0 }}
       title="Toggle Command Center (Cmd+Shift+G)"
     >
       <LayoutGrid size={14} />
-      <span>COMMAND CENTER</span>
+      <span className="flex-1 text-left">Command Center</span>
+      <span className="font-mono text-[10.5px] text-fg-5">⌘⇧G</span>
     </button>
   );
 }

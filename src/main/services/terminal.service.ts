@@ -21,6 +21,8 @@ interface SSHTerminal {
   type: 'ssh';
   id: string;
   sessionId: string;
+  sshConnectionId: string;
+  disposeConnection: () => void;
   channel: ClientChannel;
   outputListeners: Set<(data: string) => void>;
 }
@@ -136,13 +138,26 @@ export class TerminalService {
     console.log('[Terminal] SSH config:', { host: sshConfig.host, remoteWorkdir: sshConfig.remoteWorkdir });
 
     try {
-      // Create SSH shell channel
-      const channel = await sshService.createShell(sessionId, sshConfig);
+      // A terminal must never share the Build session's transport key. Closing
+      // a multiplexed shell can close the underlying SSH client on some hosts;
+      // if that client also owns a Claude/Codex bridge, the active agent turn is
+      // orphaned. Give every terminal its own connection and teardown scope.
+      const sshConnectionId = `${sessionId}:terminal:${terminalId}`;
+      const channel = await sshService.createShell(sshConnectionId, sshConfig);
+
+      let connectionDisposed = false;
+      const disposeConnection = () => {
+        if (connectionDisposed) return;
+        connectionDisposed = true;
+        sshService.disconnect(sshConnectionId);
+      };
 
       const terminal: SSHTerminal = {
         type: 'ssh',
         id: terminalId,
         sessionId,
+        sshConnectionId,
+        disposeConnection,
         channel,
         outputListeners: new Set(),
       };
@@ -163,6 +178,7 @@ export class TerminalService {
       channel.on('close', () => {
         console.log(`[Terminal] SSH terminal ${terminalId} closed`);
         this.terminals.delete(terminalId);
+        disposeConnection();
       });
 
       // Handle errors
@@ -183,7 +199,9 @@ export class TerminalService {
 
   write(terminalId: string, data: string): void {
     const terminal = this.terminals.get(terminalId);
-    if (!terminal) throw new Error(`Terminal ${terminalId} not found`);
+    // Renderer input can race the channel's close event by a frame. Treat late
+    // keystrokes as a no-op instead of throwing an uncaught main-process error.
+    if (!terminal) return;
 
     if (terminal.type === 'ssh') {
       (terminal as SSHTerminal).channel.write(data);
@@ -219,10 +237,13 @@ export class TerminalService {
     if (!terminal) return;
 
     if (terminal.type === 'ssh') {
+      const sshTerminal = terminal as SSHTerminal;
       try {
-        (terminal as SSHTerminal).channel.close();
+        sshTerminal.channel.close();
       } catch (error) {
         console.error('[Terminal] Error closing SSH channel:', error);
+      } finally {
+        sshTerminal.disposeConnection();
       }
     } else {
       (terminal as LocalTerminal).ptyProcess.kill();

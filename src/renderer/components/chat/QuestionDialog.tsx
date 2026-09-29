@@ -61,36 +61,40 @@ export default function QuestionDialog({ request, onAnswer, onCancel }: Question
   const allAnswered = request.questions.every((q) => (answers[q.question]?.size || 0) > 0);
 
   return (
-    <div className="border-2 border-blue-500 bg-blue-500/10 p-4 font-mono max-h-[60vh] overflow-y-auto overscroll-contain">
+    <div className="max-h-[60vh] overflow-y-auto overscroll-contain bg-ink-1 p-4 shadow-[inset_0_0_0_1px_rgba(240,180,41,0.45)]">
       {/* Header */}
-      <div className="flex items-center gap-2 mb-4">
-        <HelpCircle size={20} className="text-blue-500" />
-        <h3 className="text-sm font-bold text-blue-400 uppercase" style={{ letterSpacing: '0.1em' }}>
-          QUESTION{request.questions.length > 1 ? 'S' : ''}
+      <div className="mb-4 flex items-center gap-2.5">
+        <HelpCircle size={15} className="flex-shrink-0 text-amber" />
+        <h3 className="text-[13.5px] font-semibold text-fg" style={{ letterSpacing: '-0.01em' }}>
+          Question{request.questions.length > 1 ? 's' : ''}
         </h3>
+        <span className="h-[7px] w-[7px] flex-shrink-0 rounded-full bg-amber shadow-[0_0_0_3px_rgba(240,180,41,0.18)]" />
       </div>
 
       {/* Questions */}
-      <div className="space-y-4">
+      <div className="space-y-5">
         {request.questions.map((question, qIndex) => (
           <div key={qIndex} className="space-y-2">
             {/* Question header chip */}
-            <div className="inline-block px-2 py-1 bg-blue-500/20 text-blue-400 text-xs font-bold uppercase border border-blue-500/30">
+            <div
+              className="inline-block px-[5px] py-px font-mono text-[9.5px] uppercase text-fg-3 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.16)]"
+              style={{ letterSpacing: '0.04em' }}
+            >
               {question.header}
             </div>
 
             {/* Question text */}
-            <div className="text-sm text-claude-text font-semibold">{question.question}</div>
+            <div className="text-[14px] font-medium leading-[1.5] text-fg">{question.question}</div>
 
             {/* Multi-select hint */}
             {question.multiSelect && (
-              <div className="text-xs text-claude-text-secondary italic">
+              <div className="text-[12px] text-fg-5">
                 (You can select multiple options)
               </div>
             )}
 
             {/* Options */}
-            <div className="space-y-2 ml-2">
+            <div className="space-y-1.5">
               {question.options.map((option, oIndex) => {
                 const isSelected = answers[question.question]?.has(option.label) || false;
 
@@ -99,37 +103,36 @@ export default function QuestionDialog({ request, onAnswer, onCancel }: Question
                     key={oIndex}
                     onClick={() => handleOptionClick(question, option.label)}
                     className={`
-                      w-full text-left p-3 border transition-colors
+                      w-full text-left px-3 py-2.5 transition-colors
                       ${
                         isSelected
-                          ? 'border-blue-500 bg-blue-500/20'
-                          : 'border-claude-border bg-claude-surface/30 hover:bg-claude-surface/50'
+                          ? 'bg-[rgba(76,154,255,0.13)] shadow-[inset_0_0_0_1px_rgba(76,154,255,0.35)]'
+                          : 'bg-ink-3 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)] hover:bg-[#1E1E1E]'
                       }
                     `}
-                    style={{ borderRadius: 0 }}
                   >
-                    <div className="flex items-start gap-2">
+                    <div className="flex items-start gap-2.5">
                       {/* Checkbox/Radio indicator */}
                       <div
                         className={`
-                          flex-shrink-0 w-4 h-4 mt-0.5 border-2 flex items-center justify-center
+                          flex-shrink-0 w-[14px] h-[14px] mt-[3px] flex items-center justify-center
                           ${
                             isSelected
-                              ? 'border-blue-500 bg-blue-500'
-                              : 'border-claude-text-secondary'
+                              ? 'bg-accent'
+                              : 'shadow-[inset_0_0_0_1.5px_#666666]'
                           }
                         `}
-                        style={{ borderRadius: question.multiSelect ? 2 : '50%' }}
+                        style={{ borderRadius: question.multiSelect ? 0 : '50%' }}
                       >
-                        {isSelected && <Check size={12} className="text-white" />}
+                        {isSelected && <Check size={10} strokeWidth={3} className="text-[#0A0A0A]" />}
                       </div>
 
                       {/* Option content */}
                       <div className="flex-1">
-                        <div className={`text-sm font-semibold ${isSelected ? 'text-blue-400' : 'text-claude-text'}`}>
+                        <div className={`text-[13px] font-medium ${isSelected ? 'text-accent-text' : 'text-fg'}`}>
                           {option.label}
                         </div>
-                        <div className="text-xs text-claude-text-secondary mt-1">
+                        <div className="mt-0.5 text-[12px] leading-[1.5] text-fg-4">
                           {option.description}
                         </div>
                       </div>
@@ -143,32 +146,30 @@ export default function QuestionDialog({ request, onAnswer, onCancel }: Question
       </div>
 
       {/* Action buttons */}
-      <div className="flex items-center justify-end gap-2 mt-4">
+      <div className="mt-4 flex items-center justify-end gap-2">
         {onCancel && (
           <button
             onClick={onCancel}
-            className="px-4 py-2 text-xs font-bold uppercase flex items-center gap-1.5 transition-colors bg-claude-surface text-claude-text-secondary hover:bg-red-900/30 hover:text-red-400"
-            style={{ letterSpacing: '0.05em', borderRadius: 0 }}
+            className="flex h-[30px] items-center gap-1.5 px-3 text-[12.5px] text-fg-3 transition-colors hover:bg-white/[0.04] hover:text-fg"
           >
-            <X size={14} />
-            DISMISS
+            <X size={13} />
+            Dismiss
           </button>
         )}
         <button
           onClick={handleSubmit}
           disabled={!allAnswered}
           className={`
-            px-4 py-2 text-xs font-bold uppercase flex items-center gap-1.5 transition-colors
+            flex h-[30px] items-center gap-1.5 px-3 text-[12.5px] font-semibold transition-colors
             ${
               allAnswered
-                ? 'bg-blue-900/40 text-blue-400 hover:bg-blue-900/60'
-                : 'bg-claude-surface text-claude-text-secondary cursor-not-allowed opacity-50'
+                ? 'bg-[#EDEDED] text-[#0F0F0F] hover:bg-white'
+                : 'bg-[#EDEDED] text-[#0F0F0F] cursor-not-allowed opacity-40'
             }
           `}
-          style={{ letterSpacing: '0.05em', borderRadius: 0 }}
         >
-          <Check size={14} />
-          SUBMIT
+          <Check size={13} strokeWidth={2.4} />
+          Submit
         </button>
       </div>
     </div>

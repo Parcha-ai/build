@@ -2,7 +2,7 @@ import { IpcMain, systemPreferences } from 'electron';
 import { IPC_CHANNELS } from '../../shared/constants/channels';
 import { AudioService } from '../services/audio.service';
 import { getMainWindow } from '../index';
-import type { TranscriptionResult, TTSRequest } from '../../shared/types/audio';
+import type { TTSRequest } from '../../shared/types/audio';
 
 const audioService = new AudioService();
 
@@ -98,15 +98,6 @@ export function registerAudioHandlers(ipcMain: IpcMain): void {
   // ============================================
   // API Key Management
   // ============================================
-
-  ipcMain.handle(IPC_CHANNELS.AUDIO_GET_ELEVENLABS_KEY, async () => {
-    return audioService.getElevenLabsApiKey() || '';
-  });
-
-  ipcMain.handle(IPC_CHANNELS.AUDIO_SET_ELEVENLABS_KEY, async (_, key: string) => {
-    audioService.setElevenLabsApiKey(key);
-    return { success: true };
-  });
 
   ipcMain.handle(IPC_CHANNELS.AUDIO_GET_OPENAI_KEY, async () => {
     return audioService.getOpenAiApiKey() || '';

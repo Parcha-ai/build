@@ -205,29 +205,29 @@ export default function EditorPanel({ onClose }: EditorPanelProps) {
   };
 
   return (
-    <div className="h-full flex flex-col bg-claude-bg">
+    <div className="h-full flex flex-col bg-ink-1">
       {/* Header with tabs */}
-      <div className="flex items-center justify-between bg-claude-surface border-b border-claude-border">
+      <div className="h-11 flex items-center justify-between bg-ink-1 border-b border-line">
         {/* Tabs */}
-        <div className="flex-1 flex items-center overflow-x-auto">
+        <div className="flex-1 flex items-center gap-0.5 px-2 overflow-x-auto">
           {tabs.map(tab => (
             <button
               key={tab.id}
               onClick={() => setActiveTab(tab.id)}
-              className={`flex items-center gap-2 px-3 py-2 text-sm font-mono border-r border-claude-border transition-colors ${
+              className={`flex items-center gap-1.5 h-7 px-2.5 text-[12.5px] whitespace-nowrap transition-colors ${
                 tab.id === activeTabId
-                  ? 'bg-claude-bg text-claude-text'
-                  : 'bg-claude-surface text-claude-text-secondary hover:bg-claude-bg/50'
+                  ? 'bg-[#262626] text-fg'
+                  : 'text-fg-4 hover:text-fg-2'
               }`}
             >
-              <FileText size={14} className="flex-shrink-0" />
+              <FileText size={13} className="flex-shrink-0 opacity-70" />
               <span className="truncate max-w-[150px]">{tab.fileName}</span>
               {tab.isDirty && (
-                <Circle size={8} className="fill-claude-accent text-claude-accent flex-shrink-0" />
+                <Circle size={7} className="fill-accent text-accent flex-shrink-0" />
               )}
               <button
                 onClick={(e) => handleTabClose(e, tab.id)}
-                className="ml-1 p-0.5 hover:bg-claude-surface rounded"
+                className="ml-0.5 p-0.5 text-fg-5 hover:text-fg hover:bg-white/10"
               >
                 <X size={12} />
               </button>
@@ -236,23 +236,23 @@ export default function EditorPanel({ onClose }: EditorPanelProps) {
         </div>
 
         {/* Actions */}
-        <div className="flex items-center gap-2 px-3">
+        <div className="flex items-center gap-1.5 px-3">
           {/* Preview/Edit toggle for markdown files */}
           {activeTab?.language === 'markdown' && (
             <button
               onClick={() => activeTab && togglePreviewMode(activeTab.id)}
-              className="flex items-center gap-1 px-2 py-1 text-xs font-mono bg-claude-surface hover:bg-claude-bg text-claude-text transition-colors"
+              className="flex items-center gap-1.5 h-7 px-2.5 text-[12px] text-fg-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] hover:bg-white/5 hover:text-fg transition-colors"
               title={activeTab.isPreviewMode ? "Switch to Edit Mode" : "Switch to Preview Mode"}
             >
               {activeTab.isPreviewMode ? (
                 <>
                   <Edit3 size={12} />
-                  EDIT
+                  Edit
                 </>
               ) : (
                 <>
                   <Eye size={12} />
-                  PREVIEW
+                  Preview
                 </>
               )}
             </button>
@@ -269,30 +269,30 @@ export default function EditorPanel({ onClose }: EditorPanelProps) {
                 });
                 showHtmlPanel();
               }}
-              className="flex items-center gap-1 px-2 py-1 text-xs font-mono bg-claude-surface hover:bg-claude-bg text-claude-text transition-colors"
+              className="flex items-center gap-1.5 h-7 px-2.5 text-[12px] text-fg-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] hover:bg-white/5 hover:text-fg transition-colors"
               title="Open HTML Preview"
             >
               <Eye size={12} />
-              PREVIEW
+              Preview
             </button>
           )}
           {activeTab?.isDirty && (
             <button
               onClick={handleSave}
-              className="flex items-center gap-1 px-2 py-1 text-xs font-mono bg-claude-accent text-white hover:bg-claude-accent/80 transition-colors"
+              className="flex items-center gap-1.5 h-7 px-2.5 text-[12px] font-semibold bg-[#EDEDED] text-[#0F0F0F] hover:bg-white transition-colors"
               title="Save (Cmd+S)"
             >
               <Save size={12} />
-              SAVE
+              Save
             </button>
           )}
           {activeTab && (
             <button
               onClick={() => window.electronAPI.app.openPath(activeTab.filePath)}
-              className="p-1.5 hover:bg-claude-surface rounded transition-colors"
+              className="w-7 h-7 flex items-center justify-center text-fg-4 hover:text-fg hover:bg-claude-surface-hover transition-colors"
               title="Open in external editor"
             >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <polyline points="15 3 21 3 21 9" />
                 <line x1="10" y1="14" x2="21" y2="3" />
                 <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
@@ -301,18 +301,18 @@ export default function EditorPanel({ onClose }: EditorPanelProps) {
           )}
           <button
             onClick={handleClose}
-            className="p-1.5 hover:bg-claude-surface rounded transition-colors"
+            className="w-7 h-7 flex items-center justify-center text-fg-4 hover:text-fg hover:bg-claude-surface-hover transition-colors"
             title="Close Editor (Esc)"
           >
-            <X size={18} />
+            <X size={15} />
           </button>
         </div>
       </div>
 
       {/* File path breadcrumb */}
       {activeTab && (
-        <div className="px-3 py-1.5 bg-claude-surface/50 border-b border-claude-border">
-          <span className="text-xs font-mono text-claude-text-secondary">
+        <div className="px-3 py-1.5 bg-ink-1 border-b border-line">
+          <span className="text-[11.5px] font-mono text-fg-4">
             {activeTab.filePath}
           </span>
         </div>
@@ -322,16 +322,15 @@ export default function EditorPanel({ onClose }: EditorPanelProps) {
       <div className="flex-1 relative overflow-hidden">
         {isLoading ? (
           <div className="absolute inset-0 flex items-center justify-center">
-            <Loader2 className="w-8 h-8 animate-spin text-claude-accent" />
+            <Loader2 className="w-6 h-6 animate-spin text-accent" />
           </div>
         ) : error ? (
           <div className="absolute inset-0 flex items-center justify-center">
             <div className="text-center">
-              <p className="text-red-400 font-mono text-sm">{error}</p>
+              <p className="text-diff-del-text font-mono text-[12px]">{error}</p>
               <button
                 onClick={handleClose}
-                className="mt-4 px-4 py-2 bg-claude-surface text-claude-text text-sm font-mono hover:bg-claude-surface/80"
-                style={{ borderRadius: 0 }}
+                className="mt-4 h-8 px-3 text-[12.5px] text-fg-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] hover:bg-white/5"
               >
                 Close
               </button>
@@ -340,7 +339,7 @@ export default function EditorPanel({ onClose }: EditorPanelProps) {
         ) : activeTab ? (
           // Show image preview for image files
           /\.(png|jpe?g|gif|svg|webp|ico|bmp)$/i.test(activeTab.filePath) ? (
-            <div className="flex-1 overflow-auto flex items-center justify-center bg-claude-bg p-4">
+            <div className="flex-1 overflow-auto flex items-center justify-center bg-ink-term p-4">
               <img
                 src={activeTab.content}
                 alt={activeTab.fileName}
@@ -350,7 +349,7 @@ export default function EditorPanel({ onClose }: EditorPanelProps) {
           ) :
           // Show markdown preview or Monaco editor based on mode
           activeTab.isPreviewMode && activeTab.language === 'markdown' ? (
-            <div className="absolute inset-0 overflow-auto p-6 bg-claude-bg">
+            <div className="absolute inset-0 overflow-auto p-6 bg-ink-2">
               <div className="max-w-4xl mx-auto prose prose-invert prose-sm">
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>{activeTab.content}</ReactMarkdown>
               </div>
@@ -363,7 +362,7 @@ export default function EditorPanel({ onClose }: EditorPanelProps) {
               path={activeTab.filePath} // Monaco uses this for model management
               language={activeTab.language}
               value={activeTab.content}
-              theme="vs-dark"
+              theme="claudette-dark"
               beforeMount={handleBeforeMount}
               onMount={handleEditorMount}
               onChange={handleEditorChange}
@@ -371,7 +370,7 @@ export default function EditorPanel({ onClose }: EditorPanelProps) {
               saveViewState={true} // Preserve view state for tab switching
               options={{
                 fontSize: 13,
-                fontFamily: 'JetBrains Mono, Menlo, Monaco, monospace',
+                fontFamily: '"Geist Mono", Menlo, Monaco, monospace',
                 lineNumbers: 'on',
                 minimap: { enabled: true },
                 scrollBeyondLastLine: false,
@@ -405,21 +404,21 @@ export default function EditorPanel({ onClose }: EditorPanelProps) {
           />
           )
         ) : (
-          <div className="absolute inset-0 flex items-center justify-center text-claude-text-secondary">
-            <p className="font-mono text-sm">No file open</p>
+          <div className="absolute inset-0 flex items-center justify-center text-fg-4">
+            <p className="text-[13px]">No file open</p>
           </div>
         )}
       </div>
 
       {/* Status bar */}
       {activeTab && (
-        <div className="flex items-center justify-between px-3 py-1 bg-claude-surface border-t border-claude-border text-xs font-mono text-claude-text-secondary">
+        <div className="h-[26px] flex items-center justify-between px-3 bg-ink-0 border-t border-line text-[11px] font-mono text-fg-4">
           <div className="flex items-center gap-4">
             <span>{activeTab.language.toUpperCase()}</span>
             <span>UTF-8</span>
           </div>
           <div className="flex items-center gap-4">
-            {activeTab.isDirty && <span className="text-claude-accent">Modified</span>}
+            {activeTab.isDirty && <span className="text-accent-text">Modified</span>}
             <span>Ln {activeTab.lineNumber || 1}</span>
           </div>
         </div>

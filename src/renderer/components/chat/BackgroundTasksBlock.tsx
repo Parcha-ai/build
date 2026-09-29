@@ -40,100 +40,89 @@ export default function BackgroundTasksBlock({ tasks, onStopTask, onViewOutput }
     return outputLines.slice(-lines).join('\n');
   };
 
-  // Colors - cyan/teal accent for background tasks
-  const accentColor = 'text-cyan-400';
-  const dotColor = runningTasks > 0 ? 'bg-cyan-500' : errorTasks > 0 ? 'bg-red-500' : 'bg-green-500';
-  const borderColor = 'border-cyan-500/30';
+  const CARD = 'bg-ink-1 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)] overflow-hidden';
+  const dotClass = runningTasks > 0 ? 'bg-accent status-pulse' : errorTasks > 0 ? 'bg-diff-del' : 'bg-diff-add';
 
   return (
-    <div className="font-mono text-sm">
+    <div className={`${CARD} text-[12.5px]`}>
       {/* Header row - clickable */}
       <button
         onClick={() => setIsExpanded(!isExpanded)}
-        className="w-full flex items-center gap-2 py-0.5 hover:bg-claude-surface/50 transition-colors text-left"
+        className="flex w-full items-center gap-2 px-3 py-[9px] text-left text-fg-3 transition-colors hover:bg-white/[0.03]"
       >
         {/* Expand/collapse chevron */}
         {isExpanded ? (
-          <ChevronDown size={12} className={`${accentColor} flex-shrink-0`} />
+          <ChevronDown size={12} className="flex-shrink-0 text-fg-4" />
         ) : (
-          <ChevronRight size={12} className={`${accentColor} flex-shrink-0`} />
+          <ChevronRight size={12} className="flex-shrink-0 text-fg-4" />
         )}
 
         {/* Status dot */}
-        <span
-          className={`w-2 h-2 rounded-full flex-shrink-0 ${dotColor} ${runningTasks > 0 ? 'animate-pulse' : ''}`}
-        />
+        <span className={`h-[7px] w-[7px] flex-shrink-0 rounded-full ${dotClass}`} />
 
         {/* Icon and label */}
-        <Ampersand size={14} className={`${accentColor} flex-shrink-0`} />
-        <span className={`font-semibold ${accentColor}`}>
-          Background ({runningTasks} running)
-        </span>
+        <Ampersand size={13} className="flex-shrink-0 text-fg-4" />
+        <span className="font-medium text-fg-2">Background</span>
+        <span className="font-mono text-[11.5px] text-fg-4">{runningTasks} running</span>
+
+        {/* Preview (collapsed) - shows first running task's command */}
+        {!isExpanded && previewText && (
+          firstRunningTask ? (
+            <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-fg">
+              <span className="text-fg-5">$ </span>{previewText}
+            </span>
+          ) : (
+            <span className="min-w-0 flex-1 truncate text-fg-4">{previewText}</span>
+          )
+        )}
 
         {/* Loading spinner for running tasks */}
         {runningTasks > 0 && (
-          <Loader2 size={12} className="text-cyan-400 animate-spin flex-shrink-0" />
+          <Loader2 size={12} className="ml-auto flex-shrink-0 animate-spin text-accent" />
         )}
       </button>
-
-      {/* Preview (collapsed) - shows first running task's command */}
-      {!isExpanded && previewText && (
-        <div className={`ml-6 mt-1 p-2 bg-claude-surface/30 border-l-2 ${borderColor}`}>
-          <div className="flex items-center gap-2 text-xs text-claude-text-secondary/80">
-            {firstRunningTask ? (
-              <>
-                <span className="text-green-400">$</span>
-                <span className="text-cyan-400 truncate">{previewText}</span>
-              </>
-            ) : (
-              <span>{previewText}</span>
-            )}
-          </div>
-        </div>
-      )}
 
       {/* Expanded content - fixed height with scroll */}
       {isExpanded && (
         <div
           ref={expandedRef}
-          className={`ml-6 mt-1 p-2 bg-claude-surface/30 border-l-2 ${borderColor} max-h-80 overflow-y-auto scroll-smooth`}
+          className="max-h-80 overflow-y-auto scroll-smooth border-t border-white/[0.05] px-3 py-2"
         >
           <div className="space-y-3">
             {tasks.map((task) => (
-              <div key={task.id} className="border-b border-claude-border/30 pb-2 last:border-b-0 last:pb-0">
+              <div key={task.id} className="border-b border-white/[0.05] pb-2 last:border-b-0 last:pb-0">
                 {/* Task header */}
-                <div className="flex items-center gap-2 text-xs mb-1">
+                <div className="mb-1 flex items-center gap-2 text-[12px]">
                   {/* Status icon */}
                   {task.status === 'completed' ? (
-                    <CheckCircle2 size={14} className="text-green-500 flex-shrink-0" />
+                    <CheckCircle2 size={13} className="flex-shrink-0 text-diff-add" />
                   ) : task.status === 'error' ? (
-                    <XCircle size={14} className="text-red-500 flex-shrink-0" />
+                    <XCircle size={13} className="flex-shrink-0 text-diff-del" />
                   ) : (
-                    <Loader2 size={14} className="text-cyan-400 animate-spin flex-shrink-0" />
+                    <Loader2 size={13} className="flex-shrink-0 animate-spin text-accent" />
                   )}
 
                   {/* Command */}
-                  <span className="text-green-400">$</span>
-                  <span className={`flex-1 truncate ${
+                  <span className="font-mono text-fg-5">$</span>
+                  <span className={`flex-1 truncate font-mono ${
                     task.status === 'completed'
-                      ? 'text-claude-text-secondary'
+                      ? 'text-fg-3'
                       : task.status === 'error'
-                        ? 'text-red-400'
-                        : 'text-cyan-400'
+                        ? 'text-diff-del-text'
+                        : 'text-fg'
                   }`}>
                     {task.command.slice(0, 80)}{task.command.length > 80 ? '...' : ''}
                   </span>
 
                   {/* Actions */}
-                  <div className="flex items-center gap-1 flex-shrink-0">
+                  <div className="flex flex-shrink-0 items-center gap-1">
                     {task.status === 'running' && onStopTask && (
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
                           onStopTask(task.id);
                         }}
-                        className="px-1.5 py-0.5 text-[10px] font-bold bg-red-500/20 hover:bg-red-500/30 text-red-400 border border-red-500/30"
-                        style={{ borderRadius: 0 }}
+                        className="flex h-5 w-5 items-center justify-center text-fg-4 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] transition-colors hover:text-diff-del"
                         title="Stop task"
                       >
                         <Square size={10} />
@@ -145,8 +134,7 @@ export default function BackgroundTasksBlock({ tasks, onStopTask, onViewOutput }
                           e.stopPropagation();
                           onViewOutput(task.id);
                         }}
-                        className="px-1.5 py-0.5 text-[10px] font-bold bg-claude-surface hover:bg-claude-accent hover:text-black text-claude-text-secondary border border-claude-border"
-                        style={{ borderRadius: 0 }}
+                        className="h-5 px-1.5 text-[11px] text-fg-3 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] transition-colors hover:text-fg"
                       >
                         View
                       </button>
@@ -156,7 +144,7 @@ export default function BackgroundTasksBlock({ tasks, onStopTask, onViewOutput }
 
                 {/* Output preview */}
                 {task.output && (
-                  <pre className="ml-6 text-[11px] text-claude-text-secondary/70 whitespace-pre-wrap overflow-x-auto max-h-20 overflow-y-auto bg-black/20 p-1">
+                  <pre className="ml-5 max-h-20 overflow-x-auto overflow-y-auto whitespace-pre-wrap bg-[#0B0B0B] p-2 font-mono text-[11px] leading-relaxed text-fg-4">
                     {getOutputPreview(task.output, 4)}
                   </pre>
                 )}

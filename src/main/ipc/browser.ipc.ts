@@ -1,7 +1,15 @@
 import { BrowserWindow, type IpcMain, session as electronSession } from 'electron';
 import { browserService } from '../services/browser.service';
+import { arcBrowserImportService } from '../services/arc-browser-import.service';
 import { IPC_CHANNELS } from '../../shared/constants/channels';
 import type { BrowserChatInsertPayload } from '../../shared/types';
+import { getBrowserPartitionName } from '../../shared/utils/browser-partition';
+
+function assertBrowserPartitionId(value: unknown): asserts value is string {
+  if (typeof value !== 'string' || value.length === 0 || value.length > 200 || /[\\/\0]/.test(value)) {
+    throw new Error('Invalid browser profile.');
+  }
+}
 
 export function registerBrowserHandlers(ipcMain: IpcMain): void {
   // Browser previews also render in a detached window. DOM CustomEvents are
@@ -72,4 +80,25 @@ export function registerBrowserHandlers(ipcMain: IpcMain): void {
       throw error;
     }
   });
+
+  ipcMain.handle(IPC_CHANNELS.BROWSER_LIST_ARC_PROFILES, async () => {
+    return arcBrowserImportService.listProfiles();
+  });
+
+  ipcMain.handle(
+    IPC_CHANNELS.BROWSER_IMPORT_ARC_COOKIES,
+    async (_event, partitionId: unknown, profileId: unknown) => {
+      assertBrowserPartitionId(partitionId);
+      if (typeof profileId !== 'string') throw new Error('Invalid Arc profile.');
+
+      const partitionName = getBrowserPartitionName(partitionId);
+      const webviewSession = electronSession.fromPartition(partitionName);
+      const result = await arcBrowserImportService.importCookies(profileId, webviewSession);
+      console.log(
+        `[Browser IPC] Imported ${result.imported} Arc cookies into the selected browser profile `
+        + `(${result.skipped} skipped, ${result.failed} failed)`,
+      );
+      return result;
+    },
+  );
 }

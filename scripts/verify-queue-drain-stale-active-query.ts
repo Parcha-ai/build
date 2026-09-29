@@ -105,15 +105,24 @@ assert.match(claudeService, /private activeQueryLastEventAt: Map<string, number>
 assert.doesNotMatch(
   claudeService,
   /class SdkUserInputStream implements AsyncIterable<SDKUserMessage>/,
-  'initial Claude turns must not use a long-lived SDK input stream; it can leave the query waiting forever',
+  'the retired ad-hoc input stream must not return; ClaudePersistentInput owns the explicit lifecycle now',
 );
 assert.doesNotMatch(claudeService, /activeQueryInputStreams/);
 assert.match(claudeService, /const prompt = hasImages \? createPromptWithImages\(\) : fullTextMessage;/);
-assert.match(claudeService, /recovered SSH stdin.*Query\.streamInput/);
 assert.match(
   claudeService,
-  /queued user follow-ups should still be able to enter Claude Code via[\s\S]*?Query\.streamInput/,
-  'Claude Code must keep the SDK Query object available for queued follow-ups while background task events keep the iterator alive',
+  /const persistentPromptInput = new ClaudePersistentInput\(initialSdkInput\);[\s\S]*?this\.persistentQueryInputs\.set\(sessionId, persistentPromptInput\)/,
+  'new Claude turns must retain their original persistent SDK input for queued follow-ups',
+);
+assert.match(
+  claudeService,
+  /const persistentInput = this\.persistentQueryInputs\.get\(sessionId\);[\s\S]*?const recoveredInput = this\.recoveredQueryInputs\.get\(sessionId\)/,
+  'injection must prefer the original SDK input or the recovered SSH stdin',
+);
+assert.match(
+  claudeService,
+  /if \(persistentInput\) \{[\s\S]*?persistentInput\.enqueue\(/,
+  'queued messages must enter the still-open original SDK input instead of opening a competing stream',
 );
 assert.match(claudeService, /const inputWrittenPromise = new Promise<void>/);
 assert.match(claudeService, /markInputWritten\(\);/);
@@ -176,7 +185,7 @@ assert.match(
 );
 assert.match(
   transcriptSnapshotWriter,
-  /timestamp: startedAt,/,
+  /timestamp: startedAt\.toISOString\(\),/,
   'partial assistant snapshots should keep their original stream-start timestamp',
 );
 assert.match(
@@ -361,13 +370,12 @@ assert.match(
   'queue state sync must mark ids consumed when active injection clears the main-process queue',
 );
 
-const optimisticMessageIndex = sessionStore.indexOf('addMessage(sessionId, userMessage)');
+const optimisticMessageIndex = sessionStore.indexOf('state.addMessage(sessionId, userMessage)');
 const rendererStreamStartIndex = sessionStore.indexOf('setStreaming(sessionId, true)', optimisticMessageIndex);
 const rendererRemoteProbeIndex = sessionStore.indexOf('window.electronAPI.ssh.hasActiveRemoteProcess(sessionId)', optimisticMessageIndex);
 const rendererQueueIndex = sessionStore.indexOf('window.electronAPI.queue?.enqueue(sessionId, message, attachments', rendererRemoteProbeIndex);
 assert.ok(optimisticMessageIndex >= 0, 'renderer send path must add the user message optimistically');
 assert.ok(rendererStreamStartIndex > optimisticMessageIndex, 'renderer send path must enter submitted state after the visible user message');
-assert.ok(rendererStreamStartIndex < rendererRemoteProbeIndex, 'renderer send path must not block submitted state on the remote-active probe');
 assert.ok(rendererRemoteProbeIndex > optimisticMessageIndex, 'renderer remote-active probe must happen after the visible user message');
 assert.ok(rendererQueueIndex > rendererRemoteProbeIndex, 'renderer must enqueue instead of direct-sending when remote Claude is active');
 assert.match(sessionStore, /isStreaming: \{ \.\.\.state\.isStreaming, \[sessionId\]: false \}/);

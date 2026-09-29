@@ -45,15 +45,15 @@ export default function HtmlArtifactPanel({ sessionId }: HtmlArtifactPanelProps)
   };
 
   return (
-    <div className="h-full flex flex-col bg-claude-bg">
-      <div className="h-10 flex items-center justify-between px-3 border-b border-claude-border bg-claude-surface">
+    <div className="h-full flex flex-col bg-ink-1">
+      <div className="h-11 flex items-center justify-between px-3 border-b border-line bg-ink-1">
         <div className="flex items-center gap-2 min-w-0">
-          <Code2 size={14} className="text-purple-400 flex-shrink-0" />
-          <span className="text-sm font-medium truncate">
+          <Code2 size={14} className="text-accent flex-shrink-0" />
+          <span className="text-[13px] font-medium text-fg truncate">
             {artifact?.title || 'HTML Preview'}
           </span>
           {artifact?.updatedAt && (
-            <span className="text-[10px] font-mono text-claude-text-secondary flex-shrink-0">
+            <span className="text-[11px] font-mono text-fg-5 flex-shrink-0">
               {new Date(artifact.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
             </span>
           )}
@@ -63,21 +63,21 @@ export default function HtmlArtifactPanel({ sessionId }: HtmlArtifactPanelProps)
             <>
               <button
                 onClick={handleOpenExternal}
-                className="p-1 rounded hover:bg-claude-bg text-claude-text-secondary hover:text-claude-text"
+                className="w-7 h-7 flex items-center justify-center hover:bg-claude-surface-hover text-fg-4 hover:text-fg"
                 title="Open in browser"
               >
                 <ExternalLink size={14} />
               </button>
               <button
                 onClick={handleCopy}
-                className="p-1 rounded hover:bg-claude-bg text-claude-text-secondary hover:text-claude-text"
+                className="w-7 h-7 flex items-center justify-center hover:bg-claude-surface-hover text-fg-4 hover:text-fg"
                 title="Copy HTML"
               >
-                {copied ? <Check size={14} className="text-green-400" /> : <Copy size={14} />}
+                {copied ? <Check size={14} className="text-diff-add" /> : <Copy size={14} />}
               </button>
               <button
                 onClick={handleClear}
-                className="p-1 rounded hover:bg-claude-bg text-claude-text-secondary hover:text-claude-text"
+                className="w-7 h-7 flex items-center justify-center hover:bg-claude-surface-hover text-fg-4 hover:text-fg"
                 title="Clear HTML preview"
               >
                 <Trash2 size={14} />
@@ -86,7 +86,7 @@ export default function HtmlArtifactPanel({ sessionId }: HtmlArtifactPanelProps)
           )}
           <button
             onClick={toggleHtmlPanel}
-            className="p-1 rounded hover:bg-claude-bg text-claude-text-secondary hover:text-claude-text"
+            className="w-7 h-7 flex items-center justify-center hover:bg-claude-surface-hover text-fg-4 hover:text-fg"
             title="Close HTML preview"
           >
             <X size={14} />
@@ -98,13 +98,13 @@ export default function HtmlArtifactPanel({ sessionId }: HtmlArtifactPanelProps)
         <iframe
           srcDoc={srcDoc}
           sandbox="allow-scripts"
-          className="flex-1 w-full border-0 bg-[#1a1a2e]"
+          className="flex-1 w-full border-0 bg-ink-2"
           title="HTML Response Preview"
         />
       ) : (
-        <div className="flex-1 flex flex-col items-center justify-center text-claude-text-secondary p-4">
+        <div className="flex-1 flex flex-col items-center justify-center text-fg-4 p-4">
           <Code2 size={32} className="mb-3 opacity-50" />
-          <p className="text-sm font-mono text-center">No HTML response loaded</p>
+          <p className="text-[13px] text-center">No HTML response loaded</p>
         </div>
       )}
     </div>

@@ -1,13 +1,23 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { X, Eye, EyeOff, Check, Loader2, Search, Download, Sparkles, Settings, Key, History, AlertCircle, ExternalLink, Terminal, Copy, Bot, RefreshCw, BookOpen, Plus, Trash2 } from 'lucide-react';
+import { X, Eye, EyeOff, Check, Loader2, Search, Download, Sparkles, Settings, Key, History, AlertCircle, ExternalLink, Terminal, Copy, Bot, RefreshCw, BookOpen } from 'lucide-react';
+import { DEFAULT_IN_APP_BROWSER_URL_PATTERNS } from '../../../shared/utils/browser-routing';
 import { useUIStore } from '../../stores/ui.store';
 import { useAudioStore } from '../../stores/audio.store';
 import { useSessionStore } from '../../stores/session.store';
 import ReleaseNotes from '../common/ReleaseNotes';
-import type { ParableCheckConfig, ParableConfig, ParableExecutorConfig, ParableTaskClass } from '../../../shared/types';
-import { cloneDefaultParableConfig, PARABLE_MODE_ID, PARABLE_TASK_CLASSES } from '../../../shared/config/parable';
+import {
+  getRealtimeVoiceLabel,
+  OPENAI_REALTIME_MODEL,
+  REALTIME_VOICE_OPTIONS,
+  type ParableSubscriptionStatus,
+  type ParableAuthRunState,
+  type ParableVendor,
+  type RealtimeReasoningEffort,
+  type RealtimeVoiceOption,
+} from '../../../shared/types';
+import { PARABLE_MODE_ID } from '../../../shared/config/parable';
 import { CASCADE_MODE_ID } from '../../../shared/config/cascade';
-import { getKnownModelPricing } from '../../../shared/config/model-pricing';
+import { stripTerminalControlSequences } from '../../../shared/utils/remote-workdir';
 
 type TabId = 'general' | 'autoBuild' | 'parable' | 'agents' | 'releases';
 
@@ -29,6 +39,7 @@ type ProvidersState = {
   gemini: ProviderStatus;
   grok: ProviderStatus;
   opencode: ProviderStatus;
+  prime: ProviderStatus;
 };
 
 const DEFAULT_PROVIDERS: ProvidersState = {
@@ -38,7 +49,70 @@ const DEFAULT_PROVIDERS: ProvidersState = {
   gemini: { loggedIn: false },
   grok: { loggedIn: false },
   opencode: { loggedIn: false },
+  prime: { loggedIn: false },
 };
+
+function ParableStringMapField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value?: Record<string, string>;
+  onChange: (value: Record<string, string>) => void;
+}) {
+  const entries = Object.entries(value || {});
+  const updateEntry = (index: number, key: string, entryValue: string) => {
+    const nextEntries = [...entries];
+    nextEntries[index] = [key, entryValue];
+    onChange(Object.fromEntries(nextEntries.filter(([entryKey]) => entryKey.trim())));
+  };
+  return (
+    <div className="space-y-1 md:col-span-2">
+      <div className="text-[11px] font-medium uppercase tracking-[0.04em] text-fg-4">{label}</div>
+      {entries.map(([key, entryValue], index) => (
+        <div key={`${key}-${index}`} className="flex gap-2">
+          <input aria-label={`${label} key ${index + 1}`} className="w-1/3 bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] px-2 py-1.5 font-mono text-[12px] text-fg placeholder:text-fg-5 focus:outline-none focus:ring-1 focus:ring-accent/50" value={key} placeholder="Name" onChange={(event) => updateEntry(index, event.target.value, entryValue)} />
+          <input aria-label={`${label} value ${index + 1}`} className="min-w-0 flex-1 bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] px-2 py-1.5 font-mono text-[12px] text-fg placeholder:text-fg-5 focus:outline-none focus:ring-1 focus:ring-accent/50" value={entryValue} placeholder="Value" onChange={(event) => updateEntry(index, key, event.target.value)} />
+          <button type="button" onClick={() => onChange(Object.fromEntries(entries.filter((_, entryIndex) => entryIndex !== index)))} className="px-2 text-[12px] text-diff-del hover:bg-diff-del/10">Remove</button>
+        </div>
+      ))}
+      <button type="button" onClick={() => onChange({ ...(value || {}), [`key${entries.length + 1}`]: '' })} className="shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] h-7 px-2 text-[12px] text-fg-2 hover:bg-claude-surface-hover">+ Add entry</button>
+    </div>
+  );
+}
+
+function ParableJsonObjectField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value?: Record<string, unknown>;
+  onChange: (value: Record<string, unknown>) => void;
+}) {
+  const serialized = JSON.stringify(value || {}, null, 2);
+  const [draft, setDraft] = useState(serialized);
+  const [error, setError] = useState('');
+  useEffect(() => setDraft(serialized), [serialized]);
+  const apply = () => {
+    try {
+      const parsed = JSON.parse(draft);
+      if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') throw new Error('Enter a JSON object.');
+      onChange(parsed);
+      setError('');
+    } catch (parseError) {
+      setError(parseError instanceof Error ? parseError.message : 'Invalid JSON object.');
+    }
+  };
+  return (
+    <label className="space-y-1 text-[11px] font-medium uppercase tracking-[0.04em] text-fg-4 md:col-span-2">
+      {label}
+      <textarea rows={4} className="w-full border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] bg-ink-3 px-2 py-1.5 font-mono text-[12px] normal-case text-claude-text focus:ring-1 focus:ring-accent/50 focus:outline-none" value={draft} onChange={(event) => setDraft(event.target.value)} onBlur={apply} />
+      {error && <span className="block normal-case text-diff-del">{error}</span>}
+    </label>
+  );
+}
 
 interface TabConfig {
   id: TabId;
@@ -46,7 +120,7 @@ interface TabConfig {
   icon: React.ReactNode;
 }
 
-type AutoBuildModelKey = 'plan' | 'build' | 'verify' | 'refine' | 'fallback';
+type AutoBuildModelKey = 'pr' | 'plan' | 'build' | 'verify' | 'refine' | 'fallback';
 
 type AutoBuildModelSettings = Record<AutoBuildModelKey, string>;
 
@@ -57,6 +131,7 @@ type AutoBuildVerificationSettings = Record<AutoBuildModelKey, string>;
 type AutoBuildBudgetSettings = Record<AutoBuildModelKey, string>;
 
 const AUTO_BUILD_EFFORT_DEFAULTS: AutoBuildEffortSettings = {
+  pr: 'max',
   plan: '',
   build: '',
   verify: '',
@@ -65,6 +140,7 @@ const AUTO_BUILD_EFFORT_DEFAULTS: AutoBuildEffortSettings = {
 };
 
 const AUTO_BUILD_SPEED_DEFAULTS: AutoBuildSpeedSettings = {
+  pr: 'auto',
   plan: 'auto',
   build: 'auto',
   verify: 'auto',
@@ -73,6 +149,7 @@ const AUTO_BUILD_SPEED_DEFAULTS: AutoBuildSpeedSettings = {
 };
 
 const AUTO_BUILD_WORKFLOW_DEFAULTS: AutoBuildWorkflowSettings = {
+  pr: 'single',
   plan: 'auto',
   build: 'auto',
   verify: 'auto',
@@ -81,6 +158,7 @@ const AUTO_BUILD_WORKFLOW_DEFAULTS: AutoBuildWorkflowSettings = {
 };
 
 const AUTO_BUILD_VERIFICATION_DEFAULTS: AutoBuildVerificationSettings = {
+  pr: 'none',
   plan: 'auto',
   build: 'auto',
   verify: 'auto',
@@ -89,6 +167,7 @@ const AUTO_BUILD_VERIFICATION_DEFAULTS: AutoBuildVerificationSettings = {
 };
 
 const AUTO_BUILD_BUDGET_DEFAULTS: AutoBuildBudgetSettings = {
+  pr: '',
   plan: '',
   build: '',
   verify: '',
@@ -127,6 +206,7 @@ const VERIFICATION_OPTIONS: Array<{ value: string; label: string }> = [
 ];
 
 const AUTO_BUILD_MODEL_DEFAULTS: AutoBuildModelSettings = {
+  pr: 'claude-fable-5',
   plan: 'claude-sonnet-4-6',
   build: 'codex:gpt-5.6-sol',
   verify: 'codex:gpt-5.6-sol',
@@ -135,6 +215,7 @@ const AUTO_BUILD_MODEL_DEFAULTS: AutoBuildModelSettings = {
 };
 
 const AUTO_BUILD_MODEL_ROWS: Array<{ id: AutoBuildModelKey; label: string; detail: string }> = [
+  { id: 'pr', label: 'Pull requests', detail: 'Native /pr publication workflow' },
   { id: 'plan', label: 'Planning', detail: 'Architecture, reviews, tradeoffs' },
   { id: 'build', label: 'Execution', detail: 'Code and file changes' },
   { id: 'verify', label: 'Verification', detail: 'Tests, QA, debugging' },
@@ -155,7 +236,7 @@ interface CustomCategoryState {
   keywords: string;
 }
 
-const FIXED_TIER_IDS = ['plan', 'build', 'verify', 'refine', 'fallback'];
+const FIXED_TIER_IDS = ['pr', 'plan', 'build', 'verify', 'refine', 'fallback'];
 
 function autoBuildConfigFromState(
   models: AutoBuildModelSettings,
@@ -189,31 +270,37 @@ function autoBuildConfigFromState(
   return {
     prePlanEnabled,
     prePlanModel,
+    prModel: models.pr,
     planModel: models.plan,
     buildModel: models.build,
     verifyModel: models.verify,
     refineModel: models.refine,
     fallbackModel: models.fallback,
+    ...(effort?.pr ? { prEffort: effort.pr } : {}),
     ...(effort?.plan ? { planEffort: effort.plan } : {}),
     ...(effort?.build ? { buildEffort: effort.build } : {}),
     ...(effort?.verify ? { verifyEffort: effort.verify } : {}),
     ...(effort?.refine ? { refineEffort: effort.refine } : {}),
     ...(effort?.fallback ? { fallbackEffort: effort.fallback } : {}),
+    ...(speed?.pr && speed.pr !== 'auto' ? { prSpeed: speed.pr } : {}),
     ...(speed?.plan && speed.plan !== 'auto' ? { planSpeed: speed.plan } : {}),
     ...(speed?.build && speed.build !== 'auto' ? { buildSpeed: speed.build } : {}),
     ...(speed?.verify && speed.verify !== 'auto' ? { verifySpeed: speed.verify } : {}),
     ...(speed?.refine && speed.refine !== 'auto' ? { refineSpeed: speed.refine } : {}),
     ...(speed?.fallback && speed.fallback !== 'auto' ? { fallbackSpeed: speed.fallback } : {}),
+    ...(workflow?.pr && workflow.pr !== 'auto' ? { prWorkflow: workflow.pr } : {}),
     ...(workflow?.plan && workflow.plan !== 'auto' ? { planWorkflow: workflow.plan } : {}),
     ...(workflow?.build && workflow.build !== 'auto' ? { buildWorkflow: workflow.build } : {}),
     ...(workflow?.verify && workflow.verify !== 'auto' ? { verifyWorkflow: workflow.verify } : {}),
     ...(workflow?.refine && workflow.refine !== 'auto' ? { refineWorkflow: workflow.refine } : {}),
     ...(workflow?.fallback && workflow.fallback !== 'auto' ? { fallbackWorkflow: workflow.fallback } : {}),
+    ...(budget?.pr && parseBudget(budget.pr) !== undefined ? { prBudgetUsd: parseBudget(budget.pr) } : {}),
     ...(budget?.plan && parseBudget(budget.plan) !== undefined ? { planBudgetUsd: parseBudget(budget.plan) } : {}),
     ...(budget?.build && parseBudget(budget.build) !== undefined ? { buildBudgetUsd: parseBudget(budget.build) } : {}),
     ...(budget?.verify && parseBudget(budget.verify) !== undefined ? { verifyBudgetUsd: parseBudget(budget.verify) } : {}),
     ...(budget?.refine && parseBudget(budget.refine) !== undefined ? { refineBudgetUsd: parseBudget(budget.refine) } : {}),
     ...(budget?.fallback && parseBudget(budget.fallback) !== undefined ? { fallbackBudgetUsd: parseBudget(budget.fallback) } : {}),
+    ...(verification?.pr && verification.pr !== 'auto' ? { prVerification: verification.pr } : {}),
     ...(verification?.plan && verification.plan !== 'auto' ? { planVerification: verification.plan } : {}),
     ...(verification?.build && verification.build !== 'auto' ? { buildVerification: verification.build } : {}),
     ...(verification?.verify && verification.verify !== 'auto' ? { verifyVerification: verification.verify } : {}),
@@ -229,6 +316,7 @@ function migrateAutoBuildModels(savedAutoConfig: any): AutoBuildModelSettings {
 
   if (Array.isArray(savedAutoConfig?.categories)) {
     for (const category of savedAutoConfig.categories) {
+      if (category?.id === 'pr' && typeof category.model === 'string') models.pr = category.model;
       if (category?.id === 'plan' && typeof category.model === 'string') models.plan = category.model;
       if (category?.id === 'build' && typeof category.model === 'string') models.build = category.model;
       if (category?.id === 'verify' && typeof category.model === 'string') models.verify = category.model;
@@ -236,6 +324,7 @@ function migrateAutoBuildModels(savedAutoConfig: any): AutoBuildModelSettings {
     }
   }
 
+  if (typeof savedAutoConfig?.prModel === 'string') models.pr = savedAutoConfig.prModel;
   if (typeof savedAutoConfig?.planModel === 'string') models.plan = savedAutoConfig.planModel;
   if (typeof savedAutoConfig?.buildModel === 'string') models.build = savedAutoConfig.buildModel;
   if (typeof savedAutoConfig?.verifyModel === 'string') models.verify = savedAutoConfig.verifyModel;
@@ -276,7 +365,7 @@ const ApiKeyInputComponent = ({
       }}
       placeholder={isLoading ? 'Loading...' : placeholder}
       disabled={isLoading}
-      className="w-full px-3 py-2 pr-10 bg-claude-bg border border-claude-border text-claude-text font-mono text-sm placeholder:text-claude-text-secondary focus:outline-none focus:border-claude-accent disabled:opacity-50"
+      className="w-full px-3 py-2 pr-10 bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-claude-text font-mono text-[13px] placeholder:text-fg-5 focus:outline-none focus:ring-1 focus:ring-accent/50 disabled:opacity-50"
       style={{ borderRadius: 0 }}
     />
     <button
@@ -318,9 +407,6 @@ export default function SettingsDialog() {
   const [showOpenaiApiKey, setShowOpenaiApiKey] = useState(false);
   const [googleApiKey, setGoogleApiKey] = useState('');
   const [showGoogleApiKey, setShowGoogleApiKey] = useState(false);
-  const [elevenLabsApiKey, setElevenLabsApiKey] = useState('');
-  const [showElevenLabsApiKey, setShowElevenLabsApiKey] = useState(false);
-  const [elevenLabsAgentId, setElevenLabsAgentId] = useState('');
   const [cursorApiKey, setCursorApiKey] = useState('');
   const [showCursorApiKey, setShowCursorApiKey] = useState(false);
   const [deepseekApiKey, setDeepseekApiKey] = useState('');
@@ -336,6 +422,8 @@ export default function SettingsDialog() {
 
   // Audio settings
   const [voiceModeEnabled, setVoiceModeEnabled] = useState(false);
+  const [realtimeVoice, setRealtimeVoice] = useState<RealtimeVoiceOption>('marin');
+  const [realtimeReasoningEffort, setRealtimeReasoningEffort] = useState<RealtimeReasoningEffort>('low');
   const [ralphLoopEnabled, setRalphLoopEnabled] = useState(false);
   const [computerUseEnabled, setComputerUseEnabled] = useState(false);
   const [maxComputerUseIterations, setMaxComputerUseIterations] = useState(20);
@@ -351,6 +439,12 @@ export default function SettingsDialog() {
   const [dailyReviewEnabled, setDailyReviewEnabled] = useState(false);
   const [dailyReviewTime, setDailyReviewTime] = useState('09:00');
   const [bedtimeTaskReviewEnabled, setBedtimeTaskReviewEnabled] = useState(true);
+  const [eveningPlanningLockEnabled, setEveningPlanningLockEnabled] = useState(true);
+  const [eveningPlanningLockTime, setEveningPlanningLockTime] = useState('22:30');
+  const [eveningPlanningCalendarUrl, setEveningPlanningCalendarUrl] = useState('https://calendar.google.com/calendar/u/0/r');
+  const [inAppBrowserUrlPatterns, setInAppBrowserUrlPatterns] = useState(
+    DEFAULT_IN_APP_BROWSER_URL_PATTERNS.join('\n'),
+  );
 
   // Foundry settings
   const [foundryEnabled, setFoundryEnabled] = useState(false);
@@ -366,6 +460,7 @@ export default function SettingsDialog() {
 
   // Auto Build fixed model routing tiers
   const availableModels = useSessionStore((s) => s.availableModels || []);
+  const activeParableSession = useSessionStore((s) => s.sessions.find((session) => session.id === s.activeSessionId));
   const [autoBuildModels, setAutoBuildModels] = useState<AutoBuildModelSettings>(AUTO_BUILD_MODEL_DEFAULTS);
   const [autoBuildEffort, setAutoBuildEffort] = useState<AutoBuildEffortSettings>(AUTO_BUILD_EFFORT_DEFAULTS);
   const [autoBuildSpeed, setAutoBuildSpeed] = useState<AutoBuildSpeedSettings>(AUTO_BUILD_SPEED_DEFAULTS);
@@ -377,8 +472,18 @@ export default function SettingsDialog() {
   const [autoBuildPrePlanModel, setAutoBuildPrePlanModel] = useState('claude-fable-5');
   const [customCategories, setCustomCategories] = useState<CustomCategoryState[]>([]);
 
-  // Parable mode — Claude Code is the meta-harness and owns executor routing.
-  const [parableConfig, setParableConfig] = useState<ParableConfig>(() => cloneDefaultParableConfig());
+  // Parable mode — upstream owns subscription setup, OAuth, and executor routing.
+  const [parableStatus, setParableStatus] = useState<ParableSubscriptionStatus | null>(null);
+  const [isCheckingParable, setIsCheckingParable] = useState(false);
+  const [parableChatGpt, setParableChatGpt] = useState(true);
+  const [parableXai, setParableXai] = useState(true);
+  const [parableAuthRun, setParableAuthRun] = useState<ParableAuthRunState>({ running: false, output: '', phase: 'idle' });
+  const parableAuthOutputRef = useRef<HTMLPreElement | null>(null);
+  const [parableToml, setParableToml] = useState('');
+  const [parableConfigData, setParableConfigData] = useState<Record<string, any>>({});
+  const [parableConfigMessage, setParableConfigMessage] = useState('');
+  const [isSavingParableToml, setIsSavingParableToml] = useState(false);
+  const [isSyncingParableAuth, setIsSyncingParableAuth] = useState(false);
 
   // QMD status
   const [qmdStatus, setQmdStatus] = useState<{ installed: boolean; bundled: boolean } | null>(null);
@@ -388,6 +493,8 @@ export default function SettingsDialog() {
   const [isLoading, setIsLoading] = useState(true);
   const [providers, setProviders] = useState<ProvidersState>(DEFAULT_PROVIDERS);
   const [isCheckingProviders, setIsCheckingProviders] = useState(false);
+  const [providerSetupId, setProviderSetupId] = useState<keyof ProvidersState | null>(null);
+  const [providerSetupError, setProviderSetupError] = useState<{ id: keyof ProvidersState; message: string } | null>(null);
 
   // Show save indicator briefly
   const showSaveIndicator = useCallback(() => {
@@ -404,7 +511,7 @@ export default function SettingsDialog() {
   }, []);
 
   // Auto-save app settings (toggles and time picker)
-  const autoSaveAppSettings = useCallback(async (updates: { qmdEnabled?: boolean; ultraPlanMode?: boolean; showClearContextOnPlanAccept?: boolean; lunchReminderEnabled?: boolean; lunchReminderTime?: string; bedtimeReminderEnabled?: boolean; bedtimeReminderTime?: string; dailyReviewEnabled?: boolean; dailyReviewTime?: string; bedtimeTaskReviewEnabled?: boolean; foundryEnabled?: boolean; foundryBaseUrl?: string; foundryApiKey?: string; foundryDefaultSonnetModel?: string; foundryDefaultHaikuModel?: string; foundryDefaultOpusModel?: string; customModels?: typeof customModels; cursorApiKey?: string; deepseekApiKey?: string; geminiApiKey?: string; zaiApiKey?: string; xaiApiKey?: string; cerebrasApiKey?: string; autoRouterConfig?: any; parableConfig?: ParableConfig }) => {
+  const autoSaveAppSettings = useCallback(async (updates: { qmdEnabled?: boolean; ultraPlanMode?: boolean; showClearContextOnPlanAccept?: boolean; lunchReminderEnabled?: boolean; lunchReminderTime?: string; bedtimeReminderEnabled?: boolean; bedtimeReminderTime?: string; dailyReviewEnabled?: boolean; dailyReviewTime?: string; bedtimeTaskReviewEnabled?: boolean; eveningPlanningLockEnabled?: boolean; eveningPlanningLockTime?: string; eveningPlanningCalendarUrl?: string; inAppBrowserUrlPatterns?: string[]; foundryEnabled?: boolean; foundryBaseUrl?: string; foundryApiKey?: string; foundryDefaultSonnetModel?: string; foundryDefaultHaikuModel?: string; foundryDefaultOpusModel?: string; customModels?: typeof customModels; cursorApiKey?: string; deepseekApiKey?: string; geminiApiKey?: string; zaiApiKey?: string; xaiApiKey?: string; cerebrasApiKey?: string; autoRouterConfig?: any }) => {
     showSaveIndicator();
     try {
       await window.electronAPI.settings.set(updates);
@@ -437,7 +544,7 @@ export default function SettingsDialog() {
   }, [audioSettings, updateSettings, showSaveIndicator]);
 
   // Auto-save API keys with debounce for text inputs
-  const autoSaveApiKey = useCallback(async (key: string, type: 'anthropic' | 'openai' | 'google' | 'elevenlabs') => {
+  const autoSaveApiKey = useCallback(async (key: string, type: 'anthropic' | 'openai' | 'google') => {
     showSaveIndicator();
     try {
       if (type === 'anthropic') {
@@ -446,8 +553,6 @@ export default function SettingsDialog() {
         await window.electronAPI.audio.setOpenAiKey(key);
       } else if (type === 'google') {
         await window.electronAPI.settings.setGoogleApiKey(key);
-      } else if (type === 'elevenlabs') {
-        await window.electronAPI.audio.setElevenLabsKey(key);
       }
       console.log(`[SettingsDialog] Auto-saved ${type} API key`);
     } catch (error) {
@@ -479,6 +584,42 @@ export default function SettingsDialog() {
     }
   }, []);
 
+  const refreshParableStatus = useCallback(async () => {
+    setIsCheckingParable(true);
+    try {
+      const status = await window.electronAPI.parable.getStatus();
+      setParableStatus(status);
+      if (status.configured) {
+        setParableChatGpt(status.vendors.includes('chatgpt'));
+        setParableXai(status.vendors.includes('xai'));
+        const [toml, data] = await Promise.all([
+          window.electronAPI.parable.getConfig(),
+          window.electronAPI.parable.getConfigData(),
+        ]);
+        setParableToml(toml);
+        setParableConfigData(data);
+      }
+    } catch (error) {
+      console.warn('[SettingsDialog] Parable status check failed:', error);
+    } finally {
+      setIsCheckingParable(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isSettingsOpen) return;
+    void window.electronAPI.parable.getAuthRun().then(setParableAuthRun);
+    return window.electronAPI.parable.onAuthEvent((state) => {
+      setParableAuthRun(state);
+      if (!state.running) void refreshParableStatus();
+    });
+  }, [isSettingsOpen, refreshParableStatus]);
+
+  useEffect(() => {
+    const output = parableAuthOutputRef.current;
+    if (output) output.scrollTop = output.scrollHeight;
+  }, [parableAuthRun.output]);
+
   useEffect(() => {
     if (isSettingsOpen) {
       setActiveTab((settingsTab as TabId) || 'general');
@@ -490,6 +631,7 @@ export default function SettingsDialog() {
     if (isSettingsOpen) {
       setIsLoading(true);
       void refreshProviders();
+      void refreshParableStatus();
 
       // These are all instant electron-store reads — never hang
       Promise.all([
@@ -498,14 +640,12 @@ export default function SettingsDialog() {
         window.electronAPI.settings.getGoogleApiKey(),
         window.electronAPI.settings.get(),
         loadSettings(),
-        window.electronAPI.audio.getElevenLabsKey(),
       ])
-        .then(([anthropicKey, openAiKey, googleKey, appSettings, , elevenLabsKey]) => {
+        .then(([anthropicKey, openAiKey, googleKey, appSettings]) => {
           console.log('[SettingsDialog] Loaded settings:', appSettings);
           setApiKey(anthropicKey || '');
           setOpenaiApiKey(openAiKey || '');
           setGoogleApiKey(googleKey || '');
-          setElevenLabsApiKey(elevenLabsKey || '');
           setQmdEnabled(appSettings.qmdEnabled || false);
           setUltraPlanMode(appSettings.ultraPlanMode || false);
           setShowClearContextOnPlanAccept((appSettings as any).showClearContextOnPlanAccept || false);
@@ -516,6 +656,12 @@ export default function SettingsDialog() {
           setDailyReviewEnabled((appSettings as any).dailyReviewEnabled ?? false);
           setDailyReviewTime((appSettings as any).dailyReviewTime || '09:00');
           setBedtimeTaskReviewEnabled((appSettings as any).bedtimeTaskReviewEnabled ?? true);
+          setEveningPlanningLockEnabled((appSettings as any).eveningPlanningLockEnabled ?? true);
+          setEveningPlanningLockTime((appSettings as any).eveningPlanningLockTime || '22:30');
+          setEveningPlanningCalendarUrl((appSettings as any).eveningPlanningCalendarUrl || 'https://calendar.google.com/calendar/u/0/r');
+          setInAppBrowserUrlPatterns(
+            (appSettings.inAppBrowserUrlPatterns || DEFAULT_IN_APP_BROWSER_URL_PATTERNS).join('\n'),
+          );
           setFoundryEnabled(appSettings.foundryEnabled || false);
           setFoundryBaseUrl(appSettings.foundryBaseUrl || '');
           setFoundryApiKey(appSettings.foundryApiKey || '');
@@ -529,22 +675,6 @@ export default function SettingsDialog() {
           setZaiApiKey((appSettings as any).zaiApiKey || '');
           setCerebrasApiKey((appSettings as any).cerebrasApiKey || '');
           setXaiApiKey((appSettings as any).xaiApiKey || '');
-          const savedParableConfig = (appSettings as any).parableConfig as Partial<ParableConfig> | undefined;
-          if (savedParableConfig) {
-            const parableDefaults = cloneDefaultParableConfig();
-            setParableConfig({
-              ...parableDefaults,
-              ...savedParableConfig,
-              executors: Array.isArray(savedParableConfig.executors)
-                ? savedParableConfig.executors
-                : parableDefaults.executors,
-              checks: Array.isArray(savedParableConfig.checks)
-                ? savedParableConfig.checks
-                : parableDefaults.checks,
-            });
-          } else {
-            setParableConfig(cloneDefaultParableConfig());
-          }
           // Auto Build config
           const savedAutoConfig = (appSettings as any).autoRouterConfig;
           if (savedAutoConfig) {
@@ -557,6 +687,7 @@ export default function SettingsDialog() {
           setAutoBuildPrePlanModel(savedAutoConfig?.prePlanModel || 'claude-fable-5');
           // Load effort settings
           const savedEffort: AutoBuildEffortSettings = { ...AUTO_BUILD_EFFORT_DEFAULTS };
+          if (savedAutoConfig?.prEffort) savedEffort.pr = savedAutoConfig.prEffort;
           if (savedAutoConfig?.planEffort) savedEffort.plan = savedAutoConfig.planEffort;
           if (savedAutoConfig?.buildEffort) savedEffort.build = savedAutoConfig.buildEffort;
           if (savedAutoConfig?.verifyEffort) savedEffort.verify = savedAutoConfig.verifyEffort;
@@ -564,6 +695,7 @@ export default function SettingsDialog() {
           if (savedAutoConfig?.fallbackEffort) savedEffort.fallback = savedAutoConfig.fallbackEffort;
           setAutoBuildEffort(savedEffort);
           const savedSpeed: AutoBuildSpeedSettings = { ...AUTO_BUILD_SPEED_DEFAULTS };
+          if (savedAutoConfig?.prSpeed) savedSpeed.pr = savedAutoConfig.prSpeed;
           if (savedAutoConfig?.planSpeed) savedSpeed.plan = savedAutoConfig.planSpeed;
           if (savedAutoConfig?.buildSpeed) savedSpeed.build = savedAutoConfig.buildSpeed;
           if (savedAutoConfig?.verifySpeed) savedSpeed.verify = savedAutoConfig.verifySpeed;
@@ -571,6 +703,7 @@ export default function SettingsDialog() {
           if (savedAutoConfig?.fallbackSpeed) savedSpeed.fallback = savedAutoConfig.fallbackSpeed;
           setAutoBuildSpeed(savedSpeed);
           const savedWorkflow: AutoBuildWorkflowSettings = { ...AUTO_BUILD_WORKFLOW_DEFAULTS };
+          if (savedAutoConfig?.prWorkflow) savedWorkflow.pr = savedAutoConfig.prWorkflow;
           if (savedAutoConfig?.planWorkflow) savedWorkflow.plan = savedAutoConfig.planWorkflow;
           if (savedAutoConfig?.buildWorkflow) savedWorkflow.build = savedAutoConfig.buildWorkflow;
           if (savedAutoConfig?.verifyWorkflow) savedWorkflow.verify = savedAutoConfig.verifyWorkflow;
@@ -578,6 +711,7 @@ export default function SettingsDialog() {
           if (savedAutoConfig?.fallbackWorkflow) savedWorkflow.fallback = savedAutoConfig.fallbackWorkflow;
           setAutoBuildWorkflow(savedWorkflow);
           const savedBudget: AutoBuildBudgetSettings = { ...AUTO_BUILD_BUDGET_DEFAULTS };
+          if (savedAutoConfig?.prBudgetUsd !== undefined) savedBudget.pr = String(savedAutoConfig.prBudgetUsd);
           if (savedAutoConfig?.planBudgetUsd !== undefined) savedBudget.plan = String(savedAutoConfig.planBudgetUsd);
           if (savedAutoConfig?.buildBudgetUsd !== undefined) savedBudget.build = String(savedAutoConfig.buildBudgetUsd);
           if (savedAutoConfig?.verifyBudgetUsd !== undefined) savedBudget.verify = String(savedAutoConfig.verifyBudgetUsd);
@@ -585,6 +719,7 @@ export default function SettingsDialog() {
           if (savedAutoConfig?.fallbackBudgetUsd !== undefined) savedBudget.fallback = String(savedAutoConfig.fallbackBudgetUsd);
           setAutoBuildBudget(savedBudget);
           const savedVerification: AutoBuildVerificationSettings = { ...AUTO_BUILD_VERIFICATION_DEFAULTS };
+          if (savedAutoConfig?.prVerification) savedVerification.pr = savedAutoConfig.prVerification;
           if (savedAutoConfig?.planVerification) savedVerification.plan = savedAutoConfig.planVerification;
           if (savedAutoConfig?.buildVerification) savedVerification.build = savedAutoConfig.buildVerification;
           if (savedAutoConfig?.verifyVerification) savedVerification.verify = savedAutoConfig.verifyVerification;
@@ -621,7 +756,7 @@ export default function SettingsDialog() {
         .then((s) => setQmdStatus(s))
         .catch((err) => console.warn('[SettingsDialog] QMD status check failed:', err));
     }
-  }, [isSettingsOpen, loadSettings, refreshProviders]);
+  }, [isSettingsOpen, loadSettings, refreshParableStatus, refreshProviders]);
 
   // Update local state when audio settings load
   useEffect(() => {
@@ -630,7 +765,8 @@ export default function SettingsDialog() {
       setRalphLoopEnabled(audioSettings.ralphLoopEnabled || false);
       setComputerUseEnabled(audioSettings.computerUseEnabled || false);
       setMaxComputerUseIterations(audioSettings.maxComputerUseIterations || 20);
-      setElevenLabsAgentId(audioSettings.elevenLabsAgentId || '');
+      setRealtimeVoice(audioSettings.realtimeVoice || 'marin');
+      setRealtimeReasoningEffort(audioSettings.realtimeReasoningEffort || 'low');
     }
   }, [audioSettings]);
 
@@ -639,7 +775,7 @@ export default function SettingsDialog() {
     return () => {
       if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
       if (debounceTimeoutRef.current) clearTimeout(debounceTimeoutRef.current);
-    };
+  };
   }, []);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -679,7 +815,7 @@ export default function SettingsDialog() {
   }, []);
 
   // Toggle component for consistent styling
-  const Toggle = ({ enabled, onChange, disabled = false, color = 'bg-claude-accent' }: {
+  const Toggle = ({ enabled, onChange, disabled = false, color = 'bg-accent' }: {
     enabled: boolean;
     onChange: (value: boolean) => void;
     disabled?: boolean;
@@ -689,7 +825,7 @@ export default function SettingsDialog() {
       onClick={() => onChange(!enabled)}
       disabled={disabled}
       className={`relative inline-flex h-6 w-11 items-center transition-colors ${
-        enabled ? color : 'bg-claude-border'
+        enabled ? color : 'bg-ink-4'
       } disabled:opacity-50`}
       style={{ borderRadius: 0 }}
     >
@@ -705,21 +841,51 @@ export default function SettingsDialog() {
   // Render General Tab
   const renderGeneralTab = () => (
     <div className="space-y-6">
-      {/* QMD Semantic Search */}
-      <div className="space-y-4">
+      {/* Browser link routing */}
+      <div className="space-y-3">
         <div className="flex items-center gap-2">
-          <Search size={14} className="text-blue-400" />
-          <h3 className="text-xs font-mono text-claude-text uppercase tracking-wider">
+          <ExternalLink size={14} className="text-accent-text" />
+          <h3 className="text-[11px] font-medium uppercase tracking-[0.04em] text-fg-4">
+            Browser Link Routing
+          </h3>
+        </div>
+        <p className="text-[12px] text-fg-4">
+          Matching HTTP(S) links open in the app browser. All other links open in your system browser.
+        </p>
+        <textarea
+          value={inAppBrowserUrlPatterns}
+          onChange={(event) => setInAppBrowserUrlPatterns(event.target.value)}
+          onBlur={() => {
+            const patterns = inAppBrowserUrlPatterns.split(/\r?\n/).map((value) => value.trim()).filter(Boolean);
+            void autoSaveAppSettings({ inAppBrowserUrlPatterns: patterns });
+          }}
+          disabled={isLoading}
+          rows={4}
+          spellCheck={false}
+          className="w-full px-3 py-2 bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-claude-text font-mono text-xs focus:outline-none focus:ring-1 focus:ring-accent/50 disabled:opacity-50 resize-y"
+          style={{ borderRadius: 0 }}
+          placeholder={'*.m.parcha.dev*\nlocalhost:*'}
+        />
+        <p className="text-[12px] text-fg-4">
+          Enter one wildcard pattern per line. An empty list sends every link to the system browser.
+        </p>
+      </div>
+
+      {/* QMD Semantic Search */}
+      <div className="space-y-4 pt-4 border-t border-line">
+        <div className="flex items-center gap-2">
+          <Search size={14} className="text-accent-text" />
+          <h3 className="text-[11px] font-medium uppercase tracking-[0.04em] text-fg-4">
             Semantic Codebase Search
           </h3>
         </div>
 
         <div className="flex items-center justify-between">
           <div>
-            <label className="block text-xs font-mono text-claude-text-secondary uppercase tracking-wider">
+            <label className="block text-[13px] font-medium text-fg-2">
               Enable QMD Search
             </label>
-            <p className="text-[10px] font-mono text-claude-text-secondary mt-1">
+            <p className="text-[12px] text-fg-4 mt-1">
               AI-powered semantic search through your codebase
             </p>
           </div>
@@ -730,29 +896,29 @@ export default function SettingsDialog() {
               autoSaveAppSettings({ qmdEnabled: value });
             }}
             disabled={isLoading}
-            color="bg-blue-500"
+            color="bg-accent"
           />
         </div>
 
         {qmdStatus && (
           <div className="space-y-2">
-            <div className="text-[10px] font-mono text-claude-text-secondary">
+            <div className="text-[12px] text-fg-4">
               {qmdStatus.installed ? (
-                <span className="text-green-400">
+                <span className="text-diff-add">
                   QMD {qmdStatus.bundled ? '(bundled)' : '(installed)'} ready
                 </span>
               ) : isInstallingQmd ? (
-                <span className="flex items-center gap-2 text-blue-400">
+                <span className="flex items-center gap-2 text-accent-text">
                   <Loader2 size={12} className="animate-spin" />
                   {qmdInstallMessage || 'Installing...'}
                 </span>
               ) : (
                 <div className="flex items-center gap-2">
-                  <span className="text-amber-400">QMD not installed</span>
+                  <span className="text-amber">QMD not installed</span>
                   <button
                     onClick={handleInstallQmd}
                     disabled={isLoading}
-                    className="flex items-center gap-1 px-2 py-0.5 text-[10px] bg-blue-500/20 text-blue-400 hover:bg-blue-500/30 transition-colors"
+                    className="flex items-center gap-1 px-2 py-0.5 text-[12px] bg-accent/20 text-accent-text hover:bg-accent/30 transition-colors"
                     style={{ borderRadius: 0 }}
                   >
                     <Download size={10} />
@@ -762,7 +928,7 @@ export default function SettingsDialog() {
               )}
             </div>
             {qmdInstallMessage && !isInstallingQmd && (
-              <div className="text-[10px] font-mono text-green-400">
+              <div className="text-[12px] text-diff-add">
                 {qmdInstallMessage}
               </div>
             )}
@@ -771,17 +937,17 @@ export default function SettingsDialog() {
       </div>
 
       {/* Lunch Reminder */}
-      <div className="space-y-4 pt-4 border-t border-claude-border">
-        <h3 className="text-xs font-mono text-claude-text uppercase tracking-wider">
+      <div className="space-y-4 pt-4 border-t border-line">
+        <h3 className="text-[11px] font-medium uppercase tracking-[0.04em] text-fg-4">
           Reminders
         </h3>
 
         <div className="flex items-center justify-between">
           <div>
-            <label className="block text-xs font-mono text-claude-text-secondary uppercase tracking-wider">
+            <label className="block text-[13px] font-medium text-fg-2">
               Lunch Reminder
             </label>
-            <p className="text-[10px] font-mono text-claude-text-secondary mt-1">
+            <p className="text-[12px] text-fg-4 mt-1">
               Get reminded to log your lunch at a specific time
             </p>
           </div>
@@ -792,12 +958,12 @@ export default function SettingsDialog() {
               autoSaveAppSettings({ lunchReminderEnabled: value });
             }}
             disabled={isLoading}
-            color="bg-green-500"
+            color="bg-accent"
           />
         </div>
 
         <div className="space-y-2">
-          <label className="block text-xs font-mono text-claude-text-secondary uppercase tracking-wider">
+          <label className="block text-[13px] font-medium text-fg-2">
             Reminder Time
           </label>
           <input
@@ -809,23 +975,23 @@ export default function SettingsDialog() {
               autoSaveAppSettings({ lunchReminderTime: value });
             }}
             disabled={isLoading || !lunchReminderEnabled}
-            className="w-full px-3 py-2 bg-claude-bg border border-claude-border text-claude-text font-mono text-sm focus:outline-none focus:border-claude-accent disabled:opacity-50"
+            className="w-full px-3 py-2 bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-claude-text font-mono text-[13px] focus:outline-none focus:ring-1 focus:ring-accent/50 disabled:opacity-50"
             style={{ borderRadius: 0 }}
           />
-          <p className="text-[10px] font-mono text-claude-text-secondary">
+          <p className="text-[12px] text-fg-4">
             Time to remind you to take a lunch break
           </p>
         </div>
       </div>
 
       {/* Bedtime Reminder */}
-      <div className="space-y-4 pt-4 border-t border-claude-border">
+      <div className="space-y-4 pt-4 border-t border-line">
         <div className="flex items-center justify-between">
           <div>
-            <label className="block text-xs font-mono text-claude-text-secondary uppercase tracking-wider">
+            <label className="block text-[13px] font-medium text-fg-2">
               Bedtime Reminder
             </label>
-            <p className="text-[10px] font-mono text-claude-text-secondary mt-1">
+            <p className="text-[12px] text-fg-4 mt-1">
               Get reminded to go to bed — with 5-minute snooze
             </p>
           </div>
@@ -836,12 +1002,12 @@ export default function SettingsDialog() {
               autoSaveAppSettings({ bedtimeReminderEnabled: value });
             }}
             disabled={isLoading}
-            color="bg-indigo-500"
+            color="bg-accent"
           />
         </div>
 
         <div className="space-y-2">
-          <label className="block text-xs font-mono text-claude-text-secondary uppercase tracking-wider">
+          <label className="block text-[13px] font-medium text-fg-2">
             Bedtime
           </label>
           <input
@@ -853,27 +1019,27 @@ export default function SettingsDialog() {
               autoSaveAppSettings({ bedtimeReminderTime: value });
             }}
             disabled={isLoading || !bedtimeReminderEnabled}
-            className="w-full px-3 py-2 bg-claude-bg border border-claude-border text-claude-text font-mono text-sm focus:outline-none focus:border-claude-accent disabled:opacity-50"
+            className="w-full px-3 py-2 bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-claude-text font-mono text-[13px] focus:outline-none focus:ring-1 focus:ring-accent/50 disabled:opacity-50"
             style={{ borderRadius: 0 }}
           />
-          <p className="text-[10px] font-mono text-claude-text-secondary">
+          <p className="text-[12px] text-fg-4">
             Clock turns indigo → amber → red as bedtime approaches. Dialog locks the app at bedtime.
           </p>
         </div>
       </div>
 
       {/* Daily Task Review */}
-      <div className="space-y-4 pt-4 border-t border-claude-border">
-        <h3 className="text-xs font-mono text-claude-text uppercase tracking-wider">
+      <div className="space-y-4 pt-4 border-t border-line">
+        <h3 className="text-[11px] font-medium uppercase tracking-[0.04em] text-fg-4">
           Task Reviews
         </h3>
 
         <div className="flex items-center justify-between">
           <div>
-            <label className="block text-xs font-mono text-claude-text-secondary uppercase tracking-wider">
+            <label className="block text-[13px] font-medium text-fg-2">
               Daily Task Review
             </label>
-            <p className="text-[10px] font-mono text-claude-text-secondary mt-1">
+            <p className="text-[12px] text-fg-4 mt-1">
               Morning prompt to review and plan your tasks
             </p>
           </div>
@@ -884,13 +1050,13 @@ export default function SettingsDialog() {
               autoSaveAppSettings({ dailyReviewEnabled: value });
             }}
             disabled={isLoading}
-            color="bg-emerald-500"
+            color="bg-accent"
           />
         </div>
 
         {dailyReviewEnabled && (
           <div className="space-y-2">
-            <label className="block text-xs font-mono text-claude-text-secondary uppercase tracking-wider">
+            <label className="block text-[13px] font-medium text-fg-2">
               Review Time
             </label>
             <input
@@ -902,10 +1068,10 @@ export default function SettingsDialog() {
                 autoSaveAppSettings({ dailyReviewTime: value });
               }}
               disabled={isLoading}
-              className="w-full px-3 py-2 bg-claude-bg border border-claude-border text-claude-text font-mono text-sm focus:outline-none focus:border-claude-accent disabled:opacity-50"
+              className="w-full px-3 py-2 bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-claude-text font-mono text-[13px] focus:outline-none focus:ring-1 focus:ring-accent/50 disabled:opacity-50"
               style={{ borderRadius: 0 }}
             />
-            <p className="text-[10px] font-mono text-claude-text-secondary">
+            <p className="text-[12px] text-fg-4">
               Shows a task review modal after this time (until 6 PM)
             </p>
           </div>
@@ -913,10 +1079,10 @@ export default function SettingsDialog() {
 
         <div className="flex items-center justify-between">
           <div>
-            <label className="block text-xs font-mono text-claude-text-secondary uppercase tracking-wider">
+            <label className="block text-[13px] font-medium text-fg-2">
               Bedtime Task Review
             </label>
-            <p className="text-[10px] font-mono text-claude-text-secondary mt-1">
+            <p className="text-[12px] text-fg-4 mt-1">
               Review tasks 30 minutes before bedtime
             </p>
           </div>
@@ -927,26 +1093,87 @@ export default function SettingsDialog() {
               autoSaveAppSettings({ bedtimeTaskReviewEnabled: value });
             }}
             disabled={isLoading}
-            color="bg-indigo-500"
+            color="bg-accent"
           />
+        </div>
+
+        <div className="pt-4 border-t border-line space-y-4">
+          <div className="flex items-center justify-between gap-6">
+            <div>
+              <label className="block text-[13px] font-medium text-fg-2">
+                Next-Day Planning Lock
+              </label>
+              <p className="text-[12px] text-fg-4 mt-1">
+                At the set time, open the planner. Finish as soon as your plan is ready.
+              </p>
+            </div>
+            <Toggle
+              enabled={eveningPlanningLockEnabled}
+              onChange={(value) => {
+                setEveningPlanningLockEnabled(value);
+                autoSaveAppSettings({ eveningPlanningLockEnabled: value });
+              }}
+              disabled={isLoading}
+              color="bg-accent"
+            />
+          </div>
+
+          {eveningPlanningLockEnabled && (
+            <>
+              <div className="space-y-2">
+                <label className="block text-[13px] font-medium text-fg-2">
+                  Planning Time
+                </label>
+                <input
+                  type="time"
+                  value={eveningPlanningLockTime}
+                  onChange={(e) => {
+                    setEveningPlanningLockTime(e.target.value);
+                    autoSaveAppSettings({ eveningPlanningLockTime: e.target.value });
+                  }}
+                  disabled={isLoading}
+                  className="w-full px-3 py-2 bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-claude-text font-mono text-[13px] focus:outline-none focus:ring-1 focus:ring-accent/50 disabled:opacity-50"
+                  style={{ borderRadius: 0 }}
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="block text-[13px] font-medium text-fg-2">
+                  Calendar Address
+                </label>
+                <input
+                  type="url"
+                  value={eveningPlanningCalendarUrl}
+                  onChange={(e) => setEveningPlanningCalendarUrl(e.target.value)}
+                  onBlur={() => autoSaveAppSettings({ eveningPlanningCalendarUrl })}
+                  disabled={isLoading}
+                  placeholder="https://calendar.google.com/"
+                  className="w-full px-3 py-2 bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-claude-text font-mono text-[13px] focus:outline-none focus:ring-1 focus:ring-accent/50 disabled:opacity-50"
+                  style={{ borderRadius: 0 }}
+                />
+                <p className="text-[12px] text-fg-4">
+                  Scheduled tasks open here in Build's browser as prefilled calendar events.
+                </p>
+              </div>
+            </>
+          )}
         </div>
       </div>
 
       {/* Ultra Plan Mode */}
-      <div className="space-y-4 pt-4 border-t border-claude-border">
+      <div className="space-y-4 pt-4 border-t border-line">
         <div className="flex items-center gap-2">
-          <Sparkles size={14} className="text-purple-400" />
-          <h3 className="text-xs font-mono text-claude-text uppercase tracking-wider">
+          <Sparkles size={14} className="text-accent-text" />
+          <h3 className="text-[11px] font-medium uppercase tracking-[0.04em] text-fg-4">
             Ultra Plan Mode
           </h3>
         </div>
 
         <div className="flex items-center justify-between">
           <div>
-            <label className="block text-xs font-mono text-claude-text-secondary uppercase tracking-wider">
+            <label className="block text-[13px] font-medium text-fg-2">
               Enable Ultra Plan Mode
             </label>
-            <p className="text-[10px] font-mono text-claude-text-secondary mt-1">
+            <p className="text-[12px] text-fg-4 mt-1">
               After plan approval, automatically create structured tasks with dependencies
             </p>
           </div>
@@ -957,16 +1184,16 @@ export default function SettingsDialog() {
               autoSaveAppSettings({ ultraPlanMode: value });
             }}
             disabled={isLoading}
-            color="bg-purple-500"
+            color="bg-accent"
           />
         </div>
 
         <div className="flex items-center justify-between">
           <div>
-            <label className="block text-xs font-mono text-claude-text-secondary uppercase tracking-wider">
+            <label className="block text-[13px] font-medium text-fg-2">
               Clear Context on Plan Accept
             </label>
-            <p className="text-[10px] font-mono text-claude-text-secondary mt-1">
+            <p className="text-[12px] text-fg-4 mt-1">
               Show option to summarize and start with clean context when approving a plan
             </p>
           </div>
@@ -977,23 +1204,23 @@ export default function SettingsDialog() {
               autoSaveAppSettings({ showClearContextOnPlanAccept: value });
             }}
             disabled={isLoading}
-            color="bg-purple-500"
+            color="bg-accent"
           />
         </div>
       </div>
 
       {/* Ralph Loop Toggle */}
-      <div className="space-y-4 pt-4 border-t border-claude-border">
-        <h3 className="text-xs font-mono text-claude-text uppercase tracking-wider">
+      <div className="space-y-4 pt-4 border-t border-line">
+        <h3 className="text-[11px] font-medium uppercase tracking-[0.04em] text-fg-4">
           Just Build It Mode
         </h3>
 
         <div className="flex items-center justify-between">
           <div>
-            <label className="block text-xs font-mono text-claude-text-secondary uppercase tracking-wider">
+            <label className="block text-[13px] font-medium text-fg-2">
               Ralph Loop (Persistent Work)
             </label>
-            <p className="text-[10px] font-mono text-claude-text-secondary mt-1">
+            <p className="text-[12px] text-fg-4 mt-1">
               Agent keeps working until task is objectively complete
             </p>
           </div>
@@ -1004,21 +1231,21 @@ export default function SettingsDialog() {
               autoSaveAudioSettings({ ralphLoopEnabled: value });
             }}
             disabled={isLoading}
-            color="bg-purple-500"
+            color="bg-accent"
           />
         </div>
 
         {/* Computer Use API Settings */}
         <div className="flex items-center justify-between">
           <div>
-            <label className="block text-xs font-mono text-claude-text-secondary uppercase tracking-wider">
+            <label className="block text-[13px] font-medium text-fg-2">
               Computer Use Mode (Visual Automation)
             </label>
-            <p className="text-[10px] font-mono text-claude-text-secondary mt-1">
+            <p className="text-[12px] text-fg-4 mt-1">
               Enable Claude-powered screenshot-based browser automation
             </p>
             {computerUseEnabled && (
-              <p className="text-[10px] font-mono text-amber-500 mt-1">
+              <p className="text-[12px] text-amber mt-1">
                 ⚠️ Requires Anthropic API (not compatible with Foundry)
               </p>
             )}
@@ -1030,17 +1257,17 @@ export default function SettingsDialog() {
               autoSaveAudioSettings({ computerUseEnabled: value });
             }}
             disabled={isLoading}
-            color="bg-blue-500"
+            color="bg-accent"
           />
         </div>
 
         {/* Max Computer Use Iterations */}
         <div className="flex items-center justify-between">
           <div className="flex-1">
-            <label className="block text-xs font-mono text-claude-text-secondary uppercase tracking-wider">
+            <label className="block text-[13px] font-medium text-fg-2">
               Max Computer Use Iterations
             </label>
-            <p className="text-[10px] font-mono text-claude-text-secondary mt-1">
+            <p className="text-[12px] text-fg-4 mt-1">
               Limit iterations to prevent runaway loops (default: 20)
             </p>
           </div>
@@ -1055,24 +1282,24 @@ export default function SettingsDialog() {
               autoSaveAudioSettings({ maxComputerUseIterations: value });
             }}
             disabled={isLoading}
-            className="w-20 px-2 py-1 bg-claude-surface border border-claude-border text-claude-text text-xs font-mono rounded focus:outline-none focus:ring-1 focus:ring-purple-500"
+            className="w-20 px-2 py-1 bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-claude-text text-xs font-mono focus:outline-none focus:ring-1 focus:ring-accent/50"
           />
         </div>
       </div>
 
-      {/* Voice Conversation Mode */}
-      <div className="space-y-4 pt-4 border-t border-claude-border">
-        <h3 className="text-xs font-mono text-claude-text uppercase tracking-wider">
-          Voice Conversation Mode (Experimental)
+      {/* OpenAI Realtime Voice */}
+      <div className="space-y-4 pt-4 border-t border-line">
+        <h3 className="text-[11px] font-medium uppercase tracking-[0.04em] text-fg-4">
+          OpenAI Realtime Voice
         </h3>
 
         <div className="flex items-center justify-between">
           <div>
-            <label className="block text-xs font-mono text-claude-text-secondary uppercase tracking-wider">
+            <label className="block text-[13px] font-medium text-fg-2">
               Enable Voice Conversation
             </label>
-            <p className="text-[10px] font-mono text-claude-text-secondary mt-1">
-              Hands-free speech-to-speech conversations with Claude
+            <p className="text-[12px] text-fg-4 mt-1">
+              Conversational speech-to-speech that can steer Build while you keep talking. AI-generated voice.
             </p>
           </div>
           <Toggle
@@ -1084,6 +1311,59 @@ export default function SettingsDialog() {
             disabled={isLoading}
           />
         </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <label className="space-y-1">
+            <span className="block text-[11px] font-medium uppercase tracking-[0.04em] text-fg-4">
+              Voice
+            </span>
+            <select
+              value={realtimeVoice}
+              onChange={(event) => {
+                const value = event.target.value as RealtimeVoiceOption;
+                setRealtimeVoice(value);
+                void autoSaveAudioSettings({
+                  realtimeVoice: value,
+                  selectedVoice: value === 'M' ? 'marin' : value,
+                  voiceSettings: { voiceId: value === 'M' ? 'marin' : value },
+                });
+              }}
+              disabled={isLoading}
+              className="w-full border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] bg-ink-3 px-2 py-1.5 font-mono text-xs text-claude-text focus:ring-1 focus:ring-accent/50 focus:outline-none"
+            >
+              {REALTIME_VOICE_OPTIONS.map((voice) => (
+                <option key={voice} value={voice}>{getRealtimeVoiceLabel(voice)}</option>
+              ))}
+            </select>
+            <span className="block text-[12px] leading-relaxed text-fg-4">
+              Moneypenny keeps Marin's timbre with a modern British secret-agent speaking style.
+            </span>
+          </label>
+
+          <label className="space-y-1">
+            <span className="block text-[11px] font-medium uppercase tracking-[0.04em] text-fg-4">
+              Reasoning
+            </span>
+            <select
+              value={realtimeReasoningEffort}
+              onChange={(event) => {
+                const value = event.target.value as RealtimeReasoningEffort;
+                setRealtimeReasoningEffort(value);
+                void autoSaveAudioSettings({ realtimeReasoningEffort: value });
+              }}
+              disabled={isLoading}
+              className="w-full border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] bg-ink-3 px-2 py-1.5 font-mono text-xs text-claude-text focus:ring-1 focus:ring-accent/50 focus:outline-none"
+            >
+              <option value="low">low · fastest</option>
+              <option value="medium">medium</option>
+              <option value="high">high</option>
+            </select>
+          </label>
+        </div>
+
+        <p className="text-[12px] text-fg-4">
+          Model: {OPENAI_REALTIME_MODEL}. Uses WebRTC with semantic turn detection and interruption support.
+        </p>
       </div>
     </div>
   );
@@ -1096,6 +1376,7 @@ export default function SettingsDialog() {
       if (id.startsWith('gemini:')) return 'Gemini';
       if (id.startsWith('grok:')) return 'Grok';
       if (id.startsWith('opencode:')) return 'DeepSeek';
+      if (id.startsWith('prime:')) return 'Prime Agent';
       if (id.startsWith('custom:')) return 'Custom';
       if (id.startsWith('claude-')) return 'Claude';
       return '';
@@ -1271,15 +1552,15 @@ export default function SettingsDialog() {
     return (
       <div className="space-y-4">
         <div>
-          <h3 className="text-sm font-medium text-claude-text mb-1">Auto Build Routing</h3>
-          <p className="text-[10px] text-claude-text-secondary mb-4">
+          <h3 className="text-[14px] font-semibold tracking-tight text-fg mb-1">Auto Build Routing</h3>
+          <p className="text-[12px] text-claude-text-secondary mb-4">
             Pick the harness/model for each fixed task category. When Auto Build is selected, routing assigns the turn to one of these categories and delegates execution to the selected harness.
           </p>
         </div>
 
         {/* Cerebras API Key — enables intelligent routing */}
-        <div className="space-y-2 border border-claude-border/30 p-3">
-          <label className="block text-[10px] font-mono text-claude-text-secondary uppercase tracking-wider">
+        <div className="space-y-2 border border-line p-3">
+          <label className="block text-[11px] font-medium uppercase tracking-[0.04em] text-fg-4">
             Cerebras API Key
           </label>
           <ApiKeyInput
@@ -1292,7 +1573,7 @@ export default function SettingsDialog() {
             isLoading={isLoading}
             handleDebouncedChange={handleDebouncedChange}
           />
-          <p className="text-[10px] font-mono text-claude-text-secondary">
+          <p className="text-[12px] text-fg-4">
             Required for intelligent Auto Build routing. Without this key, Auto Build uses heuristic-only routing.{' '}
             <a
               href="#"
@@ -1300,7 +1581,7 @@ export default function SettingsDialog() {
                 e.preventDefault();
                 window.electronAPI.app?.openExternal?.('https://cloud.cerebras.ai');
               }}
-              className="text-claude-accent hover:underline"
+              className="text-accent-text hover:underline"
             >
               cloud.cerebras.ai
             </a>
@@ -1308,13 +1589,13 @@ export default function SettingsDialog() {
         </div>
 
         {/* Fixed tier -> model mapping */}
-        <div className="space-y-3 border border-fuchsia-500/20 bg-fuchsia-500/5 p-3">
+        <div className="space-y-3 border border-accent/20 bg-accent/5 p-3">
           <div className="flex items-center justify-between gap-4">
             <div>
-              <label className="block text-[10px] font-mono uppercase tracking-wider text-fuchsia-400">
+              <label className="block text-[11px] font-medium uppercase tracking-[0.04em] text-fg-4">
                 Pre-build 80/20 gate
               </label>
-              <p className="mt-1 text-[9px] font-mono text-claude-text-secondary">
+              <p className="mt-1 text-[11px] text-fg-4">
                 Pause substantial work for one 80/20 scope choice, then approve a compact first-slice implementation handoff.
               </p>
             </div>
@@ -1322,19 +1603,19 @@ export default function SettingsDialog() {
               enabled={autoBuildPrePlanEnabled}
               onChange={updatePrePlanEnabled}
               disabled={isLoading}
-              color="bg-fuchsia-500"
+              color="bg-accent"
             />
           </div>
 
           <label className="block space-y-1">
-            <span className="block text-[9px] font-mono uppercase tracking-wider text-claude-text-secondary">
+            <span className="block text-[11px] font-medium uppercase tracking-[0.04em] text-claude-text-secondary">
               Interview model
             </span>
             <select
               value={autoBuildPrePlanModel}
               onChange={(event) => updatePrePlanModel(event.target.value)}
               disabled={!autoBuildPrePlanEnabled}
-              className="w-full bg-claude-bg border border-claude-border px-2 py-1.5 text-[10px] font-mono text-claude-text focus:outline-none focus:border-fuchsia-500 disabled:opacity-40 appearance-none cursor-pointer"
+              className="w-full bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] px-2 py-1.5 text-[12px] text-claude-text focus:outline-none focus:ring-1 focus:ring-accent/50 disabled:opacity-40 appearance-none cursor-pointer"
             >
               {allModels
                 .filter((model) => model.id.startsWith('claude-') || model.id.startsWith('custom:'))
@@ -1350,11 +1631,11 @@ export default function SettingsDialog() {
         {/* Fixed tier -> model mapping */}
         <div className="space-y-2">
           <div className="flex items-center justify-between mb-2">
-            <label className="text-[10px] font-mono text-claude-text-secondary uppercase tracking-wider">Fixed categories</label>
-            <span className="text-[10px] text-claude-text-secondary">Model assignments for the base task tiers</span>
+            <label className="text-[11px] font-medium uppercase tracking-[0.04em] text-fg-4">Fixed categories</label>
+            <span className="text-[12px] text-claude-text-secondary">Model assignments for the base task tiers</span>
           </div>
 
-          <div className="grid grid-cols-[116px_minmax(220px,1fr)_88px_78px] gap-2 px-2 text-[9px] font-mono uppercase tracking-wider text-claude-text-secondary">
+          <div className="grid grid-cols-[116px_minmax(220px,1fr)_88px_78px] gap-2 px-2 text-[11px] font-medium uppercase tracking-[0.04em] text-fg-4">
             <span />
             <span>Model</span>
             <span>Effort</span>
@@ -1362,17 +1643,17 @@ export default function SettingsDialog() {
           </div>
 
           {AUTO_BUILD_MODEL_ROWS.map((row) => (
-            <div key={row.id} className="border border-claude-border/20 bg-claude-bg/20 px-2 py-2">
+            <div key={row.id} className="border border-claude-border/20 bg-ink-1 px-2 py-2">
               <div className="grid grid-cols-[116px_minmax(220px,1fr)_88px_78px] items-center gap-2">
                 <div>
-                  <div className="text-xs font-mono text-claude-text">{row.label}</div>
-                  <div className="text-[9px] text-claude-text-secondary truncate">{row.detail}</div>
+                  <div className="text-[13px] text-fg">{row.label}</div>
+                  <div className="text-[11px] text-claude-text-secondary truncate">{row.detail}</div>
                 </div>
 
                 <select
                   value={autoBuildModels[row.id]}
                   onChange={(e) => updateTierModel(row.id, e.target.value)}
-                  className="min-w-0 bg-claude-bg border border-claude-border px-2 py-1.5 text-xs font-mono text-claude-text focus:outline-none focus:border-claude-accent appearance-none cursor-pointer"
+                  className="min-w-0 bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] px-2 py-1.5 text-xs text-claude-text focus:outline-none focus:ring-1 focus:ring-accent/50 appearance-none cursor-pointer"
                 >
                   {allModels.map(m => (
                     <option key={m.id} value={m.id}>
@@ -1384,7 +1665,7 @@ export default function SettingsDialog() {
                 <select
                   value={autoBuildEffort[row.id]}
                   onChange={(e) => updateTierEffort(row.id, e.target.value)}
-                  className="bg-claude-bg border border-claude-border px-1.5 py-1.5 text-[10px] font-mono text-claude-text focus:outline-none focus:border-claude-accent appearance-none cursor-pointer"
+                  className="bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] px-1.5 py-1.5 text-[12px] text-claude-text focus:outline-none focus:ring-1 focus:ring-accent/50 appearance-none cursor-pointer"
                   title="Effort level for this category"
                 >
                   {EFFORT_OPTIONS.map(opt => (
@@ -1395,7 +1676,7 @@ export default function SettingsDialog() {
                 <select
                   value={autoBuildSpeed[row.id]}
                   onChange={(e) => updateTierSpeed(row.id, e.target.value)}
-                  className="bg-claude-bg border border-claude-border px-1.5 py-1.5 text-[10px] font-mono text-claude-text focus:outline-none focus:border-claude-accent appearance-none cursor-pointer"
+                  className="bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] px-1.5 py-1.5 text-[12px] text-claude-text focus:outline-none focus:ring-1 focus:ring-accent/50 appearance-none cursor-pointer"
                   title="Speed mode"
                 >
                   {SPEED_OPTIONS.map(opt => (
@@ -1404,17 +1685,17 @@ export default function SettingsDialog() {
                 </select>
               </div>
 
-              <details className="ml-[124px] mt-2 text-[10px] text-claude-text-secondary">
-                <summary className="cursor-pointer select-none font-mono uppercase tracking-wider hover:text-claude-text">
+              <details className="ml-[124px] mt-2 text-[12px] text-claude-text-secondary">
+                <summary className="cursor-pointer select-none font-medium hover:text-fg">
                   Optional policy
                 </summary>
                 <div className="mt-2 grid grid-cols-[120px_120px_96px] gap-2">
                   <label className="space-y-1">
-                    <span className="block text-[9px] font-mono uppercase tracking-wider">Workflow</span>
+                    <span className="block text-[11px] font-medium uppercase tracking-[0.04em]">Workflow</span>
                     <select
                       value={autoBuildWorkflow[row.id]}
                       onChange={(e) => updateTierWorkflow(row.id, e.target.value)}
-                      className="w-full bg-claude-bg border border-claude-border px-1.5 py-1.5 text-[10px] font-mono text-claude-text focus:outline-none focus:border-claude-accent appearance-none cursor-pointer"
+                      className="w-full bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] px-1.5 py-1.5 text-[12px] text-claude-text focus:outline-none focus:ring-1 focus:ring-accent/50 appearance-none cursor-pointer"
                       title="Workflow mode"
                     >
                       {WORKFLOW_OPTIONS.map(opt => (
@@ -1423,11 +1704,11 @@ export default function SettingsDialog() {
                     </select>
                   </label>
                   <label className="space-y-1">
-                    <span className="block text-[9px] font-mono uppercase tracking-wider">Verify</span>
+                    <span className="block text-[11px] font-medium uppercase tracking-[0.04em]">Verify</span>
                     <select
                       value={autoBuildVerification[row.id]}
                       onChange={(e) => updateTierVerification(row.id, e.target.value)}
-                      className="w-full bg-claude-bg border border-claude-border px-1.5 py-1.5 text-[10px] font-mono text-claude-text focus:outline-none focus:border-claude-accent appearance-none cursor-pointer"
+                      className="w-full bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] px-1.5 py-1.5 text-[12px] text-claude-text focus:outline-none focus:ring-1 focus:ring-accent/50 appearance-none cursor-pointer"
                       title="Verification policy"
                     >
                       {VERIFICATION_OPTIONS.map(opt => (
@@ -1436,14 +1717,14 @@ export default function SettingsDialog() {
                     </select>
                   </label>
                   <label className="space-y-1">
-                    <span className="block text-[9px] font-mono uppercase tracking-wider">Budget</span>
+                    <span className="block text-[11px] font-medium uppercase tracking-[0.04em]">Budget</span>
                     <input
                       type="number"
                       min="0"
                       step="1"
                       value={autoBuildBudget[row.id]}
                       onChange={(e) => updateTierBudget(row.id, e.target.value)}
-                      className="w-full bg-claude-bg border border-claude-border px-1.5 py-1.5 text-[10px] font-mono text-claude-text focus:outline-none focus:border-claude-accent"
+                      className="w-full bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] px-1.5 py-1.5 text-[12px] font-mono text-claude-text focus:outline-none focus:ring-1 focus:ring-accent/50"
                       placeholder="$"
                       title="Budget cap in USD"
                     />
@@ -1455,35 +1736,35 @@ export default function SettingsDialog() {
         </div>
 
         {/* Custom categories */}
-        <div className="border-t border-claude-border/30 pt-4 space-y-2">
+        <div className="border-t border-line pt-4 space-y-2">
           <div className="flex items-center justify-between mb-2">
-            <label className="text-[10px] font-mono text-claude-text-secondary uppercase tracking-wider">Custom categories</label>
+            <label className="text-[11px] font-medium uppercase tracking-[0.04em] text-fg-4">Custom categories</label>
             <button
               onClick={addCustomCategory}
-              className="text-[10px] text-claude-accent hover:text-claude-accent/80 font-mono"
+              className="text-[12px] text-accent-text hover:text-accent"
             >
               + Add category
             </button>
           </div>
 
           {customCategories.length === 0 && (
-            <p className="text-[9px] text-claude-text-secondary italic">
+            <p className="text-[11px] text-claude-text-secondary italic">
               Add custom categories with keywords to route specific tasks to a preferred harness.
             </p>
           )}
 
           {customCategories.map((cat) => (
-            <div key={cat.id} className="border border-claude-border/30 rounded px-3 py-2 space-y-2">
+            <div key={cat.id} className="border border-line px-3 py-2 space-y-2">
               <div className="flex items-center gap-2">
                 <input
                   value={cat.label}
                   onChange={(e) => updateCustomCategory(cat.id, 'label', e.target.value)}
-                  className="flex-1 bg-transparent border-b border-claude-border/30 text-xs font-mono text-claude-text focus:outline-none focus:border-claude-accent px-0 py-0.5"
+                  className="flex-1 bg-transparent border-b border-line text-[13px] text-fg focus:outline-none focus:border-accent/60 px-0 py-0.5"
                   placeholder="Category name"
                 />
                 <button
                   onClick={() => removeCustomCategory(cat.id)}
-                  className="text-red-400/60 hover:text-red-400 text-[10px] font-mono"
+                  className="text-diff-del/60 hover:text-diff-del text-[12px]"
                   title="Remove category"
                 >
                   ×
@@ -1493,7 +1774,7 @@ export default function SettingsDialog() {
                 <select
                   value={cat.model}
                   onChange={(e) => updateCustomCategory(cat.id, 'model', e.target.value)}
-                  className="min-w-0 bg-claude-bg border border-claude-border px-2 py-1.5 text-[10px] font-mono text-claude-text focus:outline-none focus:border-claude-accent appearance-none cursor-pointer"
+                  className="min-w-0 bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] px-2 py-1.5 text-[12px] text-claude-text focus:outline-none focus:ring-1 focus:ring-accent/50 appearance-none cursor-pointer"
                 >
                   {allModels.map(m => (
                     <option key={m.id} value={m.id}>
@@ -1504,7 +1785,7 @@ export default function SettingsDialog() {
                 <select
                   value={cat.effort}
                   onChange={(e) => updateCustomCategory(cat.id, 'effort', e.target.value)}
-                  className="bg-claude-bg border border-claude-border px-1.5 py-1.5 text-[10px] font-mono text-claude-text focus:outline-none focus:border-claude-accent appearance-none cursor-pointer"
+                  className="bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] px-1.5 py-1.5 text-[12px] text-claude-text focus:outline-none focus:ring-1 focus:ring-accent/50 appearance-none cursor-pointer"
                   title="Effort level for this category"
                 >
                   {EFFORT_OPTIONS.map(opt => (
@@ -1514,7 +1795,7 @@ export default function SettingsDialog() {
                 <select
                   value={cat.speed}
                   onChange={(e) => updateCustomCategory(cat.id, 'speed', e.target.value)}
-                  className="bg-claude-bg border border-claude-border px-1.5 py-1.5 text-[10px] font-mono text-claude-text focus:outline-none focus:border-claude-accent appearance-none cursor-pointer"
+                  className="bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] px-1.5 py-1.5 text-[12px] text-claude-text focus:outline-none focus:ring-1 focus:ring-accent/50 appearance-none cursor-pointer"
                   title="Speed mode"
                 >
                   {SPEED_OPTIONS.map(opt => (
@@ -1525,26 +1806,26 @@ export default function SettingsDialog() {
               <input
                 value={cat.description}
                 onChange={(e) => updateCustomCategory(cat.id, 'description', e.target.value)}
-                className="w-full bg-transparent text-[9px] text-claude-text-secondary focus:outline-none focus:text-claude-text border-b border-transparent focus:border-claude-border/30 px-0 py-0.5"
+                className="w-full bg-transparent text-[11px] text-claude-text-secondary focus:outline-none focus:text-claude-text border-b border-transparent focus:border-line-strong px-0 py-0.5"
                 placeholder="Description (shown to routing)"
               />
               <input
                 value={cat.keywords}
                 onChange={(e) => updateCustomCategory(cat.id, 'keywords', e.target.value)}
-                className="w-full bg-transparent text-[9px] text-claude-text-secondary font-mono focus:outline-none focus:text-claude-text border-b border-transparent focus:border-claude-border/30 px-0 py-0.5"
+                className="w-full bg-transparent text-[12px] text-fg-4 focus:outline-none focus:text-claude-text border-b border-transparent focus:border-line-strong px-0 py-0.5"
                 placeholder="Keywords (comma-separated, e.g. security, auth, oauth)"
               />
-              <details className="text-[10px] text-claude-text-secondary">
-                <summary className="cursor-pointer select-none font-mono uppercase tracking-wider hover:text-claude-text">
+              <details className="text-[12px] text-claude-text-secondary">
+                <summary className="cursor-pointer select-none font-medium hover:text-fg">
                   Optional policy
                 </summary>
                 <div className="mt-2 grid grid-cols-[120px_120px_96px] gap-2">
                   <label className="space-y-1">
-                    <span className="block text-[9px] font-mono uppercase tracking-wider">Workflow</span>
+                    <span className="block text-[11px] font-medium uppercase tracking-[0.04em]">Workflow</span>
                     <select
                       value={cat.workflow}
                       onChange={(e) => updateCustomCategory(cat.id, 'workflow', e.target.value)}
-                      className="w-full bg-claude-bg border border-claude-border px-1.5 py-1.5 text-[10px] font-mono text-claude-text focus:outline-none focus:border-claude-accent appearance-none cursor-pointer"
+                      className="w-full bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] px-1.5 py-1.5 text-[12px] text-claude-text focus:outline-none focus:ring-1 focus:ring-accent/50 appearance-none cursor-pointer"
                       title="Workflow mode"
                     >
                       {WORKFLOW_OPTIONS.map(opt => (
@@ -1553,11 +1834,11 @@ export default function SettingsDialog() {
                     </select>
                   </label>
                   <label className="space-y-1">
-                    <span className="block text-[9px] font-mono uppercase tracking-wider">Verify</span>
+                    <span className="block text-[11px] font-medium uppercase tracking-[0.04em]">Verify</span>
                     <select
                       value={cat.verification}
                       onChange={(e) => updateCustomCategory(cat.id, 'verification', e.target.value)}
-                      className="w-full bg-claude-bg border border-claude-border px-1.5 py-1.5 text-[10px] font-mono text-claude-text focus:outline-none focus:border-claude-accent appearance-none cursor-pointer"
+                      className="w-full bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] px-1.5 py-1.5 text-[12px] text-claude-text focus:outline-none focus:ring-1 focus:ring-accent/50 appearance-none cursor-pointer"
                       title="Verification policy"
                     >
                       {VERIFICATION_OPTIONS.map(opt => (
@@ -1566,14 +1847,14 @@ export default function SettingsDialog() {
                     </select>
                   </label>
                   <label className="space-y-1">
-                    <span className="block text-[9px] font-mono uppercase tracking-wider">Budget</span>
+                    <span className="block text-[11px] font-medium uppercase tracking-[0.04em]">Budget</span>
                     <input
                       type="number"
                       min="0"
                       step="1"
                       value={cat.budgetUsd}
                       onChange={(e) => updateCustomCategory(cat.id, 'budgetUsd', e.target.value)}
-                      className="w-full bg-claude-bg border border-claude-border px-1.5 py-1.5 text-[10px] font-mono text-claude-text focus:outline-none focus:border-claude-accent"
+                      className="w-full bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] px-1.5 py-1.5 text-[12px] font-mono text-claude-text focus:outline-none focus:ring-1 focus:ring-accent/50"
                       placeholder="$"
                       title="Budget cap in USD"
                     />
@@ -1585,11 +1866,11 @@ export default function SettingsDialog() {
         </div>
 
         {/* Cost-aware routing toggle */}
-        <div className="border-t border-claude-border/30 pt-4">
+        <div className="border-t border-line pt-4">
           <div className="flex items-center justify-between">
             <div>
-              <label className="text-xs text-claude-text">Cost-aware routing</label>
-              <p className="text-[10px] text-claude-text-secondary">Automatically downgrade models when monthly spend is high</p>
+              <label className="text-[13px] font-medium text-fg-2">Cost-aware routing</label>
+              <p className="text-[12px] text-claude-text-secondary">Automatically downgrade models when monthly spend is high</p>
             </div>
             <button
               onClick={() => {
@@ -1597,17 +1878,17 @@ export default function SettingsDialog() {
                 setAutoBuildCostAware(next);
                 saveAutoBuildConfig(autoBuildModels, next);
               }}
-              className={`w-8 h-4 rounded-full transition-colors relative ${autoBuildCostAware ? 'bg-claude-accent' : 'bg-claude-border'}`}
+              className={`w-8 h-4 transition-colors relative ${autoBuildCostAware ? 'bg-accent' : 'bg-ink-4'}`}
             >
-              <div className={`w-3 h-3 rounded-full bg-white absolute top-0.5 transition-transform ${autoBuildCostAware ? 'translate-x-4' : 'translate-x-0.5'}`} />
+              <div className={`w-3 h-3 bg-white absolute top-0.5 transition-transform ${autoBuildCostAware ? 'translate-x-4' : 'translate-x-0.5'}`} />
             </button>
           </div>
         </div>
 
         {/* Info section */}
-        <div className="border-t border-claude-border/30 pt-4">
-          <p className="text-[10px] text-claude-text-secondary">
-            Select <span className="text-purple-400 font-bold">Auto Build</span> from the model picker in any session. Build injects transcripts, project instructions, agents, and skills into CLI harnesses where possible.
+        <div className="border-t border-line pt-4">
+          <p className="text-[12px] text-claude-text-secondary">
+            Select <span className="text-accent-text font-semibold">Auto Build</span> from the model picker in any session. Build injects transcripts, project instructions, agents, and skills into CLI harnesses where possible.
           </p>
         </div>
       </div>
@@ -1615,369 +1896,430 @@ export default function SettingsDialog() {
   };
 
   const renderParableTab = () => {
-    const concreteModels = availableModels.filter((model) => model.id !== 'auto' && model.id !== PARABLE_MODE_ID && model.id !== CASCADE_MODE_ID);
-    const brainModels = concreteModels.filter((model) => !/^(?:codex|cursor|gemini|opencode|custom):/.test(model.id));
-    const executorModels = concreteModels.filter((model) => (
-      !model.id.includes(':') || model.id.startsWith('codex:') || model.id.startsWith('cursor:')
-    ));
-    const withSavedModel = (models: typeof availableModels, modelId: string) => (
-      models.some((model) => model.id === modelId)
-        ? models
-        : [{ id: modelId, name: modelId, description: 'Saved model' }, ...models]
-    );
-    const saveParableConfig = (next: ParableConfig) => {
-      setParableConfig(next);
-      void autoSaveAppSettings({ parableConfig: next });
+    const selectedVendors: ParableVendor[] = [
+      'claude',
+      ...(parableChatGpt ? ['chatgpt' as const] : []),
+      ...(parableXai ? ['xai' as const] : []),
+    ];
+    const startSetup = async () => {
+      try {
+        setParableAuthRun(await window.electronAPI.parable.startSetup(selectedVendors));
+      } catch (error) {
+        setParableAuthRun({ running: false, output: error instanceof Error ? error.message : String(error), exitCode: 1 });
+      }
     };
-    const updateExecutor = (executorIndex: number, updates: Partial<ParableExecutorConfig>) => {
-      const next = {
-        ...parableConfig,
-        executors: parableConfig.executors.map((executor, index) => index === executorIndex ? { ...executor, ...updates } : executor),
-      };
-      saveParableConfig(next);
+    const startAuth = async (vendor: ParableVendor) => {
+      try {
+        setParableAuthRun(await window.electronAPI.parable.startAuth(vendor));
+      } catch (error) {
+        setParableAuthRun({ running: false, output: error instanceof Error ? error.message : String(error), exitCode: 1 });
+      }
     };
-    const renameExecutor = (executorIndex: number, nextId: string) => {
-      const executorId = parableConfig.executors[executorIndex]?.id;
-      if (executorId === undefined) return;
-      saveParableConfig({
-        ...parableConfig,
-        defaultExecutor: parableConfig.defaultExecutor === executorId ? nextId : parableConfig.defaultExecutor,
-        defaultReviewer: parableConfig.defaultReviewer === executorId ? nextId : parableConfig.defaultReviewer,
-        executors: parableConfig.executors.map((executor, index) => index === executorIndex ? { ...executor, id: nextId } : executor),
+    const saveToml = async () => {
+      setIsSavingParableToml(true);
+      setParableConfigMessage('');
+      try {
+        await window.electronAPI.parable.setConfig(parableToml);
+        setParableConfigMessage('Saved and validated.');
+        await refreshParableStatus();
+      } catch (error) {
+        setParableConfigMessage(error instanceof Error ? error.message : String(error));
+      } finally {
+        setIsSavingParableToml(false);
+      }
+    };
+    const saveConfigData = async () => {
+      setIsSavingParableToml(true);
+      setParableConfigMessage('');
+      try {
+        await window.electronAPI.parable.setConfigData(parableConfigData);
+        const [toml, data] = await Promise.all([
+          window.electronAPI.parable.getConfig(),
+          window.electronAPI.parable.getConfigData(),
+        ]);
+        setParableToml(toml);
+        setParableConfigData(data);
+        setParableConfigMessage('Saved and validated.');
+        await refreshParableStatus();
+      } catch (error) {
+        setParableConfigMessage(error instanceof Error ? error.message : String(error));
+      } finally {
+        setIsSavingParableToml(false);
+      }
+    };
+    const setSectionField = (section: string, field: string, value: any) => {
+      setParableConfigData((current) => ({
+        ...current,
+        [section]: { ...(current[section] || {}), [field]: value },
+      }));
+    };
+    const setNamedField = (section: string, id: string, field: string, value: any) => {
+      setParableConfigData((current) => ({
+        ...current,
+        [section]: {
+          ...(current[section] || {}),
+          [id]: { ...(current[section]?.[id] || {}), [field]: value },
+        },
+      }));
+    };
+    const setExecutorCostField = (id: string, executor: Record<string, any>, field: 'in' | 'out' | 'cache_in', rawValue: string) => {
+      const cost = { ...(executor.cost || {}) };
+      if (rawValue === '') delete cost[field];
+      else cost[field] = Number(rawValue);
+      setNamedField('executors', id, 'cost', cost);
+    };
+    const addNamedItem = (section: 'providers' | 'executors' | 'checks', prefix: string, defaults: Record<string, any>) => {
+      const existing = parableConfigData[section] || {};
+      let index = 1;
+      let id = prefix;
+      while (existing[id]) id = `${prefix}${++index}`;
+      setParableConfigData((current) => ({ ...current, [section]: { ...(current[section] || {}), [id]: defaults } }));
+    };
+    const removeNamedItem = (section: 'providers' | 'executors' | 'checks', id: string) => {
+      setParableConfigData((current) => {
+        const nextSection = { ...(current[section] || {}) };
+        delete nextSection[id];
+        return { ...current, [section]: nextSection };
       });
     };
-    const addExecutor = () => {
-      const existing = new Set(parableConfig.executors.map((executor) => executor.id));
-      let index = parableConfig.executors.length + 1;
-      let id = `executor-${index}`;
-      while (existing.has(id)) id = `executor-${++index}`;
-      const model = executorModels.find((candidate) => candidate.id === 'claude-sonnet-5')?.id
-        || executorModels[0]?.id
-        || 'claude-sonnet-5';
-      saveParableConfig({
-        ...parableConfig,
-        executors: [...parableConfig.executors, {
-          id,
-          model,
-          enabled: true,
-          effort: 'high',
-          taskClasses: ['feature'],
-          useFor: '',
-          avoidFor: '',
-        }],
-      });
+    const fieldClass = 'w-full border-0 bg-ink-3 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] px-2 py-1.5 font-mono text-[12px] normal-case tracking-normal text-fg focus:outline-none focus:ring-1 focus:ring-accent/50';
+    const labelClass = 'space-y-1 text-[11px] font-medium uppercase tracking-[0.04em] text-fg-4';
+    const syncAuthToActiveSsh = async () => {
+      if (!activeParableSession?.sshConfig) return;
+      setIsSyncingParableAuth(true);
+      setParableConfigMessage('');
+      try {
+        const result = await window.electronAPI.parable.syncAuthToSsh(activeParableSession.id);
+        setParableConfigMessage(`Copied ${result.copied} credential record(s) to ${result.host}.`);
+      } catch (error) {
+        setParableConfigMessage(error instanceof Error ? error.message : String(error));
+      } finally {
+        setIsSyncingParableAuth(false);
+      }
     };
-    const removeExecutor = (executorIndex: number) => {
-      if (parableConfig.executors.length <= 1) return;
-      const executorId = parableConfig.executors[executorIndex]?.id;
-      if (executorId === undefined) return;
-      const executors = parableConfig.executors.filter((_, index) => index !== executorIndex);
-      const firstEnabled = executors.find((executor) => executor.enabled)?.id || executors[0].id;
-      saveParableConfig({
-        ...parableConfig,
-        executors,
-        defaultExecutor: parableConfig.defaultExecutor === executorId ? firstEnabled : parableConfig.defaultExecutor,
-        defaultReviewer: parableConfig.defaultReviewer === executorId ? firstEnabled : parableConfig.defaultReviewer,
-      });
-    };
-    const toggleTaskClass = (executorIndex: number, executor: ParableExecutorConfig, taskClass: ParableTaskClass) => {
-      const taskClasses = executor.taskClasses.includes(taskClass)
-        ? executor.taskClasses.filter((value) => value !== taskClass)
-        : [...executor.taskClasses, taskClass];
-      updateExecutor(executorIndex, { taskClasses });
-    };
-    const updateCheck = (checkIndex: number, updates: Partial<ParableCheckConfig>) => {
-      saveParableConfig({
-        ...parableConfig,
-        checks: parableConfig.checks.map((check, index) => index === checkIndex ? { ...check, ...updates } : check),
-      });
-    };
-    const addCheck = () => {
-      const id = `check-${parableConfig.checks.length + 1}`;
-      saveParableConfig({
-        ...parableConfig,
-        checks: [...parableConfig.checks, { id, run: '', cwd: '.', when: ['post-implement'], timeoutMinutes: 15 }],
-      });
-    };
-
+    const providerRows: Array<{ id: ParableVendor; label: string; models: string }> = [
+      { id: 'claude', label: 'Claude', models: 'Fable, Sonnet, Opus, Haiku' },
+      { id: 'chatgpt', label: 'ChatGPT', models: 'Sol, Terra, Luna' },
+      { id: 'xai', label: 'xAI', models: 'Grok 4.5' },
+    ];
     return (
-      <div className="space-y-5">
-        <div className="border border-amber-500/30 bg-amber-500/5 p-3">
-          <div className="flex items-center gap-2">
-            <BookOpen size={14} className="text-amber-400" />
-            <h3 className="text-sm font-medium text-claude-text">Claude Code meta-harness</h3>
+      <div className="min-w-0 space-y-5 overflow-hidden">
+        <div className="border border-amber/30 bg-amber/5 p-3">
+          <div className="flex min-w-0 items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <BookOpen size={14} className="text-amber" />
+                <h3 className="text-[14px] font-semibold tracking-tight text-fg">Claude Code, multi-model cast</h3>
+              </div>
+              <p className="mt-1 break-words text-[12px] text-claude-text-secondary">
+                Claude Code stays the harness. Parable routes its parent and named agents through a user-owned loopback proxy to native subscription OAuth; Build does not copy provider tokens or reimplement the proxy.
+              </p>
+            </div>
+            <div className={`shrink-0 flex items-center gap-1.5 border px-2 py-1 text-[11px] font-mono ${
+              parableStatus?.ready
+                ? 'border-diff-add/40 bg-diff-add/10 text-diff-add'
+                : 'border-amber/50 bg-amber/10 text-amber'
+            }`}>
+              {isCheckingParable ? <Loader2 size={11} className="animate-spin" /> : parableStatus?.ready ? <Check size={11} /> : <AlertCircle size={11} />}
+              {parableStatus?.ready ? 'READY' : parableStatus?.configured ? 'AUTH NEEDED' : 'SETUP NEEDED'}
+            </div>
           </div>
-          <p className="mt-1 text-[10px] text-claude-text-secondary">
-            Parable is a separate model mode. Claude Code plans and routes work to this cast, then verifies and reviews it. Auto Build routing and helper stages are disabled for Parable turns.
-          </p>
         </div>
 
-        <div className="grid grid-cols-[minmax(220px,1fr)_120px] gap-3">
-          <label className="space-y-1">
-            <span className="block text-[9px] font-mono uppercase tracking-wider text-claude-text-secondary">Brain model</span>
-            <select
-              value={parableConfig.brainModel}
-              onChange={(event) => saveParableConfig({ ...parableConfig, brainModel: event.target.value })}
-              className="w-full bg-claude-bg border border-claude-border px-2 py-1.5 text-xs font-mono text-claude-text"
-            >
-              {withSavedModel(brainModels, parableConfig.brainModel).map((model) => (
-                <option key={model.id} value={model.id}>{model.name}</option>
-              ))}
-            </select>
-          </label>
-          <label className="space-y-1">
-            <span className="block text-[9px] font-mono uppercase tracking-wider text-claude-text-secondary">Max parallel</span>
-            <select
-              value={parableConfig.maxParallel}
-              onChange={(event) => saveParableConfig({ ...parableConfig, maxParallel: Number(event.target.value) })}
-              className="w-full bg-claude-bg border border-claude-border px-2 py-1.5 text-xs font-mono text-claude-text"
-            >
-              {[1, 2, 3, 4].map((count) => <option key={count} value={count}>{count}</option>)}
-            </select>
-          </label>
-        </div>
-
-        <div className="grid grid-cols-2 gap-3">
-          <label className="space-y-1">
-            <span className="block text-[9px] font-mono uppercase tracking-wider text-claude-text-secondary">Default executor</span>
-            <select
-              value={parableConfig.defaultExecutor}
-              onChange={(event) => saveParableConfig({ ...parableConfig, defaultExecutor: event.target.value })}
-              className="w-full bg-claude-bg border border-claude-border px-2 py-1.5 text-xs font-mono text-claude-text"
-            >
-              {parableConfig.executors.map((executor, index) => <option key={`executor-option-${index}`} value={executor.id}>{executor.id}</option>)}
-            </select>
-          </label>
-          <label className="space-y-1">
-            <span className="block text-[9px] font-mono uppercase tracking-wider text-claude-text-secondary">Default reviewer</span>
-            <select
-              value={parableConfig.defaultReviewer}
-              onChange={(event) => saveParableConfig({ ...parableConfig, defaultReviewer: event.target.value })}
-              className="w-full bg-claude-bg border border-claude-border px-2 py-1.5 text-xs font-mono text-claude-text"
-            >
-              {parableConfig.executors.map((executor, index) => <option key={`reviewer-option-${index}`} value={executor.id}>{executor.id}</option>)}
-            </select>
-          </label>
-        </div>
-
-        <label className="block space-y-1">
-          <span className="block text-[9px] font-mono uppercase tracking-wider text-claude-text-secondary">Repository notes copied into plans</span>
-          <textarea
-            value={parableConfig.repoNotes || ''}
-            onChange={(event) => saveParableConfig({ ...parableConfig, repoNotes: event.target.value })}
-            rows={3}
-            className="w-full resize-y bg-claude-bg border border-claude-border px-2 py-1.5 text-xs font-mono text-claude-text"
-            placeholder="Project conventions every executor must follow…"
-          />
-        </label>
-
-        <section className="space-y-3 border-t border-claude-border/30 pt-4">
+        <section className="space-y-2">
           <div className="flex items-center justify-between">
             <div>
-              <h4 className="text-xs font-mono uppercase tracking-wider text-claude-text">Executor cast</h4>
-              <p className="text-[9px] text-claude-text-secondary">Claude subagents, Codex, and Cursor executors are supported by the bundled Parable runtime.</p>
+              <h4 className="text-[11px] font-medium uppercase tracking-[0.04em] text-fg-4">Subscription pools</h4>
+              <p className="text-[11px] text-claude-text-secondary">Claude is required because Claude Code is the harness. The other pools are optional.</p>
             </div>
-            <button onClick={addExecutor} className="flex items-center gap-1 text-[10px] font-mono text-amber-400 hover:text-amber-300">
-              <Plus size={12} /> Add executor
+            <button
+              type="button"
+              onClick={() => void refreshParableStatus()}
+              className="flex items-center gap-1 text-[12px] text-fg-3 hover:text-fg"
+            >
+              <RefreshCw size={11} className={isCheckingParable ? 'animate-spin' : ''} /> Refresh
             </button>
           </div>
-
-          {parableConfig.executors.map((executor, executorIndex) => (
-            <div key={`executor-row-${executorIndex}`} className="border border-claude-border/40 bg-claude-bg/20 p-3 space-y-3">
-              <div className="grid grid-cols-[120px_minmax(220px,1fr)_90px_28px] items-center gap-2">
+          {providerRows.map((provider) => {
+            const selected = provider.id === 'claude'
+              || (provider.id === 'chatgpt' ? parableChatGpt : parableXai);
+            const authorized = Boolean(parableStatus?.providers[provider.id]?.present);
+            return (
+              <div key={provider.id} className="flex min-w-0 flex-wrap items-center gap-3 border border-line bg-ink-1 p-3 sm:flex-nowrap">
                 <input
-                  value={executor.id}
-                  onChange={(event) => renameExecutor(executorIndex, event.target.value)}
-                  className="min-w-0 bg-claude-bg border border-claude-border px-2 py-1.5 text-xs font-mono text-claude-text"
-                  aria-label="Executor id"
+                  type="checkbox"
+                  checked={selected}
+                  disabled={provider.id === 'claude' || Boolean(parableStatus?.configured)}
+                  onChange={(event) => provider.id === 'chatgpt'
+                    ? setParableChatGpt(event.target.checked)
+                    : setParableXai(event.target.checked)}
+                  className="accent-[#4C9AFF]"
                 />
-                <select
-                  value={executor.model}
-                  onChange={(event) => updateExecutor(executorIndex, {
-                    model: event.target.value,
-                    costIn: undefined,
-                    costOut: undefined,
-                    cacheIn: undefined,
-                  })}
-                  className="min-w-0 bg-claude-bg border border-claude-border px-2 py-1.5 text-xs font-mono text-claude-text"
-                >
-                  {withSavedModel(executorModels, executor.model).map((model) => (
-                    <option key={model.id} value={model.id}>{model.name}</option>
-                  ))}
-                </select>
-                <select
-                  value={executor.effort || 'high'}
-                  onChange={(event) => updateExecutor(executorIndex, { effort: event.target.value })}
-                  className="bg-claude-bg border border-claude-border px-1.5 py-1.5 text-[10px] font-mono text-claude-text"
-                >
-                  {EFFORT_OPTIONS.filter((option) => option.value).map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-                </select>
-                <button
-                  onClick={() => removeExecutor(executorIndex)}
-                  disabled={parableConfig.executors.length <= 1}
-                  className="text-red-400/70 hover:text-red-400 disabled:opacity-20"
-                  title="Remove executor"
-                >
-                  <Trash2 size={13} />
-                </button>
+                <div className="min-w-0 flex-1">
+                  <div className="text-[13px] text-fg">{provider.label}</div>
+                  <div className="text-[11px] text-claude-text-secondary">{provider.models}</div>
+                </div>
+                <span className={`text-[11px] font-mono ${authorized ? 'text-diff-add' : selected ? 'text-amber' : 'text-claude-text-secondary'}`}>
+                  {authorized ? 'AUTHORIZED' : selected ? 'SELECTED' : 'OFF'}
+                </span>
+                {parableStatus?.configured && selected && !authorized && (
+                  <button
+                    type="button"
+                    onClick={() => void startAuth(provider.id)}
+                    disabled={parableAuthRun.running}
+                    className="flex shrink-0 items-center gap-1.5 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] h-7 px-2 text-[12px] text-fg-2 hover:bg-claude-surface-hover disabled:opacity-50"
+                  >
+                    {parableAuthRun.running && parableAuthRun.vendor === provider.id
+                      ? <Loader2 size={10} className="animate-spin" />
+                      : <Key size={10} />}
+                    {parableAuthRun.running && parableAuthRun.vendor === provider.id ? 'Waiting…' : 'Connect'}
+                  </button>
+                )}
               </div>
-
-              <div className="flex flex-wrap gap-1.5">
-                {PARABLE_TASK_CLASSES.map((taskClass) => {
-                  const selected = executor.taskClasses.includes(taskClass.id);
-                  return (
-                    <button
-                      key={taskClass.id}
-                      onClick={() => toggleTaskClass(executorIndex, executor, taskClass.id)}
-                      className={`px-2 py-1 text-[9px] font-mono border ${selected ? 'border-amber-400/60 bg-amber-400/10 text-amber-300' : 'border-claude-border/40 text-claude-text-secondary hover:text-claude-text'}`}
-                    >
-                      {taskClass.label}
-                    </button>
-                  );
-                })}
-                <button
-                  onClick={() => updateExecutor(executorIndex, { enabled: !executor.enabled })}
-                  className={`ml-auto px-2 py-1 text-[9px] font-mono border ${executor.enabled ? 'border-green-500/50 text-green-400' : 'border-claude-border text-claude-text-secondary'}`}
-                >
-                  {executor.enabled ? 'Enabled' : 'Disabled'}
-                </button>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2">
-                <input
-                  value={executor.useFor || ''}
-                  onChange={(event) => updateExecutor(executorIndex, { useFor: event.target.value })}
-                  className="bg-transparent border-b border-claude-border/40 px-1 py-1 text-[10px] text-claude-text"
-                  placeholder="Use for…"
-                />
-                <input
-                  value={executor.avoidFor || ''}
-                  onChange={(event) => updateExecutor(executorIndex, { avoidFor: event.target.value })}
-                  className="bg-transparent border-b border-claude-border/40 px-1 py-1 text-[10px] text-claude-text"
-                  placeholder="Avoid for…"
-                />
-              </div>
-
-              <details className="text-[10px] text-claude-text-secondary">
-                <summary className="cursor-pointer font-mono uppercase tracking-wider">Cost and limits</summary>
-                {(() => {
-                  const catalogPricing = getKnownModelPricing(executor.model);
-                  const hasCostOverride = executor.costIn !== undefined || executor.costOut !== undefined || executor.cacheIn !== undefined;
-                  const costFields: Array<[keyof ParableExecutorConfig, string, number | undefined]> = [
-                    ['costIn', 'Input $/M', executor.costIn ?? catalogPricing?.input],
-                    ['costOut', 'Output $/M', executor.costOut ?? catalogPricing?.output],
-                    ['cacheIn', 'Cache $/M', executor.cacheIn ?? catalogPricing?.cacheRead],
-                  ];
-                  return <div className="mt-2 space-y-2">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className={catalogPricing && !hasCostOverride ? 'text-green-400' : 'text-amber-400'}>
-                        {catalogPricing
-                          ? hasCostOverride ? 'Manual pricing override' : 'Automatic pricing from Build model catalog'
-                          : 'Unknown model — enter pricing manually'}
-                      </span>
-                      {catalogPricing && (
-                        <button
-                          type="button"
-                          onClick={() => updateExecutor(executorIndex, hasCostOverride
-                            ? { costIn: undefined, costOut: undefined, cacheIn: undefined }
-                            : { costIn: catalogPricing.input, costOut: catalogPricing.output, cacheIn: catalogPricing.cacheRead })}
-                          className="font-mono text-[9px] text-amber-400 hover:text-amber-300"
-                        >
-                          {hasCostOverride ? 'Use catalog pricing' : 'Override'}
-                        </button>
-                      )}
-                    </div>
-                    <div className="grid grid-cols-5 gap-2">
-                      {costFields.map(([field, label, effectiveValue]) => (
-                        <label key={field} className="space-y-1">
-                          <span className="block text-[8px] font-mono uppercase">{label}</span>
-                          <input
-                            type="number"
-                            min="0"
-                            value={effectiveValue ?? ''}
-                            disabled={Boolean(catalogPricing) && !hasCostOverride}
-                            onChange={(event) => updateExecutor(executorIndex, { [field]: event.target.value === '' ? undefined : Number(event.target.value) })}
-                            className="w-full bg-claude-bg border border-claude-border px-1.5 py-1 text-[9px] font-mono text-claude-text disabled:opacity-60"
-                          />
-                        </label>
-                      ))}
-                      {([
-                        ['contextKtok', 'Context K'],
-                        ['maxMinutes', 'Max min'],
-                      ] as Array<[keyof ParableExecutorConfig, string]>).map(([field, label]) => (
-                    <label key={field} className="space-y-1">
-                      <span className="block text-[8px] font-mono uppercase">{label}</span>
-                      <input
-                        type="number"
-                        min="0"
-                        value={(executor[field] as number | undefined) ?? ''}
-                        onChange={(event) => updateExecutor(executorIndex, { [field]: event.target.value === '' ? undefined : Number(event.target.value) })}
-                        className="w-full bg-claude-bg border border-claude-border px-1.5 py-1 text-[9px] font-mono text-claude-text"
-                      />
-                    </label>
-                      ))}
-                    </div>
-                  </div>;
-                })()}
-              </details>
-            </div>
-          ))}
+            );
+          })}
         </section>
 
-        <section className="space-y-3 border-t border-claude-border/30 pt-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <h4 className="text-xs font-mono uppercase tracking-wider text-claude-text">Deterministic checks</h4>
-              <p className="text-[9px] text-claude-text-secondary">Parable runs these before spending reviewer tokens.</p>
-            </div>
-            <button onClick={addCheck} className="flex items-center gap-1 text-[10px] font-mono text-amber-400 hover:text-amber-300">
-              <Plus size={12} /> Add check
-            </button>
-          </div>
-          {parableConfig.checks.length === 0 && (
-            <p className="border border-dashed border-claude-border/40 p-3 text-[10px] text-claude-text-secondary">No checks configured. Verification will pass vacuously until you add commands.</p>
-          )}
-          {parableConfig.checks.map((check, checkIndex) => (
-            <div key={`parable-check-${checkIndex}`} className="grid grid-cols-[100px_minmax(260px,1fr)_100px_130px_28px] items-center gap-2 border border-claude-border/40 p-2">
-              <input
-                value={check.id}
-                onChange={(event) => updateCheck(checkIndex, { id: event.target.value })}
-                className="bg-claude-bg border border-claude-border px-1.5 py-1 text-[10px] font-mono text-claude-text"
-                placeholder="id"
-              />
-              <input
-                value={check.run}
-                onChange={(event) => updateCheck(checkIndex, { run: event.target.value })}
-                className="bg-claude-bg border border-claude-border px-1.5 py-1 text-[10px] font-mono text-claude-text"
-                placeholder="npm test"
-              />
-              <input
-                value={check.cwd || '.'}
-                onChange={(event) => updateCheck(checkIndex, { cwd: event.target.value })}
-                className="bg-claude-bg border border-claude-border px-1.5 py-1 text-[10px] font-mono text-claude-text"
-                placeholder="cwd"
-              />
-              <select
-                value={check.when.includes('pre-commit') ? 'pre-commit' : 'post-implement'}
-                onChange={(event) => updateCheck(checkIndex, { when: [event.target.value as 'post-implement' | 'pre-commit'] })}
-                className="bg-claude-bg border border-claude-border px-1.5 py-1 text-[10px] font-mono text-claude-text"
-              >
-                <option value="post-implement">Post implement</option>
-                <option value="pre-commit">Pre commit</option>
-              </select>
+        {!parableStatus?.configured ? (
+          <section className="space-y-3 border-t border-line pt-4">
+            <p className="text-[12px] text-claude-text-secondary">
+              Install Parable and build its pinned local proxy. Build will then guide you through each selected subscription here. Provider credentials remain private files owned by Parable's proxy.
+            </p>
+            <div className="flex gap-2">
               <button
-                onClick={() => saveParableConfig({ ...parableConfig, checks: parableConfig.checks.filter((_, index) => index !== checkIndex) })}
-                className="text-red-400/70 hover:text-red-400"
-                title="Remove check"
+                type="button"
+                onClick={() => void startSetup()}
+                disabled={parableAuthRun.running}
+                className="flex items-center gap-2 bg-fg text-ink-0 font-semibold hover:bg-white h-8 px-3 text-[13px] disabled:opacity-50"
               >
-                <Trash2 size={13} />
+                {parableAuthRun.running ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />}
+                {parableAuthRun.running ? 'Setting up Parable…' : 'Install Parable'}
+              </button>
+              {parableAuthRun.running && (
+                <button
+                  type="button"
+                  onClick={() => void window.electronAPI.parable.cancelAuth()}
+                  className="shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] h-8 px-3 text-[13px] text-fg-2 hover:text-fg hover:bg-claude-surface-hover"
+                >
+                  Cancel
+                </button>
+              )}
+            </div>
+            {parableAuthRun.output && (
+              <details className="max-w-full border border-line bg-ink-1 p-2 text-[11px] text-claude-text-secondary">
+                <summary className="cursor-pointer text-[12px] text-fg-3">Installation diagnostics</summary>
+                <pre ref={parableAuthOutputRef} className="mt-2 max-h-40 max-w-full overflow-auto whitespace-pre-wrap break-all font-mono leading-relaxed">
+                  {stripTerminalControlSequences(parableAuthRun.output)}
+                </pre>
+              </details>
+            )}
+            {!parableAuthRun.running && parableAuthRun.exitCode === 0 && (
+              <p className="text-[11px] text-diff-add">Parable installed. Connect the selected subscriptions above.</p>
+            )}
+          </section>
+        ) : !parableStatus.ready ? (
+          <section className="space-y-3 border-t border-line pt-4">
+            <p className="text-[12px] text-claude-text-secondary">
+              Connect each selected subscription above. Build opens the provider authorization page and tracks completion here; Parable's proxy owns the OAuth exchange, refresh tokens, and private credential records.
+            </p>
+            {parableAuthRun.running && (
+              <div className="space-y-3 border border-amber/30 bg-amber/5 p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-[13px] text-fg">Authorize {providerRows.find((row) => row.id === parableAuthRun.vendor)?.label || parableAuthRun.vendor}</div>
+                    <div className="mt-1 text-[11px] text-claude-text-secondary">Complete the provider approval in your browser. This window will update automatically.</div>
+                  </div>
+                  <Loader2 size={14} className="shrink-0 animate-spin text-amber" />
+                </div>
+                {parableAuthRun.userCode && (
+                  <div className="flex items-center justify-between border border-line bg-ink-1 px-3 py-2">
+                    <span className="text-[11px] text-fg-4">Device code</span>
+                    <button type="button" onClick={() => void navigator.clipboard.writeText(parableAuthRun.userCode || '')} className="flex items-center gap-2 font-mono text-sm tracking-widest text-claude-text">
+                      {parableAuthRun.userCode} <Copy size={11} />
+                    </button>
+                  </div>
+                )}
+                <div className="flex gap-2">
+                  {parableAuthRun.authorizationUrl && (
+                    <button
+                      type="button"
+                      onClick={() => void window.electronAPI.app.openExternal(parableAuthRun.authorizationUrl!)}
+                      className="flex items-center gap-2 bg-fg text-ink-0 font-semibold hover:bg-white h-8 px-3 text-[13px]"
+                    >
+                      <ExternalLink size={11} /> Open authorization page
+                    </button>
+                  )}
+                <button
+                  type="button"
+                  onClick={() => void window.electronAPI.parable.cancelAuth()}
+                  className="shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] h-8 px-3 text-[13px] text-fg-2 hover:text-fg hover:bg-claude-surface-hover"
+                >
+                  Cancel
+                </button>
+                </div>
+              </div>
+            )}
+            {parableAuthRun.output && parableAuthRun.vendor && (
+              <details className="max-w-full border border-line bg-ink-1 p-2 text-[11px] text-claude-text-secondary">
+                <summary className="cursor-pointer text-[12px] text-fg-3">Authorization diagnostics</summary>
+                <pre ref={parableAuthOutputRef} className="mt-2 max-h-40 max-w-full overflow-auto whitespace-pre-wrap break-all font-mono leading-relaxed">
+                  {stripTerminalControlSequences(parableAuthRun.output)}
+                </pre>
+              </details>
+            )}
+            {!parableAuthRun.running && parableAuthRun.exitCode === 0 && (
+              <p className="text-[11px] text-diff-add">{parableAuthRun.vendor || 'Subscription'} authorization completed.</p>
+            )}
+            {parableStatus.error && <p className="text-[12px] text-diff-del hover:underline">{parableStatus.error}</p>}
+          </section>
+        ) : (
+          <section className="space-y-3 border-t border-line pt-4">
+            <p className="text-[12px] text-claude-text-secondary">
+              Ready. Selecting Parable now wraps the Agent SDK's Claude Code process with upstream <span className="font-mono text-claude-text">parable --brain auto</span>. Parable starts or reuses the proxy, verifies the exact catalog, generates project-local agents, and stops only a proxy it owns.
+            </p>
+            <button
+              type="button"
+              onClick={() => window.electronAPI.app?.openPath?.(parableStatus.configPath)}
+              className="flex items-center gap-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] h-8 px-3 text-[13px] text-fg-2 hover:text-fg hover:bg-claude-surface-hover"
+            >
+              <ExternalLink size={12} /> Open parable.toml
+            </button>
+          </section>
+        )}
+
+        {parableStatus?.configured && (
+          <section className="space-y-3 border-t border-line pt-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h4 className="text-[11px] font-medium uppercase tracking-[0.04em] text-fg-4">Models and routing</h4>
+                <p className="text-[11px] text-claude-text-secondary">Configure the cast and routing here. Build validates and writes parable.toml for you.</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => void saveConfigData()}
+                disabled={isSavingParableToml}
+                className="bg-fg text-ink-0 font-semibold hover:bg-white h-8 px-3 text-[13px] disabled:opacity-50"
+              >
+                {isSavingParableToml ? 'Validating…' : 'Save settings'}
               </button>
             </div>
-          ))}
-        </section>
 
-        <div className="border-t border-claude-border/30 pt-4 text-[10px] text-claude-text-secondary">
-          Select <span className="font-bold text-amber-400">Parable</span> from the model picker to test this mode independently from Auto Build. Build keeps its tested upstream copy isolated at <span className="font-mono">~/.claude/skills/parable-build</span>, leaving any personal Parable install untouched.
+            <details open className="border border-line bg-ink-1 p-3">
+              <summary className="cursor-pointer text-[12px] font-medium text-fg-2">Defaults and parent model</summary>
+              <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
+                <label className={labelClass}>Default executor<input className={fieldClass} value={parableConfigData.parable?.default_executor || ''} onChange={(e) => setSectionField('parable', 'default_executor', e.target.value)} /></label>
+                <label className={labelClass}>Default reviewer<input className={fieldClass} value={parableConfigData.parable?.default_reviewer || ''} onChange={(e) => setSectionField('parable', 'default_reviewer', e.target.value)} /></label>
+                <label className={labelClass}>Log directory<input className={fieldClass} value={parableConfigData.parable?.log_dir || '.parable'} onChange={(e) => setSectionField('parable', 'log_dir', e.target.value)} /></label>
+                <label className={labelClass}>Brain model<input className={fieldClass} value={parableConfigData.claude?.brain_model || ''} onChange={(e) => setSectionField('claude', 'brain_model', e.target.value)} /></label>
+                <label className={labelClass}>Claude proxy URL<input className={fieldClass} value={parableConfigData.claude?.base_url || ''} onChange={(e) => setSectionField('claude', 'base_url', e.target.value)} /></label>
+                <label className={labelClass}>Claude token environment variable<input className={fieldClass} value={parableConfigData.claude?.auth_token_env || ''} onChange={(e) => setSectionField('claude', 'auth_token_env', e.target.value)} /></label>
+                <label className={`${labelClass} md:col-span-2`}>Repository instructions<textarea rows={3} className={fieldClass} value={parableConfigData.parable?.repo_notes || ''} onChange={(e) => setSectionField('parable', 'repo_notes', e.target.value)} /></label>
+                <label className={labelClass}>Research provider<select className={fieldClass} value={parableConfigData.research?.provider || 'grep.ai'} onChange={(e) => setSectionField('research', 'provider', e.target.value)}><option value="grep.ai">grep.ai</option><option value="claude">Claude</option></select></label>
+                <label className={labelClass}>Claude binary<input className={fieldClass} value={parableConfigData.claude?.binary || 'claude'} onChange={(e) => setSectionField('claude', 'binary', e.target.value)} /></label>
+              </div>
+            </details>
+
+            <details className="border border-line bg-ink-1 p-3">
+              <summary className="cursor-pointer text-[12px] font-medium text-fg-2">Providers ({Object.keys(parableConfigData.providers || {}).length})</summary>
+              <div className="mt-3 space-y-3">
+                {Object.entries(parableConfigData.providers || {}).map(([id, raw]) => {
+                  const provider = raw as Record<string, any>;
+                  return <div key={id} className="space-y-2 border border-line p-3">
+                    <div className="flex items-center justify-between"><span className="font-mono text-xs text-claude-text">{id}</span><button type="button" onClick={() => removeNamedItem('providers', id)} className="text-[12px] text-diff-del hover:underline">Remove</button></div>
+                    <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+                      <label className={labelClass}>Type<select className={fieldClass} value={provider.type || 'subagent'} onChange={(e) => setNamedField('providers', id, 'type', e.target.value)}>{['subagent','codex-native','codex','pi','cursor'].map((v) => <option key={v}>{v}</option>)}</select></label>
+                      <label className={labelClass}>Base URL<input className={fieldClass} value={provider.base_url || ''} onChange={(e) => setNamedField('providers', id, 'base_url', e.target.value)} /></label>
+                      <label className={labelClass}>Credential environment variable<input className={fieldClass} value={provider.env_key || ''} onChange={(e) => setNamedField('providers', id, 'env_key', e.target.value)} /></label>
+                      <label className={labelClass}>API protocol<input className={fieldClass} value={provider.api || provider.wire_api || ''} onChange={(e) => setNamedField('providers', id, provider.type === 'pi' ? 'api' : 'wire_api', e.target.value)} /></label>
+                      <ParableStringMapField label="HTTP headers" value={provider.type === 'pi' ? provider.headers : provider.http_headers} onChange={(value) => setNamedField('providers', id, provider.type === 'pi' ? 'headers' : 'http_headers', value)} />
+                      <ParableStringMapField label="Query parameters" value={provider.query_params} onChange={(value) => setNamedField('providers', id, 'query_params', value)} />
+                      {provider.type === 'pi' && <ParableJsonObjectField label="PI compatibility options" value={provider.compat} onChange={(value) => setNamedField('providers', id, 'compat', value)} />}
+                    </div>
+                  </div>;
+                })}
+                <button type="button" onClick={() => addNamedItem('providers', 'provider', { type: 'codex', base_url: '', env_key: '', wire_api: 'responses' })} className="shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] h-7 px-2 text-[12px] text-fg-2 hover:bg-claude-surface-hover">+ Add provider</button>
+              </div>
+            </details>
+
+            <details open className="border border-line bg-ink-1 p-3">
+              <summary className="cursor-pointer text-[12px] font-medium text-fg-2">Agents and executors ({Object.keys(parableConfigData.executors || {}).length})</summary>
+              <div className="mt-3 space-y-3">
+                {Object.entries(parableConfigData.executors || {}).map(([id, raw]) => {
+                  const executor = raw as Record<string, any>;
+                  return <div key={id} className="space-y-2 border border-line p-3">
+                    <div className="flex items-center justify-between gap-3"><span className="font-mono text-xs text-claude-text">{id}</span><div className="flex items-center gap-3"><label className="flex items-center gap-1 text-[11px] text-fg-4"><input type="checkbox" checked={executor.enabled !== false} onChange={(e) => setNamedField('executors', id, 'enabled', e.target.checked)} /> Enabled</label><button type="button" onClick={() => removeNamedItem('executors', id)} className="text-[12px] text-diff-del hover:underline">Remove</button></div></div>
+                    <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
+                      <label className={labelClass}>Provider<select className={fieldClass} value={executor.provider || ''} onChange={(e) => setNamedField('executors', id, 'provider', e.target.value)}><option value="">Select…</option>{Object.keys(parableConfigData.providers || {}).map((v) => <option key={v}>{v}</option>)}</select></label>
+                      <label className={labelClass}>Model<input className={fieldClass} value={executor.model || ''} onChange={(e) => setNamedField('executors', id, 'model', e.target.value)} /></label>
+                      <label className={labelClass}>Reasoning effort<select className={fieldClass} value={executor.effort || 'high'} onChange={(e) => setNamedField('executors', id, 'effort', e.target.value)}>{['off','minimal','low','medium','high','xhigh','max','ultra'].map((v) => <option key={v}>{v}</option>)}</select></label>
+                      <label className={labelClass}>Tags (comma separated)<input className={fieldClass} value={(executor.tags || []).join(', ')} onChange={(e) => setNamedField('executors', id, 'tags', e.target.value.split(',').map((v) => v.trim()).filter(Boolean))} /></label>
+                      <label className={labelClass}>Context (K tokens)<input type="number" className={fieldClass} value={executor.context_ktok || ''} onChange={(e) => setNamedField('executors', id, 'context_ktok', Number(e.target.value) || undefined)} /></label>
+                      <label className={labelClass}>Timeout (minutes)<input type="number" className={fieldClass} value={executor.max_minutes || ''} onChange={(e) => setNamedField('executors', id, 'max_minutes', Number(e.target.value) || undefined)} /></label>
+                      <label className="flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.04em] text-fg-4"><input type="checkbox" checked={executor.reasoning !== false} onChange={(e) => setNamedField('executors', id, 'reasoning', e.target.checked)} /> Reasoning model</label>
+                      <label className={labelClass}>Input cost ($/M tokens)<input type="number" step="any" className={fieldClass} value={executor.cost?.in ?? ''} onChange={(e) => setExecutorCostField(id, executor, 'in', e.target.value)} /></label>
+                      <label className={labelClass}>Output cost ($/M tokens)<input type="number" step="any" className={fieldClass} value={executor.cost?.out ?? ''} onChange={(e) => setExecutorCostField(id, executor, 'out', e.target.value)} /></label>
+                      <label className={labelClass}>Cache input cost ($/M tokens)<input type="number" step="any" className={fieldClass} value={executor.cost?.cache_in ?? ''} onChange={(e) => setExecutorCostField(id, executor, 'cache_in', e.target.value)} /></label>
+                      <label className={`${labelClass} md:col-span-3`}>Codex extra configuration (one -c value per line)<textarea rows={3} className={fieldClass} value={(executor.extra_config || []).join('\n')} onChange={(e) => setNamedField('executors', id, 'extra_config', e.target.value.split('\n').map((value) => value.trim()).filter(Boolean))} /></label>
+                      <ParableJsonObjectField label="PI model overrides" value={executor.model_overrides} onChange={(value) => setNamedField('executors', id, 'model_overrides', value)} />
+                      <label className={`${labelClass} md:col-span-3`}>Use for<textarea rows={2} className={fieldClass} value={executor.use_for || ''} onChange={(e) => setNamedField('executors', id, 'use_for', e.target.value)} /></label>
+                      <label className={`${labelClass} md:col-span-3`}>Avoid for<textarea rows={2} className={fieldClass} value={executor.avoid_for || ''} onChange={(e) => setNamedField('executors', id, 'avoid_for', e.target.value)} /></label>
+                    </div>
+                  </div>;
+                })}
+                <button type="button" onClick={() => addNamedItem('executors', 'agent', { provider: 'claude', model: '', effort: 'high', enabled: true, tags: [] })} className="shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] h-7 px-2 text-[12px] text-fg-2 hover:bg-claude-surface-hover">+ Create agent</button>
+              </div>
+            </details>
+
+            <details open className="border border-line bg-ink-1 p-3">
+              <summary className="cursor-pointer text-[12px] font-medium text-fg-2">Routing</summary>
+              <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2">
+                {Object.entries(parableConfigData.routing || {}).filter(([key]) => key !== 'notes').map(([task, chain]) => <label key={task} className={labelClass}>{task.replaceAll('_', ' ')}<input className={fieldClass} value={(chain as string[]).join(', ')} onChange={(e) => setSectionField('routing', task, e.target.value.split(',').map((v) => v.trim()).filter(Boolean))} /></label>)}
+                <label className={`${labelClass} md:col-span-2`}>Routing instructions<textarea rows={3} className={fieldClass} value={parableConfigData.routing?.notes || ''} onChange={(e) => setSectionField('routing', 'notes', e.target.value)} /></label>
+              </div>
+            </details>
+
+            <details className="border border-line bg-ink-1 p-3">
+              <summary className="cursor-pointer text-[12px] font-medium text-fg-2">Verification checks ({Object.keys(parableConfigData.checks || {}).length})</summary>
+              <div className="mt-3 space-y-3">
+                {Object.entries(parableConfigData.checks || {}).map(([id, raw]) => { const check = raw as Record<string, any>; return <div key={id} className="grid grid-cols-1 gap-2 border border-line p-3 md:grid-cols-2"><div className="flex items-center justify-between md:col-span-2"><span className="font-mono text-xs text-claude-text">{id}</span><button type="button" onClick={() => removeNamedItem('checks', id)} className="text-[12px] text-diff-del hover:underline">Remove</button></div><label className={`${labelClass} md:col-span-2`}>Command<input className={fieldClass} value={check.run || ''} onChange={(e) => setNamedField('checks', id, 'run', e.target.value)} /></label><label className={labelClass}>Working directory<input className={fieldClass} value={check.cwd || '.'} onChange={(e) => setNamedField('checks', id, 'cwd', e.target.value)} /></label><label className={labelClass}>Timeout (minutes)<input type="number" className={fieldClass} value={check.timeout_minutes || 15} onChange={(e) => setNamedField('checks', id, 'timeout_minutes', Number(e.target.value))} /></label><label className={labelClass}>Failure line pattern<input className={fieldClass} value={check.grep || ''} onChange={(e) => setNamedField('checks', id, 'grep', e.target.value)} /></label><label className={labelClass}>Failure tail lines<input type="number" min="1" className={fieldClass} value={check.tail_lines || 8} onChange={(e) => setNamedField('checks', id, 'tail_lines', Number(e.target.value))} /></label><label className={`${labelClass} md:col-span-2`}>Run at<div className="flex gap-4 pt-1">{['post-implement','pre-commit'].map((gate) => <label key={gate} className="flex items-center gap-1 normal-case"><input type="checkbox" checked={(check.when || []).includes(gate)} onChange={(e) => setNamedField('checks', id, 'when', e.target.checked ? [...(check.when || []), gate] : (check.when || []).filter((v: string) => v !== gate))} />{gate}</label>)}</div></label></div>; })}
+                <button type="button" onClick={() => addNamedItem('checks', 'check', { run: '', cwd: '.', when: ['post-implement', 'pre-commit'], timeout_minutes: 15 })} className="shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] h-7 px-2 text-[12px] text-fg-2 hover:bg-claude-surface-hover">+ Add check</button>
+              </div>
+            </details>
+
+            <details className="border border-line bg-ink-1 p-3">
+              <summary className="cursor-pointer text-[12px] font-medium text-fg-2-secondary">Advanced TOML</summary>
+              <p className="my-2 text-[11px] text-claude-text-secondary">The normal controls above cover the current Parable schema. Use this only for future fields that this Build version does not know yet.</p>
+              <textarea value={parableToml} onChange={(event) => setParableToml(event.target.value)} spellCheck={false} rows={18} className="w-full resize-y border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] bg-ink-term p-3 font-mono text-[12px] leading-relaxed text-claude-text focus:ring-1 focus:ring-accent/50 focus:outline-none" />
+              <button type="button" onClick={() => void saveToml()} disabled={isSavingParableToml} className="mt-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] h-7 px-2 text-[12px] text-fg-2 hover:bg-claude-surface-hover">Validate and save raw TOML</button>
+            </details>
+          </section>
+        )}
+
+        {parableStatus?.ready && activeParableSession?.sshConfig && (
+          <section className="space-y-2 border-t border-line pt-4">
+            <h4 className="text-[11px] font-medium uppercase tracking-[0.04em] text-fg-4">Active SSH host</h4>
+            <p className="text-[11px] text-claude-text-secondary">
+              Explicitly trust <span className="font-mono text-claude-text">{activeParableSession.sshConfig.username}@{activeParableSession.sshConfig.host}</span> with reusable Parable subscription credentials. Existing remote credential files are never overwritten.
+            </p>
+            <button
+              type="button"
+              onClick={() => void syncAuthToActiveSsh()}
+              disabled={isSyncingParableAuth}
+              className="h-8 px-3 text-[13px] text-diff-del shadow-[inset_0_0_0_1px_rgba(248,81,73,0.45)] hover:bg-diff-del/10 disabled:opacity-40"
+            >
+              {isSyncingParableAuth ? 'Copying securely…' : 'Trust host and copy credentials'}
+            </button>
+          </section>
+        )}
+
+        {parableConfigMessage && (
+          <p className={`text-[11px] ${/saved|copied/i.test(parableConfigMessage) ? 'text-diff-add' : 'text-diff-del'}`}>
+            {parableConfigMessage}
+          </p>
+        )}
+
+        <div className="border-t border-line pt-4 text-[11px] text-fg-4">
+          Bundled runtime {parableStatus?.runtimeVersion || 'not installed'} · config {parableStatus?.configPath || '~/.config/parable/parable.toml'}
         </div>
       </div>
     );
@@ -2006,6 +2348,7 @@ export default function SettingsDialog() {
     apiKeyInput,
     docsUrl,
     keyHelp,
+    onSetup,
   }: {
     id: keyof ProvidersState;
     label: string;
@@ -2015,26 +2358,42 @@ export default function SettingsDialog() {
     apiKeyInput: React.ReactNode;
     docsUrl: string;
     keyHelp: React.ReactNode;
+    onSetup?: () => Promise<void>;
   }) => {
     const ready = status.loggedIn;
     const setupCommand = status.installCommand;
     const effectiveDocsUrl = status.docsUrl || docsUrl;
+    const setupRunning = providerSetupId === id;
+    const setupError = providerSetupError?.id === id ? providerSetupError.message : '';
+
+    const runSetup = async () => {
+      if (!onSetup || setupRunning) return;
+      setProviderSetupId(id);
+      setProviderSetupError(null);
+      try {
+        await onSetup();
+      } catch (error) {
+        setProviderSetupError({ id, message: error instanceof Error ? error.message : String(error) });
+      } finally {
+        setProviderSetupId(null);
+      }
+    };
 
     return (
-      <div key={id} className="border border-claude-border bg-claude-bg/30" style={{ borderRadius: 0 }}>
-        <div className="p-3 border-b border-claude-border/70">
+      <div key={id} className="border border-line bg-ink-1" style={{ borderRadius: 0 }}>
+        <div className="p-3 border-b border-line">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <div className="flex items-center gap-2">
                 <Terminal size={14} className="text-claude-text-secondary" />
-                <h4 className="text-sm font-mono font-semibold text-claude-text">{label}</h4>
+                <h4 className="text-[14px] font-semibold tracking-tight text-fg">{label}</h4>
               </div>
-              <p className="mt-1 text-[10px] font-mono text-claude-text-secondary">{description}</p>
+              <p className="mt-1 text-[12px] text-fg-4">{description}</p>
             </div>
-            <div className={`shrink-0 flex items-center gap-1.5 px-2 py-1 border text-[10px] font-mono ${
+            <div className={`shrink-0 flex items-center gap-1.5 px-2 py-1 border text-[11px] font-mono ${
               ready
-                ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-400'
-                : 'border-amber-500/50 bg-amber-500/10 text-amber-400'
+                ? 'border-diff-add/40 bg-diff-add/10 text-diff-add'
+                : 'border-amber/50 bg-amber/10 text-amber'
             }`}>
               {isCheckingProviders ? (
                 <Loader2 size={11} className="animate-spin" />
@@ -2047,7 +2406,7 @@ export default function SettingsDialog() {
             </div>
           </div>
           {(status.version || status.path) && (
-            <div className="mt-2 text-[10px] font-mono text-claude-text-secondary truncate">
+            <div className="mt-2 text-[12px] text-fg-4 truncate">
               {[status.version, status.path].filter(Boolean).join(' · ')}
             </div>
           )}
@@ -2056,39 +2415,53 @@ export default function SettingsDialog() {
         <div className="p-3 space-y-3">
           {!ready && setupCommand && (
             <div className="space-y-1.5">
-              <label className="block text-[10px] font-mono text-claude-text-secondary uppercase tracking-wider">
+              <label className="block text-[11px] font-medium uppercase tracking-[0.04em] text-fg-4">
                 Install CLI
               </label>
               <div className="flex items-center gap-2">
-                <code className="flex-1 min-w-0 px-2 py-1.5 bg-claude-surface border border-claude-border text-[10px] font-mono text-claude-text-secondary truncate">
+                <code className="flex-1 min-w-0 px-2 py-1.5 bg-ink-term border border-line text-[12px] font-mono text-fg-3 truncate">
                   {setupCommand}
                 </code>
-                <button
-                  type="button"
-                  onClick={() => copySetupCommand(setupCommand)}
-                  className="p-1.5 border border-claude-border text-claude-text-secondary hover:text-claude-text hover:bg-claude-surface"
-                  title="Copy setup command"
-                >
-                  <Copy size={12} />
-                </button>
+                {onSetup && status.installed === false ? (
+                  <button
+                    type="button"
+                    onClick={() => void runSetup()}
+                    disabled={setupRunning}
+                    className="shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] flex items-center gap-1.5 h-7 px-2 text-[12px] text-fg-2 hover:bg-claude-surface-hover disabled:opacity-50"
+                    title={`Install ${label} inside Build`}
+                  >
+                    {setupRunning ? <Loader2 size={12} className="animate-spin" /> : <Terminal size={12} />}
+                    {setupRunning ? 'Installing…' : 'Install'}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => copySetupCommand(setupCommand)}
+                    className="p-1.5 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] text-claude-text-secondary hover:text-fg hover:bg-claude-surface-hover"
+                    title="Copy setup command"
+                  >
+                    <Copy size={12} />
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => window.electronAPI.app?.openExternal?.(effectiveDocsUrl)}
-                  className="p-1.5 border border-claude-border text-claude-text-secondary hover:text-claude-text hover:bg-claude-surface"
+                  className="p-1.5 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] text-claude-text-secondary hover:text-fg hover:bg-claude-surface-hover"
                   title="Open setup docs"
                 >
                   <ExternalLink size={12} />
                 </button>
               </div>
+              {setupError && <p className="text-[12px] text-diff-del">{setupError}</p>}
             </div>
           )}
 
           <div className="space-y-2">
-            <label className="block text-[10px] font-mono text-claude-text-secondary uppercase tracking-wider">
+            <label className="block text-[11px] font-medium uppercase tracking-[0.04em] text-fg-4">
               {apiKeyLabel}
             </label>
             {apiKeyInput}
-            <p className="text-[10px] font-mono text-claude-text-secondary">{keyHelp}</p>
+            <p className="text-[12px] text-fg-4">{keyHelp}</p>
           </div>
         </div>
       </div>
@@ -2132,7 +2505,7 @@ export default function SettingsDialog() {
             <button
               type="button"
               onClick={() => window.electronAPI.app?.openExternal?.('https://console.anthropic.com/settings/keys')}
-              className="text-claude-accent hover:underline"
+              className="text-accent-text hover:underline"
             >
               console.anthropic.com
             </button>
@@ -2168,7 +2541,7 @@ export default function SettingsDialog() {
             <button
               type="button"
               onClick={() => window.electronAPI.app?.openExternal?.('https://platform.openai.com/api-keys')}
-              className="text-claude-accent hover:underline"
+              className="text-accent-text hover:underline"
             >
               platform.openai.com
             </button>
@@ -2204,7 +2577,7 @@ export default function SettingsDialog() {
             <button
               type="button"
               onClick={() => window.electronAPI.app?.openExternal?.('https://cursor.com/settings')}
-              className="text-claude-accent hover:underline"
+              className="text-accent-text hover:underline"
             >
               cursor.com/settings
             </button>
@@ -2240,7 +2613,7 @@ export default function SettingsDialog() {
             <button
               type="button"
               onClick={() => window.electronAPI.app?.openExternal?.('https://aistudio.google.com/apikey')}
-              className="text-claude-accent hover:underline"
+              className="text-accent-text hover:underline"
             >
               AI Studio
             </button>
@@ -2276,7 +2649,7 @@ export default function SettingsDialog() {
             <button
               type="button"
               onClick={() => window.electronAPI.app?.openExternal?.('https://console.x.ai/')}
-              className="text-claude-accent hover:underline"
+              className="text-accent-text hover:underline"
             >
               console.x.ai
             </button>
@@ -2312,11 +2685,33 @@ export default function SettingsDialog() {
             <button
               type="button"
               onClick={() => window.electronAPI.app?.openExternal?.('https://platform.deepseek.com')}
-              className="text-claude-accent hover:underline"
+              className="text-accent-text hover:underline"
             >
               platform.deepseek.com
             </button>
             .
+          </>
+        ),
+      }),
+      renderHarnessCard({
+        id: 'prime',
+        label: 'Prime Agent',
+        description: 'Self-improving RLM harness with persistent sessions, goals, schedules, and native recursive subagents.',
+        status: providers.prime,
+        apiKeyLabel: 'Authentication',
+        docsUrl: 'https://github.com/PrimeIntellect-ai/prime-agent',
+        onSetup: async () => {
+          await window.electronAPI.auth.setupProvider('prime');
+          await refreshProviders();
+        },
+        apiKeyInput: (
+          <div className="border border-line bg-ink-1 px-2 py-2 text-[12px] text-fg-4">
+            Prime Agent owns its provider credentials in <span className="text-claude-text">~/.prime/agent/auth.json</span>.
+          </div>
+        ),
+        keyHelp: (
+          <>
+            After installation, start <span className="text-claude-text">prime-agent</span> once and use <span className="text-claude-text">/login</span>. Build then resumes the same private Prime Agent sessions.
           </>
         ),
       }),
@@ -2326,8 +2721,8 @@ export default function SettingsDialog() {
       <div className="space-y-6">
         <div className="flex items-start justify-between gap-3">
           <div>
-            <h3 className="text-sm font-mono font-semibold text-claude-text">Agent Harnesses</h3>
-            <p className="mt-1 text-[10px] font-mono text-claude-text-secondary">
+            <h3 className="text-[14px] font-semibold tracking-tight text-fg">Agent Harnesses</h3>
+            <p className="mt-1 text-[12px] text-fg-4">
               Configure local agent CLIs and their API keys in one place.
             </p>
           </div>
@@ -2335,7 +2730,7 @@ export default function SettingsDialog() {
             type="button"
             onClick={refreshProviders}
             disabled={isCheckingProviders}
-            className="flex items-center gap-1.5 px-2 py-1 border border-claude-border text-[10px] font-mono text-claude-text-secondary hover:text-claude-text hover:bg-claude-bg disabled:opacity-60"
+            className="flex items-center gap-1.5 h-7 px-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] text-[12px] text-fg-2 hover:text-fg hover:bg-claude-surface-hover disabled:opacity-60"
             style={{ borderRadius: 0 }}
           >
             <RefreshCw size={11} className={isCheckingProviders ? 'animate-spin' : ''} />
@@ -2353,7 +2748,7 @@ export default function SettingsDialog() {
           type="button"
           onClick={handleContinue}
           disabled={!hasReadyAgent && !apiKey.trim()}
-          className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-claude-accent text-white font-mono text-xs uppercase tracking-wider hover:bg-claude-accent/80 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          className="w-full flex items-center justify-center gap-2 h-9 px-4 bg-fg text-ink-0 text-[13px] font-semibold hover:bg-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           style={{ borderRadius: 0 }}
         >
           <Check size={13} />
@@ -2366,22 +2761,22 @@ export default function SettingsDialog() {
   // Render non-harness API keys inside the Agents tab
   const renderOtherApiKeysSection = () => (
     <div className="space-y-6">
-      <div className="space-y-2 pt-4 border-t border-claude-border">
+      <div className="space-y-2 pt-4 border-t border-line">
         <div className="flex items-center gap-2">
           <Key size={14} className="text-claude-text-secondary" />
-          <h3 className="text-xs font-mono text-claude-text uppercase tracking-wider">
+          <h3 className="text-[11px] font-medium uppercase tracking-[0.04em] text-fg-4">
             Other API Keys
           </h3>
         </div>
-        <p className="text-[10px] font-mono text-claude-text-secondary">
+        <p className="text-[12px] text-fg-4">
           Keys below support non-agent features such as voice, browser automation, hosted Claude endpoints, and custom API models.
         </p>
       </div>
 
       {/* Anthropic Foundry */}
-      <div className="space-y-3 pt-4 border-t border-claude-border">
+      <div className="space-y-3 pt-4 border-t border-line">
         <div className="flex items-center justify-between">
-          <label className="block text-xs font-mono text-claude-text-secondary uppercase tracking-wider">
+          <label className="block text-[13px] font-medium text-fg-2">
             Anthropic Foundry
           </label>
           <button
@@ -2390,21 +2785,21 @@ export default function SettingsDialog() {
               setFoundryEnabled(newValue);
               autoSaveAppSettings({ foundryEnabled: newValue });
             }}
-            className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
-              foundryEnabled ? 'bg-claude-accent' : 'bg-claude-border'
+            className={`relative inline-flex h-5 w-9 items-center transition-colors ${
+              foundryEnabled ? 'bg-accent' : 'bg-ink-4'
             }`}
           >
             <span
-              className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${
+              className={`inline-block h-3.5 w-3.5 transform bg-white transition-transform ${
                 foundryEnabled ? 'translate-x-[18px]' : 'translate-x-[3px]'
               }`}
             />
           </button>
         </div>
         {foundryEnabled && (
-          <div className="space-y-3 pl-2 border-l-2 border-claude-accent/30">
+          <div className="space-y-3 pl-2 border-l-2 border-accent/30">
             <div>
-              <label className="block text-[10px] font-mono text-claude-text-secondary mb-1">Base URL</label>
+              <label className="block text-[12px] text-fg-4 mb-1">Base URL</label>
               <input
                 type="text"
                 value={foundryBaseUrl}
@@ -2414,12 +2809,12 @@ export default function SettingsDialog() {
                   handleDebouncedChange(val, (v) => autoSaveAppSettings({ foundryBaseUrl: v }));
                 }}
                 placeholder="https://your-foundry-endpoint/v1/messages"
-                className="w-full px-3 py-2 bg-claude-bg border border-claude-border text-claude-text font-mono text-sm placeholder:text-claude-text-secondary focus:outline-none focus:border-claude-accent"
+                className="w-full px-3 py-2 bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-claude-text font-mono text-[13px] placeholder:text-fg-5 focus:outline-none focus:ring-1 focus:ring-accent/50"
                 style={{ borderRadius: 0 }}
               />
             </div>
             <div>
-              <label className="block text-[10px] font-mono text-claude-text-secondary mb-1">Foundry API Key</label>
+              <label className="block text-[12px] text-fg-4 mb-1">Foundry API Key</label>
               <ApiKeyInput
                 value={foundryApiKey}
                 onChange={setFoundryApiKey}
@@ -2432,7 +2827,7 @@ export default function SettingsDialog() {
               />
             </div>
             <div className="space-y-2">
-              <label className="block text-[10px] font-mono text-claude-text-secondary">Model Overrides (optional)</label>
+              <label className="block text-[12px] text-fg-4">Model Overrides (optional)</label>
               <input
                 type="text"
                 value={foundryDefaultSonnetModel}
@@ -2442,7 +2837,7 @@ export default function SettingsDialog() {
                   handleDebouncedChange(val, (v) => autoSaveAppSettings({ foundryDefaultSonnetModel: v }));
                 }}
                 placeholder="Sonnet model name"
-                className="w-full px-3 py-1.5 bg-claude-bg border border-claude-border text-claude-text font-mono text-xs placeholder:text-claude-text-secondary focus:outline-none focus:border-claude-accent"
+                className="w-full px-3 py-1.5 bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-claude-text font-mono text-xs placeholder:text-fg-5 focus:outline-none focus:ring-1 focus:ring-accent/50"
                 style={{ borderRadius: 0 }}
               />
               <input
@@ -2454,7 +2849,7 @@ export default function SettingsDialog() {
                   handleDebouncedChange(val, (v) => autoSaveAppSettings({ foundryDefaultHaikuModel: v }));
                 }}
                 placeholder="Haiku model name"
-                className="w-full px-3 py-1.5 bg-claude-bg border border-claude-border text-claude-text font-mono text-xs placeholder:text-claude-text-secondary focus:outline-none focus:border-claude-accent"
+                className="w-full px-3 py-1.5 bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-claude-text font-mono text-xs placeholder:text-fg-5 focus:outline-none focus:ring-1 focus:ring-accent/50"
                 style={{ borderRadius: 0 }}
               />
               <input
@@ -2466,7 +2861,7 @@ export default function SettingsDialog() {
                   handleDebouncedChange(val, (v) => autoSaveAppSettings({ foundryDefaultOpusModel: v }));
                 }}
                 placeholder="Opus model name"
-                className="w-full px-3 py-1.5 bg-claude-bg border border-claude-border text-claude-text font-mono text-xs placeholder:text-claude-text-secondary focus:outline-none focus:border-claude-accent"
+                className="w-full px-3 py-1.5 bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-claude-text font-mono text-xs placeholder:text-fg-5 focus:outline-none focus:ring-1 focus:ring-accent/50"
                 style={{ borderRadius: 0 }}
               />
             </div>
@@ -2475,9 +2870,9 @@ export default function SettingsDialog() {
       </div>
 
       {/* OpenAI API Key */}
-      <div className="space-y-2 pt-4 border-t border-claude-border">
-        <label className="block text-xs font-mono text-claude-text-secondary uppercase tracking-wider">
-          OpenAI API Key (Speech-to-Text)
+      <div className="space-y-2 pt-4 border-t border-line">
+        <label className="block text-[13px] font-medium text-fg-2">
+          OpenAI API Key (Realtime Voice + Transcription)
         </label>
         <ApiKeyInput
           value={openaiApiKey}
@@ -2489,15 +2884,15 @@ export default function SettingsDialog() {
           isLoading={isLoading}
           handleDebouncedChange={handleDebouncedChange}
         />
-        <p className="text-[10px] font-mono text-claude-text-secondary">
-          For voice transcription using Whisper. This is the same OpenAI key used by the Codex agent.{' '}
+        <p className="text-[12px] text-fg-4">
+          Powers GPT Realtime voice, speech transcription, and text-to-speech. Voice WebRTC receives only a short-lived client secret, not your stored API key.{' '}
           <a
             href="#"
             onClick={(e) => {
               e.preventDefault();
               window.electronAPI.app?.openExternal?.('https://platform.openai.com/api-keys');
             }}
-            className="text-claude-accent hover:underline"
+            className="text-accent-text hover:underline"
           >
             Get key
           </a>
@@ -2505,8 +2900,8 @@ export default function SettingsDialog() {
       </div>
 
       {/* Z.AI API Key */}
-      <div className="space-y-2 pt-4 border-t border-claude-border">
-        <label className="block text-xs font-mono text-claude-text-secondary uppercase tracking-wider">
+      <div className="space-y-2 pt-4 border-t border-line">
+        <label className="block text-[13px] font-medium text-fg-2">
           Z.AI API Key
         </label>
         <ApiKeyInput
@@ -2519,7 +2914,7 @@ export default function SettingsDialog() {
           isLoading={isLoading}
           handleDebouncedChange={handleDebouncedChange}
         />
-        <p className="text-[10px] font-mono text-claude-text-secondary">
+        <p className="text-[12px] text-fg-4">
           Enables GLM 5.2 in both Claude Code proxy mode and Codex CLI mode. Build uses Z.AI&apos;s Anthropic-compatible endpoint for Claude Code and OpenAI-compatible endpoint for Codex.{' '}
           <a
             href="#"
@@ -2527,71 +2922,16 @@ export default function SettingsDialog() {
               e.preventDefault();
               window.electronAPI.app?.openExternal?.('https://z.ai/api-keys');
             }}
-            className="text-claude-accent hover:underline"
+            className="text-accent-text hover:underline"
           >
             Get key
           </a>
         </p>
       </div>
 
-      {/* ElevenLabs API Key */}
-      <div className="space-y-2 pt-4 border-t border-claude-border">
-        <label className="block text-xs font-mono text-claude-text-secondary uppercase tracking-wider">
-          ElevenLabs API Key
-        </label>
-        <ApiKeyInput
-          value={elevenLabsApiKey}
-          onChange={setElevenLabsApiKey}
-          show={showElevenLabsApiKey}
-          onToggleShow={() => setShowElevenLabsApiKey(!showElevenLabsApiKey)}
-          placeholder="xi-..."
-          onSave={(value) => autoSaveApiKey(value, 'elevenlabs')}
-          isLoading={isLoading}
-          handleDebouncedChange={handleDebouncedChange}
-        />
-        <p className="text-[10px] font-mono text-claude-text-secondary">
-          Required for voice mode.{' '}
-          <a
-            href="#"
-            onClick={(e) => {
-              e.preventDefault();
-              window.electronAPI.app?.openExternal?.('https://elevenlabs.io/app/settings/api-keys');
-            }}
-            className="text-claude-accent hover:underline"
-          >
-            Get your key at elevenlabs.io
-          </a>
-        </p>
-      </div>
-
-      {/* ElevenLabs Agent ID */}
-      <div className="space-y-2 pt-4 border-t border-claude-border">
-        <label className="block text-xs font-mono text-claude-text-secondary uppercase tracking-wider">
-          ElevenLabs Agent ID
-        </label>
-        <div className="relative">
-          <input
-            type="text"
-            value={elevenLabsAgentId}
-            onChange={(e) => {
-              const newValue = e.target.value;
-              setElevenLabsAgentId(newValue);
-              handleDebouncedChange(newValue, (v) => autoSaveAudioSettings({ elevenLabsAgentId: v }));
-            }}
-            placeholder="agent_..."
-            disabled={isLoading}
-            className="w-full px-3 py-2 bg-claude-bg border border-claude-border text-claude-text font-mono text-sm placeholder:text-claude-text-secondary focus:outline-none focus:border-claude-accent disabled:opacity-50"
-            style={{ borderRadius: 0 }}
-          />
-        </div>
-        <p className="text-[10px] font-mono text-claude-text-secondary">
-          Your Conversational AI agent ID for voice mode
-        </p>
-      </div>
-
       {/* Google/Gemini API Key (Browser AI) */}
-      <div className="space-y-2 pt-4 border-t border-claude-border">
-        <label className="block text-xs font-mono text-claude-text-secondary uppercase tracking-wider">
+      <div className="space-y-2 pt-4 border-t border-line">
+        <label className="block text-[13px] font-medium text-fg-2">
           Google/Gemini API Key (Browser AI)
         </label>
         <ApiKeyInput
@@ -2604,7 +2944,7 @@ export default function SettingsDialog() {
           isLoading={isLoading}
           handleDebouncedChange={handleDebouncedChange}
         />
-        <p className="text-[10px] font-mono text-claude-text-secondary">
+        <p className="text-[12px] text-fg-4">
           For AI-powered browser automation (Stagehand).{' '}
           <a
             href="#"
@@ -2612,7 +2952,7 @@ export default function SettingsDialog() {
               e.preventDefault();
               window.electronAPI.app?.openExternal?.('https://aistudio.google.com/app/apikey');
             }}
-            className="text-claude-accent hover:underline"
+            className="text-accent-text hover:underline"
           >
             Get key
           </a>
@@ -2620,9 +2960,9 @@ export default function SettingsDialog() {
       </div>
 
       {/* Custom Models (Kimi, Gemini, etc via Anthropic-compatible proxy) */}
-      <div className="space-y-3 pt-4 border-t border-claude-border">
+      <div className="space-y-3 pt-4 border-t border-line">
         <div className="flex items-center justify-between">
-          <label className="block text-xs font-mono text-claude-text-secondary uppercase tracking-wider">
+          <label className="block text-[13px] font-medium text-fg-2">
             Custom Models
           </label>
           <button
@@ -2638,26 +2978,26 @@ export default function SettingsDialog() {
               const updated = [...customModels, newModel];
               setCustomModels(updated);
             }}
-            className="px-2 py-0.5 text-[10px] font-mono text-claude-accent border border-claude-accent/30 hover:bg-claude-accent/10 uppercase"
+            className="h-7 px-2 text-[12px] text-fg-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] hover:bg-claude-surface-hover"
             style={{ borderRadius: 0 }}
           >
             + Add Model
           </button>
         </div>
-        <p className="text-[9px] text-claude-text-secondary">
+        <p className="text-[11px] text-claude-text-secondary">
           Add third-party models via Anthropic-compatible API proxies (e.g. Kimi K2.6, Gemini).
         </p>
         {customModels.map((model, index) => (
-          <div key={model.id} className="space-y-2 pl-2 border-l-2 border-cyan-500/30 pb-3">
+          <div key={model.id} className="space-y-2 pl-2 border-l-2 border-accent/30 pb-3">
             <div className="flex items-center justify-between">
-              <span className="text-[10px] font-mono text-cyan-400 uppercase">Model {index + 1}</span>
+              <span className="text-[11px] font-medium uppercase tracking-[0.04em] text-fg-4">Model {index + 1}</span>
               <button
                 onClick={() => {
                   const updated = customModels.filter((_, i) => i !== index);
                   setCustomModels(updated);
                   autoSaveAppSettings({ customModels: updated });
                 }}
-                className="text-[10px] text-red-400 hover:text-red-300"
+                className="text-[12px] text-diff-del hover:text-diff-del-text"
               >
                 Remove
               </button>
@@ -2672,7 +3012,7 @@ export default function SettingsDialog() {
                 handleDebouncedChange(e.target.value, () => autoSaveAppSettings({ customModels: updated }));
               }}
               placeholder="Display name (e.g. Kimi K2.6)"
-              className="w-full px-3 py-1.5 bg-claude-bg border border-claude-border text-claude-text font-mono text-xs placeholder:text-claude-text-secondary focus:outline-none focus:border-claude-accent"
+              className="w-full px-3 py-1.5 bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-claude-text font-mono text-xs placeholder:text-fg-5 focus:outline-none focus:ring-1 focus:ring-accent/50"
               style={{ borderRadius: 0 }}
             />
             <input
@@ -2685,7 +3025,7 @@ export default function SettingsDialog() {
                 handleDebouncedChange(e.target.value, () => autoSaveAppSettings({ customModels: updated }));
               }}
               placeholder="Model ID (e.g. kimi-k2.6-0528)"
-              className="w-full px-3 py-1.5 bg-claude-bg border border-claude-border text-claude-text font-mono text-xs placeholder:text-claude-text-secondary focus:outline-none focus:border-claude-accent"
+              className="w-full px-3 py-1.5 bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-claude-text font-mono text-xs placeholder:text-fg-5 focus:outline-none focus:ring-1 focus:ring-accent/50"
               style={{ borderRadius: 0 }}
             />
             <input
@@ -2698,7 +3038,7 @@ export default function SettingsDialog() {
                 handleDebouncedChange(e.target.value, () => autoSaveAppSettings({ customModels: updated }));
               }}
               placeholder="API base URL (e.g. https://api.moonshot.ai/anthropic)"
-              className="w-full px-3 py-1.5 bg-claude-bg border border-claude-border text-claude-text font-mono text-xs placeholder:text-claude-text-secondary focus:outline-none focus:border-claude-accent"
+              className="w-full px-3 py-1.5 bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-claude-text font-mono text-xs placeholder:text-fg-5 focus:outline-none focus:ring-1 focus:ring-accent/50"
               style={{ borderRadius: 0 }}
             />
             <input
@@ -2711,7 +3051,7 @@ export default function SettingsDialog() {
                 handleDebouncedChange(e.target.value, () => autoSaveAppSettings({ customModels: updated }));
               }}
               placeholder="API key"
-              className="w-full px-3 py-1.5 bg-claude-bg border border-claude-border text-claude-text font-mono text-xs placeholder:text-claude-text-secondary focus:outline-none focus:border-claude-accent"
+              className="w-full px-3 py-1.5 bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-claude-text font-mono text-xs placeholder:text-fg-5 focus:outline-none focus:ring-1 focus:ring-accent/50"
               style={{ borderRadius: 0 }}
             />
           </div>
@@ -2720,7 +3060,7 @@ export default function SettingsDialog() {
 
       {/* Info */}
       <div className="pt-4">
-        <p className="text-[10px] font-mono text-claude-text-secondary text-center">
+        <p className="text-[12px] text-fg-4 text-center">
           Agent credentials and API keys are stored locally and encrypted.
         </p>
       </div>
@@ -2731,8 +3071,8 @@ export default function SettingsDialog() {
   const renderReleasesTab = () => (
     <div className="space-y-4">
       <div className="flex items-center gap-2 mb-3">
-        <Sparkles size={14} className="text-purple-400" />
-        <h3 className="text-xs font-mono text-claude-text uppercase tracking-wider">
+        <Sparkles size={14} className="text-accent-text" />
+        <h3 className="text-[11px] font-medium uppercase tracking-[0.04em] text-fg-4">
           What's New
         </h3>
       </div>
@@ -2766,14 +3106,14 @@ export default function SettingsDialog() {
       onKeyDown={handleKeyDown}
     >
       <div
-        className="w-[1080px] max-w-[calc(100vw-48px)] h-[760px] max-h-[calc(100vh-48px)] bg-claude-surface border border-claude-border flex"
+        className="w-[1080px] max-w-[calc(100vw-48px)] h-[760px] max-h-[calc(100vh-48px)] bg-ink-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1),0_16px_40px_rgba(0,0,0,0.4)] flex"
         onClick={(e) => e.stopPropagation()}
         style={{ borderRadius: 0 }}
       >
         {/* Left Sidebar - Tab Navigation */}
-        <div className="w-[160px] border-r border-claude-border bg-claude-bg flex flex-col">
-          <div className="p-3 border-b border-claude-border">
-            <h2 className="text-xs font-mono font-bold text-claude-text uppercase tracking-wider">
+        <div className="w-[180px] shrink-0 border-r border-line bg-ink-1 flex flex-col">
+          <div className="p-3 border-b border-line">
+            <h2 className="text-[16px] font-semibold tracking-tight text-fg">
               Settings
             </h2>
           </div>
@@ -2782,10 +3122,10 @@ export default function SettingsDialog() {
               <button
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id)}
-                className={`w-full flex items-center gap-2 px-3 py-2 text-xs font-mono uppercase tracking-wider transition-colors ${
+                className={`w-full flex items-center gap-2 h-8 px-3 text-[13px] transition-colors ${
                   activeTab === tab.id
-                    ? 'bg-claude-accent text-white'
-                    : 'text-claude-text-secondary hover:text-claude-text hover:bg-claude-surface'
+                    ? 'bg-claude-surface-hover text-fg'
+                    : 'text-fg-3 hover:text-fg hover:bg-claude-surface-hover'
                 }`}
               >
                 {tab.icon}
@@ -2794,8 +3134,8 @@ export default function SettingsDialog() {
             ))}
           </nav>
           {/* Save status indicator */}
-          <div className="p-3 border-t border-claude-border">
-            <div className={`text-[10px] font-mono text-center transition-opacity duration-200 ${
+          <div className="p-3 border-t border-line">
+            <div className={`text-[12px] text-center transition-opacity duration-200 ${
               saveStatus === 'idle' ? 'opacity-0' : 'opacity-100'
             }`}>
               {saveStatus === 'saving' && (
@@ -2805,7 +3145,7 @@ export default function SettingsDialog() {
                 </span>
               )}
               {saveStatus === 'saved' && (
-                <span className="text-green-400 flex items-center justify-center gap-1">
+                <span className="text-diff-add flex items-center justify-center gap-1">
                   <Check size={10} />
                   Saved
                 </span>
@@ -2815,10 +3155,10 @@ export default function SettingsDialog() {
         </div>
 
         {/* Right Content Area */}
-        <div className="flex-1 flex flex-col">
+        <div className="min-w-0 flex-1 flex flex-col">
           {/* Header */}
-          <div className="flex items-center justify-between px-4 py-3 border-b border-claude-border">
-            <h3 className="text-xs font-mono font-bold text-claude-text uppercase tracking-wider">
+          <div className="flex items-center justify-between px-4 py-3 border-b border-line">
+            <h3 className="text-[16px] font-semibold tracking-tight text-fg">
               {TABS.find(t => t.id === activeTab)?.label}
             </h3>
             <button
@@ -2830,7 +3170,7 @@ export default function SettingsDialog() {
           </div>
 
           {/* Content */}
-          <div className="flex-1 overflow-y-auto p-4">
+          <div className="min-w-0 flex-1 overflow-x-hidden overflow-y-auto p-4">
             {renderTabContent()}
           </div>
         </div>

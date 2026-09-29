@@ -28,6 +28,36 @@ interface BranchWatcher {
 
 export type BranchChangeCallback = (sessionId: string, branch: string) => void;
 
+export function resolveGitHeadPath(worktreePath: string): string {
+  const gitPath = path.join(worktreePath, '.git');
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(gitPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      throw new Error(`${worktreePath} is not a Git repository.`);
+    }
+    throw error;
+  }
+
+  if (stat.isFile()) {
+    const gitFileContent = fs.readFileSync(gitPath, 'utf-8').trim();
+    const match = gitFileContent.match(/^gitdir: (.+)$/);
+    if (!match) throw new Error(`${worktreePath} has an invalid Git worktree pointer.`);
+    const gitDirectory = path.isAbsolute(match[1])
+      ? match[1]
+      : path.resolve(worktreePath, match[1]);
+    const headPath = path.join(gitDirectory, 'HEAD');
+    if (!fs.existsSync(headPath)) throw new Error(`${worktreePath} has no readable Git HEAD.`);
+    return headPath;
+  }
+
+  if (!stat.isDirectory()) throw new Error(`${worktreePath} is not a Git repository.`);
+  const headPath = path.join(gitPath, 'HEAD');
+  if (!fs.existsSync(headPath)) throw new Error(`${worktreePath} has no readable Git HEAD.`);
+  return headPath;
+}
+
 export class GitService {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private store: any;
@@ -252,25 +282,7 @@ export class GitService {
    */
   private getHeadPath(sessionId: string): string {
     const worktreePath = this.getWorktreePath(sessionId);
-    const gitPath = path.join(worktreePath, '.git');
-
-    // Check if .git is a file (worktree) or directory (regular repo)
-    try {
-      const stat = fs.statSync(gitPath);
-      if (stat.isFile()) {
-        // Worktree: .git file contains path to actual gitdir
-        const gitFileContent = fs.readFileSync(gitPath, 'utf-8').trim();
-        const match = gitFileContent.match(/^gitdir: (.+)$/);
-        if (match) {
-          return path.join(match[1], 'HEAD');
-        }
-      }
-    } catch {
-      // Fall through to default
-    }
-
-    // Regular repo or fallback
-    return path.join(gitPath, 'HEAD');
+    return resolveGitHeadPath(worktreePath);
   }
 
   /**
@@ -331,8 +343,14 @@ export class GitService {
       console.log(`[GitService] Started watching branch for session ${sessionId}: ${initialBranch}`);
       return { success: true, branch: initialBranch || undefined };
     } catch (error) {
-      console.error(`[GitService] Failed to watch branch for session ${sessionId}:`, error);
-      return { success: false, error: String(error) };
+      // Discovered folders can be valid Build sessions without being Git
+      // repositories. Treat that as an expected capability result, not a
+      // renderer-facing startup failure.
+      const message = error instanceof Error ? error.message : String(error);
+      if (!/not a Git repository|no readable Git HEAD/.test(message)) {
+        console.error(`[GitService] Failed to watch branch for session ${sessionId}:`, error);
+      }
+      return { success: false, error: message };
     }
   }
 

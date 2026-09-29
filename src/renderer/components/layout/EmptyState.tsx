@@ -3,46 +3,30 @@ import { Folder } from 'lucide-react';
 
 export default function EmptyState() {
   return (
-    <div className="flex-1 flex items-center justify-center font-mono bg-claude-bg">
+    <div className="flex-1 flex items-center justify-center bg-ink-2">
       <div className="text-center max-w-md">
-        {/* Icon - brutalist square */}
-        <div
-          className="w-16 h-16 flex items-center justify-center mx-auto mb-4 bg-claude-surface"
-          style={{ borderRadius: 0 }}
-        >
-          <Folder size={32} className="text-claude-accent" />
+        {/* Icon */}
+        <div className="w-12 h-12 flex items-center justify-center mx-auto mb-5 bg-ink-1 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)]">
+          <Folder size={22} strokeWidth={1.8} className="text-fg-3" />
         </div>
 
         {/* Title */}
-        <h2
-          className="text-sm font-bold mb-2 text-claude-text"
-          style={{ letterSpacing: '0.1em' }}
-        >
-          NO SESSION SELECTED
+        <h2 className="text-[18px] font-semibold tracking-[-0.02em] mb-2 text-fg">
+          No session selected
         </h2>
 
         {/* Description */}
-        <p className="text-xs mb-6 text-claude-text-secondary">
+        <p className="text-[13px] leading-[1.6] mb-6 text-fg-3">
           Select an existing session from the sidebar or create a new one to get started.
         </p>
 
-        {/* Keyboard hint - brutalist */}
+        {/* Keyboard hint */}
         <div className="flex flex-col gap-2 items-center">
-          <div className="flex items-center gap-1.5 text-[10px] text-claude-text-secondary">
-            <kbd
-              className="px-1.5 py-0.5 font-bold bg-claude-surface"
-              style={{ borderRadius: 0 }}
-            >
-              ⌘
+          <div className="flex items-center gap-2 text-[12px] text-fg-4">
+            <kbd className="font-mono text-[11px] px-1.5 py-0.5 bg-ink-4 text-fg-2">
+              ⌘N
             </kbd>
-            <span>+</span>
-            <kbd
-              className="px-1.5 py-0.5 font-bold bg-claude-surface"
-              style={{ borderRadius: 0 }}
-            >
-              N
-            </kbd>
-            <span style={{ letterSpacing: '0.05em' }}>NEW SESSION</span>
+            <span>New session</span>
           </div>
         </div>
       </div>

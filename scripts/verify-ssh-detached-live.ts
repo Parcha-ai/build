@@ -56,8 +56,6 @@ async function waitForOutput(getOutput: () => string, expected: string): Promise
 
 async function main(): Promise<void> {
   const service = new SSHService();
-  // This focused integration check must not run the app's global orphan cleanup.
-  (service as unknown as { hasRunStartupCleanup: boolean }).hasRunStartupCleanup = true;
   const config: SSHConfig = {
     host,
     port: 22,
@@ -92,6 +90,7 @@ async function main(): Promise<void> {
     await service.connect(sessionId, config);
     const secondProcess = service.createDetachedCommandProcess(sessionId, config, {
       command: '/usr/bin/node',
+      recoveryCommand: 'gemini',
       args: ['-e', "console.log('phase-two-after-reinstall'); setTimeout(() => {}, 2000)"],
       cwd: '/tmp',
       requireDetached: true,
@@ -101,6 +100,12 @@ async function main(): Promise<void> {
     assert.equal(secondResult.code, 0);
     assert.match(secondResult.output, /phase-two-after-reinstall/);
     assert.equal(remote(`test -s '${stableBridgePath}' && printf ready`).trim(), 'ready');
+    const jobs = await service.listDetachedBridgeJobs(sessionId, config);
+    assert.equal(
+      jobs.some((job) => job.command === 'gemini'),
+      true,
+      'detached bridge discovery must report the recovery harness, not its wrapper executable',
+    );
     await new Promise((resolve) => setTimeout(resolve, 300));
 
     console.log('Live ubuntu@m detached SSH persistence verifier passed');

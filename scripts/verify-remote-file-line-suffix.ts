@@ -35,8 +35,8 @@ assert.match(
 );
 assert.match(
   fsIpc,
-  /const normalizedFilePath = stripPathLineSuffix\(filePath\)/,
-  'fs read/write handlers must normalize incoming paths',
+  /const normalizedFilePath = resolveFilePathForSession\(filePath, session\?\.worktreePath\)/,
+  'fs read/write handlers must normalize incoming paths against the session worktree',
 );
 assert.match(
   fsIpc,

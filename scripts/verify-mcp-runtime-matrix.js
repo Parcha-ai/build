@@ -88,7 +88,7 @@ function readIfExists(filePath) {
 }
 
 function assertMcpConfig(label, text, options = {}) {
-  assert.ok(text.includes('https://mcp.linear.app/sse'), `${label} should include Linear MCP URL`);
+  assert.ok(text.includes('https://mcp.linear.app/mcp'), `${label} should include canonical Linear MCP URL`);
   assert.ok(text.includes('mcp-remote@0.1.38'), `${label} should use pinned mcp-remote`);
   assert.ok(!/\bmcp-remote\b(?!@0\.1\.38)/.test(text), `${label} should not use unpinned mcp-remote`);
   if (options.expectAllowHttp) {
@@ -99,7 +99,6 @@ function assertMcpConfig(label, text, options = {}) {
 function checkLocalConfigs(report) {
   const home = os.homedir();
   const files = [
-    ['local.cursor', path.join(home, '.cursor/mcp.json')],
     ['local.gemini', path.join(home, '.gemini/settings.json')],
     ['local.codex', path.join(home, '.codex/config.toml')],
     ['local.opencode', path.join(home, '.config/opencode/build-mcp.json')],
@@ -110,6 +109,12 @@ function checkLocalConfigs(report) {
     assertMcpConfig(label, text, { expectAllowHttp: label !== 'local.codex' || text.includes('Paper') });
     report.push({ target: label, status: 'pass', detail: filePath });
   }
+
+  const cursorPath = path.join(home, '.cursor/mcp.json');
+  const cursorText = readIfExists(cursorPath);
+  assert.ok(!cursorText.includes('mcp.notion.com'), 'local.cursor must not globally autostart Build-managed Notion');
+  assert.ok(!cursorText.includes('mcp.linear.app'), 'local.cursor must not duplicate Build session MCP injection');
+  report.push({ target: 'local.cursor', status: 'pass', detail: 'Build-managed globals removed; SDK injection is per session' });
 }
 
 function checkLocalRuntime(report) {
@@ -135,10 +140,7 @@ function checkLocalRuntime(report) {
   }
 
   if (localCommands.cursor) {
-    const result = run('cursor-agent', ['mcp', 'list-tools', 'linear'], { timeoutMs: 30_000 });
-    assert.ok(result.ok, `local cursor linear tools failed: ${result.stderr || result.stdout}`);
-    assert.ok(result.output.includes('Tools for linear'), 'local cursor should list Linear tools');
-    report.push({ target: 'local.cursor.runtime', status: 'pass', detail: 'cursor-agent lists Linear tools' });
+    report.push({ target: 'local.cursor.runtime', status: 'info', detail: 'Build injects MCP servers into Cursor SDK sessions instead of Cursor Desktop globals' });
   } else {
     report.push({ target: 'local.cursor.runtime', status: 'skip', detail: 'cursor-agent CLI missing' });
   }
@@ -196,8 +198,9 @@ function checkClaudeSdkInjection(report) {
     'Claude service should pass Build MCP servers to the Claude SDK query',
   );
   assert.ok(
-    claudeServiceSource.includes('sshService.syncMcpConfigsToRemote(sessionId, session.sshConfig)'),
-    'SSH Claude sessions should sync MCP config/auth before querying',
+    !claudeServiceSource.includes('sshService.scheduleMcpConfigsToRemote(sessionId, session.sshConfig)')
+      && !claudeServiceSource.includes('await sshService.syncMcpConfigsToRemote(sessionId, session.sshConfig)'),
+    'SSH Claude model turns should not trigger MCP synchronization',
   );
   assert.ok(
     claudeServiceSource.includes('sshService.createRemoteProcess('),
@@ -207,7 +210,22 @@ function checkClaudeSdkInjection(report) {
   report.push({
     target: 'claude.sdk-injection',
     status: 'pass',
-    detail: 'Claude SDK query receives mcpServersConfig locally and after SSH MCP sync',
+    detail: 'Claude SDK query receives mcpServersConfig locally while SSH MCP sync stays event-driven',
+  });
+
+  const cursorServiceSource = readIfExists(path.join(__dirname, '../src/main/services/cursor.service.ts'));
+  assert.ok(
+    cursorServiceSource.includes('toCursorSdkMcpServers(mcpService.getHarnessMcpServersConfig())'),
+    'Cursor service should load Build MCP servers per SDK session',
+  );
+  assert.ok(
+    cursorServiceSource.includes('mcpServers: cursorMcpServers'),
+    'Cursor service should pass Build MCP servers directly to the Cursor SDK',
+  );
+  report.push({
+    target: 'cursor.sdk-injection',
+    status: 'pass',
+    detail: 'Cursor SDK receives MCP servers per Build session without global Cursor Desktop autostart',
   });
 }
 
@@ -272,7 +290,7 @@ done
   );
   report.push({ target: 'remote.cli', status: 'info', detail: remoteCommands });
 
-  const linear = remoteRun(args, `${remotePathPrefix(args)}\ntimeout 10 npx -y mcp-remote@0.1.38 https://mcp.linear.app/sse --auth-timeout 5`, 15_000);
+  const linear = remoteRun(args, `${remotePathPrefix(args)}\ntimeout 10 npx -y mcp-remote@0.1.38 https://mcp.linear.app/mcp --auth-timeout 5`, 15_000);
   assert.ok(linear.output.includes('Proxy established successfully'), `remote Linear mcp-remote did not connect: ${linear.stderr || linear.stdout}`);
   report.push({ target: 'remote.linear.runtime', status: 'pass', detail: 'mcp-remote connects with synced auth' });
 

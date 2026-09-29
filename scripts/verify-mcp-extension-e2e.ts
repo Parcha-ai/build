@@ -1,4 +1,5 @@
 import assert from 'assert';
+import { createHash } from 'crypto';
 import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import * as fsPromises from 'fs/promises';
@@ -88,7 +89,7 @@ function readTempHome(relativePath: string): string {
 
 function assertBuildWrapped(fileName: string, text: string, serverId: string): void {
   assert.ok(text.includes(serverId), `${fileName} should include ${serverId}`);
-  assert.ok(text.includes('https://mcp.linear.app/sse'), `${fileName} should include the Linear URL`);
+  assert.ok(text.includes('https://mcp.linear.app/mcp'), `${fileName} should include the canonical Linear URL`);
   assert.ok(text.includes('mcp-remote@0.1.38'), `${fileName} should pin mcp-remote`);
   assert.ok(!/\bmcp-remote\b(?!@0\.1\.38)/.test(text), `${fileName} should not include unpinned mcp-remote`);
   assert.ok(text.includes('BUILD_MCP_LINEAR_UI_SMOKE_AUTHORIZATION'), `${fileName} should use an env-backed Authorization header`);
@@ -117,15 +118,29 @@ async function main(): Promise<void> {
   assert.deepEqual(installResult, { success: true });
   assert.deepEqual(await authEvent, {
     serverId,
-    remoteUrl: 'https://mcp.linear.app/sse',
+    remoteUrl: 'https://mcp.linear.app/mcp',
     reason: 'authenticated',
     authenticated: true,
   });
 
+  // The fake proxy cannot write OAuth files, so materialize the completed
+  // cache record that a real successful mcp-remote process would persist.
+  const authPrefix = createHash('md5').update('https://mcp.linear.app/mcp').digest('hex');
+  const authDir = path.join(tempHome, '.mcp-auth', 'mcp-remote-0.1.37');
+  await fsPromises.mkdir(authDir, { recursive: true });
+  await fsPromises.writeFile(
+    path.join(authDir, `${authPrefix}_tokens.json`),
+    '{"access_token":"smoke-access","refresh_token":"smoke-refresh"}',
+  );
+  await fsPromises.writeFile(
+    path.join(authDir, `${authPrefix}_client_info.json`),
+    '{"client_id":"smoke-client"}',
+  );
+
   const rawConfig = mcpService.getRawConfig(serverId);
   assert.deepEqual(rawConfig, {
     type: 'sse',
-    url: 'https://mcp.linear.app/sse',
+    url: 'https://mcp.linear.app/mcp',
     headers: {
       Authorization: 'Bearer smoke-token',
     },
@@ -139,7 +154,7 @@ async function main(): Promise<void> {
   assert.deepEqual(claudeConfig.args, [
     '-y',
     'mcp-remote@0.1.38',
-    'https://mcp.linear.app/sse',
+    'https://mcp.linear.app/mcp',
     '--header',
     'Authorization: ${BUILD_MCP_LINEAR_UI_SMOKE_AUTHORIZATION}',
   ]);
@@ -148,7 +163,11 @@ async function main(): Promise<void> {
   const localSync = await mcpService.syncLocalHarnessConfigs();
   assert.deepEqual(localSync.errors, {});
 
-  assertBuildWrapped('Cursor MCP config', readTempHome('.cursor/mcp.json'), serverId);
+  assert.ok(
+    !readTempHome('.cursor/mcp.json').includes(serverId),
+    'Cursor Desktop globals must not receive Build-managed MCPs because Cursor SDK sessions inject them directly',
+  );
+  assert.ok(mcpService.getHarnessMcpServersConfig()[serverId], 'Cursor SDK config should retain the server');
   assertBuildWrapped('Gemini MCP config', readTempHome('.gemini/settings.json'), serverId);
   assertBuildWrapped('Codex MCP config', readTempHome('.codex/config.toml'), serverId);
   assertBuildWrapped('OpenCode MCP config', readTempHome('.config/opencode/build-mcp.json'), serverId);

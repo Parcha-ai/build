@@ -29,13 +29,13 @@ assert.match(
 );
 assert.match(
   claudeService,
-  /const forkFromSdkSessionId = normalizeClaudeSdkSessionId\(rawForkFromSdkSessionId\);/,
-  'fork resume must normalize its persisted parent id',
+  /const forkFromSdkSessionId = forkSourceIsBuildSessionId[\s\S]*?: normalizeClaudeSdkSessionId\(rawForkFromSdkSessionId\);/,
+  'fork resume must reject Build ids and normalize its persisted native parent id',
 );
 assert.match(
   claudeService,
-  /\.\.\.\(forkFromSdkSessionId \? \{ resume: forkFromSdkSessionId, forkSession: true \} : \{\}\)/,
-  'SDK query options may only use the normalized fork source',
+  /\.\.\.\(effectiveForkFromSdkSessionId \? \{ resume: effectiveForkFromSdkSessionId, forkSession: true \} : \{\}\)/,
+  'SDK query options may only use the normalized and remotely verified fork source',
 );
 assert.doesNotMatch(
   claudeService,
@@ -49,6 +49,16 @@ assert.match(
 );
 assert.match(
   sessionService,
+  /parentSession\.sshConfig \? undefined : parentSessionId/,
+  'only local sessions may use their Build id as a legacy native-id fallback',
+);
+assert.doesNotMatch(
+  sessionService,
+  /rawMappedParentSdkSessionId \|\| parentSession\.sdkSessionId \|\| parentSessionId/,
+  'SSH forks must never substitute an internal Build id for a missing native conversation id',
+);
+assert.match(
+  sessionService,
   /parentSession\.sshConfig && parentSdkSessionId \? \{ forkFromSdkSessionId: parentSdkSessionId \} : \{\}/,
   'SSH forks without a native conversation must use cloned Build context',
 );
@@ -56,6 +66,41 @@ assert.match(
   sessionService,
   /fastStackForkInPlace[\s\S]*?parentSdkSessionId = normalizeClaudeSdkSessionId\(/,
   'Fast Stack must reject sentinels before preparing a native fork',
+);
+assert.match(
+  claudeService,
+  /const forkSourceNativeId =[\s\S]*?const forkSourceIsBuildSessionId = Boolean\([\s\S]*?forkSourceNativeId !== rawForkFromSdkSessionId/,
+  'runtime must retire legacy fork handles that point at Build sessions without a matching native mapping',
+);
+assert.match(
+  claudeService,
+  /delete\(`sessions\.\$\{sessionId\}\.forkFromSdkSessionId`\)/,
+  'clearing a stale native session must also clear its one-shot fork handle',
+);
+assert.match(
+  claudeService,
+  /const attemptedResumeSessionId = effectiveForkFromSdkSessionId \|\| effectiveSdkSessionId;/,
+  'empty-result recovery must cover one-shot fork resumes as well as canonical resumes',
+);
+assert.match(
+  claudeService,
+  /const verifiedResumeSessionId = effectiveForkFromSdkSessionId \|\| effectiveSdkSessionId;/,
+  'live-owner checks must use the verified/repaired resume handle',
+);
+assert.match(
+  claudeService,
+  /this\.clearSdkSessionId\(sessionId\);\s*effectiveSdkSessionId = undefined;\s*effectiveForkFromSdkSessionId = undefined;/,
+  'a live or missing resume owner must clear canonical and one-shot fork handles together',
+);
+assert.match(
+  claudeService,
+  /repairSshSdkSessionIdFromBuildTranscriptOnce\([\s\S]*?Retiring missing SSH Claude resume/,
+  'every SSH Claude resume must verify or repair its remote transcript before spawn',
+);
+assert.match(
+  claudeService,
+  /return currentTranscriptFound \? currentSdkSessionId : undefined;/,
+  'a missing remote transcript must fall back to authoritative Build context',
 );
 
 console.log('Claude session-id boundary verifier passed');

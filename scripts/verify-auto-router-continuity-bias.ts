@@ -14,6 +14,7 @@ const flueMetaRouterSource = fs.readFileSync(path.join(root, 'src/main/services/
 
 // Static wiring: settings choose first; continuity is only an optimization.
 assert.match(autoRouterSource, /isContinuationIntentMessage/);
+assert.match(autoRouterSource, /isPrWorkflowContinuation/);
 assert.match(autoRouterSource, /if \(options\.approvedPlanContinuation && isApprovedPlanExecutionFollowup\(message\)\) return false;/);
 assert.match(autoRouterSource, /harnessFromModel\(configured\) === options\.continuationHarness/);
 assert.match(autoRouterSource, /Configured \$\{tier\} model \$\{configured\} matches the previous/);
@@ -213,7 +214,38 @@ async function runContinuityAssertions(): Promise<void> {
     );
     assert.equal(resolvedPrWorkflow.tier, 'build');
     assert.equal(resolvedPrWorkflow.planningGate.action, 'none');
-    assert.equal(resolvedPrWorkflow.resolvedModel, 'codex:gpt-5.5');
+    assert.equal(resolvedPrWorkflow.resolvedHarness, 'claude');
+    assert.equal(resolvedPrWorkflow.resolvedModel, 'claude-fable-5');
+    assert.equal(resolvedPrWorkflow.categoryId, 'pr');
+    assert.equal(resolvedPrWorkflow.categoryLabel, 'Pull requests');
+    assert.equal(resolvedPrWorkflow.missionControl?.categoryId, 'pr');
+    assert.equal(resolvedPrWorkflow.orchestration?.mode, 'single');
+    assert.match(resolvedPrWorkflow.reason, /First-class PR category uses configured model claude-fable-5/);
+
+    const nativePrWorkflow = await autoRouterService.classifyAndRoute(
+      'native-pr-workflow-executes',
+      '/pr',
+      { ...baseOptions, permissionMode: 'bypassPermissions' },
+    );
+    assert.equal(nativePrWorkflow.tier, 'build');
+    assert.equal(nativePrWorkflow.categoryId, 'pr');
+    assert.equal(nativePrWorkflow.resolvedModel, 'claude-fable-5');
+    assert.equal(nativePrWorkflow.orchestration?.mode, 'single');
+    assert.equal(nativePrWorkflow.orchestration?.handoffPrompt, '');
+
+    // A disconnected background check must not turn a prose continuation of
+    // the native PR workflow into a generic Sol build turn. This reproduces
+    // the Fable -> background pytest -> Sol handoff seen in production.
+    const pendingPrWorkflow = await autoRouterService.classifyAndRoute(
+      'pending-pr-workflow-stays-on-pr-model',
+      'OK while it is doing that in the PR workflow, resolve the blockers and move the review policies into REVIEW.md',
+      { ...baseOptions, permissionMode: 'bypassPermissions' },
+    );
+    assert.equal(pendingPrWorkflow.tier, 'build');
+    assert.equal(pendingPrWorkflow.categoryId, 'pr');
+    assert.equal(pendingPrWorkflow.resolvedHarness, 'claude');
+    assert.equal(pendingPrWorkflow.resolvedModel, 'claude-fable-5');
+    assert.equal(pendingPrWorkflow.orchestration?.mode, 'single');
 
     const frustratedPrWorkflow = await autoRouterService.classifyAndRoute(
       'frustrated-pr-workflow-executes',
@@ -222,6 +254,66 @@ async function runContinuityAssertions(): Promise<void> {
     );
     assert.equal(frustratedPrWorkflow.tier, 'build');
     assert.equal(frustratedPrWorkflow.planningGate.action, 'none');
+    assert.equal(frustratedPrWorkflow.resolvedModel, 'claude-fable-5');
+    assert.equal(frustratedPrWorkflow.missionControl?.categoryId, 'pr');
+
+    // This is the exact shape seen by Fable after a cross-harness transcript
+    // sync. The active imperative comes after the sync envelope, and "create"
+    // must still be treated as workflow execution rather than model-routed
+    // planning.
+    const syncedCreatePrWorkflow = await autoRouterService.classifyAndRoute(
+      'synced-create-pr-workflow-executes',
+      '<conversation_sync>prior transcript with plans and reviews</conversation_sync>\ncreate the /pr',
+      { ...baseOptions, skipMetaController: false, permissionMode: 'bypassPermissions' },
+    );
+    assert.equal(syncedCreatePrWorkflow.tier, 'build');
+    assert.equal(syncedCreatePrWorkflow.planningGate.action, 'none');
+    assert.equal(syncedCreatePrWorkflow.resolvedModel, 'claude-fable-5');
+    assert.equal(syncedCreatePrWorkflow.missionControl?.categoryId, 'pr');
+    assert.match(syncedCreatePrWorkflow.reason, /explicitly invoked a mutating execution workflow/i);
+
+    // 10. Ordinary spoken PR operations are also hard phase boundaries. They
+    // must not depend on slash-command expansion to avoid Fable plan mode.
+    const createPr = await autoRouterService.classifyAndRoute(
+      'spoken-pr-publication-executes',
+      'Push the branch and create the PR now',
+      { ...baseOptions, skipMetaController: false, permissionMode: 'bypassPermissions' },
+    );
+    assert.equal(createPr.tier, 'build');
+    assert.equal(createPr.planningGate.action, 'none');
+    assert.equal(createPr.resolvedModel, 'codex:gpt-5.5');
+    assert.match(createPr.reason, /publication request must execute without a planning turn/);
+
+    const prStatus = await autoRouterService.classifyAndRoute(
+      'spoken-pr-status-verifies',
+      'Is there a PR yet?',
+      { ...baseOptions, skipMetaController: false, permissionMode: 'bypassPermissions' },
+    );
+    assert.equal(prStatus.tier, 'verify');
+    assert.equal(prStatus.planningGate.action, 'none');
+    assert.equal(prStatus.resolvedModel, 'gemini:gemini-3.5-flash');
+    assert.match(prStatus.reason, /status lookup is verification, not planning/);
+
+    const planLoopComplaint = await autoRouterService.classifyAndRoute(
+      'pr-plan-loop-complaint-verifies',
+      'WHY DOES IT KEEP GOING INTO PLAN MODE IN FABLE TO WRITE THE PR?',
+      { ...baseOptions, skipMetaController: false, permissionMode: 'bypassPermissions' },
+    );
+    assert.equal(planLoopComplaint.tier, 'verify');
+    assert.equal(planLoopComplaint.planningGate.action, 'none');
+    assert.match(planLoopComplaint.reason, /unwanted planning or verification loop/);
+
+    // 11. The input's explicitly selected permission mode is authoritative.
+    // Even a direct publication command stays in Plan when the user deliberately
+    // selected Plan; the PR fast path only applies to executable input modes.
+    const manuallySelectedPlan = await autoRouterService.classifyAndRoute(
+      'manual-plan-mode-remains-authoritative',
+      'Push the branch and create the PR now',
+      { ...baseOptions, skipMetaController: false, permissionMode: 'plan' },
+    );
+    assert.equal(manuallySelectedPlan.tier, 'plan');
+    assert.equal(manuallySelectedPlan.resolvedModel, 'claude-sonnet-4-6');
+    assert.match(manuallySelectedPlan.reason, /Permission mode is plan/);
 
     console.log(`[AutoRouter] follow-up → ${followUp.resolvedHarness}:${followUp.resolvedModel}`);
     console.log(`[AutoRouter] anaphoric → ${anaphoric.resolvedHarness}:${anaphoric.resolvedModel}`);
@@ -232,6 +324,12 @@ async function runContinuityAssertions(): Promise<void> {
     console.log(`[AutoRouter] cross-tier switch → ${crossTierSwitch.resolvedHarness}:${crossTierSwitch.resolvedModel}`);
     console.log(`[AutoRouter] approved plan → ${approvedPlan.resolvedHarness}:${approvedPlan.resolvedModel}`);
     console.log(`[AutoRouter] explicit /pr → ${resolvedPrWorkflow.resolvedHarness}:${resolvedPrWorkflow.resolvedModel}`);
+    console.log(`[AutoRouter] native /pr → ${nativePrWorkflow.resolvedHarness}:${nativePrWorkflow.resolvedModel}`);
+    console.log(`[AutoRouter] pending PR workflow → ${pendingPrWorkflow.resolvedHarness}:${pendingPrWorkflow.resolvedModel}`);
+    console.log(`[AutoRouter] synced create /pr → ${syncedCreatePrWorkflow.resolvedHarness}:${syncedCreatePrWorkflow.resolvedModel}`);
+    console.log(`[AutoRouter] spoken PR creation → ${createPr.resolvedHarness}:${createPr.resolvedModel}`);
+    console.log(`[AutoRouter] spoken PR status → ${prStatus.resolvedHarness}:${prStatus.resolvedModel}`);
+    console.log(`[AutoRouter] manual Plan mode → ${manuallySelectedPlan.resolvedHarness}:${manuallySelectedPlan.resolvedModel}`);
   } finally {
     moduleWithLoad._load = originalLoad;
   }

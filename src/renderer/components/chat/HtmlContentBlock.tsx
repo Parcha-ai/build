@@ -77,27 +77,25 @@ export default function HtmlContentBlock({ html, messageId }: HtmlContentBlockPr
         ref={iframeRef}
         srcDoc={enhancedHtml}
         sandbox="allow-scripts"
-        className="w-full border border-claude-border bg-[#1a1a2e]"
-        style={{ height, borderRadius: 0, minHeight: 200, maxHeight: 2000 }}
+        className="w-full bg-[#0B0B0B] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)]"
+        style={{ height, minHeight: 200, maxHeight: 2000 }}
         title="HTML Response"
       />
       {/* Action bar - appears on hover */}
       <div className="absolute top-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
         <button
           onClick={handleOpenInBrowser}
-          className="p-1.5 bg-claude-surface/90 border border-claude-border text-claude-text-secondary hover:text-claude-text"
-          style={{ borderRadius: 0 }}
+          className="p-1.5 bg-ink-3/95 text-fg-3 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] hover:text-fg"
           title="Open in browser"
         >
           <ExternalLink size={14} />
         </button>
         <button
           onClick={handleCopy}
-          className="p-1.5 bg-claude-surface/90 border border-claude-border text-claude-text-secondary hover:text-claude-text"
-          style={{ borderRadius: 0 }}
+          className="p-1.5 bg-ink-3/95 text-fg-3 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] hover:text-fg"
           title="Copy HTML"
         >
-          {copied ? <Check size={14} className="text-green-400" /> : <Copy size={14} />}
+          {copied ? <Check size={14} className="text-diff-add" /> : <Copy size={14} />}
         </button>
       </div>
     </div>

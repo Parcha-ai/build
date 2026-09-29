@@ -37,7 +37,7 @@ export const SoundVisualization: React.FC<SoundVisualizationProps> = ({
         {[...Array(5)].map((_, i) => (
           <div
             key={i}
-            className={`${barSizes[size]} bg-gradient-to-t from-blue-500 to-cyan-400 rounded-full animate-sound-bar`}
+            className={`${barSizes[size]} bg-gradient-to-t from-accent to-accent-text animate-sound-bar`}
             style={{
               animationDelay: `${i * 0.1}s`,
               height: '100%',
@@ -57,9 +57,9 @@ export const SoundVisualization: React.FC<SoundVisualizationProps> = ({
 
     return (
       <div className={`relative ${pulseSizes[size]} ${className}`}>
-        <div className="absolute inset-0 bg-blue-500 rounded-full animate-ping opacity-75" />
-        <div className="absolute inset-0 bg-blue-400 rounded-full animate-pulse" />
-        <div className="absolute inset-1 bg-cyan-400 rounded-full" />
+        <div className="absolute inset-0 bg-accent rounded-full animate-ping opacity-60" />
+        <div className="absolute inset-0 bg-accent rounded-full animate-pulse" />
+        <div className="absolute inset-1 bg-accent-text rounded-full" />
       </div>
     );
   }
@@ -78,9 +78,9 @@ export const SoundVisualization: React.FC<SoundVisualizationProps> = ({
         />
         <defs>
           <linearGradient id="waveGradient" x1="0%" y1="0%" x2="100%" y2="0%">
-            <stop offset="0%" stopColor="#3B82F6" />
-            <stop offset="50%" stopColor="#22D3EE" />
-            <stop offset="100%" stopColor="#3B82F6" />
+            <stop offset="0%" stopColor="#4C9AFF" />
+            <stop offset="50%" stopColor="#8DBBFF" />
+            <stop offset="100%" stopColor="#4C9AFF" />
           </linearGradient>
         </defs>
       </svg>
@@ -98,9 +98,9 @@ export const InlineSoundVisualization: React.FC<{
   if (!isActive) return null;
 
   return (
-    <div className="inline-flex items-center gap-2 px-3 py-1.5 bg-blue-500/10 border border-blue-500/30 rounded-full">
+    <div className="inline-flex items-center gap-2 px-2.5 py-1 bg-accent/[0.13] shadow-[inset_0_0_0_1px_rgba(76,154,255,0.35)]">
       <SoundVisualization isActive={isActive} variant="bars" size="sm" />
-      <span className="text-xs text-blue-400 font-medium">{label}</span>
+      <span className="text-[12px] text-accent-text font-medium">{label}</span>
     </div>
   );
 };

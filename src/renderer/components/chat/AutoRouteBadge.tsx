@@ -2,6 +2,8 @@ import React from 'react';
 
 interface AutoRouteBadgeProps {
   tier: string;
+  categoryId?: string;
+  categoryLabel?: string;
   domain?: string;
   resolvedHarness?: string;
   modelLabel?: string;
@@ -10,11 +12,13 @@ interface AutoRouteBadgeProps {
 }
 
 const TIER_COLORS: Record<string, { bg: string; text: string; border: string }> = {
-  spec:   { bg: 'bg-fuchsia-500/15', text: 'text-fuchsia-400', border: 'border-fuchsia-500/30' },
-  plan:   { bg: 'bg-purple-500/15', text: 'text-purple-400', border: 'border-purple-500/30' },
-  build:  { bg: 'bg-blue-500/15',   text: 'text-blue-400',   border: 'border-blue-500/30' },
-  verify: { bg: 'bg-amber-500/15',  text: 'text-amber-400',  border: 'border-amber-500/30' },
-  refine: { bg: 'bg-green-500/15',  text: 'text-green-400',  border: 'border-green-500/30' },
+  // Graphite tags: transparent with an inset hairline; tint only the text/line.
+  pr:     { bg: 'bg-[rgba(76,154,255,0.08)]', text: 'text-accent-text', border: 'shadow-[inset_0_0_0_1px_rgba(76,154,255,0.35)]' },
+  spec:   { bg: 'bg-[rgba(76,154,255,0.08)]', text: 'text-accent-text', border: 'shadow-[inset_0_0_0_1px_rgba(76,154,255,0.35)]' },
+  plan:   { bg: 'bg-transparent', text: 'text-accent-text', border: 'shadow-[inset_0_0_0_1px_rgba(76,154,255,0.35)]' },
+  build:  { bg: 'bg-transparent', text: 'text-fg-3', border: 'shadow-[inset_0_0_0_1px_rgba(255,255,255,0.16)]' },
+  verify: { bg: 'bg-transparent', text: 'text-amber', border: 'shadow-[inset_0_0_0_1px_rgba(240,180,41,0.35)]' },
+  refine: { bg: 'bg-transparent', text: 'text-diff-add', border: 'shadow-[inset_0_0_0_1px_rgba(63,185,80,0.35)]' },
 };
 
 export const HARNESS_LABELS: Record<string, string> = {
@@ -23,6 +27,7 @@ export const HARNESS_LABELS: Record<string, string> = {
   codex: 'Codex',
   gemini: 'Gemini',
   opencode: 'OpenCode',
+  prime: 'Prime Agent',
   custom: 'Custom',
 };
 
@@ -32,6 +37,7 @@ export function inferHarnessFromModel(model?: string): string | undefined {
   if (model.startsWith('cursor:')) return 'cursor';
   if (model.startsWith('gemini:')) return 'gemini';
   if (model.startsWith('opencode:')) return 'opencode';
+  if (model.startsWith('prime:')) return 'prime';
   if (model.startsWith('custom:')) return 'custom';
   return 'claude';
 }
@@ -51,8 +57,8 @@ export function formatModelId(model?: string): string | undefined {
 
 function normalizeModelLabel(label?: string): string | undefined {
   return label
-    ?.replace(/ \((Claude|Cursor|Codex|Gemini|OpenCode|Custom)\)$/i, '')
-    .replace(/ \[(Claude|Cursor|Codex|Gemini|OpenCode|Custom)\]$/i, '')
+    ?.replace(/ \((Claude|Cursor|Codex|Gemini|OpenCode|Prime Agent|Custom)\)$/i, '')
+    .replace(/ \[(Claude|Cursor|Codex|Gemini|OpenCode|Prime Agent|Custom)\]$/i, '')
     .trim();
 }
 
@@ -69,19 +75,19 @@ function formatRouteTitle(tier: string, domain?: string, harness?: string, model
   return agent ? `Using ${agent}. Auto Build scope: ${scope}` : `Current turn scope: ${scope}`;
 }
 
-export const AutoRouteBadge: React.FC<AutoRouteBadgeProps> = ({ tier, domain, resolvedHarness, modelLabel, compact, planningGateAction }) => {
-  const displayTier = planningGateAction === 'start' ? 'spec' : tier;
+export const AutoRouteBadge: React.FC<AutoRouteBadgeProps> = ({ tier, categoryId, categoryLabel, domain, resolvedHarness, modelLabel, compact, planningGateAction }) => {
+  const displayTier = planningGateAction === 'start' ? 'spec' : categoryId || tier;
   const colors = TIER_COLORS[displayTier] || TIER_COLORS.build;
   const agentLabel = formatHarnessModelLabel(resolvedHarness, undefined, modelLabel);
-  const title = formatRouteTitle(displayTier, domain, resolvedHarness, modelLabel);
+  const title = formatRouteTitle(categoryLabel || displayTier, domain, resolvedHarness, modelLabel);
 
   if (compact) {
     return (
       <span
-        className={`inline-flex min-w-0 max-w-[180px] items-center gap-1 px-1.5 py-0.5 text-[9px] font-mono uppercase tracking-wider ${colors.bg} ${colors.text} border ${colors.border} rounded`}
+        className={`inline-flex min-w-0 max-w-[180px] items-center gap-1 px-[5px] py-px text-[9.5px] font-mono uppercase tracking-[0.04em] ${colors.bg} ${colors.text} ${colors.border}`}
         title={title}
       >
-        <span className="font-bold">{displayTier === 'spec' ? 'SPEC' : 'AUTO'}</span>
+        <span className="font-medium">{displayTier === 'spec' ? 'SPEC' : displayTier === 'pr' ? 'PR' : 'AUTO'}</span>
         {agentLabel && <span className="min-w-0 truncate opacity-70 normal-case tracking-normal">{agentLabel}</span>}
       </span>
     );
@@ -89,10 +95,10 @@ export const AutoRouteBadge: React.FC<AutoRouteBadgeProps> = ({ tier, domain, re
 
   return (
     <span
-      className={`inline-flex min-w-0 max-w-[220px] items-center gap-1.5 px-2 py-0.5 text-[10px] font-mono ${colors.bg} ${colors.text} border ${colors.border} rounded`}
+      className={`inline-flex min-w-0 max-w-[220px] items-center gap-1.5 px-1.5 py-px text-[10px] font-mono ${colors.bg} ${colors.text} ${colors.border}`}
       title={title}
     >
-      <span className="uppercase font-bold tracking-wider">{displayTier === 'spec' ? 'SPEC' : 'AUTO'}</span>
+      <span className="uppercase font-medium tracking-[0.04em]">{displayTier === 'spec' ? 'SPEC' : displayTier === 'pr' ? 'PR' : 'AUTO'}</span>
       {agentLabel && <span className="min-w-0 truncate opacity-70">{agentLabel}</span>}
     </span>
   );

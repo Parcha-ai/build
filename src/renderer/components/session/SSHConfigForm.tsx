@@ -19,6 +19,7 @@ type RemoteCliCapabilities = {
   cursor?: boolean;
   gemini?: boolean;
   opencode?: boolean;
+  prime?: boolean;
 };
 
 type RemoteCliSetupCommand = {
@@ -34,9 +35,10 @@ const REMOTE_HARNESS_LABELS: Record<keyof RemoteCliCapabilities, string> = {
   cursor: 'Cursor',
   gemini: 'Gemini',
   opencode: 'OpenCode',
+  prime: 'Prime Agent',
 };
 
-const REMOTE_HARNESS_ORDER: Array<keyof RemoteCliCapabilities> = ['claude', 'codex', 'cursor', 'gemini', 'opencode'];
+const REMOTE_HARNESS_ORDER: Array<keyof RemoteCliCapabilities> = ['claude', 'codex', 'cursor', 'gemini', 'opencode', 'prime'];
 
 function getRemoteHarnessLabels(capabilities?: RemoteCliCapabilities): string[] {
   if (!capabilities) return [];
@@ -72,6 +74,8 @@ export default function SSHConfigForm({ onBack, onConnect, teleportSource, onTel
 
   // Status
   const [isTesting, setIsTesting] = useState(false);
+  const [installingHarness, setInstallingHarness] = useState<keyof RemoteCliCapabilities | null>(null);
+  const [installError, setInstallError] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<{
     success: boolean;
     error?: string;
@@ -255,6 +259,40 @@ export default function SSHConfigForm({ onBack, onConnect, teleportSource, onTel
     }
   };
 
+  const handleInstallRemoteHarness = async (harness: keyof RemoteCliCapabilities) => {
+    if (!host || !username || !privateKeyPath || !remoteWorkdir) {
+      setInstallError('Fill in the host, username, key, and remote directory first.');
+      return;
+    }
+
+    setInstallingHarness(harness);
+    setInstallError(null);
+    try {
+      const config: SSHConfig = {
+        host,
+        port: parseInt(port) || 22,
+        username,
+        privateKeyPath,
+        remoteWorkdir,
+        passphrase: passphrase || undefined,
+      };
+      const result = await window.electronAPI.ssh.installCli(config, harness);
+      const nextCapabilities = result.capabilities;
+      setTestResult((current) => ({
+        ...(current || { success: true }),
+        success: true,
+        cliCapabilities: nextCapabilities,
+        setupWarning: undefined,
+        missingCliInstallCommands: current?.missingCliInstallCommands?.filter((setup) => setup.harness !== harness),
+      }));
+      await handleTestConnection();
+    } catch (error) {
+      setInstallError(error instanceof Error ? error.message : `Could not install ${REMOTE_HARNESS_LABELS[harness]}.`);
+    } finally {
+      setInstallingHarness(null);
+    }
+  };
+
   const handleCreate = async () => {
     if (!testResult?.success) {
       setCreateError('Please test the connection first');
@@ -326,8 +364,8 @@ export default function SSHConfigForm({ onBack, onConnect, teleportSource, onTel
   if (isLoading) {
     return (
       <div className="flex flex-col h-full items-center justify-center">
-        <Loader2 size={24} className="animate-spin text-claude-text-secondary" />
-        <span className="mt-2 text-[10px] text-claude-text-secondary">Loading saved config...</span>
+        <Loader2 size={24} className="animate-spin text-fg-4" />
+        <span className="mt-2 text-[12px] text-fg-4">Loading saved config...</span>
       </div>
     );
   }
@@ -336,28 +374,27 @@ export default function SSHConfigForm({ onBack, onConnect, teleportSource, onTel
     <div className="flex flex-col h-full">
       {/* Teleport Source Info */}
       {isTeleportMode && teleportSource && (
-        <div className="mb-3 p-3 bg-cyan-500/10 border border-cyan-500/30" style={{ borderRadius: 0 }}>
+        <div className="mb-3 p-3 bg-accent/10 shadow-[inset_0_0_0_1px_rgba(76,154,255,0.3)]">
           <div className="flex items-center gap-2 mb-1">
-            <Upload size={14} className="text-cyan-400" />
-            <span className="text-[10px] font-bold text-cyan-400 uppercase tracking-wider">TELEPORTING FROM LOCAL</span>
+            <Upload size={14} className="text-accent-text" />
+            <span className="text-[11px] font-medium text-accent-text uppercase tracking-[0.04em]">TELEPORTING FROM LOCAL</span>
           </div>
-          <div className="font-mono text-sm font-bold text-claude-text">{teleportSource.name}</div>
-          <div className="text-[10px] text-claude-text-secondary truncate mt-0.5">{teleportSource.worktreePath}</div>
+          <div className="text-[14px] font-semibold text-fg">{teleportSource.name}</div>
+          <div className="text-[11.5px] font-mono text-fg-4 truncate mt-0.5">{teleportSource.worktreePath}</div>
         </div>
       )}
 
       {/* Tab Header */}
-      <div className="flex border-b border-claude-border mb-3">
+      <div className="flex gap-1 border-b border-line pb-2 mb-3">
         {tabs.map((tab) => (
           <button
             key={tab.id}
             onClick={() => setActiveTab(tab.id)}
-            className={`flex items-center gap-1.5 px-4 py-2 text-[10px] font-bold transition-colors ${
+            className={`flex items-center gap-1.5 h-7 px-3 text-[12.5px] font-medium transition-colors ${
               activeTab === tab.id
-                ? 'text-claude-accent border-b-2 border-claude-accent -mb-[1px]'
-                : 'text-claude-text-secondary hover:text-claude-text'
+                ? 'bg-claude-surface-hover text-fg'
+                : 'text-fg-3 hover:text-fg hover:bg-claude-surface-hover'
             }`}
-            style={{ letterSpacing: '0.1em' }}
           >
             {tab.icon}
             {tab.label.toUpperCase()}
@@ -372,23 +409,22 @@ export default function SSHConfigForm({ onBack, onConnect, teleportSource, onTel
             {/* Host & Port */}
             <div className="flex gap-3">
               <div className="flex-1">
-                <label className="block text-[10px] font-bold mb-1 text-claude-text-secondary" style={{ letterSpacing: '0.1em' }}>
+                <label className="block text-[11px] font-medium uppercase tracking-[0.04em] mb-1 text-fg-4">
                   HOST
                 </label>
                 <div className="relative">
-                  <Server size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-claude-text-secondary" />
+                  <Server size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-fg-5" />
                   <input
                     type="text"
                     value={host}
                     onChange={(e) => setHost(e.target.value)}
                     placeholder="hostname or IP"
-                    className="w-full pl-9 pr-3 py-1.5 text-sm font-mono focus:outline-none focus:border-claude-accent bg-claude-bg border border-claude-border text-claude-text"
-                    style={{ borderRadius: 0 }}
+                    className="w-full pl-9 pr-3 py-1.5 text-[13px] font-mono bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-fg placeholder:text-fg-5 focus:outline-none focus:ring-1 focus:ring-accent/50"
                   />
                 </div>
               </div>
               <div className="w-16">
-                <label className="block text-[10px] font-bold mb-1 text-claude-text-secondary" style={{ letterSpacing: '0.1em' }}>
+                <label className="block text-[11px] font-medium uppercase tracking-[0.04em] mb-1 text-fg-4">
                   PORT
                 </label>
                 <input
@@ -396,15 +432,14 @@ export default function SSHConfigForm({ onBack, onConnect, teleportSource, onTel
                   value={port}
                   onChange={(e) => setPort(e.target.value)}
                   placeholder="22"
-                  className="w-full px-2 py-1.5 text-sm font-mono focus:outline-none focus:border-claude-accent bg-claude-bg border border-claude-border text-claude-text text-center"
-                  style={{ borderRadius: 0 }}
+                  className="w-full px-2 py-1.5 text-[13px] font-mono bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-fg placeholder:text-fg-5 focus:outline-none focus:ring-1 focus:ring-accent/50 text-center"
                 />
               </div>
             </div>
 
             {/* Username */}
             <div>
-              <label className="block text-[10px] font-bold mb-1 text-claude-text-secondary" style={{ letterSpacing: '0.1em' }}>
+              <label className="block text-[11px] font-medium uppercase tracking-[0.04em] mb-1 text-fg-4">
                 USERNAME
               </label>
               <input
@@ -412,33 +447,30 @@ export default function SSHConfigForm({ onBack, onConnect, teleportSource, onTel
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
                 placeholder="ubuntu"
-                className="w-full px-3 py-1.5 text-sm font-mono focus:outline-none focus:border-claude-accent bg-claude-bg border border-claude-border text-claude-text"
-                style={{ borderRadius: 0 }}
+                className="w-full px-3 py-1.5 text-[13px] font-mono bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-fg placeholder:text-fg-5 focus:outline-none focus:ring-1 focus:ring-accent/50"
               />
             </div>
 
             {/* Private Key */}
             <div>
-              <label className="block text-[10px] font-bold mb-1 text-claude-text-secondary" style={{ letterSpacing: '0.1em' }}>
+              <label className="block text-[11px] font-medium uppercase tracking-[0.04em] mb-1 text-fg-4">
                 PRIVATE KEY
               </label>
               <div className="flex gap-2">
                 <div className="flex-1 relative">
-                  <Key size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-claude-text-secondary" />
+                  <Key size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-fg-5" />
                   <input
                     type="text"
                     value={privateKeyPath}
                     readOnly
                     placeholder="~/.ssh/id_ed25519"
                     onClick={handleSelectKeyFile}
-                    className="w-full pl-9 pr-3 py-1.5 text-sm font-mono focus:outline-none bg-claude-bg border border-claude-border text-claude-text cursor-pointer truncate"
-                    style={{ borderRadius: 0 }}
+                    className="w-full pl-9 pr-3 py-1.5 text-[13px] font-mono bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-fg placeholder:text-fg-5 focus:outline-none focus:ring-1 focus:ring-accent/50 cursor-pointer truncate"
                   />
                 </div>
                 <button
                   onClick={handleSelectKeyFile}
-                  className="px-3 py-1.5 text-[10px] font-bold bg-claude-bg hover:bg-claude-surface border border-claude-border text-claude-text"
-                  style={{ borderRadius: 0 }}
+                  className="px-3 text-[13px] text-fg-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] hover:bg-claude-surface-hover"
                 >
                   ...
                 </button>
@@ -447,16 +479,15 @@ export default function SSHConfigForm({ onBack, onConnect, teleportSource, onTel
 
             {/* Passphrase */}
             <div>
-              <label className="block text-[10px] font-bold mb-1 text-claude-text-secondary" style={{ letterSpacing: '0.1em' }}>
-                KEY PASSPHRASE <span className="font-normal opacity-60">(if encrypted)</span>
+              <label className="block text-[11px] font-medium uppercase tracking-[0.04em] mb-1 text-fg-4">
+                KEY PASSPHRASE <span className="font-normal normal-case tracking-normal text-fg-5">(if encrypted)</span>
               </label>
               <input
                 type="password"
                 value={passphrase}
                 onChange={(e) => setPassphrase(e.target.value)}
                 placeholder="Leave empty if none"
-                className="w-full px-3 py-1.5 text-sm font-mono focus:outline-none focus:border-claude-accent bg-claude-bg border border-claude-border text-claude-text"
-                style={{ borderRadius: 0 }}
+                className="w-full px-3 py-1.5 text-[13px] font-mono bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-fg placeholder:text-fg-5 focus:outline-none focus:ring-1 focus:ring-accent/50"
               />
             </div>
           </>
@@ -466,19 +497,18 @@ export default function SSHConfigForm({ onBack, onConnect, teleportSource, onTel
           <>
             {/* Remote Working Directory */}
             <div>
-              <label className="block text-[10px] font-bold mb-1 text-claude-text-secondary" style={{ letterSpacing: '0.1em' }}>
+              <label className="block text-[11px] font-medium uppercase tracking-[0.04em] mb-1 text-fg-4">
                 REMOTE WORKING DIRECTORY
               </label>
               <div className="flex gap-2">
                 <div className="flex-1 relative">
-                  <Folder size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-claude-text-secondary" />
+                  <Folder size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-fg-5" />
                   <input
                     type="text"
                     value={remoteWorkdir}
                     onChange={(e) => setRemoteWorkdir(e.target.value)}
                     placeholder="/home/ubuntu/project"
-                    className="w-full pl-9 pr-3 py-1.5 text-sm font-mono focus:outline-none focus:border-claude-accent bg-claude-bg border border-claude-border text-claude-text"
-                    style={{ borderRadius: 0 }}
+                    className="w-full pl-9 pr-3 py-1.5 text-[13px] font-mono bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-fg placeholder:text-fg-5 focus:outline-none focus:ring-1 focus:ring-accent/50"
                   />
                 </div>
                 <button
@@ -488,46 +518,43 @@ export default function SSHConfigForm({ onBack, onConnect, teleportSource, onTel
                     }
                   }}
                   disabled={!isConnectionValid}
-                  className="px-3 py-1.5 bg-claude-surface border border-claude-border hover:bg-claude-surface-hover disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                  className="px-2.5 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] hover:bg-claude-surface-hover disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
                   title={isConnectionValid ? "Browse remote directories" : "Fill in connection details first"}
-                  style={{ borderRadius: 0 }}
                 >
-                  <FolderSearch size={14} className="text-claude-text-secondary" />
+                  <FolderSearch size={14} className="text-fg-3" />
                 </button>
               </div>
-              <p className="text-[9px] text-claude-text-secondary mt-1">Where remote harnesses will execute tools</p>
+              <p className="text-[11.5px] text-fg-4 mt-1">Where remote harnesses will execute tools</p>
             </div>
 
             {/* Session Name */}
             <div>
-              <label className="block text-[10px] font-bold mb-1 text-claude-text-secondary" style={{ letterSpacing: '0.1em' }}>
-                SESSION NAME <span className="font-normal opacity-60">(optional)</span>
+              <label className="block text-[11px] font-medium uppercase tracking-[0.04em] mb-1 text-fg-4">
+                SESSION NAME <span className="font-normal normal-case tracking-normal text-fg-5">(optional)</span>
               </label>
               <input
                 type="text"
                 value={sessionName}
                 onChange={(e) => setSessionName(e.target.value)}
                 placeholder="Auto-generated from hostname"
-                className="w-full px-3 py-1.5 text-sm focus:outline-none focus:border-claude-accent bg-claude-bg border border-claude-border text-claude-text"
-                style={{ borderRadius: 0 }}
+                className="w-full px-3 py-1.5 text-[13px] bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-fg placeholder:text-fg-5 focus:outline-none focus:ring-1 focus:ring-accent/50"
               />
             </div>
 
             {/* Worktree Setup Script */}
             <div>
-              <label className="block text-[10px] font-bold mb-1 text-claude-text-secondary" style={{ letterSpacing: '0.1em' }}>
-                SETUP SCRIPT <span className="font-normal opacity-60">(optional)</span>
+              <label className="block text-[11px] font-medium uppercase tracking-[0.04em] mb-1 text-fg-4">
+                SETUP SCRIPT <span className="font-normal normal-case tracking-normal text-fg-5">(optional)</span>
               </label>
               <div className="flex gap-2">
                 <div className="relative flex-1">
-                  <Terminal size={14} className="absolute left-3 top-2.5 text-claude-text-secondary" />
+                  <Terminal size={14} className="absolute left-3 top-2.5 text-fg-5" />
                   <textarea
                     value={worktreeScript}
                     onChange={(e) => setWorktreeScript(e.target.value)}
                     placeholder="./setup-worktree.sh my-branch"
                     rows={2}
-                    className="w-full pl-9 pr-3 py-1.5 text-sm font-mono focus:outline-none focus:border-claude-accent bg-claude-bg border border-claude-border text-claude-text resize-none"
-                    style={{ borderRadius: 0 }}
+                    className="w-full pl-9 pr-3 py-1.5 text-[13px] font-mono bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-fg placeholder:text-fg-5 focus:outline-none focus:ring-1 focus:ring-accent/50 resize-none"
                   />
                 </div>
                 <button
@@ -538,14 +565,13 @@ export default function SSHConfigForm({ onBack, onConnect, teleportSource, onTel
                     }
                   }}
                   disabled={!testResult?.success}
-                  className="px-3 py-1.5 bg-claude-surface border border-claude-border hover:bg-claude-surface-hover disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                  className="px-2.5 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] hover:bg-claude-surface-hover disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
                   title={testResult?.success ? "Browse remote files" : "Test connection first"}
-                  style={{ borderRadius: 0 }}
                 >
-                  <FolderSearch size={14} className="text-claude-text-secondary" />
+                  <FolderSearch size={14} className="text-fg-3" />
                 </button>
               </div>
-              <p className="text-[9px] text-claude-text-secondary mt-1">Runs before the agent starts (e.g., clone repo, create worktree)</p>
+              <p className="text-[11.5px] text-fg-4 mt-1">Runs before the agent starts (e.g., clone repo, create worktree)</p>
             </div>
 
             {/* Sync Settings */}
@@ -555,10 +581,10 @@ export default function SSHConfigForm({ onBack, onConnect, teleportSource, onTel
                 id="syncSettings"
                 checked={syncSettings}
                 onChange={(e) => setSyncSettings(e.target.checked)}
-                className="w-3.5 h-3.5 accent-claude-accent"
+                className="w-3.5 h-3.5 accent-[#4C9AFF]"
               />
-              <label htmlFor="syncSettings" className="text-[11px] text-claude-text cursor-pointer flex items-center gap-1.5">
-                <Settings size={11} className="text-claude-text-secondary" />
+              <label htmlFor="syncSettings" className="text-[12.5px] text-fg-2 cursor-pointer flex items-center gap-1.5">
+                <Settings size={11} className="text-fg-4" />
                 Sync settings to remote (~/.claude/agents, commands, CLAUDE.md)
               </label>
             </div>
@@ -572,11 +598,11 @@ export default function SSHConfigForm({ onBack, onConnect, teleportSource, onTel
                 checked={forwardGitHubCredentials}
                 onChange={(e) => setForwardGitHubCredentials(e.target.checked)}
                 disabled={!syncSettings}
-                className="w-3.5 h-3.5 mt-0.5 accent-amber-500 disabled:opacity-40"
+                className="w-3.5 h-3.5 mt-0.5 accent-[#F0B429] disabled:opacity-40"
               />
-              <label htmlFor="forwardGitHubCredentials" className={`text-[11px] flex flex-col gap-0.5 ${syncSettings ? 'text-claude-text cursor-pointer' : 'text-claude-text-secondary cursor-not-allowed'}`}>
+              <label htmlFor="forwardGitHubCredentials" className={`text-[12.5px] flex flex-col gap-0.5 ${syncSettings ? 'text-fg-2 cursor-pointer' : 'text-fg-4 cursor-not-allowed'}`}>
                 <span>Forward local GitHub identity &amp; authentication</span>
-                <span className="text-[9px] text-claude-text-secondary leading-relaxed">
+                <span className="text-[11.5px] text-fg-4 leading-relaxed">
                   Opt in to copy ~/.gitconfig and GitHub CLI auth, then use gh as the remote Git credential helper. Leave off to preserve remote or bot credentials.
                 </span>
               </label>
@@ -584,21 +610,21 @@ export default function SSHConfigForm({ onBack, onConnect, teleportSource, onTel
 
             {!isTeleportMode && (
               <div>
-                <label className="block text-[10px] font-bold mb-1 text-claude-text-secondary" style={{ letterSpacing: '0.1em' }}>
+                <label className="block text-[11px] font-medium uppercase tracking-[0.04em] mb-1 text-fg-4">
                   EXISTING SESSION
                 </label>
                 {worktreeScript.trim() ? (
-                  <div className="p-2 border border-amber-400/30 bg-amber-400/10 text-[10px] text-claude-text-secondary">
+                  <div className="p-2 shadow-[inset_0_0_0_1px_rgba(240,180,41,0.35)] bg-amber/10 text-[12px] text-fg-3">
                     Resume selection is disabled while a setup script is configured, because the script can change the final working directory.
                   </div>
                 ) : isLoadingResumeCandidates ? (
-                  <div className="p-2 border border-claude-border bg-claude-bg text-[10px] text-claude-text-secondary flex items-center gap-2">
+                  <div className="p-2 bg-ink-1 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)] text-[12px] text-fg-3 flex items-center gap-2">
                     <Loader2 size={12} className="animate-spin" />
                     Checking for existing remote sessions...
                   </div>
                 ) : resumeCandidates.length > 0 ? (
-                  <div className="border border-claude-border bg-claude-bg">
-                    <label className="flex items-center gap-2 px-3 py-2 text-[11px] text-claude-text border-b border-claude-border cursor-pointer">
+                  <div className="bg-ink-1 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)]">
+                    <label className="flex items-center gap-2 px-3 py-2 text-[12.5px] text-fg border-b border-line cursor-pointer hover:bg-claude-surface-hover">
                       <input
                         type="radio"
                         name="ssh-resume-mode"
@@ -607,18 +633,18 @@ export default function SSHConfigForm({ onBack, onConnect, teleportSource, onTel
                           setResumeMode('new');
                           setSelectedResumeSessionId('');
                         }}
-                        className="accent-claude-accent"
+                        className="accent-[#4C9AFF]"
                       />
                       Start fresh
                     </label>
-                    <div className="px-3 py-2 border-b border-claude-border text-[10px] text-claude-text-secondary">
+                    <div className="px-3 py-2 border-b border-line text-[12px] text-fg-4">
                       Or continue one of the existing remote Claude sessions in this folder:
                     </div>
                     <div className="max-h-40 overflow-y-auto">
                       {resumeCandidates.map((candidate) => (
                         <label
                           key={candidate.sessionId}
-                          className="flex flex-col gap-1 px-3 py-2 text-[11px] text-claude-text border-b border-claude-border/50 cursor-pointer last:border-b-0"
+                          className="flex flex-col gap-1 px-3 py-2 text-[12.5px] text-fg border-b border-line cursor-pointer last:border-b-0 hover:bg-claude-surface-hover"
                         >
                           <div className="flex items-center gap-2">
                             <input
@@ -629,15 +655,15 @@ export default function SSHConfigForm({ onBack, onConnect, teleportSource, onTel
                                 setResumeMode('existing');
                                 setSelectedResumeSessionId(candidate.sessionId);
                               }}
-                              className="accent-claude-accent"
+                              className="accent-[#4C9AFF]"
                             />
-                            <span className="font-mono text-[10px]">{candidate.sessionId}</span>
+                            <span className="font-mono text-[11.5px]">{candidate.sessionId}</span>
                           </div>
-                          <div className="pl-5 text-[9px] text-claude-text-secondary">
+                          <div className="pl-5 text-[11.5px] text-fg-4">
                             Last active: {new Date(candidate.mtime * 1000).toLocaleString()}
                           </div>
                           {candidate.localSessionId && (
-                            <div className="pl-5 text-[9px] text-cyan-400">
+                            <div className="pl-5 text-[11.5px] text-accent-text">
                               Will also carry forward local Build session history{candidate.localSessionName ? ` from ${candidate.localSessionName}` : ''}.
                             </div>
                           )}
@@ -646,11 +672,11 @@ export default function SSHConfigForm({ onBack, onConnect, teleportSource, onTel
                     </div>
                   </div>
                 ) : testResult?.success ? (
-                  <div className="p-2 border border-claude-border bg-claude-bg text-[10px] text-claude-text-secondary">
+                  <div className="p-2 bg-ink-1 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)] text-[12px] text-fg-3">
                     No existing Claude sessions were found for this remote folder.
                   </div>
                 ) : (
-                  <div className="p-2 border border-claude-border bg-claude-bg text-[10px] text-claude-text-secondary">
+                  <div className="p-2 bg-ink-1 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)] text-[12px] text-fg-3">
                     Test the connection to check for existing sessions in this folder.
                   </div>
                 )}
@@ -666,8 +692,7 @@ export default function SSHConfigForm({ onBack, onConnect, teleportSource, onTel
         <button
           onClick={handleTestConnection}
           disabled={!canTest || isTesting}
-          className="w-full py-2 text-[10px] font-bold bg-claude-bg hover:bg-claude-surface border border-claude-border text-claude-text disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-          style={{ borderRadius: 0, letterSpacing: '0.1em' }}
+          className="w-full h-8 text-[13px] text-fg-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] hover:bg-claude-surface-hover disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
         >
           {isTesting && <Loader2 size={12} className="animate-spin" />}
           {isTesting ? 'TESTING...' : 'TEST CONNECTION'}
@@ -675,26 +700,26 @@ export default function SSHConfigForm({ onBack, onConnect, teleportSource, onTel
 
         {/* Test Result */}
         {testResult && (
-          <div className={`p-2 border text-[10px] ${testResult.success ? 'bg-green-500/10 border-green-500/30' : 'bg-red-500/10 border-red-500/30'}`}>
+          <div className={`p-2 text-[12px] ${testResult.success ? 'bg-diff-add/10 shadow-[inset_0_0_0_1px_rgba(63,185,80,0.3)]' : 'bg-diff-del/10 shadow-[inset_0_0_0_1px_rgba(248,81,73,0.3)]'}`}>
             <div className="flex items-center gap-2">
               {testResult.success ? (
-                <CheckCircle size={14} className="text-green-400" />
+                <CheckCircle size={14} className="text-diff-add" />
               ) : (
-                <XCircle size={14} className="text-red-400" />
+                <XCircle size={14} className="text-diff-del" />
               )}
-              <span className={testResult.success ? 'text-green-400' : 'text-red-400'}>
+              <span className={testResult.success ? 'text-diff-add-text' : 'text-diff-del-text'}>
                 {testResult.success
                   ? `Connected. ${formatRemoteHarnesses(testResult.cliCapabilities) || testResult.claudeCodeVersion || ''}`
                   : testResult.error}
               </span>
             </div>
             {testResult.success && testResult.claudeCodeVersion && (
-              <div className="mt-1 pl-6 text-green-300/80">
+              <div className="mt-1 pl-6 font-mono text-[11.5px] text-diff-add-text/80">
                 Claude Code: {testResult.claudeCodeVersion}
               </div>
             )}
             {testResult.success && testResult.setupWarning && (
-              <div className="mt-2 flex items-start gap-2 text-amber-300">
+              <div className="mt-2 flex items-start gap-2 text-amber">
                 <AlertTriangle size={12} className="mt-0.5 shrink-0" />
                 <span>{testResult.setupWarning}</span>
               </div>
@@ -703,21 +728,33 @@ export default function SSHConfigForm({ onBack, onConnect, teleportSource, onTel
               <div className="mt-2 space-y-1">
                 {testResult.missingCliInstallCommands.map((setup) => (
                   <div key={setup.harness} className="flex items-center gap-2">
-                    <span className="w-20 shrink-0 text-[9px] text-claude-text-secondary">{setup.label}</span>
-                    <code className="flex-1 min-w-0 px-2 py-1 bg-claude-bg border border-claude-border text-[9px] font-mono text-claude-text-secondary truncate">
+                    <span className="w-20 shrink-0 text-[11.5px] text-fg-4">{setup.label}</span>
+                    <code className="flex-1 min-w-0 px-2 py-1 bg-ink-term shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)] text-[11px] font-mono text-fg-3 truncate">
                       {setup.command}
                     </code>
                     <button
                       type="button"
+                      onClick={() => handleInstallRemoteHarness(setup.harness)}
+                      disabled={installingHarness !== null}
+                      className="h-6 px-2 text-[12px] text-fg-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] hover:bg-claude-surface-hover disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
+                      title={`Install ${setup.label} on this remote computer`}
+                    >
+                      {installingHarness === setup.harness && <Loader2 size={10} className="animate-spin" />}
+                      {installingHarness === setup.harness ? 'INSTALLING...' : 'INSTALL'}
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => navigator.clipboard?.writeText(setup.command).catch(() => undefined)}
-                      className="p-1 border border-claude-border text-claude-text-secondary hover:text-claude-text hover:bg-claude-surface"
+                      className="p-1 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] text-fg-3 hover:text-fg hover:bg-claude-surface-hover"
                       title={`Copy ${setup.label} install command`}
-                      style={{ borderRadius: 0 }}
                     >
                       <Copy size={11} />
                     </button>
                   </div>
                 ))}
+                {installError && (
+                  <div className="mt-2 text-[11.5px] text-diff-del-text">{installError}</div>
+                )}
               </div>
             )}
           </div>
@@ -725,42 +762,39 @@ export default function SSHConfigForm({ onBack, onConnect, teleportSource, onTel
 
         {/* Create Error */}
         {createError && (
-          <div className="p-2 bg-red-500/20 border border-red-500/50 text-[10px] text-red-400">
+          <div className="p-2 bg-diff-del/10 shadow-[inset_0_0_0_1px_rgba(248,81,73,0.35)] text-[12px] text-diff-del-text">
             {createError}
           </div>
         )}
 
         {/* Requirements Note */}
         {!testResult?.success && (
-          <div className="p-2 bg-amber-400/10 border border-amber-400/30 text-[9px] text-claude-text-secondary flex items-start gap-2">
-            <AlertTriangle size={12} className="text-amber-400 mt-0.5 shrink-0" />
+          <div className="p-2 bg-amber/10 shadow-[inset_0_0_0_1px_rgba(240,180,41,0.3)] text-[12px] text-fg-3 flex items-start gap-2">
+            <AlertTriangle size={12} className="text-amber mt-0.5 shrink-0" />
             <span>
               Requires at least one supported remote harness CLI:{' '}
-              <code className="bg-claude-bg px-1">claude</code>,{' '}
-              <code className="bg-claude-bg px-1">codex</code>,{' '}
-              <code className="bg-claude-bg px-1">cursor-agent</code>,{' '}
-              <code className="bg-claude-bg px-1">gemini</code>, or{' '}
-              <code className="bg-claude-bg px-1">opencode</code>.
+              <code className="bg-ink-term px-1 font-mono text-fg-2">claude</code>,{' '}
+              <code className="bg-ink-term px-1 font-mono text-fg-2">codex</code>,{' '}
+              <code className="bg-ink-term px-1 font-mono text-fg-2">cursor-agent</code>,{' '}
+              <code className="bg-ink-term px-1 font-mono text-fg-2">gemini</code>, or{' '}
+              <code className="bg-ink-term px-1 font-mono text-fg-2">opencode</code>, or{' '}
+              <code className="bg-ink-term px-1 font-mono text-fg-2">prime-agent</code>.
             </span>
           </div>
         )}
 
         {/* Footer */}
-        <div className="flex items-center justify-between pt-2 border-t border-claude-border">
+        <div className="flex items-center justify-between pt-3 border-t border-line">
           <button
             onClick={onBack}
-            className="px-3 py-1.5 text-[10px] font-bold hover:bg-claude-bg transition-colors text-claude-text-secondary"
-            style={{ letterSpacing: '0.05em', borderRadius: 0 }}
+            className="h-8 px-3 text-[13px] text-fg-3 hover:text-fg hover:bg-claude-surface-hover transition-colors"
           >
             BACK
           </button>
           <button
             onClick={handleCreate}
             disabled={!canCreate || isCreating}
-            className={`px-4 py-1.5 text-[10px] font-bold text-white flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed ${
-              isTeleportMode ? 'bg-cyan-500 hover:bg-cyan-600' : 'bg-claude-accent hover:bg-claude-accent-hover'
-            }`}
-            style={{ letterSpacing: '0.05em', borderRadius: 0 }}
+            className="h-8 px-3 text-[13px] font-semibold bg-fg text-ink-0 hover:bg-white flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
           >
             {isCreating && <Loader2 size={12} className="animate-spin" />}
             {!isCreating && isTeleportMode && <Upload size={12} />}

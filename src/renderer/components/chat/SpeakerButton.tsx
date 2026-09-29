@@ -136,7 +136,7 @@ export const SpeakerButton: React.FC<SpeakerButtonProps> = ({
         text,
         messageId,
         voiceId: settings.voiceSettings.voiceId,
-        modelId: 'eleven_turbo_v2_5',
+        modelId: 'gpt-4o-mini-tts',
       });
 
       if (!response.success) {
@@ -166,10 +166,10 @@ export const SpeakerButton: React.FC<SpeakerButtonProps> = ({
     <div className="flex items-center gap-2">
       {/* Playing/buffering indicator with waveform */}
       {isPlaying && !isLoading && (
-        <div className="flex items-center gap-2 px-2 py-1 bg-blue-950 border border-blue-500" style={{ borderRadius: 0 }}>
-          <AudioWaveform isActive={!isBuffering} color="rgb(59, 130, 246)" barCount={6} height={12} />
+        <div className="flex items-center gap-2 px-2 py-1 bg-accent/[0.13] shadow-[inset_0_0_0_1px_rgba(76,154,255,0.35)]" style={{ borderRadius: 0 }}>
+          <AudioWaveform isActive={!isBuffering} color="rgb(76, 154, 255)" barCount={6} height={12} />
           {isBuffering && (
-            <span className="text-[10px] text-blue-400 font-mono uppercase tracking-wider">
+            <span className="text-[11px] text-accent-text uppercase tracking-[0.04em]">
               Buffering
             </span>
           )}
@@ -178,9 +178,9 @@ export const SpeakerButton: React.FC<SpeakerButtonProps> = ({
 
       {/* Loading indicator */}
       {isLoading && (
-        <div className="flex items-center gap-2 px-2 py-1 bg-blue-950 border border-blue-500" style={{ borderRadius: 0 }}>
-          <Radio className="w-3 h-3 text-blue-400 animate-pulse" />
-          <span className="text-[10px] text-blue-400 font-mono uppercase tracking-wider">
+        <div className="flex items-center gap-2 px-2 py-1 bg-accent/[0.13] shadow-[inset_0_0_0_1px_rgba(76,154,255,0.35)]" style={{ borderRadius: 0 }}>
+          <Radio className="w-3 h-3 text-accent-text animate-pulse" />
+          <span className="text-[11px] text-accent-text uppercase tracking-[0.04em]">
             Streaming
           </span>
         </div>
@@ -191,10 +191,10 @@ export const SpeakerButton: React.FC<SpeakerButtonProps> = ({
         onClick={handleClick}
         disabled={disabled}
         className={`
-          relative p-1.5 transition-all duration-200 border group
+          relative flex h-[30px] w-[30px] items-center justify-center transition-colors duration-150 group
           ${isPlaying
-            ? 'bg-blue-500 border-blue-400 hover:bg-blue-600 text-white shadow-[0_0_8px_rgba(59,130,246,0.4)]'
-            : 'bg-claude-bg border-claude-border hover:border-blue-400 text-claude-text-secondary hover:text-blue-400'
+            ? 'bg-accent/[0.13] text-accent-text shadow-[inset_0_0_0_1px_rgba(76,154,255,0.35)] hover:bg-accent/20'
+            : 'bg-transparent text-fg-3 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] hover:bg-white/[0.05] hover:text-fg'
           }
           ${disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}
         `}
@@ -202,16 +202,16 @@ export const SpeakerButton: React.FC<SpeakerButtonProps> = ({
         title={isPlaying ? 'Stop playback' : 'Play with text-to-speech'}
       >
         {isLoading ? (
-          <Loader2 className="w-4 h-4 animate-spin" />
+          <Loader2 className="w-[15px] h-[15px] animate-spin" />
         ) : isPlaying ? (
-          <VolumeX className="w-4 h-4" />
+          <VolumeX className="w-[15px] h-[15px]" />
         ) : (
-          <Volume2 className="w-4 h-4" />
+          <Volume2 className="w-[15px] h-[15px]" />
         )}
 
         {/* Subtle animation when playing */}
         {isPlaying && !isLoading && (
-          <span className="absolute inset-0 border border-blue-400 animate-pulse" style={{ borderRadius: 0 }} />
+          <span className="absolute inset-0 border border-accent/60 animate-pulse" style={{ borderRadius: 0 }} />
         )}
       </button>
     </div>

@@ -9,6 +9,38 @@ import { Code, Loader2 } from 'lucide-react';
 // Track all lazy editor instances for cleanup
 const lazyEditorModels = new Set<string>();
 
+// Graphite transcript theme. In Electron, monaco-config.ts registers
+// 'claudette-dark' during loader init (before any editor mounts). The plain
+// browser build skips that config, so register an equivalent there to avoid
+// Monaco falling back to its light theme.
+const TRANSCRIPT_THEME = 'claudette-dark';
+let transcriptThemeRegistered = false;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function ensureTranscriptTheme(monaco: any) {
+  if (transcriptThemeRegistered) return;
+  transcriptThemeRegistered = true;
+  if (typeof window !== 'undefined' && window.electronAPI) return;
+  try {
+    monaco.editor.defineTheme(TRANSCRIPT_THEME, {
+      base: 'vs-dark',
+      inherit: true,
+      rules: [],
+      colors: {
+        'editor.background': '#0F0F0F',
+        'editor.lineHighlightBackground': '#171717',
+        'editorLineNumber.foreground': '#4D4D4D',
+        'editorLineNumber.activeForeground': '#A0A0A0',
+        'editor.selectionBackground': '#4C9AFF40',
+        'editorGutter.background': '#0F0F0F',
+        'diffEditor.insertedTextBackground': '#3FB95022',
+        'diffEditor.removedTextBackground': '#F8514922',
+      },
+    });
+  } catch {
+    // Theme registration is cosmetic; Monaco keeps its default dark theme.
+  }
+}
+
 /**
  * LazyMonacoEditor - Only renders Monaco when visible in viewport
  *
@@ -82,8 +114,9 @@ export function LazyMonacoEditor({
       lazyEditorModels.add(editorId);
     }
 
-    // Apply custom theme adjustments if needed
-    monaco.editor.setTheme('vs-dark');
+    // Apply the graphite transcript theme
+    ensureTranscriptTheme(monaco);
+    monaco.editor.setTheme(TRANSCRIPT_THEME);
 
     // Call original onMount if provided
     if (props.onMount) {
@@ -102,14 +135,14 @@ export function LazyMonacoEditor({
     return (
       <div
         ref={containerRef}
-        className="bg-claude-bg border border-claude-border flex items-center justify-center"
+        className="bg-[#0B0B0B] flex items-center justify-center"
         style={{
           height: numericHeight,
           borderRadius: 0,
           minHeight: numericHeight,
         }}
       >
-        <div className="text-claude-text-secondary text-xs font-mono flex items-center gap-2">
+        <div className="text-fg-5 text-[11.5px] font-mono flex items-center gap-2">
           <Code size={14} />
           <span>{hasBeenVisible ? 'Scroll to view code' : 'Code preview'}</span>
         </div>
@@ -124,10 +157,10 @@ export function LazyMonacoEditor({
         height={height}
         value={value}
         language={language}
-        theme="vs-dark"
+        theme={TRANSCRIPT_THEME}
         loading={
           <div
-            className="bg-claude-bg flex items-center justify-center text-claude-text-secondary text-xs"
+            className="bg-[#0B0B0B] flex items-center justify-center text-fg-5 text-[11.5px]"
             style={{ height: numericHeight }}
           >
             <Loader2 size={14} className="animate-spin mr-2" />
@@ -135,6 +168,10 @@ export function LazyMonacoEditor({
           </div>
         }
         {...props}
+        beforeMount={(monaco) => {
+          ensureTranscriptTheme(monaco);
+          props.beforeMount?.(monaco);
+        }}
         onMount={handleMount}
       />
     </div>
@@ -213,7 +250,8 @@ export function LazyDiffEditor({
       lazyEditorModels.add(editorId);
     }
 
-    monaco.editor.setTheme('vs-dark');
+    ensureTranscriptTheme(monaco);
+    monaco.editor.setTheme(TRANSCRIPT_THEME);
 
     requestAnimationFrame(() => {
       const width = containerRef.current?.clientWidth || 0;
@@ -265,7 +303,7 @@ export function LazyDiffEditor({
     return (
       <div
         ref={containerRef}
-        className="bg-claude-bg border border-claude-border flex items-center justify-center"
+        className="bg-[#0B0B0B] flex items-center justify-center"
         style={{
           height: boundedHeight,
           borderRadius: 0,
@@ -275,7 +313,7 @@ export function LazyDiffEditor({
           overflow: 'hidden',
         }}
       >
-        <div className="text-claude-text-secondary text-xs font-mono flex items-center gap-2">
+        <div className="text-fg-5 text-[11.5px] font-mono flex items-center gap-2">
           <Code size={14} />
           <span>Diff preview</span>
         </div>
@@ -299,7 +337,7 @@ export function LazyDiffEditor({
     >
       {!isVisible && (
         <div
-          className="bg-claude-bg border border-claude-border flex items-center justify-center"
+          className="bg-[#0B0B0B] flex items-center justify-center"
           style={{
             height: boundedHeight,
             borderRadius: 0,
@@ -309,7 +347,7 @@ export function LazyDiffEditor({
             overflow: 'hidden',
           }}
         >
-          <div className="text-claude-text-secondary text-xs font-mono flex items-center gap-2">
+          <div className="text-fg-5 text-[11.5px] font-mono flex items-center gap-2">
             <Code size={14} />
             <span>Scroll to view diff</span>
           </div>
@@ -329,10 +367,10 @@ export function LazyDiffEditor({
           original={original}
           modified={modified}
           language={language}
-          theme="vs-dark"
+          theme={TRANSCRIPT_THEME}
           loading={
             <div
-              className="bg-claude-bg flex items-center justify-center text-claude-text-secondary text-xs"
+              className="bg-[#0B0B0B] flex items-center justify-center text-fg-5 text-[11.5px]"
               style={{ height: boundedHeight }}
             >
               <Loader2 size={14} className="animate-spin mr-2" />
@@ -340,6 +378,10 @@ export function LazyDiffEditor({
             </div>
           }
           {...props}
+          beforeMount={(monaco) => {
+            ensureTranscriptTheme(monaco);
+            props.beforeMount?.(monaco);
+          }}
           onMount={handleMount}
         />
       </div>

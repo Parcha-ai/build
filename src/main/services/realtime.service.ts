@@ -70,15 +70,15 @@ export class RealtimeService extends EventEmitter {
 
     return new Promise((resolve, reject) => {
       try {
-        // Use the realtime endpoint with gpt-4o-realtime-preview model
-        const url = 'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview';
+        // GA transcription session. The transcription model is configured in
+        // session.update and must not be passed as the WebSocket model query.
+        const url = 'wss://api.openai.com/v1/realtime?intent=transcription';
 
         console.log('[RealtimeService] Connecting to:', url);
 
         this.ws = new WebSocket(url, {
           headers: {
             'Authorization': `Bearer ${apiKey}`,
-            'OpenAI-Beta': 'realtime=v1',
           },
         });
 
@@ -90,16 +90,19 @@ export class RealtimeService extends EventEmitter {
           this.sendEvent({
             type: 'session.update',
             session: {
-              modalities: ['text'], // Only text output, not audio
-              input_audio_format: 'pcm16',
-              input_audio_transcription: {
-                model: 'whisper-1',
-              },
-              turn_detection: {
-                type: 'server_vad',
-                threshold: 0.3, // Lower threshold for more sensitive detection
-                prefix_padding_ms: 300,
-                silence_duration_ms: 800, // Wait longer before considering speech done
+              type: 'transcription',
+              audio: {
+                input: {
+                  format: {
+                    type: 'audio/pcm',
+                    rate: 24000,
+                  },
+                  transcription: {
+                    model: 'gpt-realtime-whisper',
+                    language: 'en',
+                    delay: 'low',
+                  },
+                },
               },
             },
           });

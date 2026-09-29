@@ -90,7 +90,7 @@ assert.match(claudeIpc, /userMessageId\?: string, cascadeMode\?: boolean/);
 assert.match(claudeIpc, /supplementalMessages, fastMode, cascadeMode/);
 
 const settings = read('src/renderer/components/settings/SettingsDialog.tsx');
-assert.match(settings, /model\.id !== PARABLE_MODE_ID && model\.id !== CASCADE_MODE_ID/);
+assert.match(settings, /\.id !== PARABLE_MODE_ID && \w+\.id !== CASCADE_MODE_ID/);
 
 const forgeConfig = read('forge.config.ts');
 assert.match(forgeConfig, /resources', 'cascade/);

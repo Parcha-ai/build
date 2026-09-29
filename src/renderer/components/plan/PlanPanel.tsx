@@ -5,6 +5,7 @@ import { X, FileText, Trash2, Check, XCircle, RefreshCw, ClipboardList, FileChec
 import { v4 as uuid } from 'uuid';
 import { useUIStore } from '../../stores/ui.store';
 import { useSessionStore } from '../../stores/session.store';
+import ChatMarkdownLink from '../chat/ChatMarkdownLink';
 
 const EMPTY_CHAT_MESSAGES: never[] = [];
 
@@ -93,21 +94,21 @@ function SpecMetadataBar({ content }: { content: string }) {
   const capabilityCount = (content.match(/\[@test\]/g) || []).length;
 
   return (
-    <div className="mb-4 p-3 bg-claude-surface border border-claude-border">
+    <div className="mb-4 p-3 bg-ink-1 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)]">
       <div className="flex items-center gap-2 mb-1">
-        <FileCheck size={14} className="text-teal-400" />
-        <span className="text-xs font-bold uppercase tracking-wider text-teal-400">SPEC</span>
-        {name && <span className="text-sm font-mono text-claude-text">{name}</span>}
+        <FileCheck size={14} className="text-accent" />
+        <span className="text-[11px] uppercase tracking-[0.04em] text-accent-text">SPEC</span>
+        {name && <span className="text-[13px] font-mono text-fg">{name}</span>}
       </div>
-      {description && <p className="text-xs text-claude-text-secondary mb-2">{description}</p>}
-      <div className="flex gap-4 text-xs text-claude-text-secondary">
+      {description && <p className="text-[12px] text-fg-3 mb-2">{description}</p>}
+      <div className="flex gap-4 font-mono text-[11px] text-fg-4">
         {targets.length > 0 && <span>{targets.length} target file{targets.length !== 1 ? 's' : ''}</span>}
         {capabilityCount > 0 && <span>{capabilityCount} capabilit{capabilityCount !== 1 ? 'ies' : 'y'}</span>}
       </div>
       {targets.length > 0 && (
         <div className="mt-2 flex flex-wrap gap-1">
           {targets.map((t, i) => (
-            <span key={i} className="px-1.5 py-0.5 text-[10px] font-mono bg-claude-bg border border-claude-border text-claude-text-secondary">
+            <span key={i} className="px-1.5 py-0.5 text-[10.5px] font-mono bg-ink-4 text-fg-3">
               {t}
             </span>
           ))}
@@ -432,25 +433,25 @@ export default function PlanPanel() {
   };
 
   return (
-    <div className="h-full flex flex-col bg-claude-bg">
+    <div className="h-full flex flex-col bg-ink-1">
       {/* Header */}
-      <div className="h-10 flex items-center justify-between px-3 border-b border-claude-border bg-claude-surface">
+      <div className="h-11 flex items-center justify-between px-3 border-b border-line bg-ink-1">
         <div className="flex items-center gap-2">
-          {isSpecFile ? <FileCheck size={14} className="text-teal-400" /> : <ClipboardList size={14} className="text-claude-accent" />}
-          <span className="text-sm font-medium">{isSpecFile ? 'Spec' : 'Plan'}</span>
+          {isSpecFile ? <FileCheck size={14} className="text-accent" /> : <ClipboardList size={14} className="text-fg-4" />}
+          <span className="text-[13px] font-medium text-fg">{isSpecFile ? 'Spec' : 'Plan'}</span>
           {isSpecFile && (
-            <span className="px-2 py-0.5 text-xs font-medium bg-teal-500/20 text-teal-400 border border-teal-500/30">
+            <span className="font-mono text-[9.5px] uppercase px-1.5 py-0.5 text-accent-text shadow-[inset_0_0_0_1px_rgba(76,154,255,0.35)]">
               SDD
             </span>
           )}
           {comments.length > 0 && (
-            <span className="px-2 py-0.5 text-xs font-medium bg-amber-500/20 text-amber-400 border border-amber-500/30 flex items-center gap-1">
+            <span className="font-mono text-[9.5px] uppercase px-1.5 py-0.5 shadow-[inset_0_0_0_1px_rgba(240,180,41,0.45)] text-amber flex items-center gap-1">
               <MessageSquarePlus size={10} />
               {comments.length}
             </span>
           )}
           {pendingApproval && (
-            <span className="px-2 py-0.5 text-xs font-medium bg-amber-500/20 text-amber-400 border border-amber-500/30">
+            <span className="px-1.5 py-0.5 text-[11px] font-medium bg-amber text-[#0A0A0A]">
               Awaiting Approval
             </span>
           )}
@@ -459,7 +460,7 @@ export default function PlanPanel() {
           {planContent && !pendingApproval && sessionMessages && sessionMessages.length > 0 && (
             <button
               onClick={handleLoadFromMessages}
-              className="p-1 rounded hover:bg-claude-bg text-claude-text-secondary hover:text-claude-text"
+              className="w-7 h-7 flex items-center justify-center hover:bg-claude-surface-hover text-fg-4 hover:text-fg"
               title="Reload plan from messages"
             >
               <RefreshCw size={14} />
@@ -468,7 +469,7 @@ export default function PlanPanel() {
           {planContent && !pendingApproval && (
             <button
               onClick={handleClear}
-              className="p-1 rounded hover:bg-claude-bg text-claude-text-secondary hover:text-claude-text"
+              className="w-7 h-7 flex items-center justify-center hover:bg-claude-surface-hover text-fg-4 hover:text-fg"
               title="Clear plan"
             >
               <Trash2 size={14} />
@@ -476,7 +477,7 @@ export default function PlanPanel() {
           )}
           <button
             onClick={togglePlanPanel}
-            className="p-1 rounded hover:bg-claude-bg text-claude-text-secondary hover:text-claude-text"
+            className="w-7 h-7 flex items-center justify-center hover:bg-claude-surface-hover text-fg-4 hover:text-fg"
           >
             <X size={14} />
           </button>
@@ -485,8 +486,8 @@ export default function PlanPanel() {
 
       {/* Approval buttons - shown when there's a pending approval */}
       {pendingApproval && (
-        <div className="px-4 py-3 border-b border-claude-border bg-claude-surface/50">
-          <p className="text-sm text-claude-text-secondary mb-3">
+        <div className="px-4 py-3 border-b border-line bg-[rgba(240,180,41,0.05)]">
+          <p className="text-[13px] text-fg-3 mb-3">
             Claude has created a plan and is waiting for your approval to proceed.
           </p>
 
@@ -494,14 +495,14 @@ export default function PlanPanel() {
             <div className="flex gap-2">
               <button
                 onClick={handleApprove}
-                className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-500 text-white font-medium text-sm transition-colors"
+                className="flex-1 flex items-center justify-center gap-2 h-8 px-3 bg-[#EDEDED] hover:bg-white text-[#0F0F0F] font-semibold text-[12.5px] transition-colors"
               >
                 <Check size={16} />
                 Approve Plan
               </button>
               <button
                 onClick={handleRejectWithFeedback}
-                className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-claude-surface hover:bg-claude-bg border border-claude-border text-claude-text font-medium text-sm transition-colors"
+                className="flex-1 flex items-center justify-center gap-2 h-8 px-3 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] hover:bg-white/5 text-fg-2 text-[12.5px] transition-colors"
               >
                 <RefreshCw size={16} />
                 Request Updates
@@ -509,7 +510,7 @@ export default function PlanPanel() {
               {comments.length > 0 && (
                 <button
                   onClick={handleSubmitAllComments}
-                  className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white font-medium text-sm transition-colors"
+                  className="flex-1 flex items-center justify-center gap-2 h-8 px-3 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] hover:bg-white/5 text-fg-2 text-[12.5px] transition-colors"
                 >
                   <Send size={16} />
                   Submit Feedback ({comments.length})
@@ -522,20 +523,20 @@ export default function PlanPanel() {
                 value={feedback}
                 onChange={(e) => setFeedback(e.target.value)}
                 placeholder="Describe what changes you'd like to see in the plan..."
-                className="w-full h-24 px-3 py-2 text-sm bg-claude-bg border border-claude-border text-claude-text placeholder-claude-text-secondary resize-none focus:outline-none focus:border-claude-accent font-mono"
+                className="w-full h-24 px-3 py-2 text-[13px] bg-ink-3 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-fg placeholder-fg-5 resize-none focus:outline-none focus:shadow-[inset_0_0_0_1px_rgba(76,154,255,0.6)]"
                 autoFocus
               />
               <div className="flex gap-2">
                 <button
                   onClick={handleReject}
-                  className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white font-medium text-sm transition-colors"
+                  className="flex-1 flex items-center justify-center gap-2 h-8 px-3 bg-[#EDEDED] hover:bg-white text-[#0F0F0F] font-semibold text-[12.5px] transition-colors"
                 >
                   <RefreshCw size={16} />
                   Update Plan
                 </button>
                 <button
                   onClick={() => setShowFeedback(false)}
-                  className="px-4 py-2 bg-claude-surface hover:bg-claude-bg border border-claude-border text-claude-text font-medium text-sm transition-colors"
+                  className="h-8 px-3 text-fg-3 hover:text-fg text-[12.5px] transition-colors"
                 >
                   Cancel
                 </button>
@@ -544,12 +545,12 @@ export default function PlanPanel() {
           )}
 
           {pendingApproval.allowedPrompts && pendingApproval.allowedPrompts.length > 0 && !showFeedback && (
-            <div className="mt-3 pt-3 border-t border-claude-border">
-              <p className="text-xs text-claude-text-secondary mb-2">Requested permissions:</p>
-              <ul className="text-xs text-claude-text-secondary space-y-1">
+            <div className="mt-3 pt-3 border-t border-line">
+              <p className="text-[11px] uppercase tracking-[0.04em] text-fg-4 mb-2">Requested permissions:</p>
+              <ul className="text-[12px] text-fg-3 space-y-1">
                 {pendingApproval.allowedPrompts.map((prompt, i) => (
                   <li key={i} className="flex items-center gap-2">
-                    <span className="text-claude-accent">•</span>
+                    <span className="text-fg-5">•</span>
                     {prompt.prompt}
                   </li>
                 ))}
@@ -562,22 +563,22 @@ export default function PlanPanel() {
       {/* Content */}
       <div className="flex-1 overflow-auto p-4">
         {!planContent && sessionMessages && sessionMessages.length > 0 && (
-          <div className="h-full flex flex-col items-center justify-center text-claude-text-secondary p-4">
+          <div className="h-full flex flex-col items-center justify-center text-fg-4 p-4">
             <FileText size={32} className="mb-3 opacity-50" />
-            <p className="text-sm font-mono mb-4 text-center">No plan loaded</p>
+            <p className="text-[13px] mb-4 text-center">No plan loaded</p>
             <button
               onClick={handleLoadFromMessages}
-              className="px-4 py-2 bg-claude-accent hover:bg-claude-accent/80 text-white font-medium text-sm transition-colors"
+              className="h-8 px-3 bg-[#EDEDED] hover:bg-white text-[#0F0F0F] font-semibold text-[12.5px] transition-colors"
             >
               Load Plan from Messages
             </button>
-            <p className="text-xs font-mono mt-2 opacity-70 text-center max-w-xs">
+            <p className="text-[11.5px] mt-2 text-fg-5 text-center max-w-xs">
               If you created a plan in this session, click to load it
             </p>
           </div>
         )}
         {planContent ? (
-          <div className="prose prose-invert prose-sm max-w-none font-mono relative" ref={planContentRef}>
+          <div className="prose prose-invert prose-sm max-w-none relative" ref={planContentRef}>
             {isSpecFile && <SpecMetadataBar content={planContent} />}
 
             {/* Floating "Add Comment" button near selection */}
@@ -592,7 +593,7 @@ export default function PlanPanel() {
                 <button
                   onClick={handleAddCommentClick}
                   onMouseDown={(e) => e.preventDefault()}
-                  className="flex items-center gap-1.5 px-2 py-1 text-xs font-mono bg-amber-500/90 text-black hover:bg-amber-400 transition-colors shadow-lg"
+                  className="flex items-center gap-1.5 px-2 py-1 text-[12px] font-medium bg-amber text-[#0A0A0A] hover:brightness-110 transition-colors shadow-lg"
                 >
                   <MessageSquarePlus size={12} />
                   Add Comment
@@ -610,8 +611,8 @@ export default function PlanPanel() {
                   right: 0,
                 }}
               >
-                <div className="bg-claude-surface border border-amber-500/50 p-2 shadow-lg">
-                  <div className="text-[10px] font-mono text-amber-400 mb-1 truncate">
+                <div className="bg-ink-1 shadow-[inset_0_0_0_1px_rgba(240,180,41,0.45),0_12px_40px_rgba(0,0,0,0.35)] p-2">
+                  <div className="text-[10.5px] font-mono text-amber mb-1 truncate">
                     &ldquo;{activeSelection.text.length > 80 ? activeSelection.text.slice(0, 80) + '...' : activeSelection.text}&rdquo;
                   </div>
                   <div className="flex gap-1">
@@ -631,18 +632,18 @@ export default function PlanPanel() {
                         }
                       }}
                       placeholder="Type your comment..."
-                      className="flex-1 px-2 py-1 text-xs font-mono bg-claude-bg border border-claude-border text-claude-text placeholder-claude-text-secondary focus:outline-none focus:border-amber-500/50"
+                      className="flex-1 px-2 py-1 text-[12.5px] bg-ink-3 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-fg placeholder-fg-5 focus:outline-none focus:shadow-[inset_0_0_0_1px_rgba(240,180,41,0.5)]"
                     />
                     <button
                       onClick={handleSubmitComment}
                       disabled={!commentInput.trim()}
-                      className="px-2 py-1 text-xs font-mono bg-amber-500/90 text-black hover:bg-amber-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                      className="px-2 py-1 text-[12px] font-medium bg-amber text-[#0A0A0A] hover:brightness-110 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                     >
                       <Check size={12} />
                     </button>
                     <button
                       onClick={handleCancelComment}
-                      className="px-2 py-1 text-xs font-mono bg-claude-bg border border-claude-border text-claude-text-secondary hover:text-claude-text transition-colors"
+                      className="px-2 py-1 text-[12px] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] text-fg-3 hover:text-fg transition-colors"
                     >
                       <X size={12} />
                     </button>
@@ -654,7 +655,7 @@ export default function PlanPanel() {
             {/* Comment tooltip on hover */}
             {tooltip && (
               <div
-                className="absolute z-30 max-w-xs px-2 py-1 text-xs font-mono bg-claude-surface border border-amber-500/40 text-claude-text shadow-lg pointer-events-none"
+                className="absolute z-30 max-w-xs px-2 py-1 text-[12px] bg-ink-1 shadow-[inset_0_0_0_1px_rgba(240,180,41,0.4),0_8px_24px_rgba(0,0,0,0.35)] text-fg pointer-events-none"
                 style={{ left: tooltip.x, top: tooltip.y }}
               >
                 {tooltip.text}
@@ -666,22 +667,22 @@ export default function PlanPanel() {
               components={{
                 // Custom styling for plan content
                 h1: ({ children }) => (
-                  <h1 className="text-lg font-bold text-claude-text border-b border-claude-border pb-2 mb-4">
+                  <h1 className="text-lg font-semibold tracking-[-0.02em] text-fg border-b border-line pb-2 mb-4">
                     {children}
                   </h1>
                 ),
                 h2: ({ children }) => (
-                  <h2 className="text-base font-bold text-claude-text mt-6 mb-2">
+                  <h2 className="text-base font-semibold tracking-[-0.02em] text-fg mt-6 mb-2">
                     {children}
                   </h2>
                 ),
                 h3: ({ children }) => (
-                  <h3 className="text-sm font-bold text-claude-text mt-4 mb-2">
+                  <h3 className="text-sm font-semibold tracking-[-0.01em] text-fg mt-4 mb-2">
                     {children}
                   </h3>
                 ),
                 p: ({ children }) => (
-                  <p className="text-sm text-claude-text-secondary leading-relaxed my-2">
+                  <p className="text-[14px] text-[#D4D4D4] leading-[1.65] my-2">
                     {children}
                   </p>
                 ),
@@ -696,7 +697,7 @@ export default function PlanPanel() {
                   </ol>
                 ),
                 li: ({ children }) => (
-                  <li className="text-sm text-claude-text-secondary">
+                  <li className="text-[14px] text-[#D4D4D4] leading-[1.6]">
                     {children}
                   </li>
                 ),
@@ -705,14 +706,14 @@ export default function PlanPanel() {
                   const isBlock = String(children).includes('\n') || match;
                   if (isBlock) {
                     return (
-                      <div className="overflow-hidden border border-claude-border my-2" style={{ borderRadius: 0 }}>
+                      <div className="overflow-hidden bg-ink-1 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)] my-2">
                         {match && (
-                          <div className="px-2 py-1 text-xs font-bold font-mono bg-claude-surface border-b border-claude-border text-claude-text-secondary uppercase tracking-wider">
+                          <div className="px-2 py-1 text-[10.5px] font-mono border-b border-line text-fg-4 uppercase">
                             {match[1]}
                           </div>
                         )}
-                        <pre className="p-3 bg-claude-bg m-0 overflow-x-auto">
-                          <code className="text-xs font-mono text-claude-text" {...props}>
+                        <pre className="p-3 bg-[#0B0B0B] m-0 overflow-x-auto">
+                          <code className="text-[12px] font-mono text-fg-2" {...props}>
                             {children}
                           </code>
                         </pre>
@@ -721,8 +722,7 @@ export default function PlanPanel() {
                   }
                   return (
                     <code
-                      className="px-1 py-0.5 text-xs font-mono bg-claude-surface text-claude-accent"
-                      style={{ borderRadius: 0 }}
+                      className="px-1 py-0.5 text-[0.9em] font-mono bg-ink-4 text-fg-2"
                       {...props}
                     >
                       {children}
@@ -730,34 +730,34 @@ export default function PlanPanel() {
                   );
                 },
                 blockquote: ({ children }) => (
-                  <blockquote className="border-l-2 border-claude-accent pl-3 my-2 text-claude-text-secondary italic">
+                  <blockquote className="border-l-2 border-line-strong pl-3 my-2 text-fg-3 italic">
                     {children}
                   </blockquote>
                 ),
                 table: ({ children }) => (
                   <div className="overflow-x-auto my-2">
-                    <table className="w-full text-sm border-collapse border border-claude-border">
+                    <table className="w-full text-[13px] border-collapse border border-line">
                       {children}
                     </table>
                   </div>
                 ),
                 th: ({ children }) => (
-                  <th className="border border-claude-border bg-claude-surface px-2 py-1 text-left font-bold text-claude-text">
+                  <th className="border border-line bg-ink-3 px-2 py-1 text-left font-semibold text-fg">
                     {children}
                   </th>
                 ),
                 td: ({ children }) => (
-                  <td className="border border-claude-border px-2 py-1 text-claude-text-secondary">
+                  <td className="border border-line px-2 py-1 text-fg-3">
                     {children}
                   </td>
                 ),
-                hr: () => <hr className="border-claude-border my-4" />,
+                hr: () => <hr className="border-line my-4" />,
                 a: ({ href, children }) => {
                   const childText = String(children);
                   if (childText === '@test' && href) {
                     return (
                       <span
-                        className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-mono font-bold bg-teal-500/20 text-teal-400 border border-teal-500/30 cursor-default"
+                        className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-mono text-accent-text bg-[rgba(76,154,255,0.13)] shadow-[inset_0_0_0_1px_rgba(76,154,255,0.35)] cursor-default"
                         title={`Test: ${href}`}
                       >
                         @test
@@ -765,14 +765,9 @@ export default function PlanPanel() {
                     );
                   }
                   return (
-                    <a
-                      href={href}
-                      className="text-claude-accent hover:underline"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                    >
+                    <ChatMarkdownLink href={href} sessionId={activeSessionId || undefined}>
                       {children}
-                    </a>
+                    </ChatMarkdownLink>
                   );
                 },
                 // Task list support
@@ -783,7 +778,7 @@ export default function PlanPanel() {
                         type="checkbox"
                         checked={checked}
                         readOnly
-                        className="mr-2 accent-claude-accent"
+                        className="mr-2 accent-accent"
                         {...props}
                       />
                     );
@@ -797,10 +792,10 @@ export default function PlanPanel() {
 
             {/* Comment summary list */}
             {comments.length > 0 && (
-              <div className="mt-6 border-t border-amber-500/30 pt-4">
+              <div className="mt-6 border-t border-line pt-4">
                 <div className="flex items-center gap-2 mb-3">
-                  <MessageSquarePlus size={14} className="text-amber-400" />
-                  <span className="text-xs font-bold uppercase tracking-wider text-amber-400">
+                  <MessageSquarePlus size={14} className="text-amber" />
+                  <span className="text-[11px] uppercase tracking-[0.04em] text-amber">
                     Comments ({comments.length})
                   </span>
                 </div>
@@ -808,22 +803,22 @@ export default function PlanPanel() {
                   {comments.map((c, i) => (
                     <div
                       key={c.id}
-                      className="flex items-start gap-2 p-2 bg-claude-surface border border-claude-border group"
+                      className="flex items-start gap-2 p-2 bg-ink-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)] group"
                     >
-                      <span className="text-[10px] font-mono text-amber-400 mt-0.5 shrink-0">
+                      <span className="text-[10.5px] font-mono text-amber mt-0.5 shrink-0">
                         {i + 1}.
                       </span>
                       <div className="flex-1 min-w-0">
-                        <div className="text-[10px] font-mono text-claude-text-secondary truncate mb-0.5">
+                        <div className="text-[11px] font-mono text-fg-4 truncate mb-0.5">
                           &ldquo;{c.selectedText.length > 60 ? c.selectedText.slice(0, 60) + '...' : c.selectedText}&rdquo;
                         </div>
-                        <div className="text-xs font-mono text-claude-text">
+                        <div className="text-[12.5px] text-fg">
                           {c.comment}
                         </div>
                       </div>
                       <button
                         onClick={() => handleDeleteComment(c.id)}
-                        className="p-0.5 text-claude-text-secondary hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+                        className="p-0.5 text-fg-5 hover:text-diff-del opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
                         title="Remove comment"
                       >
                         <X size={12} />
@@ -835,10 +830,10 @@ export default function PlanPanel() {
             )}
           </div>
         ) : (!sessionMessages || sessionMessages.length === 0) && (
-          <div className="h-full flex flex-col items-center justify-center text-claude-text-secondary">
+          <div className="h-full flex flex-col items-center justify-center text-fg-4">
             <FileText size={32} className="mb-3 opacity-50" />
-            <p className="text-sm font-mono">No plan created yet</p>
-            <p className="text-xs font-mono mt-1 opacity-70">
+            <p className="text-[13px]">No plan created yet</p>
+            <p className="text-[11.5px] mt-1 text-fg-5">
               Switch to Plan mode to generate a plan
             </p>
           </div>

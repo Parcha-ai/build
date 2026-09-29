@@ -985,6 +985,10 @@ Only return the title, nothing else.`
       ...originalSession,
       id: forkedSessionId,
       name: forkedName,
+      manualName: undefined,
+      manuallyRenamedAt: undefined,
+      aiGeneratedName: undefined,
+      autoTitleGeneratedAt: undefined,
       sdkSessionId: undefined, // Fork gets its own SDK session — sharing causes conflicts on resume
       createdAt: new Date(),
       updatedAt: new Date(),
@@ -1030,7 +1034,7 @@ Only return the title, nothing else.`
   async createForkFromInput(
     parentSessionId: string,
     forkPoint: string,
-    initialUserMessage?: string
+    _initialUserMessage?: string
   ): Promise<Session> {
     const parentSession = await this.getSession(parentSessionId);
     if (!parentSession) {
@@ -1040,10 +1044,19 @@ Only return the title, nothing else.`
     // Resolve the SDK session ID for the parent — this is what the SDK knows
     // the session as (may differ from our internal parentSessionId).
     const rawMappedParentSdkSessionId = this.store.get(`sdkSessionMappings.${parentSessionId}`) as string | undefined;
+    // A Build session id and a Claude SDK conversation id are both UUIDs, so
+    // syntax validation cannot tell them apart. Remote sessions must only
+    // trust ids that were explicitly recorded by the SDK. Falling back to the
+    // Build id here poisons the child with --resume=<build-tab-id>; the error
+    // then remains dormant while another harness (for example Codex) handles
+    // the child's early turns.
+    const rawParentSdkSessionId = rawMappedParentSdkSessionId === 'new'
+      ? undefined
+      : rawMappedParentSdkSessionId
+        || parentSession.sdkSessionId
+        || (parentSession.sshConfig ? undefined : parentSessionId);
     const parentSdkSessionId = normalizeClaudeSdkSessionId(
-      rawMappedParentSdkSessionId === 'new'
-        ? undefined
-        : rawMappedParentSdkSessionId || parentSession.sdkSessionId || parentSessionId
+      rawParentSdkSessionId
     );
 
     let forkedSessionId: string;
@@ -1092,6 +1105,12 @@ Only return the title, nothing else.`
       ...parentSession,
       id: forkedSessionId,
       name: `${parentSession.name} (fork)`,
+      // A fork is a new topic. Never inherit the parent's title locks: doing so
+      // makes the dynamic Cerebras namer treat the new tab as user-renamed.
+      manualName: undefined,
+      manuallyRenamedAt: undefined,
+      aiGeneratedName: undefined,
+      autoTitleGeneratedAt: undefined,
       sdkSessionId: parentSession.sshConfig ? undefined : forkedSdkSessionId,
       createdAt: new Date(),
       updatedAt: new Date(),
@@ -1144,12 +1163,9 @@ Only return the title, nothing else.`
 
     console.log(`[Session] Created conversation fork ${forkedSessionId} from parent ${parentSessionId}`);
 
-    // Generate AI name asynchronously (non-blocking)
-    if (initialUserMessage) {
-      this.generateForkName(forkedSessionId, parentSession, initialUserMessage).catch(err => {
-        console.error('[Session] Failed to generate fork name:', err);
-      });
-    }
+    // The shared dynamic title service names this after the first completed
+    // response. It uses Cerebras, has better result context, and emits the
+    // normal session update event. Avoid racing it with the legacy Haiku path.
 
     return forkedSession;
   }

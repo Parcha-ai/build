@@ -46,10 +46,13 @@ class QueueController extends EventEmitter {
     const normalizedText = text.trim();
 
     // Dedup by content within 10s
-    const existing = existingQueue.find(m =>
-      (opts?.id && m.id === opts.id) ||
-      (normalizedText.length > 0 && m.text.trim() === normalizedText && Date.now() - m.timestamp < 10_000)
-    );
+    const existing = opts?.id
+      ? existingQueue.find((message) => message.id === opts.id)
+      : existingQueue.find((message) =>
+        normalizedText.length > 0
+        && message.text.trim() === normalizedText
+        && Date.now() - message.timestamp < 10_000
+      );
     if (existing) {
       return existing;
     }

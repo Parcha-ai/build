@@ -74,10 +74,13 @@ async function main(): Promise<void> {
   assert.match(sessionStore, /fastStack: async \(sessionId, message, attachments, queuedMessageId/);
   assert.match(sessionStore, /queue\?\.beginFastStack\(sessionId\)/);
   assert.match(sessionStore, /for \(const queuedMessage of initialState\.messageQueue\[sessionId\] \|\| \[\]\)[\s\S]*?queue\?\.enqueue\(/);
-  assert.match(sessionStore, /queue\?\.remove\(sessionId, queuedMessageId\)/);
+  assert.match(sessionStore, /queue\?\.remove\(sessionId, effectiveQueuedMessageId\)/);
   assert.match(sessionStore, /sessions\.fastStackFork\(sessionId\)/);
   assert.match(sessionStore, /queue\?\.markFastStackRunning\(sessionId\)/);
+  assert.match(sessionStore, /const effectiveQueuedMessageId = queuedMessageId \|\| matchingQueuedMessage\?\.id/);
+  assert.match(sessionStore, /candidate\.message\.trim\(\) === message\.trim\(\)[\s\S]*?sameAttachments\(candidate\.attachments, attachments\)/);
   assert.match(sessionStore, /existingMessageId: fastStackMessageId/);
+  assert.match(sessionStore, /existingMessageId: fastStackMessageId,[\s\S]*?fromQueueDrain: true/);
   assert.match(sessionStore, /const fastStackSiblings =/);
   assert.match(sessionStore, /if \(fastStackSiblings\.length > 0\)[\s\S]*?fromQueueDrain: true/);
   assert.doesNotMatch(

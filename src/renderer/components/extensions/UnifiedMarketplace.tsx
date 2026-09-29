@@ -380,38 +380,38 @@ export default function UnifiedMarketplace({
   return (
     <div className="h-full flex flex-col">
       {/* Tab Bar */}
-      <div className="flex border-b border-claude-border flex-shrink-0">
+      <div className="flex border-b border-line flex-shrink-0">
         <button
           onClick={() => setActiveTab('mcp')}
-          className={`flex items-center gap-2 px-4 py-2 text-sm font-mono transition-colors ${
+          className={`flex items-center gap-2 h-9 px-4 text-[13px] transition-colors ${
             activeTab === 'mcp'
-              ? 'text-claude-text border-b-2 border-green-400 bg-claude-surface/50'
-              : 'text-claude-text-secondary hover:text-claude-text'
+              ? 'text-fg border-b-2 border-accent bg-claude-surface-hover'
+              : 'text-fg-3 hover:text-fg hover:bg-claude-surface-hover'
           }`}
         >
-          <Server size={14} className={activeTab === 'mcp' ? 'text-green-400' : ''} />
+          <Server size={14} className={activeTab === 'mcp' ? 'text-accent' : ''} />
           MCP Servers
-          <span className="text-[10px] text-claude-text-secondary">({mcpServers.length})</span>
+          <span className="font-mono text-[11px] text-fg-4">({mcpServers.length})</span>
         </button>
         <button
           onClick={() => setActiveTab('plugins')}
-          className={`flex items-center gap-2 px-4 py-2 text-sm font-mono transition-colors ${
+          className={`flex items-center gap-2 h-9 px-4 text-[13px] transition-colors ${
             activeTab === 'plugins'
-              ? 'text-claude-text border-b-2 border-purple-500 bg-claude-surface/50'
-              : 'text-claude-text-secondary hover:text-claude-text'
+              ? 'text-fg border-b-2 border-accent bg-claude-surface-hover'
+              : 'text-fg-3 hover:text-fg hover:bg-claude-surface-hover'
           }`}
         >
-          <Puzzle size={14} className={activeTab === 'plugins' ? 'text-purple-500' : ''} />
+          <Puzzle size={14} className={activeTab === 'plugins' ? 'text-accent' : ''} />
           Plugins
-          <span className="text-[10px] text-claude-text-secondary">({plugins.length})</span>
+          <span className="font-mono text-[11px] text-fg-4">({plugins.length})</span>
         </button>
       </div>
 
       {activeLoading ? (
         <div className="flex-1 flex items-center justify-center">
           <div className="flex flex-col items-center gap-3">
-            <Loader2 size={24} className="animate-spin text-claude-accent" />
-            <span className="text-sm text-claude-text-secondary">
+            <Loader2 size={24} className="animate-spin text-accent" />
+            <span className="text-[13px] text-fg-3">
               Loading {activeTab === 'plugins' ? 'plugins' : 'MCP servers'}...
             </span>
           </div>
@@ -419,11 +419,11 @@ export default function UnifiedMarketplace({
       ) : activeError ? (
         <div className="flex-1 flex items-center justify-center">
           <div className="flex flex-col items-center gap-3 text-center max-w-md">
-            <AlertCircle size={24} className="text-red-400" />
-            <p className="text-sm text-red-400">{activeError}</p>
+            <AlertCircle size={24} className="text-diff-del" />
+            <p className="text-[13px] text-diff-del-text">{activeError}</p>
             <button
               onClick={() => void retryActiveTab()}
-              className="flex items-center gap-2 px-3 py-1.5 text-xs font-mono bg-claude-surface text-claude-text hover:bg-claude-surface/80 transition-colors"
+              className="flex items-center gap-2 h-8 px-3 text-[13px] text-fg-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] hover:bg-claude-surface-hover transition-colors"
             >
               <RefreshCw size={12} />
               Retry
@@ -433,17 +433,17 @@ export default function UnifiedMarketplace({
       ) : (
         <>
       {/* Search and Filter Bar */}
-      <div className="p-3 border-b border-claude-border flex-shrink-0">
+      <div className="p-3 border-b border-line flex-shrink-0">
         <div className="flex items-center gap-2">
           {/* Search Input */}
           <div className="relative flex-1">
-            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-claude-text-secondary" />
+            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-fg-4" />
             <input
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder={activeTab === 'mcp' ? 'Search MCP servers...' : 'Search plugins...'}
-              className="w-full pl-9 pr-3 py-2 bg-claude-surface border border-claude-border text-sm text-claude-text placeholder:text-claude-text-secondary focus:outline-none focus:border-claude-accent"
+              className="w-full pl-9 pr-3 py-2 bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-[13px] text-fg placeholder:text-fg-5 focus:outline-none focus:ring-1 focus:ring-accent/50"
             />
           </div>
 
@@ -451,8 +451,8 @@ export default function UnifiedMarketplace({
           <select
             value={selectedCategory}
             onChange={(e) => setSelectedCategory(e.target.value)}
-            className={`px-3 py-2 bg-claude-surface border border-claude-border text-sm font-mono text-claude-text focus:outline-none focus:border-claude-accent ${
-              activeTab === 'mcp' ? 'focus:border-green-400' : 'focus:border-purple-500'
+            className={`px-3 py-2 bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-[13px] text-fg focus:outline-none focus:ring-1 focus:ring-accent/50 ${
+              activeTab === 'mcp' ? 'focus:ring-accent/50' : 'focus:ring-accent/50'
             }`}
           >
             {categories.map((cat) => (
@@ -466,7 +466,7 @@ export default function UnifiedMarketplace({
           {activeTab === 'plugins' ? (
             <button
               onClick={() => setShowGitHubInstallDialog(true)}
-              className="flex items-center gap-1.5 px-3 py-2 text-xs font-mono bg-purple-500 text-white hover:bg-purple-600 transition-colors border border-purple-500"
+              className="flex items-center gap-1.5 h-8 px-3 text-[13px] text-fg-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] hover:bg-claude-surface-hover transition-colors"
               title="Install plugin marketplace from GitHub"
             >
               <Download size={14} />
@@ -475,7 +475,7 @@ export default function UnifiedMarketplace({
           ) : (
             <button
               onClick={() => setShowManualMcpInstallDialog(true)}
-              className="flex items-center gap-1.5 px-3 py-2 text-xs font-mono bg-green-500 text-white hover:bg-green-600 transition-colors border border-green-500"
+              className="flex items-center gap-1.5 h-8 px-3 text-[13px] text-fg-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] hover:bg-claude-surface-hover transition-colors"
               title="Install MCP server from npm/URL"
             >
               <Download size={14} />
@@ -487,7 +487,7 @@ export default function UnifiedMarketplace({
           <button
             onClick={handleRefresh}
             disabled={refreshing}
-            className="p-2 text-claude-text-secondary hover:text-claude-text transition-colors disabled:opacity-50 border border-claude-border bg-claude-surface"
+            className="p-2 text-fg-3 hover:text-fg hover:bg-claude-surface-hover transition-colors disabled:opacity-40 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)]"
             title="Refresh marketplace"
           >
             <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
@@ -496,7 +496,7 @@ export default function UnifiedMarketplace({
       </div>
 
       {/* Results Count */}
-      <div className="px-3 py-2 text-xs text-claude-text-secondary border-b border-claude-border flex-shrink-0">
+      <div className="px-3 py-2 text-[12px] text-fg-4 border-b border-line flex-shrink-0">
         {activeTab === 'mcp' ? filteredMcpServers.length : filteredPlugins.length}{' '}
         {activeTab === 'mcp' ? 'server' : 'plugin'}
         {(activeTab === 'mcp' ? filteredMcpServers.length : filteredPlugins.length) !== 1 ? 's' : ''} found
@@ -510,8 +510,8 @@ export default function UnifiedMarketplace({
           // MCP Servers Grid
           filteredMcpServers.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full text-center">
-              <Server size={32} className="text-claude-text-secondary opacity-50 mb-3" />
-              <p className="text-sm text-claude-text-secondary">No MCP servers found</p>
+              <Server size={32} className="text-fg-5 mb-3" />
+              <p className="text-[13px] text-fg-3">No MCP servers found</p>
             </div>
           ) : (
             <div className="grid grid-cols-1 gap-3">
@@ -524,42 +524,42 @@ export default function UnifiedMarketplace({
                 return (
                   <div
                     key={server.id}
-                    className="p-4 border border-claude-border hover:border-green-500/50 transition-colors bg-claude-bg group"
+                    className="p-4 bg-ink-1 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)] hover:bg-claude-surface-hover transition-colors group"
                   >
                     {/* Header Row */}
                     <div className="flex items-start gap-3 mb-3">
-                      <div className="w-10 h-10 flex items-center justify-center bg-claude-surface border border-claude-border flex-shrink-0">
+                      <div className="w-10 h-10 flex items-center justify-center bg-ink-3 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] flex-shrink-0">
                         {server.icon ? (
                           <img src={server.icon} alt="" className="w-6 h-6 object-contain" />
                         ) : (
-                          <Server size={20} className="text-green-400" />
+                          <Server size={20} className="text-fg-3" />
                         )}
                       </div>
 
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 flex-wrap">
-                          <h3 className="font-mono text-sm text-claude-text font-medium truncate">
+                          <h3 className="text-[14px] text-fg font-semibold tracking-tight truncate">
                             {server.name}
                           </h3>
-                          <span className="text-[10px] text-claude-text-secondary bg-claude-surface px-1.5 py-0.5">
+                          <span className="font-mono text-[10px] text-fg-3 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.16)] px-1.5 py-0.5">
                             v{server.version}
                           </span>
                         </div>
-                        <p className="text-[11px] text-claude-text-secondary font-mono mt-0.5 truncate">
+                        <p className="text-[11.5px] text-fg-4 font-mono mt-0.5 truncate">
                           {server.id}
                         </p>
                       </div>
 
                       <div className="flex-shrink-0">
                         {installed ? (
-                          <span className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-mono bg-green-500/10 text-green-400 border border-green-500/30">
+                          <span className="flex items-center gap-1.5 h-8 px-3 text-[13px] bg-diff-add/10 text-diff-add-text shadow-[inset_0_0_0_1px_rgba(63,185,80,0.3)]">
                             <Check size={12} />
                             Installed
                           </span>
                         ) : (
                           <button
                             onClick={() => handleMcpInstallClick(server)}
-                            className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-mono bg-green-400 text-black hover:bg-green-500 transition-colors"
+                            className="flex items-center gap-1.5 h-8 px-3 text-[13px] font-semibold bg-fg text-ink-0 hover:bg-white transition-colors"
                           >
                             <Download size={12} />
                             Install
@@ -568,11 +568,11 @@ export default function UnifiedMarketplace({
                       </div>
                     </div>
 
-                    <p className="text-xs text-claude-text-secondary mb-3 line-clamp-2">
+                    <p className="text-[13px] text-fg-3 mb-3 line-clamp-2">
                       {server.description}
                     </p>
 
-                    <div className="flex items-center gap-4 flex-wrap text-[10px] text-claude-text-secondary">
+                    <div className="flex items-center gap-4 flex-wrap text-[11.5px] text-fg-4">
                       <span className="flex items-center gap-1">
                         <Tag size={10} />
                         {deriveMcpCategory(server)}
@@ -590,7 +590,7 @@ export default function UnifiedMarketplace({
                         </span>
                       )}
                       {server.requiresAuth && (
-                        <span className="flex items-center gap-1 text-amber-400">
+                        <span className="flex items-center gap-1 text-amber">
                           <Key size={10} />
                           Auth
                         </span>
@@ -611,8 +611,8 @@ export default function UnifiedMarketplace({
           // Plugins Grid
           filteredPlugins.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full text-center">
-              <Puzzle size={32} className="text-claude-text-secondary opacity-50 mb-3" />
-              <p className="text-sm text-claude-text-secondary">No plugins found</p>
+              <Puzzle size={32} className="text-fg-5 mb-3" />
+              <p className="text-[13px] text-fg-3">No plugins found</p>
             </div>
           ) : (
             <div className="grid grid-cols-1 gap-3">
@@ -624,32 +624,32 @@ export default function UnifiedMarketplace({
                 return (
                   <div
                     key={key}
-                    className="p-4 border border-claude-border hover:border-purple-500/50 transition-colors bg-claude-bg group"
+                    className="p-4 bg-ink-1 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)] hover:bg-claude-surface-hover transition-colors group"
                   >
                     {/* Header Row */}
                     <div className="flex items-start gap-3 mb-3">
-                      <div className="w-10 h-10 flex items-center justify-center bg-claude-surface border border-claude-border flex-shrink-0">
-                        <Puzzle size={20} className="text-purple-500" />
+                      <div className="w-10 h-10 flex items-center justify-center bg-ink-3 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] flex-shrink-0">
+                        <Puzzle size={20} className="text-fg-3" />
                       </div>
 
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 flex-wrap">
-                          <h3 className="font-mono text-sm text-claude-text font-medium truncate">
+                          <h3 className="text-[14px] text-fg font-semibold tracking-tight truncate">
                             {plugin.name}
                           </h3>
                           {plugin.installed && (
                             <span
-                              className={`text-[10px] px-1.5 py-0.5 ${
+                              className={`font-mono text-[10px] uppercase px-1.5 py-0.5 ${
                                 plugin.enabled
-                                  ? 'bg-green-500/20 text-green-400'
-                                  : 'bg-gray-500/20 text-gray-400'
+                                  ? 'bg-diff-add/10 text-diff-add-text'
+                                  : 'text-fg-4 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.16)]'
                               }`}
                             >
                               {plugin.enabled ? 'Enabled' : 'Disabled'}
                             </span>
                           )}
                         </div>
-                        <p className="text-[11px] text-claude-text-secondary font-mono mt-0.5 truncate">
+                        <p className="text-[11.5px] text-fg-4 font-mono mt-0.5 truncate">
                           {plugin.id}@{plugin.marketplace}
                         </p>
                       </div>
@@ -660,10 +660,10 @@ export default function UnifiedMarketplace({
                             <button
                               onClick={() => handlePluginToggle(plugin)}
                               disabled={isToggling}
-                              className={`flex items-center gap-1.5 px-2 py-1.5 text-xs font-mono transition-colors ${
+                              className={`flex items-center gap-1.5 h-8 px-2 text-[13px] transition-colors ${
                                 plugin.enabled
-                                  ? 'bg-gray-500/20 text-gray-400 hover:bg-gray-500/30'
-                                  : 'bg-green-500/20 text-green-400 hover:bg-green-500/30'
+                                  ? 'text-fg-3 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] hover:bg-claude-surface-hover hover:text-fg'
+                                  : 'bg-diff-add/10 text-diff-add-text hover:bg-diff-add/20'
                               }`}
                               title={plugin.enabled ? 'Disable' : 'Enable'}
                             >
@@ -680,7 +680,7 @@ export default function UnifiedMarketplace({
                           <button
                             onClick={() => handlePluginInstall(plugin)}
                             disabled={isInstalling}
-                            className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-mono bg-purple-500 text-white hover:bg-purple-600 transition-colors disabled:opacity-50"
+                            className="flex items-center gap-1.5 h-8 px-3 text-[13px] font-semibold bg-fg text-ink-0 hover:bg-white transition-colors disabled:opacity-40"
                           >
                             {isInstalling ? (
                               <Loader2 size={12} className="animate-spin" />
@@ -693,11 +693,11 @@ export default function UnifiedMarketplace({
                       </div>
                     </div>
 
-                    <p className="text-xs text-claude-text-secondary mb-3 line-clamp-2">
+                    <p className="text-[13px] text-fg-3 mb-3 line-clamp-2">
                       {plugin.description}
                     </p>
 
-                    <div className="flex items-center gap-4 flex-wrap text-[10px] text-claude-text-secondary">
+                    <div className="flex items-center gap-4 flex-wrap text-[11.5px] text-fg-4">
                       <span className="flex items-center gap-1">
                         <Tag size={10} />
                         {derivePluginCategory(plugin)}
@@ -726,7 +726,7 @@ export default function UnifiedMarketplace({
                           MCP
                         </span>
                       )}
-                      <span className="text-claude-text-secondary/50">
+                      <span className="text-fg-5">
                         from {plugin.marketplace}
                       </span>
                     </div>
@@ -822,23 +822,23 @@ function GitHubPluginInstallDialog({
   };
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
       <div
-        className="bg-claude-bg border border-claude-border w-[480px] max-w-[95%]"
+        className="bg-ink-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1),0_16px_40px_rgba(0,0,0,0.4)] w-[480px] max-w-[95%]"
         onKeyDown={(e) => {
           if (e.key === 'Escape' && !installing) onClose();
           if (e.key === 'Enter' && !installing) handleInstall();
         }}
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-claude-border">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-line">
           <div className="flex items-center gap-2">
-            <Download size={16} className="text-purple-500" />
-            <span className="text-sm font-mono text-claude-text">Install from GitHub</span>
+            <Download size={16} className="text-fg-3" />
+            <span className="text-[16px] font-semibold tracking-tight text-fg">Install from GitHub</span>
           </div>
           <button
             onClick={onClose}
-            className="text-claude-text-secondary hover:text-claude-text transition-colors"
+            className="text-fg-3 hover:text-fg transition-colors"
             disabled={installing}
           >
             <X size={16} />
@@ -848,7 +848,7 @@ function GitHubPluginInstallDialog({
         {/* Content */}
         <div className="p-4 space-y-4">
           <div>
-            <label className="block text-xs font-mono text-claude-text-secondary uppercase mb-2">
+            <label className="block text-[11px] font-medium uppercase tracking-[0.04em] text-fg-4 mb-2">
               GitHub Repository
             </label>
             <input
@@ -857,33 +857,33 @@ function GitHubPluginInstallDialog({
               value={githubRepo}
               onChange={(e) => setGithubRepo(e.target.value)}
               placeholder="e.g., username/repo or https://github.com/username/repo"
-              className="w-full px-3 py-2 bg-claude-surface border border-claude-border text-sm font-mono text-claude-text placeholder:text-claude-text-secondary focus:outline-none focus:border-purple-500"
+              className="w-full px-3 py-2 bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-[13px] font-mono text-fg placeholder:text-fg-5 focus:outline-none focus:ring-1 focus:ring-accent/50"
               disabled={installing}
             />
-            <p className="text-xs text-claude-text-secondary mt-2">
+            <p className="text-[12px] text-fg-4 mt-2">
               Install a plugin marketplace from a GitHub repository. This will clone the repo and make all its plugins available.
             </p>
           </div>
 
           {/* Popular marketplaces suggestion */}
-          <div className="p-3 bg-claude-surface border border-claude-border">
-            <p className="text-xs text-claude-text-secondary mb-2 font-mono">Popular marketplaces:</p>
+          <div className="p-3 bg-ink-1 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)]">
+            <p className="text-[12px] text-fg-3 mb-2">Popular marketplaces:</p>
             <div className="space-y-1">
               <button
                 onClick={() => setGithubRepo('kivilaid/plugin-marketplace')}
-                className="block text-xs text-purple-500 hover:text-purple-400 font-mono"
+                className="block text-[12px] text-accent-text hover:text-fg font-mono"
               >
                 kivilaid/plugin-marketplace (87+ plugins)
               </button>
               <button
                 onClick={() => setGithubRepo('ananddtyagi/cc-marketplace')}
-                className="block text-xs text-purple-500 hover:text-purple-400 font-mono"
+                className="block text-[12px] text-accent-text hover:text-fg font-mono"
               >
                 ananddtyagi/cc-marketplace
               </button>
               <button
                 onClick={() => setGithubRepo('feed-mob/claude-code-marketplace')}
-                className="block text-xs text-purple-500 hover:text-purple-400 font-mono"
+                className="block text-[12px] text-accent-text hover:text-fg font-mono"
               >
                 feed-mob/claude-code-marketplace
               </button>
@@ -895,16 +895,16 @@ function GitHubPluginInstallDialog({
             <div
               className={`flex items-start gap-2 p-3 ${
                 result.success
-                  ? 'bg-green-500/10 border border-green-500/30'
-                  : 'bg-red-500/10 border border-red-500/30'
+                  ? 'bg-diff-add/10 shadow-[inset_0_0_0_1px_rgba(63,185,80,0.3)]'
+                  : 'bg-diff-del/10 shadow-[inset_0_0_0_1px_rgba(248,81,73,0.3)]'
               }`}
             >
               {result.success ? (
-                <Check size={14} className="text-green-500 flex-shrink-0 mt-0.5" />
+                <Check size={14} className="text-diff-add flex-shrink-0 mt-0.5" />
               ) : (
-                <AlertCircle size={14} className="text-red-500 flex-shrink-0 mt-0.5" />
+                <AlertCircle size={14} className="text-diff-del flex-shrink-0 mt-0.5" />
               )}
-              <p className={`text-xs ${result.success ? 'text-green-500' : 'text-red-500'}`}>
+              <p className={`text-[13px] ${result.success ? 'text-diff-add-text' : 'text-diff-del-text'}`}>
                 {result.message}
               </p>
             </div>
@@ -912,10 +912,10 @@ function GitHubPluginInstallDialog({
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-claude-border">
+        <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-line">
           <button
             onClick={onClose}
-            className="px-3 py-1.5 text-xs font-mono text-claude-text-secondary hover:text-claude-text transition-colors"
+            className="h-8 px-3 text-[13px] text-fg-3 hover:text-fg hover:bg-claude-surface-hover transition-colors"
             disabled={installing}
           >
             Cancel
@@ -923,7 +923,7 @@ function GitHubPluginInstallDialog({
           <button
             onClick={handleInstall}
             disabled={installing || !githubRepo.trim()}
-            className="px-4 py-1.5 text-xs font-mono bg-purple-500 text-white hover:bg-purple-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+            className="h-8 px-3 text-[13px] font-semibold bg-fg text-ink-0 hover:bg-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2"
           >
             {installing ? (
               <>
@@ -1046,23 +1046,23 @@ function ManualMcpInstallDialog({
   };
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
       <div
-        className="bg-claude-bg border border-claude-border w-[520px] max-w-[95%]"
+        className="bg-ink-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1),0_16px_40px_rgba(0,0,0,0.4)] w-[520px] max-w-[95%]"
         onKeyDown={(e) => {
           if (e.key === 'Escape' && !installing) onClose();
           if (e.key === 'Enter' && !installing) handleInstall();
         }}
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-claude-border">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-line">
           <div className="flex items-center gap-2">
-            <Server size={16} className="text-green-400" />
-            <span className="text-sm font-mono text-claude-text">Install Custom MCP Server</span>
+            <Server size={16} className="text-fg-3" />
+            <span className="text-[16px] font-semibold tracking-tight text-fg">Install Custom MCP Server</span>
           </div>
           <button
             onClick={onClose}
-            className="text-claude-text-secondary hover:text-claude-text transition-colors"
+            className="text-fg-3 hover:text-fg transition-colors"
             disabled={installing}
           >
             <X size={16} />
@@ -1073,7 +1073,7 @@ function ManualMcpInstallDialog({
         <div className="p-4 space-y-4">
           {/* Server Name */}
           <div>
-            <label className="block text-xs font-mono text-claude-text-secondary uppercase mb-2">
+            <label className="block text-[11px] font-medium uppercase tracking-[0.04em] text-fg-4 mb-2">
               Server Name
             </label>
             <input
@@ -1082,17 +1082,17 @@ function ManualMcpInstallDialog({
               value={serverName}
               onChange={(e) => setServerName(e.target.value)}
               placeholder="e.g., my-server"
-              className="w-full px-3 py-2 bg-claude-surface border border-claude-border text-sm font-mono text-claude-text placeholder:text-claude-text-secondary focus:outline-none focus:border-green-400"
+              className="w-full px-3 py-2 bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-[13px] font-mono text-fg placeholder:text-fg-5 focus:outline-none focus:ring-1 focus:ring-accent/50"
               disabled={installing}
             />
-            <p className="text-xs text-claude-text-secondary mt-1">
+            <p className="text-[12px] text-fg-4 mt-1">
               Unique identifier for this MCP server
             </p>
           </div>
 
           {/* Installation Type */}
           <div>
-            <label className="block text-xs font-mono text-claude-text-secondary uppercase mb-2">
+            <label className="block text-[11px] font-medium uppercase tracking-[0.04em] text-fg-4 mb-2">
               Installation Method
             </label>
             <div className="flex gap-3">
@@ -1103,10 +1103,10 @@ function ManualMcpInstallDialog({
                   checked={installType === 'npm'}
                   onChange={() => setInstallType('npm')}
                   disabled={installing}
-                  className="accent-green-500"
+                  className="accent-[#4C9AFF]"
                 />
-                <Package size={14} className="text-claude-text-secondary" />
-                <span className="text-xs text-claude-text">npm Package</span>
+                <Package size={14} className="text-fg-4" />
+                <span className="text-[13px] text-fg-2">npm Package</span>
               </label>
               <label className="flex items-center gap-2 cursor-pointer">
                 <input
@@ -1115,10 +1115,10 @@ function ManualMcpInstallDialog({
                   checked={installType === 'remote'}
                   onChange={() => setInstallType('remote')}
                   disabled={installing}
-                  className="accent-green-500"
+                  className="accent-[#4C9AFF]"
                 />
-                <Globe size={14} className="text-claude-text-secondary" />
-                <span className="text-xs text-claude-text">Remote URL</span>
+                <Globe size={14} className="text-fg-4" />
+                <span className="text-[13px] text-fg-2">Remote URL</span>
               </label>
             </div>
           </div>
@@ -1126,7 +1126,7 @@ function ManualMcpInstallDialog({
           {/* npm Package or Remote URL */}
           {installType === 'npm' ? (
             <div>
-              <label className="block text-xs font-mono text-claude-text-secondary uppercase mb-2">
+              <label className="block text-[11px] font-medium uppercase tracking-[0.04em] text-fg-4 mb-2">
                 npm Package
               </label>
               <input
@@ -1134,16 +1134,16 @@ function ManualMcpInstallDialog({
                 value={npmPackage}
                 onChange={(e) => setNpmPackage(e.target.value)}
                 placeholder="e.g., @modelcontextprotocol/server-postgres"
-                className="w-full px-3 py-2 bg-claude-surface border border-claude-border text-sm font-mono text-claude-text placeholder:text-claude-text-secondary focus:outline-none focus:border-green-400"
+                className="w-full px-3 py-2 bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-[13px] font-mono text-fg placeholder:text-fg-5 focus:outline-none focus:ring-1 focus:ring-accent/50"
                 disabled={installing}
               />
-              <p className="text-xs text-claude-text-secondary mt-1">
+              <p className="text-[12px] text-fg-4 mt-1">
                 Agent SDK will run: npx -y &lt;package&gt;
               </p>
             </div>
           ) : (
             <div>
-              <label className="block text-xs font-mono text-claude-text-secondary uppercase mb-2">
+              <label className="block text-[11px] font-medium uppercase tracking-[0.04em] text-fg-4 mb-2">
                 Remote URL
               </label>
               <input
@@ -1151,20 +1151,20 @@ function ManualMcpInstallDialog({
                 value={remoteUrl}
                 onChange={(e) => setRemoteUrl(e.target.value)}
                 placeholder="e.g., https://mcp.linear.app/mcp"
-                className="w-full px-3 py-2 bg-claude-surface border border-claude-border text-sm font-mono text-claude-text placeholder:text-claude-text-secondary focus:outline-none focus:border-green-400"
+                className="w-full px-3 py-2 bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-[13px] font-mono text-fg placeholder:text-fg-5 focus:outline-none focus:ring-1 focus:ring-accent/50"
                 disabled={installing}
               />
-              <p className="text-xs text-claude-text-secondary mt-1">
+              <p className="text-[12px] text-fg-4 mt-1">
                 Build will share this URL with every harness through mcp-remote
               </p>
             </div>
           )}
 
           {/* Optional Auth */}
-          <div className="p-3 bg-claude-surface border border-claude-border space-y-3">
+          <div className="p-3 bg-ink-1 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)] space-y-3">
             <div className="flex items-center gap-2">
-              <Key size={14} className="text-claude-text-secondary" />
-              <span className="text-xs font-mono text-claude-text-secondary uppercase">
+              <Key size={14} className="text-fg-4" />
+              <span className="text-[11px] font-medium uppercase tracking-[0.04em] text-fg-4">
                 Optional Authentication
               </span>
             </div>
@@ -1175,7 +1175,7 @@ function ManualMcpInstallDialog({
                   value={authKey}
                   onChange={(e) => setAuthKey(e.target.value)}
                   placeholder={installType === 'remote' ? 'Header-Name' : 'ENV_VAR_NAME'}
-                  className="w-full px-2 py-1.5 bg-claude-bg border border-claude-border text-xs font-mono text-claude-text placeholder:text-claude-text-secondary focus:outline-none focus:border-green-400"
+                  className="w-full px-2 py-1.5 bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-[12px] font-mono text-fg placeholder:text-fg-5 focus:outline-none focus:ring-1 focus:ring-accent/50"
                   disabled={installing}
                 />
               </div>
@@ -1185,12 +1185,12 @@ function ManualMcpInstallDialog({
                   value={authValue}
                   onChange={(e) => setAuthValue(e.target.value)}
                   placeholder="value"
-                  className="w-full px-2 py-1.5 bg-claude-bg border border-claude-border text-xs font-mono text-claude-text placeholder:text-claude-text-secondary focus:outline-none focus:border-green-400"
+                  className="w-full px-2 py-1.5 bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-[12px] font-mono text-fg placeholder:text-fg-5 focus:outline-none focus:ring-1 focus:ring-accent/50"
                   disabled={installing}
                 />
               </div>
             </div>
-            <p className="text-[10px] text-claude-text-secondary">
+            <p className="text-[12px] text-fg-4">
               {installType === 'remote' ? 'Header to pass to the remote MCP server' : 'Environment variable to pass to the MCP server'}
             </p>
           </div>
@@ -1200,16 +1200,16 @@ function ManualMcpInstallDialog({
             <div
               className={`flex items-start gap-2 p-3 ${
                 result.success
-                  ? 'bg-green-500/10 border border-green-500/30'
-                  : 'bg-red-500/10 border border-red-500/30'
+                  ? 'bg-diff-add/10 shadow-[inset_0_0_0_1px_rgba(63,185,80,0.3)]'
+                  : 'bg-diff-del/10 shadow-[inset_0_0_0_1px_rgba(248,81,73,0.3)]'
               }`}
             >
               {result.success ? (
-                <Check size={14} className="text-green-500 flex-shrink-0 mt-0.5" />
+                <Check size={14} className="text-diff-add flex-shrink-0 mt-0.5" />
               ) : (
-                <AlertCircle size={14} className="text-red-500 flex-shrink-0 mt-0.5" />
+                <AlertCircle size={14} className="text-diff-del flex-shrink-0 mt-0.5" />
               )}
-              <p className={`text-xs ${result.success ? 'text-green-500' : 'text-red-500'}`}>
+              <p className={`text-[13px] ${result.success ? 'text-diff-add-text' : 'text-diff-del-text'}`}>
                 {result.message}
               </p>
             </div>
@@ -1217,10 +1217,10 @@ function ManualMcpInstallDialog({
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-claude-border">
+        <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-line">
           <button
             onClick={onClose}
-            className="px-3 py-1.5 text-xs font-mono text-claude-text-secondary hover:text-claude-text transition-colors"
+            className="h-8 px-3 text-[13px] text-fg-3 hover:text-fg hover:bg-claude-surface-hover transition-colors"
             disabled={installing}
           >
             Cancel
@@ -1232,7 +1232,7 @@ function ManualMcpInstallDialog({
               !serverName.trim() ||
               (installType === 'npm' ? !npmPackage.trim() : !remoteUrl.trim())
             }
-            className="px-4 py-1.5 text-xs font-mono bg-green-500 text-white hover:bg-green-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+            className="h-8 px-3 text-[13px] font-semibold bg-fg text-ink-0 hover:bg-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2"
           >
             {installing ? (
               <>

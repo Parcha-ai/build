@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { Terminal, FileText, Search, FolderOpen, Play, Edit2, Globe, Code, HelpCircle, ListTodo, Loader2, ChevronRight, ChevronDown, CheckCircle2, Circle, Clock, ExternalLink, ListPlus, ListChecks, FileSearch, List, ArrowUpRight } from 'lucide-react';
+import { Terminal, FileText, Search, FolderOpen, Play, Edit2, Globe, Code, HelpCircle, ListTodo, Loader2, ChevronRight, ChevronDown, CheckCircle2, Circle, Clock, ExternalLink, ListPlus, ListChecks, FileSearch, List, ArrowUpRight, Check, X } from 'lucide-react';
 import { LazyMonacoEditor, LazyDiffEditor } from './LazyMonacoEditor';
 import type { ToolCall } from '../../../shared/types';
 import { isTranscriptVisibleToolCall, normalizeToolCall } from '../../../shared/utils/tool-call-transformer';
@@ -13,6 +13,8 @@ interface ToolCallCardProps {
   isStreaming?: boolean; // If currently streaming
   defaultCollapsed?: boolean; // If true, start collapsed (for old messages to improve performance)
   onBackground?: (toolCall: ToolCall) => void; // Callback to background a running Bash command
+  /** 'card' (default) = standalone bordered card; 'row' = compact 28px borderless row used inside ToolRunGroup */
+  variant?: 'card' | 'row';
 }
 
 interface TodoItem {
@@ -50,88 +52,84 @@ const TOOL_CONFIG: Record<string, {
   borderColor?: string; // Optional border color
   iconSize?: number;    // Optional icon size override
 }> = {
-  Bash: { icon: Terminal, label: 'Bash', color: 'text-green-400' },
-  Command: { icon: Terminal, label: 'Command', color: 'text-green-400' },
-  BashOutput: { icon: Terminal, label: 'Bash Output', color: 'text-green-400' },
-  KillShell: { icon: Terminal, label: 'Kill Shell', color: 'text-red-400' },
-  Read: { icon: FileText, label: 'Read', color: 'text-blue-400' },
-  Grep: { icon: Search, label: 'Grep', color: 'text-purple-400' },
-  Glob: { icon: FolderOpen, label: 'Glob', color: 'text-yellow-400' },
-  Write: { icon: FileText, label: 'Write', color: 'text-pink-400' },
-  Edit: { icon: Edit2, label: 'Edit', color: 'text-orange-400' },
-  Delete: { icon: FileText, label: 'Delete', color: 'text-red-400' },
-  Ls: { icon: FolderOpen, label: 'List', color: 'text-yellow-400' },
-  MCP: { icon: Code, label: 'MCP', color: 'text-indigo-400' },
-  ToolSearch: { icon: Search, label: 'Tool Search', color: 'text-purple-400' },
-  Skill: { icon: Code, label: 'Skill', color: 'text-violet-400' },
-  Monitor: { icon: Clock, label: 'Monitor', color: 'text-sky-400' },
-  Lint: { icon: FileSearch, label: 'Lint', color: 'text-rose-400' },
-  GenerateImage: { icon: FileText, label: 'Generate Image', color: 'text-pink-400' },
-  RecordScreen: { icon: Play, label: 'Record Screen', color: 'text-cyan-400' },
-  UpdateTopic: { icon: Edit2, label: 'Update Topic', color: 'text-indigo-400' },
-  WebFetch: { icon: Globe, label: 'WebFetch', color: 'text-cyan-400' },
-  WebSearch: { icon: Search, label: 'WebSearch', color: 'text-teal-400' },
+  Bash: { icon: Terminal, label: 'Bash', color: 'text-fg-3' },
+  Command: { icon: Terminal, label: 'Command', color: 'text-fg-3' },
+  BashOutput: { icon: Terminal, label: 'Bash Output', color: 'text-fg-3' },
+  KillShell: { icon: Terminal, label: 'Kill Shell', color: 'text-fg-3' },
+  Read: { icon: FileText, label: 'Read', color: 'text-fg-3' },
+  Grep: { icon: Search, label: 'Grep', color: 'text-fg-3' },
+  Glob: { icon: FolderOpen, label: 'Glob', color: 'text-fg-3' },
+  Write: { icon: FileText, label: 'Write', color: 'text-fg-3' },
+  Edit: { icon: Edit2, label: 'Edit', color: 'text-fg-3' },
+  Delete: { icon: FileText, label: 'Delete', color: 'text-fg-3' },
+  Ls: { icon: FolderOpen, label: 'List', color: 'text-fg-3' },
+  MCP: { icon: Code, label: 'MCP', color: 'text-fg-3' },
+  ToolSearch: { icon: Search, label: 'Tool Search', color: 'text-fg-3' },
+  Skill: { icon: Code, label: 'Skill', color: 'text-fg-3' },
+  Monitor: { icon: Clock, label: 'Monitor', color: 'text-fg-3' },
+  Lint: { icon: FileSearch, label: 'Lint', color: 'text-fg-3' },
+  GenerateImage: { icon: FileText, label: 'Generate Image', color: 'text-fg-3' },
+  RecordScreen: { icon: Play, label: 'Record Screen', color: 'text-fg-3' },
+  UpdateTopic: { icon: Edit2, label: 'Update Topic', color: 'text-fg-3' },
+  WebFetch: { icon: Globe, label: 'WebFetch', color: 'text-fg-3' },
+  WebSearch: { icon: Search, label: 'WebSearch', color: 'text-fg-3' },
   Task: {
     icon: Code,
     label: 'Agent Task',
-    color: 'text-purple-400',
-    bgGradient: 'from-purple-900/20 to-indigo-900/20',
-    borderColor: 'border-purple-500/50',
+    color: 'text-fg-3',
     iconSize: 18
   },
-  TodoWrite: { icon: ListTodo, label: 'Todo', color: 'text-amber-400' },
+  TodoWrite: { icon: ListTodo, label: 'Todo', color: 'text-fg-3' },
   // New SDK Tasks system
   TaskCreate: {
     icon: ListPlus,
     label: 'Create Task',
-    color: 'text-green-400',
-    bgGradient: 'from-green-900/20 to-emerald-900/20',
-    borderColor: 'border-green-500/50',
+    color: 'text-fg-3',
   },
   TaskUpdate: {
     icon: ListChecks,
     label: 'Update Task',
-    color: 'text-blue-400',
-    bgGradient: 'from-blue-900/20 to-cyan-900/20',
-    borderColor: 'border-blue-500/50',
+    color: 'text-fg-3',
   },
   TaskGet: {
     icon: FileSearch,
     label: 'Get Task',
-    color: 'text-purple-400',
-    bgGradient: 'from-purple-900/20 to-violet-900/20',
-    borderColor: 'border-purple-500/50',
+    color: 'text-fg-3',
   },
   TaskList: {
     icon: List,
     label: 'List Tasks',
-    color: 'text-amber-400',
-    bgGradient: 'from-amber-900/20 to-yellow-900/20',
-    borderColor: 'border-amber-500/50',
+    color: 'text-fg-3',
   },
-  AskUserQuestion: { icon: HelpCircle, label: 'Ask', color: 'text-rose-400' },
+  AskUserQuestion: { icon: HelpCircle, label: 'Ask', color: 'text-fg-3' },
   // Browser automation tools (Stagehand MCP)
-  BrowserSnapshot: { icon: Globe, label: 'BrowserSnapshot', color: 'text-cyan-400' },
-  BrowserNavigate: { icon: Globe, label: 'BrowserNavigate', color: 'text-cyan-400' },
-  BrowserAct: { icon: Globe, label: 'BrowserAct', color: 'text-emerald-400' },
-  BrowserObserve: { icon: Globe, label: 'BrowserObserve', color: 'text-sky-400' },
-  BrowserAgent: { icon: Globe, label: 'BrowserAgent', color: 'text-violet-400' },
-  BrowserClick: { icon: Globe, label: 'BrowserClick', color: 'text-cyan-400' },
-  BrowserType: { icon: Globe, label: 'BrowserType', color: 'text-cyan-400' },
-  BrowserExtract: { icon: Globe, label: 'BrowserExtract', color: 'text-cyan-400' },
-  BrowserExtractData: { icon: Globe, label: 'BrowserExtractData', color: 'text-teal-400' },
-  BrowserGetInfo: { icon: Globe, label: 'BrowserGetInfo', color: 'text-cyan-400' },
-  BrowserGetDOM: { icon: Globe, label: 'BrowserGetDOM', color: 'text-cyan-400' },
+  BrowserSnapshot: { icon: Globe, label: 'BrowserSnapshot', color: 'text-fg-3' },
+  BrowserNavigate: { icon: Globe, label: 'BrowserNavigate', color: 'text-fg-3' },
+  BrowserAct: { icon: Globe, label: 'BrowserAct', color: 'text-fg-3' },
+  BrowserObserve: { icon: Globe, label: 'BrowserObserve', color: 'text-fg-3' },
+  BrowserAgent: { icon: Globe, label: 'BrowserAgent', color: 'text-fg-3' },
+  BrowserClick: { icon: Globe, label: 'BrowserClick', color: 'text-fg-3' },
+  BrowserType: { icon: Globe, label: 'BrowserType', color: 'text-fg-3' },
+  BrowserExtract: { icon: Globe, label: 'BrowserExtract', color: 'text-fg-3' },
+  BrowserExtractData: { icon: Globe, label: 'BrowserExtractData', color: 'text-fg-3' },
+  BrowserGetInfo: { icon: Globe, label: 'BrowserGetInfo', color: 'text-fg-3' },
+  BrowserGetDOM: { icon: Globe, label: 'BrowserGetDOM', color: 'text-fg-3' },
   // Utility MCP tools
-  UpdateSessionName: { icon: Edit2, label: 'UpdateSessionName', color: 'text-indigo-400' },
+  UpdateSessionName: { icon: Edit2, label: 'UpdateSessionName', color: 'text-fg-3' },
   // Document MCP tools
-  DocumentCreate: { icon: FileText, label: 'DocumentCreate', color: 'text-pink-400' },
-  DocumentRead: { icon: FileText, label: 'DocumentRead', color: 'text-blue-400' },
-  DocumentEdit: { icon: Edit2, label: 'DocumentEdit', color: 'text-orange-400' },
-  DocumentPreview: { icon: Globe, label: 'DocumentPreview', color: 'text-cyan-400' },
+  DocumentCreate: { icon: FileText, label: 'DocumentCreate', color: 'text-fg-3' },
+  DocumentRead: { icon: FileText, label: 'DocumentRead', color: 'text-fg-3' },
+  DocumentEdit: { icon: Edit2, label: 'DocumentEdit', color: 'text-fg-3' },
+  DocumentPreview: { icon: Globe, label: 'DocumentPreview', color: 'text-fg-3' },
 };
 
-const DEFAULT_CONFIG = { icon: Play, label: 'Tool', color: 'text-gray-400' };
+const DEFAULT_CONFIG = { icon: Play, label: 'Tool', color: 'text-fg-3' };
+
+// Graphite tokens shared by tool rows
+const MONO_FONT = '"Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace';
+const WELL = 'bg-[#0B0B0B] p-2.5 font-mono text-[12px] leading-[1.6] text-fg-3 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.05)]';
+const SECTION_LABEL = 'mb-1 text-[11px] uppercase tracking-[0.04em] text-fg-5';
+const EDITOR_FRAME = 'overflow-hidden shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)]';
 
 // Extract subagent type from Task tool input
 function getSubagentType(input: Record<string, unknown>): string | null {
@@ -313,10 +311,10 @@ function ClickableFilePath({ filePath, label, lineNumber }: { filePath: string; 
   return (
     <button
       onClick={handleClick}
-      className="flex items-center gap-1 text-claude-text-secondary hover:text-blue-400 transition-colors group"
+      className="flex min-w-0 items-center gap-1.5 font-mono text-[12px] font-normal text-fg-2 hover:text-accent-text transition-colors group"
     >
-      <FileText size={12} />
-      <span className="group-hover:underline">{label || fileName}</span>
+      <FileText size={12} className="flex-shrink-0 text-fg-4" />
+      <span className="truncate group-hover:underline">{label || fileName}</span>
       <ExternalLink size={10} className="opacity-0 group-hover:opacity-100 transition-opacity" />
     </button>
   );
@@ -381,7 +379,7 @@ function JSONResultViewer({ data, toolCallId, priority = false }: { data: unknow
   // For small JSON (under 500 chars), show inline formatted
   if (jsonString.length < 500) {
     return (
-      <pre className="whitespace-pre-wrap text-claude-text bg-claude-bg/50 p-2 overflow-x-auto max-h-60 overflow-y-auto font-mono text-[11px]">
+      <pre className={`whitespace-pre-wrap overflow-x-auto max-h-60 overflow-y-auto ${WELL} text-[11.5px]`}>
         {jsonString}
       </pre>
     );
@@ -389,7 +387,7 @@ function JSONResultViewer({ data, toolCallId, priority = false }: { data: unknow
 
   // For larger JSON, use Monaco editor with proper syntax highlighting
   return (
-    <div className="border border-claude-border overflow-hidden" style={{ borderRadius: 0 }}>
+    <div className={EDITOR_FRAME}>
       <LazyMonacoEditor
         editorId={`json-${toolCallId}`}
         height="300px"
@@ -398,6 +396,7 @@ function JSONResultViewer({ data, toolCallId, priority = false }: { data: unknow
         priority={priority}
         options={{
           readOnly: true,
+          fontFamily: MONO_FONT,
           minimap: { enabled: false },
           scrollBeyondLastLine: false,
           fontSize: 12,
@@ -419,7 +418,7 @@ function MediaPreview({ src, type, alt }: { src: string; type: 'image' | 'video'
 
   if (type === 'video') {
     return (
-      <div className="border border-claude-border overflow-hidden" style={{ borderRadius: 0 }}>
+      <div className={EDITOR_FRAME}>
         <video
           src={src}
           controls
@@ -431,7 +430,7 @@ function MediaPreview({ src, type, alt }: { src: string; type: 'image' | 'video'
   }
 
   return (
-    <div className="border border-claude-border overflow-hidden relative" style={{ borderRadius: 0 }}>
+    <div className={`${EDITOR_FRAME} relative`}>
       <img
         src={src}
         alt={alt || 'Preview'}
@@ -441,7 +440,7 @@ function MediaPreview({ src, type, alt }: { src: string; type: 'image' | 'video'
         title={isZoomed ? 'Click to shrink' : 'Click to expand'}
       />
       {!isZoomed && (
-        <div className="absolute bottom-1 right-1 text-[10px] bg-black/60 text-white px-1.5 py-0.5">
+        <div className="absolute bottom-1 right-1 bg-black/70 px-1.5 py-0.5 text-[10.5px] text-fg-2">
           Click to expand
         </div>
       )}
@@ -461,8 +460,8 @@ function WriteView({ content, filePath, toolCallId, priority = false }: { conten
       </div>
 
       {/* Monaco Editor for file content - lazy loaded */}
-      <div className="border border-green-500/50 overflow-hidden" style={{ borderRadius: 0 }}>
-        <div className="px-2 py-1 bg-green-900/40 text-green-400 text-xs font-bold uppercase" style={{ letterSpacing: '0.05em' }}>
+      <div className={EDITOR_FRAME}>
+        <div className="flex items-center gap-2 border-b border-white/[0.05] bg-[rgba(63,185,80,0.09)] px-3 py-1 text-[11px] uppercase tracking-[0.04em] text-diff-add-text">
           NEW FILE
         </div>
         <LazyMonacoEditor
@@ -473,9 +472,10 @@ function WriteView({ content, filePath, toolCallId, priority = false }: { conten
           priority={priority}
           options={{
             readOnly: true,
+            fontFamily: MONO_FONT,
             minimap: { enabled: false },
             scrollBeyondLastLine: false,
-            fontSize: 13,
+            fontSize: 12,
             lineNumbers: 'on',
             folding: false,
             renderLineHighlight: 'none',
@@ -530,12 +530,11 @@ function DiffView({ oldString, newString, filePath, toolCallId, priority = false
 
       {/* Monaco Diff Editor - bounded in transcript and clickable to open file */}
       <div
-        className="border border-claude-border overflow-hidden cursor-pointer hover:border-blue-400 transition-colors"
-        style={{ borderRadius: 0 }}
+        className="overflow-hidden cursor-pointer shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)] hover:shadow-[inset_0_0_0_1px_rgba(76,154,255,0.45)] transition-shadow"
         onClick={handleDiffClick}
         title="Click to open file in editor"
       >
-        <div className="px-2 py-1 bg-claude-surface text-claude-text-secondary text-xs font-bold uppercase border-b border-claude-border" style={{ letterSpacing: '0.05em' }}>
+        <div className="px-3 py-1 text-[11px] uppercase tracking-[0.04em] text-fg-5 border-b border-white/[0.05]">
           DIFF (Click to open file)
         </div>
         <LazyDiffEditor
@@ -547,6 +546,7 @@ function DiffView({ oldString, newString, filePath, toolCallId, priority = false
           priority={priority}
           options={{
             readOnly: true,
+            fontFamily: MONO_FONT,
             minimap: { enabled: false },
             scrollBeyondLastLine: false,
             fontSize: 12,
@@ -583,16 +583,16 @@ function UnifiedDiffView({ change, toolCallId, priority = false }: { change: Edi
   return (
     <div className="space-y-2 text-xs">
       <div className="flex items-center gap-2 font-semibold">
-        <span className="text-claude-text-secondary uppercase text-[10px] tracking-wide">{kindLabel}</span>
+        <span className="text-fg-5 uppercase text-[11px] tracking-[0.04em] font-normal">{kindLabel}</span>
         <ClickableFilePath filePath={change.path} />
       </div>
       {change.diff ? (
         <div
-          className="border border-claude-border overflow-hidden cursor-pointer hover:border-blue-400 transition-colors"
+          className="overflow-hidden cursor-pointer shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)] hover:shadow-[inset_0_0_0_1px_rgba(76,154,255,0.45)] transition-shadow"
           onClick={() => openFile?.(change.path)}
           title="Click to open file in editor"
         >
-          <div className="px-2 py-1 bg-claude-surface text-claude-text-secondary text-xs font-bold uppercase border-b border-claude-border" style={{ letterSpacing: '0.05em' }}>
+          <div className="px-3 py-1 text-[11px] uppercase tracking-[0.04em] text-fg-5 border-b border-white/[0.05]">
             PATCH (Click to open file)
           </div>
           <LazyMonacoEditor
@@ -603,6 +603,7 @@ function UnifiedDiffView({ change, toolCallId, priority = false }: { change: Edi
             priority={priority}
             options={{
               readOnly: true,
+              fontFamily: MONO_FONT,
               minimap: { enabled: false },
               scrollBeyondLastLine: false,
               fontSize: 12,
@@ -640,7 +641,7 @@ function ExpandedContent({ toolCall, priority = false }: { toolCall: ToolCall; p
     // Show loading state if no file path yet
     if (!filePath) {
       return (
-        <div className="flex items-center gap-2 text-xs text-claude-text-secondary">
+        <div className="flex items-center gap-2 text-[12px] text-fg-4">
           <Loader2 size={12} className="animate-spin" />
           <span>Loading file path...</span>
         </div>
@@ -675,9 +676,9 @@ function ExpandedContent({ toolCall, priority = false }: { toolCall: ToolCall; p
         {/* Result preview with Monaco if available */}
         {result !== undefined ? (
           <div>
-            <div className="text-claude-text-secondary mb-1 font-semibold">Content Preview:</div>
+            <div className={SECTION_LABEL}>Content Preview:</div>
             {typeof result === 'string' && result.length > 10 ? (
-              <div className="border border-claude-border overflow-hidden" style={{ borderRadius: 0 }}>
+              <div className={EDITOR_FRAME}>
                 <LazyMonacoEditor
                   editorId={`read-${toolCall.id}`}
                   height="300px"
@@ -686,9 +687,10 @@ function ExpandedContent({ toolCall, priority = false }: { toolCall: ToolCall; p
                   priority={priority}
                   options={{
                     readOnly: true,
+                    fontFamily: MONO_FONT,
                     minimap: { enabled: false },
                     scrollBeyondLastLine: false,
-                    fontSize: 13,
+                    fontSize: 12,
                     lineNumbers: 'on',
                     folding: true,
                     renderLineHighlight: 'none',
@@ -738,14 +740,14 @@ function ExpandedContent({ toolCall, priority = false }: { toolCall: ToolCall; p
                 }
                 return <JSONResultViewer data={result} toolCallId={toolCall.id} priority={priority} />;
               })() : (
-                <pre className="whitespace-pre-wrap text-claude-text bg-claude-bg/50 p-2 overflow-x-auto max-h-60 overflow-y-auto font-mono text-sm">
+                <pre className={`whitespace-pre-wrap overflow-x-auto max-h-60 overflow-y-auto ${WELL}`}>
                   {String(result)}
                 </pre>
               )
             )}
           </div>
         ) : isRunning ? (
-          <div className="flex items-center gap-2 text-claude-text-secondary">
+          <div className="flex items-center gap-2 text-[12px] text-fg-4">
             <Loader2 size={12} className="animate-spin" />
             <span>Reading file...</span>
           </div>
@@ -762,7 +764,7 @@ function ExpandedContent({ toolCall, priority = false }: { toolCall: ToolCall; p
     // Show loading state if no command yet
     if (!command) {
       return (
-        <div className="flex items-center gap-2 text-xs text-claude-text-secondary">
+        <div className="flex items-center gap-2 text-[12px] text-fg-4">
           <Loader2 size={12} className="animate-spin" />
           <span>Loading command...</span>
         </div>
@@ -772,28 +774,28 @@ function ExpandedContent({ toolCall, priority = false }: { toolCall: ToolCall; p
     return (
       <div className="space-y-2 text-xs">
         <div>
-          <div className="text-claude-text-secondary mb-1 font-semibold">Command:</div>
-          <pre className="whitespace-pre-wrap text-green-400 bg-black/50 p-2 overflow-x-auto font-mono border-l-2 border-green-500/30">
-            $ {command}
+          <div className={SECTION_LABEL}>Command:</div>
+          <pre className="whitespace-pre-wrap overflow-x-auto font-mono text-[12px] leading-[1.6] text-fg-2">
+            <span className="text-fg-5">$</span> {command}
           </pre>
         </div>
 
         {/* Result section */}
         {result !== undefined ? (
           <div>
-            <div className="text-claude-text-secondary mb-1 font-semibold">Output:</div>
+            <div className={SECTION_LABEL}>Output:</div>
             {typeof result === 'object' ? (
               <JSONResultViewer data={result} toolCallId={toolCall.id} priority={priority} />
             ) : tryParseJSON(String(result)) ? (
               <JSONResultViewer data={tryParseJSON(String(result))} toolCallId={toolCall.id} priority={priority} />
             ) : (
-              <pre className="whitespace-pre-wrap text-claude-text bg-claude-bg/50 p-2 overflow-x-auto max-h-60 overflow-y-auto font-mono text-sm">
+              <pre className="whitespace-pre-wrap overflow-x-auto max-h-60 overflow-y-auto font-mono text-[12px] leading-[1.6] text-fg-4">
                 {String(result)}
               </pre>
             )}
           </div>
         ) : isRunning ? (
-          <div className="flex items-center gap-2 text-claude-text-secondary">
+          <div className="flex items-center gap-2 text-[12px] text-fg-4">
             <Loader2 size={12} className="animate-spin" />
             <span>Running...</span>
           </div>
@@ -810,7 +812,7 @@ function ExpandedContent({ toolCall, priority = false }: { toolCall: ToolCall; p
     // Show loading state if no content yet
     if (!content && !filePath) {
       return (
-        <div className="flex items-center gap-2 text-xs text-claude-text-secondary">
+        <div className="flex items-center gap-2 text-[12px] text-fg-4">
           <Loader2 size={12} className="animate-spin" />
           <span>Preparing file content...</span>
         </div>
@@ -823,7 +825,7 @@ function ExpandedContent({ toolCall, priority = false }: { toolCall: ToolCall; p
 
     // Have file path but no content yet
     return (
-      <div className="flex items-center gap-2 text-xs text-claude-text-secondary">
+      <div className="flex items-center gap-2 text-[12px] text-fg-4">
         <Loader2 size={12} className="animate-spin" />
         <span>Writing to {filePath.split('/').pop() || filePath}...</span>
       </div>
@@ -841,7 +843,7 @@ function ExpandedContent({ toolCall, priority = false }: { toolCall: ToolCall; p
     // Show loading state if no content yet
     if (!oldString && !newString && !filePath && changes.length === 0 && isRunning) {
       return (
-        <div className="flex items-center gap-2 text-xs text-claude-text-secondary">
+        <div className="flex items-center gap-2 text-[12px] text-fg-4">
           <Loader2 size={12} className="animate-spin" />
           <span>Preparing edit...</span>
         </div>
@@ -874,14 +876,14 @@ function ExpandedContent({ toolCall, priority = false }: { toolCall: ToolCall; p
 
     // Have file path but no diff content yet
     if (filePath && isRunning) return (
-      <div className="flex items-center gap-2 text-xs text-claude-text-secondary">
+      <div className="flex items-center gap-2 text-[12px] text-fg-4">
         <Loader2 size={12} className="animate-spin" />
         <span>Loading changes for {filePath.split('/').pop() || filePath}...</span>
       </div>
     );
 
     return (
-      <div className="text-xs text-claude-text-secondary">
+      <div className="text-[12px] text-fg-4">
         {filePath ? <ClickableFilePath filePath={filePath} /> : 'Edit completed; Codex did not provide patch details.'}
       </div>
     );
@@ -896,20 +898,20 @@ function ExpandedContent({ toolCall, priority = false }: { toolCall: ToolCall; p
     return (
       <div className="space-y-1">
         {todos.map((todo, index) => (
-          <div key={index} className="flex items-start gap-2 text-xs">
+          <div key={index} className="flex items-start gap-2 text-[12.5px]">
             {todo.status === 'completed' ? (
-              <CheckCircle2 size={14} className="text-green-500 flex-shrink-0 mt-0.5" />
+              <CheckCircle2 size={13} className="text-diff-add flex-shrink-0 mt-0.5" />
             ) : todo.status === 'in_progress' ? (
-              <Clock size={14} className="text-amber-500 flex-shrink-0 mt-0.5 animate-pulse" />
+              <Clock size={13} className="text-accent flex-shrink-0 mt-0.5 animate-pulse" />
             ) : (
-              <Circle size={14} className="text-claude-text-secondary flex-shrink-0 mt-0.5" />
+              <Circle size={13} className="text-fg-5 flex-shrink-0 mt-0.5" />
             )}
             <span className={
               todo.status === 'completed'
-                ? 'text-claude-text-secondary line-through'
+                ? 'text-fg-5 line-through'
                 : todo.status === 'in_progress'
-                  ? 'text-amber-400'
-                  : 'text-claude-text'
+                  ? 'text-fg'
+                  : 'text-fg-3'
             }>
               {todo.status === 'in_progress' ? (todo.activeForm || todo.content) : todo.content}
             </span>
@@ -987,11 +989,11 @@ function ExpandedContent({ toolCall, priority = false }: { toolCall: ToolCall; p
       {/* Input section - only show if there's meaningful input */}
       {hasInput && (
         <div>
-          <div className="text-claude-text-secondary mb-1 font-semibold">Input:</div>
+          <div className={SECTION_LABEL}>Input:</div>
           {typeof input === 'object' ? (
             <JSONResultViewer data={input} toolCallId={`${toolCall.id}-input`} priority={priority} />
           ) : (
-            <pre className="whitespace-pre-wrap text-claude-text bg-claude-bg/50 p-2 overflow-x-auto max-h-40 overflow-y-auto">
+            <pre className={`whitespace-pre-wrap overflow-x-auto max-h-40 overflow-y-auto ${WELL}`}>
               {String(input)}
             </pre>
           )}
@@ -1001,7 +1003,7 @@ function ExpandedContent({ toolCall, priority = false }: { toolCall: ToolCall; p
       {/* Result section (if available) */}
       {result !== undefined && (
         <div>
-          <div className="text-claude-text-secondary mb-1 font-semibold">Result:</div>
+          <div className={SECTION_LABEL}>Result:</div>
           {base64Image ? (
             <MediaPreview
               src={`data:${base64Image.type};base64,${base64Image.data}`}
@@ -1022,7 +1024,7 @@ function ExpandedContent({ toolCall, priority = false }: { toolCall: ToolCall; p
                     const b = block as Record<string, unknown>;
                     if (b.type === 'text' && typeof b.text === 'string') {
                       return (
-                        <pre key={idx} className="whitespace-pre-wrap text-claude-text bg-claude-bg/50 p-2 overflow-x-auto max-h-60 overflow-y-auto">
+                        <pre key={idx} className={`whitespace-pre-wrap overflow-x-auto max-h-60 overflow-y-auto ${WELL}`}>
                           {b.text}
                         </pre>
                       );
@@ -1047,7 +1049,7 @@ function ExpandedContent({ toolCall, priority = false }: { toolCall: ToolCall; p
               )}
             </div>
           ) : contentBlockResult.matched ? (
-            <pre className="whitespace-pre-wrap text-claude-text bg-claude-bg/50 p-2 overflow-x-auto max-h-60 overflow-y-auto">
+            <pre className={`whitespace-pre-wrap overflow-x-auto max-h-60 overflow-y-auto ${WELL}`}>
               {contentBlockResult.text}
             </pre>
           ) : typeof result === 'object' ? (
@@ -1055,7 +1057,7 @@ function ExpandedContent({ toolCall, priority = false }: { toolCall: ToolCall; p
           ) : tryParseJSON(String(result)) ? (
             <JSONResultViewer data={tryParseJSON(String(result))} toolCallId={toolCall.id} priority={priority} />
           ) : (
-            <pre className="whitespace-pre-wrap text-claude-text bg-claude-bg/50 p-2 overflow-x-auto max-h-60 overflow-y-auto">
+            <pre className={`whitespace-pre-wrap overflow-x-auto max-h-60 overflow-y-auto ${WELL}`}>
               {String(result)}
             </pre>
           )}
@@ -1065,7 +1067,64 @@ function ExpandedContent({ toolCall, priority = false }: { toolCall: ToolCall; p
   );
 }
 
-export default function ToolCallCard({ toolCall, isLatest = false, isLatestToolCall = false, defaultCollapsed = false, onBackground }: ToolCallCardProps) {
+// Display-only line counts for the collapsed row meta (+N −N)
+function countDiffLines(diff: string): { add: number; del: number } {
+  let add = 0;
+  let del = 0;
+  for (const line of diff.split('\n')) {
+    if (line.startsWith('+++') || line.startsWith('---')) continue;
+    if (line.startsWith('+')) add += 1;
+    else if (line.startsWith('-')) del += 1;
+  }
+  return { add, del };
+}
+
+function getDiffStats(name: string, input: Record<string, unknown>): { add: number; del: number } | null {
+  if (name === 'Write') {
+    const content = typeof input.content === 'string' ? input.content : '';
+    return content ? { add: content.split('\n').length, del: 0 } : null;
+  }
+  if (name !== 'Edit') return null;
+  const oldString = typeof input.old_string === 'string' ? input.old_string : '';
+  const newString = typeof input.new_string === 'string' ? input.new_string : '';
+  if (oldString || newString) {
+    return {
+      add: newString ? newString.split('\n').length : 0,
+      del: oldString ? oldString.split('\n').length : 0,
+    };
+  }
+  const diffs = getEditChanges(input).map((change) => change.diff).filter((diff): diff is string => Boolean(diff));
+  if (diffs.length === 0 && typeof input.unified_diff === 'string' && input.unified_diff) diffs.push(input.unified_diff);
+  if (diffs.length === 0) return null;
+  return diffs.reduce((acc, diff) => {
+    const counts = countDiffLines(diff);
+    return { add: acc.add + counts.add, del: acc.del + counts.del };
+  }, { add: 0, del: 0 });
+}
+
+function formatToolDuration(toolCall: ToolCall): string | null {
+  if (!toolCall.startedAt || !toolCall.completedAt) return null;
+  const ms = new Date(toolCall.completedAt).getTime() - new Date(toolCall.startedAt).getTime();
+  if (!Number.isFinite(ms) || ms < 0) return null;
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  const minutes = Math.floor(ms / 60_000);
+  const seconds = Math.round((ms % 60_000) / 1000);
+  return `${minutes}m ${seconds}s`;
+}
+
+// Codex-style status glyph: accent spinner / green check / red cross
+function ToolStatusGlyph({ status }: { status: ToolCall['status'] }) {
+  if (status === 'running' || status === 'pending') {
+    return <Loader2 size={13} strokeWidth={2.4} className="flex-shrink-0 animate-spin text-accent" />;
+  }
+  if (status === 'error') {
+    return <X size={13} strokeWidth={2.6} className="flex-shrink-0 text-diff-del" />;
+  }
+  return <Check size={13} strokeWidth={2.6} className="flex-shrink-0 text-diff-add" />;
+}
+
+export default function ToolCallCard({ toolCall, isLatest = false, isLatestToolCall = false, defaultCollapsed = false, onBackground, variant = 'card' }: ToolCallCardProps) {
   const normalizedToolCall = useMemo(() => normalizeToolCall(toolCall), [toolCall]);
   const isTranscriptVisible = isTranscriptVisibleToolCall(normalizedToolCall);
 
@@ -1086,7 +1145,6 @@ export default function ToolCallCard({ toolCall, isLatest = false, isLatestToolC
 
   const baseToolName = normalizedToolCall.name;
   const config = TOOL_CONFIG[baseToolName] || DEFAULT_CONFIG;
-  const Icon = config.icon;
 
   const commandDisplay = useMemo(() => formatToolInput(baseToolName, normalizedToolCall.input), [baseToolName, normalizedToolCall.input]);
   if (!isTranscriptVisible) {
@@ -1103,27 +1161,85 @@ export default function ToolCallCard({ toolCall, isLatest = false, isLatestToolC
   const isBashTool = baseToolName === 'Bash';
   const canBackground = isBashTool && isRunning && onBackground;
 
-  // Status dot color
-  const dotColor = isRunning ? 'bg-yellow-500' : 'bg-green-500';
+  const isError = normalizedToolCall.status === 'error';
+  const isShellCard = baseToolName === 'Bash' || baseToolName === 'Command';
+  const diffStats = getDiffStats(baseToolName, normalizedToolCall.input);
+  const duration = formatToolDuration(normalizedToolCall);
 
-  // Apply enhanced styling for Task tools
-  const cardClasses = isTaskTool
-    ? `font-mono text-sm bg-gradient-to-r ${config.bgGradient} border-l-4 ${config.borderColor} px-2 py-1 rounded`
-    : 'font-mono text-sm';
+  if (variant === 'row') {
+    // Compact grouped row (Codex style): 28px, no borders. Status slot only shows
+    // for running/failed calls so a finished run reads as a quiet list.
+    return (
+      <div className="min-w-0">
+        <div
+          role="button"
+          tabIndex={0}
+          onClick={() => setIsExpanded(!isExpanded)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault();
+              setIsExpanded(!isExpanded);
+            }
+          }}
+          className={`group/row flex h-7 w-full cursor-pointer items-center gap-2 px-3 text-left font-mono text-[12px] transition-colors ${
+            isError ? 'hover:bg-[rgba(248,81,73,0.06)]' : 'hover:bg-white/[0.03]'
+          }`}
+        >
+          <span className="flex w-3 flex-shrink-0 items-center justify-center">
+            {isRunning || isError ? <ToolStatusGlyph status={normalizedToolCall.status} /> : null}
+          </span>
+          <span className={`w-[52px] flex-shrink-0 truncate ${isError ? 'text-diff-del' : 'text-fg-3'}`}>{config.label}</span>
+          <span className="min-w-0 flex-1 truncate text-fg-2" title={commandDisplay}>{commandDisplay}</span>
+          {diffStats && (diffStats.add > 0 || diffStats.del > 0) && (
+            <span className="flex flex-shrink-0 items-center gap-1.5 text-[11px]">
+              {diffStats.add > 0 && <span className="text-diff-add">+{diffStats.add}</span>}
+              {diffStats.del > 0 && <span className="text-diff-del">−{diffStats.del}</span>}
+            </span>
+          )}
+          {(isError || duration) && (
+            <span className={`flex-shrink-0 text-[11px] ${isError ? 'text-diff-del' : 'text-fg-5'}`}>
+              {isError ? (duration ? `failed · ${duration}` : 'failed') : duration}
+            </span>
+          )}
+          {canBackground && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onBackground(normalizedToolCall);
+              }}
+              className="flex h-5 flex-shrink-0 items-center gap-1 px-1.5 text-[10.5px] text-fg-3 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] transition-colors hover:bg-white/[0.04] hover:text-fg"
+              title="Move to background (Cmd+B)"
+            >
+              <ArrowUpRight size={10} />
+              <span>BG</span>
+            </button>
+          )}
+          {isExpanded ? (
+            <ChevronDown size={12} className="flex-shrink-0 text-fg-5" />
+          ) : (
+            <ChevronRight size={12} className="flex-shrink-0 text-fg-5 opacity-0 transition-opacity group-hover/row:opacity-100" />
+          )}
+        </div>
+        {hasBeenExpanded && (
+          <div className="pb-2 pl-8 pr-3 pt-1" style={{ display: isExpanded ? 'block' : 'none' }}>
+            <ExpandedContent toolCall={normalizedToolCall} priority={isLatest || isLatestToolCall || isRunning} />
+          </div>
+        )}
+      </div>
+    );
+  }
 
-  const buttonClasses = `w-full flex items-center gap-2 py-0.5 hover:bg-claude-surface/50 transition-colors text-left ${
-    isTaskTool && isRunning ? 'animate-pulse-slow' : ''
+  // Graphite card: ink-1 with a 7% inset hairline; shell output sits on the darker well
+  const cardClasses = `overflow-hidden shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)] ${
+    isShellCard ? 'bg-[#0B0B0B]' : 'bg-ink-1'
   }`;
+
+  const buttonClasses = `w-full flex items-center gap-2.5 px-3 py-[9px] text-left transition-colors ${
+    isError ? 'bg-[rgba(248,81,73,0.05)] hover:bg-[rgba(248,81,73,0.08)]' : 'hover:bg-white/[0.03]'
+  } ${isTaskTool && isRunning ? 'animate-pulse-slow' : ''}`;
 
   return (
     <div className={cardClasses}>
-      {/* Subagent type badge (Task tools only) */}
-      {isTaskTool && subagentType && (
-        <div className="mb-1 inline-block px-2 py-0.5 text-[10px] bg-purple-500/20 border border-purple-500/50 text-purple-300 font-bold tracking-wider rounded">
-          {subagentType}
-        </div>
-      )}
-
       {/* Header row - clickable */}
       <div
         role="button"
@@ -1137,33 +1253,38 @@ export default function ToolCallCard({ toolCall, isLatest = false, isLatestToolC
         }}
         className={buttonClasses}
       >
-        {/* Expand/collapse chevron */}
-        {isExpanded ? (
-          <ChevronDown size={12} className={config.color} />
-        ) : (
-          <ChevronRight size={12} className={config.color} />
+        {/* Status glyph */}
+        <ToolStatusGlyph status={normalizedToolCall.status} />
+
+        {/* Tool name */}
+        <span className="min-w-[48px] flex-shrink-0 whitespace-nowrap font-mono text-[12px] text-fg-3">{config.label}</span>
+
+        {/* Subagent type tag (Task tools only) */}
+        {isTaskTool && subagentType && (
+          <span
+            className="flex-shrink-0 px-[5px] py-px font-mono text-[9.5px] uppercase text-fg-3 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.16)]"
+            style={{ letterSpacing: '0.04em' }}
+          >
+            {subagentType}
+          </span>
         )}
 
-        {/* Status dot */}
-        <span
-          className={`w-2 h-2 rounded-full flex-shrink-0 ${dotColor} ${isRunning ? 'animate-pulse' : ''}`}
-        />
-
-        {/* Tool icon and name (larger icon for Task tools) */}
-        <Icon size={config.iconSize || 14} className={config.color} />
-        <span className={`font-semibold ${config.color}`}>{config.label}</span>
-
-        {/* Separator */}
-        <span className="text-claude-text-secondary">·</span>
-
         {/* Input/command summary (always visible) */}
-        <span className="text-claude-text truncate flex-1">
+        <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-fg" title={commandDisplay}>
           {commandDisplay}
         </span>
 
-        {/* Loading spinner for running tools */}
-        {isRunning && (
-          <Loader2 size={12} className="text-yellow-500 animate-spin flex-shrink-0" />
+        {/* Right-aligned meta */}
+        {diffStats && (diffStats.add > 0 || diffStats.del > 0) && (
+          <span className="flex flex-shrink-0 items-center gap-1.5 font-mono text-[11px]">
+            {diffStats.add > 0 && <span className="text-diff-add">+{diffStats.add}</span>}
+            {diffStats.del > 0 && <span className="text-diff-del">−{diffStats.del}</span>}
+          </span>
+        )}
+        {(isError || duration) && (
+          <span className={`flex-shrink-0 font-mono text-[11px] ${isError ? 'text-diff-del' : 'text-fg-4'}`}>
+            {isError ? (duration ? `failed · ${duration}` : 'failed') : duration}
+          </span>
         )}
 
         {/* Background button for running Bash commands */}
@@ -1173,22 +1294,27 @@ export default function ToolCallCard({ toolCall, isLatest = false, isLatestToolC
               e.stopPropagation();
               onBackground(normalizedToolCall);
             }}
-            className="ml-1 px-1.5 py-0.5 text-[10px] font-bold bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-400 border border-cyan-500/30 flex items-center gap-1"
-            style={{ borderRadius: 0 }}
+            className="flex h-5 flex-shrink-0 items-center gap-1 px-1.5 font-mono text-[10.5px] text-fg-3 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] transition-colors hover:text-fg hover:bg-white/[0.04]"
             title="Move to background (Cmd+B)"
           >
             <ArrowUpRight size={10} />
             <span>BG</span>
           </button>
         )}
+
+        {/* Expand/collapse chevron */}
+        {isExpanded ? (
+          <ChevronDown size={12} className="flex-shrink-0 text-fg-5" />
+        ) : (
+          <ChevronRight size={12} className="flex-shrink-0 text-fg-5" />
+        )}
       </div>
 
       {/* Expanded content - once rendered, hide with CSS to prevent Monaco disposal errors */}
       {hasBeenExpanded && (
         <div
-          className="ml-6 mt-1 p-2 bg-claude-surface/30 border-l-2 border-current"
+          className="border-t border-white/[0.05] px-3 pb-3 pt-2.5"
           style={{
-            borderColor: config.color.replace('text-', ''),
             display: isExpanded ? 'block' : 'none',
           }}
         >

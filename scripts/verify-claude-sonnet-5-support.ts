@@ -28,12 +28,12 @@ assert.match(
 );
 assert.match(
   claudeService,
-  /'claude-sonnet-5'[\s\S]{0,140}'claude-sonnet-4-6'/,
+  /const supportedModels = \[[\s\S]*?'claude-sonnet-5',[\s\S]*?'claude-sonnet-4-6'/,
   'Sonnet 5 should be allowed wherever current Sonnet computer-use-capable models are allowed',
 );
 assert.match(
   claudeService,
-  /model\.includes\('sonnet-5'\)[\s\S]{0,160}computer-use-2025-11-24/,
+  /private getComputerUseBetaHeader[\s\S]*?model\.includes\('sonnet-5'\)[\s\S]{0,700}computer-use-2025-11-24/,
   'Sonnet 5 must use the current Computer Use beta header',
 );
 

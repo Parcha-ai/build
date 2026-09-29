@@ -29,10 +29,16 @@ class MessageQueueService extends EventEmitter {
   enqueue(sessionId: string, text: string, attachments?: unknown[], opts?: { id?: string; model?: string; suppressUserMessage?: boolean; deferDrain?: boolean }): QueuedMessage {
     const existingQueue = this.queues.get(sessionId) || [];
     const normalizedText = text.trim();
-    const existing = existingQueue.find(m =>
-      (opts?.id && m.id === opts.id) ||
-      (normalizedText.length > 0 && m.text.trim() === normalizedText && Date.now() - m.timestamp < 10_000)
-    );
+    // A caller-supplied ID is the authoritative idempotency key. Distinct
+    // voice requests may intentionally repeat the same words and must remain
+    // distinct queue entries; transport retries reuse the same ID.
+    const existing = opts?.id
+      ? existingQueue.find((message) => message.id === opts.id)
+      : existingQueue.find((message) =>
+        normalizedText.length > 0
+        && message.text.trim() === normalizedText
+        && Date.now() - message.timestamp < 10_000
+      );
     if (existing) {
       return existing;
     }

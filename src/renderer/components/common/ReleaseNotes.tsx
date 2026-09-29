@@ -35,34 +35,34 @@ const ReleaseCard = ({ release, isExpanded, onToggle }: {
   isExpanded: boolean;
   onToggle?: () => void;
 }) => (
-  <div className="border border-claude-border bg-claude-surface/50">
+  <div className="bg-ink-1 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)]">
     <div
-      className={`p-3 flex items-center justify-between ${onToggle ? 'cursor-pointer hover:bg-claude-surface' : ''}`}
+      className={`p-3 flex items-center justify-between ${onToggle ? 'cursor-pointer hover:bg-claude-surface-hover' : ''}`}
       onClick={onToggle}
     >
       <div className="flex items-center gap-3">
-        <span className="text-xs font-bold text-claude-accent px-2 py-0.5 bg-claude-accent/10 border border-claude-accent/30 font-mono">
+        <span className="font-mono text-[11px] font-medium text-accent-text px-1.5 py-0.5 bg-accent/10 shadow-[inset_0_0_0_1px_rgba(76,154,255,0.35)]">
           v{formatVersion(release.tag_name)}
         </span>
-        <span className="text-sm font-bold text-claude-text">{release.name || formatVersion(release.tag_name)}</span>
-        <span className="text-xs text-claude-text-secondary font-mono">{formatDate(release.published_at)}</span>
+        <span className="text-[13px] font-semibold tracking-tight text-fg">{release.name || formatVersion(release.tag_name)}</span>
+        <span className="font-mono text-[11px] text-fg-4">{formatDate(release.published_at)}</span>
       </div>
       {onToggle && (
-        isExpanded ? <ChevronUp size={16} className="text-claude-text-secondary" /> : <ChevronDown size={16} className="text-claude-text-secondary" />
+        isExpanded ? <ChevronUp size={16} className="text-fg-4" /> : <ChevronDown size={16} className="text-fg-4" />
       )}
     </div>
 
     {isExpanded && release.body && (
-      <div className="px-3 pb-3 border-t border-claude-border/50">
+      <div className="px-3 pb-3 border-t border-line">
         <div className="mt-2 prose prose-invert prose-sm max-w-none
-          prose-headings:text-claude-text prose-headings:font-mono prose-headings:uppercase prose-headings:tracking-wider prose-headings:text-xs prose-headings:mt-3 prose-headings:mb-1
-          prose-p:text-claude-text-secondary prose-p:text-xs prose-p:leading-relaxed prose-p:my-1
-          prose-li:text-claude-text-secondary prose-li:text-xs prose-li:leading-relaxed prose-li:my-0.5
+          prose-headings:text-fg prose-headings:font-semibold prose-headings:tracking-tight prose-headings:text-[13px] prose-headings:mt-3 prose-headings:mb-1
+          prose-p:text-fg-3 prose-p:text-[13px] prose-p:leading-relaxed prose-p:my-1
+          prose-li:text-fg-3 prose-li:text-[13px] prose-li:leading-relaxed prose-li:my-0.5
           prose-ul:my-1 prose-ol:my-1
-          prose-strong:text-claude-text prose-strong:font-bold
-          prose-code:text-purple-400 prose-code:text-[11px] prose-code:bg-purple-500/10 prose-code:px-1 prose-code:py-0.5 prose-code:font-mono
-          prose-a:text-claude-accent prose-a:no-underline hover:prose-a:underline
-          prose-hr:border-claude-border/30 prose-hr:my-2
+          prose-strong:text-fg prose-strong:font-semibold
+          prose-code:text-fg-2 prose-code:text-[11.5px] prose-code:bg-ink-4 prose-code:px-1 prose-code:py-0.5 prose-code:font-mono
+          prose-a:text-accent-text prose-a:no-underline hover:prose-a:underline
+          prose-hr:border-line prose-hr:my-2
         ">
           <ReactMarkdown remarkPlugins={[remarkGfm]}>{release.body}</ReactMarkdown>
         </div>
@@ -125,8 +125,8 @@ export default function ReleaseNotes({ compact = false, banner = false, onDismis
   if (loading) {
     return (
       <div className="flex items-center justify-center py-8 gap-2">
-        <Loader2 size={14} className="animate-spin text-claude-text-secondary" />
-        <span className="text-xs font-mono text-claude-text-secondary uppercase tracking-wider">Loading releases...</span>
+        <Loader2 size={14} className="animate-spin text-fg-4" />
+        <span className="text-[13px] text-fg-3">Loading releases...</span>
       </div>
     );
   }
@@ -135,7 +135,7 @@ export default function ReleaseNotes({ compact = false, banner = false, onDismis
   if (error) {
     return (
       <div className="py-8 text-center">
-        <span className="text-xs font-mono text-red-400 uppercase tracking-wider">{error}</span>
+        <span className="text-[13px] text-diff-del">{error}</span>
       </div>
     );
   }
@@ -144,7 +144,7 @@ export default function ReleaseNotes({ compact = false, banner = false, onDismis
   if (releases.length === 0) {
     return (
       <div className="py-8 text-center">
-        <span className="text-xs font-mono text-claude-text-secondary uppercase tracking-wider">No releases found</span>
+        <span className="text-[13px] text-fg-3">No releases found</span>
       </div>
     );
   }
@@ -152,23 +152,23 @@ export default function ReleaseNotes({ compact = false, banner = false, onDismis
   if (banner) {
     const latest = releases[0];
     return (
-      <div className="border-b border-claude-border bg-gradient-to-r from-purple-500/5 to-claude-surface/50 p-3">
+      <div className="border-b border-line bg-ink-1 p-3">
         <div className="flex items-start justify-between gap-4">
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 mb-2">
-              <Sparkles size={14} className="text-purple-400" />
-              <span className="text-xs font-bold text-purple-400 uppercase font-mono" style={{ letterSpacing: '0.05em' }}>
+              <Sparkles size={14} className="text-accent" />
+              <span className="text-[13px] font-semibold tracking-tight text-fg">
                 What's New in v{formatVersion(latest.tag_name)}
               </span>
             </div>
-            <span className="text-xs text-claude-text-secondary font-mono">
+            <span className="text-[12px] text-fg-3">
               {latest.name || formatVersion(latest.tag_name)}
             </span>
           </div>
           {onDismiss && (
             <button
               onClick={onDismiss}
-              className="p-1 hover:bg-claude-surface text-claude-text-secondary hover:text-claude-text"
+              className="p-1 hover:bg-claude-surface-hover text-fg-3 hover:text-fg"
             >
               <X size={14} />
             </button>
@@ -194,7 +194,7 @@ export default function ReleaseNotes({ compact = false, banner = false, onDismis
   // Full release notes list
   return (
     <div className="space-y-2">
-      <h3 className="text-sm font-bold text-claude-text uppercase mb-3 font-mono" style={{ letterSpacing: '0.05em' }}>
+      <h3 className="text-[11px] font-medium uppercase tracking-[0.04em] text-fg-4 mb-3">
         Release History
       </h3>
       {releases.map(release => (

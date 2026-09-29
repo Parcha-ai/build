@@ -1,226 +1,166 @@
 import Store from 'electron-store';
-import { Readable } from 'stream';
-import type { AudioSettings, TranscriptionResult, TTSRequest } from '../../shared/types/audio';
-import { DEFAULT_AUDIO_SETTINGS } from '../../shared/types/audio';
 import OpenAI from 'openai';
-import { ElevenLabsClient } from 'elevenlabs';
+import {
+  DEFAULT_AUDIO_SETTINGS,
+  OPENAI_TTS_MODEL,
+  OPENAI_VOICES,
+  REALTIME_VOICE_OPTIONS,
+  type AudioSettings,
+  type RealtimeVoiceOption,
+  type TranscriptionResult,
+  type TTSRequest,
+} from '../../shared/types/audio';
 import { EMBEDDED_KEYS } from '../../shared/config/embedded-keys';
+
+const OPENAI_TTS_VOICES = [
+  ...OPENAI_VOICES,
+  'fable',
+  'nova',
+  'onyx',
+] as const;
 
 export class AudioService {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private store: any;
   private openaiClient: OpenAI | null = null;
-  private elevenLabsClient: ElevenLabsClient | null = null;
-  private activeStreams: Map<string, AbortController> = new Map();
+  private activeStreams = new Map<string, AbortController>();
 
   constructor() {
     this.store = new Store({ name: 'claudette-settings' });
-    this.initializeClients();
+    this.initializeClient();
   }
 
-  private initializeClients(): void {
-    // Initialize OpenAI client for Whisper
-    const openAiKey = this.getOpenAiApiKey();
-    if (openAiKey) {
-      this.openaiClient = new OpenAI({ apiKey: openAiKey });
-    }
-
-    // Initialize ElevenLabs client for TTS
-    const elevenLabsKey = this.getElevenLabsApiKey();
-    if (elevenLabsKey) {
-      this.elevenLabsClient = new ElevenLabsClient({ apiKey: elevenLabsKey });
-    }
+  private initializeClient(): void {
+    const apiKey = this.getOpenAiApiKey();
+    this.openaiClient = apiKey ? new OpenAI({ apiKey }) : null;
   }
 
-  // ============================================
-  // Settings Management
-  // ============================================
+  private normalizeSettings(stored: Partial<AudioSettings> | undefined): AudioSettings {
+    const requestedRealtimeVoice = stored?.realtimeVoice;
+    const realtimeVoice: RealtimeVoiceOption = REALTIME_VOICE_OPTIONS.includes(requestedRealtimeVoice as RealtimeVoiceOption)
+      ? requestedRealtimeVoice as RealtimeVoiceOption
+      : 'marin';
+    const providerRealtimeVoice = realtimeVoice === 'M' ? 'marin' : realtimeVoice;
+    const requestedTTSVoice = stored?.voiceSettings?.voiceId || stored?.selectedVoice;
+    const ttsVoice = OPENAI_TTS_VOICES.includes(requestedTTSVoice as typeof OPENAI_TTS_VOICES[number])
+      ? requestedTTSVoice as string
+      : providerRealtimeVoice;
+    const effort = stored?.realtimeReasoningEffort;
+
+    return {
+      ...DEFAULT_AUDIO_SETTINGS,
+      ...stored,
+      selectedVoice: ttsVoice,
+      voiceSettings: { voiceId: ttsVoice },
+      realtimeVoice,
+      realtimeReasoningEffort: effort === 'medium' || effort === 'high' ? effort : 'low',
+    };
+  }
 
   getAudioSettings(): AudioSettings {
-    return this.store.get('audioSettings', DEFAULT_AUDIO_SETTINGS) as AudioSettings;
+    return this.normalizeSettings(this.store.get('audioSettings') as Partial<AudioSettings> | undefined);
   }
 
   setAudioSettings(updates: Partial<AudioSettings>): void {
-    const current = this.getAudioSettings();
-    const updated = { ...current, ...updates };
-    this.store.set('audioSettings', updated);
-
-    // Reinitialize clients if API keys changed
-    if (updates.elevenLabsApiKey !== undefined || updates.openAiApiKey !== undefined) {
-      this.initializeClients();
-    }
-  }
-
-  getElevenLabsApiKey(): string | undefined {
-    const userKey = this.store.get('elevenLabsApiKey') as string | undefined;
-    if (userKey) return userKey;
-    return EMBEDDED_KEYS.elevenLabs || undefined;
-  }
-
-  setElevenLabsApiKey(key: string): void {
-    this.store.set('elevenLabsApiKey', key);
-    this.elevenLabsClient = new ElevenLabsClient({ apiKey: key });
+    this.store.set('audioSettings', this.normalizeSettings({ ...this.getAudioSettings(), ...updates }));
   }
 
   getOpenAiApiKey(): string | undefined {
-    // User-provided key takes precedence over embedded key
     const userKey = this.store.get('openAiApiKey') as string | undefined;
-    if (userKey) return userKey;
-
-    // Fallback to embedded key
-    return EMBEDDED_KEYS.openAi || undefined;
+    return userKey?.trim() || EMBEDDED_KEYS.openAi || undefined;
   }
 
   setOpenAiApiKey(key: string): void {
-    this.store.set('openAiApiKey', key);
-    this.openaiClient = new OpenAI({ apiKey: key });
+    this.store.set('openAiApiKey', key.trim());
+    this.initializeClient();
   }
 
-  // ============================================
-  // Speech-to-Text (Whisper)
-  // ============================================
+  private getOpenAIClient(): OpenAI {
+    if (!this.openaiClient) this.initializeClient();
+    if (!this.openaiClient) {
+      throw new Error('OpenAI API key not configured. Add it in Settings > API Keys.');
+    }
+    return this.openaiClient;
+  }
 
   async transcribeAudio(audioData: Buffer, language?: string): Promise<TranscriptionResult> {
-    console.log('[AudioService] transcribeAudio called, data size:', audioData.length, 'language:', language);
-
-    if (!this.openaiClient) {
-      const key = this.getOpenAiApiKey();
-      console.log('[AudioService] OpenAI key configured:', !!key);
-      if (!key) {
-        throw new Error('OpenAI API key not configured. Please add your API key in Settings.');
-      }
-      this.openaiClient = new OpenAI({ apiKey: key });
-    }
-
+    const client = this.getOpenAIClient();
     try {
-      // Create a File-like object for the API
-      // The Whisper API expects a file, so we need to create a proper Blob
       const audioBlob = new Blob([audioData], { type: 'audio/webm' });
       const audioFile = new File([audioBlob], 'recording.webm', { type: 'audio/webm' });
-      console.log('[AudioService] Created audio file, size:', audioFile.size);
-
-      console.log('[AudioService] Calling OpenAI Whisper API...');
-      const response = await this.openaiClient.audio.transcriptions.create({
+      const response = await client.audio.transcriptions.create({
         file: audioFile,
-        model: 'whisper-1',
+        model: 'gpt-4o-mini-transcribe',
         language: language || 'en',
         response_format: 'json',
       });
-
-      console.log('[AudioService] Whisper response:', response.text);
-      return {
-        text: response.text,
-        partial: false,
-      };
+      return { text: response.text, partial: false };
     } catch (error) {
-      console.error('[AudioService] Transcription error:', error);
-      if (error instanceof Error) {
-        throw new Error(`Transcription failed: ${error.message}`);
-      }
-      throw new Error('Transcription failed: Unknown error');
+      throw new Error(`Transcription failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
 
-  // ============================================
-  // Text-to-Speech (ElevenLabs)
-  // ============================================
-
   async *generateTTSStream(request: TTSRequest): AsyncGenerator<Buffer> {
-    if (!this.elevenLabsClient) {
-      const key = this.getElevenLabsApiKey();
-      if (!key) {
-        throw new Error('ElevenLabs API key not configured. Please add your API key in Settings.');
-      }
-      this.elevenLabsClient = new ElevenLabsClient({ apiKey: key });
-    }
+    const apiKey = this.getOpenAiApiKey();
+    if (!apiKey) throw new Error('OpenAI API key not configured. Add it in Settings > API Keys.');
 
-    // Create abort controller for this stream
-    const abortController = new AbortController();
-    this.activeStreams.set(request.messageId, abortController);
+    const controller = new AbortController();
+    this.activeStreams.set(request.messageId, controller);
+    const requestedVoice = request.voiceId || this.getAudioSettings().selectedVoice;
+    const voice = OPENAI_TTS_VOICES.includes(requestedVoice as typeof OPENAI_TTS_VOICES[number])
+      ? requestedVoice
+      : 'marin';
 
     try {
-      const audioSettings = this.getAudioSettings();
-
-      // Generate TTS using ElevenLabs streaming API
-      const audioStream = await this.elevenLabsClient.textToSpeech.convertAsStream(
-        request.voiceId || audioSettings.selectedVoice,
-        {
-          text: request.text,
-          model_id: request.modelId || 'eleven_turbo_v2_5',
-          voice_settings: {
-            stability: audioSettings.voiceSettings.stability,
-            similarity_boost: audioSettings.voiceSettings.similarityBoost,
-            style: audioSettings.voiceSettings.style,
-            use_speaker_boost: audioSettings.voiceSettings.useSpeakerBoost,
-          },
+      const response = await fetch('https://api.openai.com/v1/audio/speech', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: OPENAI_TTS_MODEL,
+          voice,
+          input: request.text,
+          instructions: 'Speak clearly and naturally in a concise, helpful tone.',
+          response_format: 'mp3',
+        }),
+        signal: controller.signal,
+      });
+      if (!response.ok || !response.body) {
+        let detail = '';
+        try {
+          const payload = await response.json() as { error?: { message?: string } };
+          detail = payload.error?.message || '';
+        } catch {
+          detail = '';
         }
-      );
+        throw new Error(detail || `OpenAI speech request failed (${response.status}).`);
+      }
 
-      // Convert the async iterable to yield buffers
-      for await (const chunk of audioStream) {
-        // Check if cancelled
-        if (abortController.signal.aborted) {
-          break;
-        }
-
-        // Convert chunk to Buffer if needed
-        if (chunk instanceof Buffer) {
-          yield chunk;
-        } else if (chunk instanceof Uint8Array) {
-          yield Buffer.from(chunk);
-        } else if (typeof chunk === 'string') {
-          yield Buffer.from(chunk, 'binary');
-        } else {
-          // For any other type, try to convert
-          yield Buffer.from(chunk as ArrayBuffer);
-        }
+      const reader = response.body.getReader();
+      while (!controller.signal.aborted) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value?.byteLength) yield Buffer.from(value);
       }
     } catch (error) {
-      console.error('TTS generation error:', error);
-      if (error instanceof Error) {
-        throw new Error(`TTS generation failed: ${error.message}`);
-      }
-      throw new Error('TTS generation failed: Unknown error');
+      if (controller.signal.aborted) return;
+      throw new Error(`TTS generation failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
     } finally {
       this.activeStreams.delete(request.messageId);
     }
   }
 
   cancelTTS(messageId: string): void {
-    const controller = this.activeStreams.get(messageId);
-    if (controller) {
-      controller.abort();
-      this.activeStreams.delete(messageId);
-    }
+    this.activeStreams.get(messageId)?.abort();
+    this.activeStreams.delete(messageId);
   }
 
-  // ============================================
-  // Voice Management
-  // ============================================
-
-  async getVoices(): Promise<Array<{ id: string; name: string; category: string }>> {
-    if (!this.elevenLabsClient) {
-      const key = this.getElevenLabsApiKey();
-      if (!key) {
-        throw new Error('ElevenLabs API key not configured. Please add your API key in Settings.');
-      }
-      this.elevenLabsClient = new ElevenLabsClient({ apiKey: key });
-    }
-
-    try {
-      const response = await this.elevenLabsClient.voices.getAll();
-
-      return response.voices.map((voice) => ({
-        id: voice.voice_id,
-        name: voice.name || 'Unnamed Voice',
-        category: voice.category || 'custom',
-      }));
-    } catch (error) {
-      console.error('Failed to fetch voices:', error);
-      if (error instanceof Error) {
-        throw new Error(`Failed to fetch voices: ${error.message}`);
-      }
-      throw new Error('Failed to fetch voices: Unknown error');
-    }
+  async getVoices(): Promise<Array<{ voice_id: string; name: string }>> {
+    return OPENAI_TTS_VOICES.map((voice) => ({
+      voice_id: voice,
+      name: voice[0].toUpperCase() + voice.slice(1),
+    }));
   }
 }

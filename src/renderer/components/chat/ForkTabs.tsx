@@ -7,6 +7,8 @@ import PullRequestStatusIcon from '../git/PullRequestStatusIcon';
 
 interface ForkTabsProps {
   sessionId: string;
+  /** 'inline' renders just the segmented control (for the chat header row); 'strip' keeps the legacy standalone row. */
+  variant?: 'strip' | 'inline';
 }
 
 export const SESSION_TAB_DRAG_TYPE = 'application/x-build-session-tab';
@@ -32,7 +34,7 @@ function formatRelativeDate(date: Date | string | undefined): string {
  * The overflow menu also shows all other sessions from the same project directory,
  * allowing any session to be promoted to a tab.
  */
-export default function ForkTabs({ sessionId }: ForkTabsProps) {
+export default function ForkTabs({ sessionId, variant = 'strip' }: ForkTabsProps) {
   const setActiveSession = useSessionStore(s => s.setActiveSession);
   const activeSessionId = useSessionStore(s => s.activeSessionId);
   const createForkFromCurrent = useSessionStore(s => s.createForkFromCurrent);
@@ -312,8 +314,14 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
   if (!isSSH && forkSiblings.length <= 1 && projectOnlySessions.length === 0) return null;
 
   return (
-    <div className="border-b border-claude-border bg-claude-bg/50 text-xs font-mono">
-      <div className="flex items-center px-3 py-1 overflow-x-auto">
+    <div
+      data-session-tab-strip=""
+      className={variant === 'inline'
+        ? 'flex min-w-0 items-center gap-2.5 text-[11.5px]'
+        : 'border-b border-white/[0.06] px-5 py-2 text-[11.5px]'}
+    >
+      {variant === 'inline' && <span className="h-4 w-px flex-shrink-0 bg-white/[0.1]" />}
+      <div className="flex w-fit max-w-full min-w-0 items-center gap-[2px] overflow-x-auto bg-[#111111] p-[2px] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.06)] [scrollbar-width:none]">
         {visibleForks.map((fork, index) => {
           const isActive = fork.id === activeSessionId;
           const displayName = getSessionDisplayName(fork);
@@ -329,15 +337,13 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
               onDragOver={(e) => handleDragOver(e, fork.id)}
               onDrop={(e) => handleDrop(e, fork.id)}
               className={`
-                flex items-center gap-2 px-3 py-1.5 whitespace-nowrap uppercase group ${isRenaming ? '' : 'cursor-grab active:cursor-grabbing'}
+                flex items-center gap-2 px-[9px] py-[3px] whitespace-nowrap group transition-colors ${isRenaming ? '' : 'cursor-grab active:cursor-grabbing'}
                 ${isActive
-                  ? 'text-claude-text bg-claude-accent/15 border-b-2 border-claude-accent font-bold'
-                  : 'text-claude-text-secondary hover:text-claude-text hover:bg-claude-bg/80'
+                  ? 'text-fg bg-[#262626]'
+                  : 'text-fg-4 hover:text-fg-2'
                 }
-                ${index > 0 ? 'border-l border-claude-border/30' : ''}
-                ${isDragOver ? 'bg-claude-accent/10' : ''}
+                ${isDragOver ? 'shadow-[inset_0_0_0_1px_rgba(76,154,255,0.45)]' : ''}
               `}
-              style={{ letterSpacing: '0.05em' }}
             >
               {isRenaming ? (
                 <input
@@ -349,8 +355,8 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
                     if (e.key === 'Enter') handleRenameCommit();
                     if (e.key === 'Escape') setRenamingId(null);
                   }}
-                  className="flex-1 bg-transparent border-b border-claude-accent text-claude-text text-xs font-mono uppercase outline-none px-0 py-0"
-                  style={{ letterSpacing: '0.05em', minWidth: '60px' }}
+                  className="flex-1 bg-transparent border-b border-accent text-fg text-[11.5px] outline-none px-0 py-0"
+                  style={{ minWidth: '60px' }}
                   autoFocus
                 />
               ) : (
@@ -360,10 +366,9 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
                     e.preventDefault();
                     handleRenameStart(fork.id, displayName);
                   }}
-                  className="flex-1 text-left"
-                  title="Double-click to rename"
+                  className={`flex-1 text-left ${variant === 'inline' ? 'max-w-[180px] truncate' : ''}`}
+                  title={`${displayName} — double-click to rename`}
                 >
-                  {isActive && '> '}
                   {displayName}
                 </button>
               )}
@@ -373,7 +378,7 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
               {visibleForks.length > 1 && !isRenaming && (
                 <button
                   onClick={(e) => handleClose(e, fork.id)}
-                  className="opacity-0 group-hover:opacity-100 text-claude-text-secondary hover:text-red-400 transition-opacity"
+                  className="opacity-0 group-hover:opacity-100 text-fg-5 hover:text-diff-del transition-opacity"
                   title="Close tab"
                 >
                   ×
@@ -445,7 +450,7 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
               console.error('[ForkTabs] Failed to create new tab:', err);
             }
           }}
-          className="flex items-center justify-center px-2 py-1 border-l border-claude-border/30 text-claude-text-secondary hover:text-claude-accent transition-colors"
+          className="flex items-center justify-center px-2 py-[3px] text-fg-4 hover:text-fg hover:bg-white/[0.04] transition-colors"
           title="New tab — fresh session (Cmd+T)"
         >
           <Plus size={12} />
@@ -462,11 +467,11 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
               }
               setShowOverflow(!showOverflow);
             }}
-            className="flex items-center gap-1 px-2 py-1 border-l border-claude-border/30 text-claude-text-secondary hover:text-claude-text transition-colors"
+            className="flex items-center gap-1 px-2 py-[3px] text-fg-4 hover:text-fg hover:bg-white/[0.04] transition-colors"
             title={`${closedForks.length + projectOnlySessions.length} more session${closedForks.length + projectOnlySessions.length > 1 ? 's' : ''}`}
           >
             <MoreHorizontal size={12} />
-            <span className="text-[9px]">{closedForks.length + projectOnlySessions.length}</span>
+            <span className="font-mono text-[10.5px]">{closedForks.length + projectOnlySessions.length}</span>
           </button>
         )}
 
@@ -474,29 +479,29 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
         {showOverflow && ReactDOM.createPortal(
           <div
             ref={overflowRef}
-            className="fixed bg-claude-surface border border-claude-border shadow-lg z-[9999] min-w-64 max-h-80 overflow-y-auto text-xs font-mono"
+            className="fixed bg-ink-3 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1),0_12px_40px_rgba(0,0,0,0.35)] z-[9999] min-w-64 max-h-80 overflow-y-auto py-1 text-[12.5px]"
             style={{ top: dropdownPos.top, right: dropdownPos.right }}
           >
             {closedForks.length > 0 && (
               <>
-                <div className="px-3 py-1.5 border-b border-claude-border">
-                  <span className="text-[10px] font-semibold text-claude-text-secondary uppercase tracking-wide">Closed Tabs</span>
+                <div className="px-3 pt-2 pb-1">
+                  <span className="text-[11px] text-fg-4 uppercase tracking-[0.04em]">Closed Tabs</span>
                 </div>
                 {closedForks.map(fork => (
                   <button
                     key={fork.id}
                     onClick={() => handleRestore(fork.id)}
-                    className="w-full text-left px-3 py-1.5 hover:bg-claude-bg transition-colors flex items-center gap-2"
+                    className="w-full h-8 text-left px-3 text-fg-2 hover:bg-[#1E1E1E] transition-colors flex items-center gap-2"
                   >
-                    <GitFork size={10} className="text-claude-accent flex-shrink-0" />
-                    <span className="text-xs truncate flex-1">{getSessionDisplayName(fork)}</span>
+                    <GitFork size={11} className="text-fg-4 flex-shrink-0" />
+                    <span className="truncate flex-1">{getSessionDisplayName(fork)}</span>
                     <PullRequestStatusIcon
                       sessionId={fork.id}
                       branch={fork.branch}
                       size={10}
                       interactive={false}
                     />
-                    <span className="text-[9px] text-claude-text-secondary flex-shrink-0">
+                    <span className="font-mono text-[10.5px] text-fg-5 flex-shrink-0">
                       {formatRelativeDate(fork.updatedAt)}
                     </span>
                   </button>
@@ -505,8 +510,8 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
             )}
             {projectOnlySessions.length > 0 && (
               <>
-                <div className="px-3 py-1.5 border-b border-claude-border">
-                  <span className="text-[10px] font-semibold text-claude-text-secondary uppercase tracking-wide">Other Sessions</span>
+                <div className="px-3 pt-2 pb-1">
+                  <span className="text-[11px] text-fg-4 uppercase tracking-[0.04em]">Other Sessions</span>
                 </div>
                 {projectOnlySessions.map(session => {
                   const isFork = !!session.parentSessionId;
@@ -556,20 +561,20 @@ export default function ForkTabs({ sessionId }: ForkTabsProps) {
                           }
                         }
                       }}
-                      className="w-full text-left px-3 py-1.5 hover:bg-claude-bg transition-colors flex items-center gap-2"
+                      className="w-full h-8 text-left px-3 text-fg-2 hover:bg-[#1E1E1E] transition-colors flex items-center gap-2"
                     >
                       {isFork
-                        ? <GitFork size={10} className="text-purple-400 flex-shrink-0" />
-                        : <MessageSquare size={10} className="text-claude-text-secondary flex-shrink-0" />
+                        ? <GitFork size={11} className="text-fg-4 flex-shrink-0" />
+                        : <MessageSquare size={11} className="text-fg-4 flex-shrink-0" />
                       }
-                      <span className="text-xs truncate flex-1">{getSessionDisplayName(session)}</span>
+                      <span className="truncate flex-1">{getSessionDisplayName(session)}</span>
                       <PullRequestStatusIcon
                         sessionId={session.id}
                         branch={session.branch}
                         size={10}
                         interactive={false}
                       />
-                      <span className="text-[9px] text-claude-text-secondary flex-shrink-0">
+                      <span className="font-mono text-[10.5px] text-fg-5 flex-shrink-0">
                         {formatRelativeDate(session.updatedAt)}
                       </span>
                     </button>

@@ -162,10 +162,69 @@ class TranscriptService {
     return path.join(this.dir, `${safe}.jsonl`);
   }
 
+  private getInProgressTranscriptPath(sessionId: string): string {
+    const safe = sessionId.replace(/[^a-zA-Z0-9_-]/g, '_');
+    return path.join(this.dir, `${safe}.in-progress.json`);
+  }
+
+  private readInProgressMessage(sessionId: string): TranscriptEntry | null {
+    const snapshotPath = this.getInProgressTranscriptPath(sessionId);
+    if (!fs.existsSync(snapshotPath)) return null;
+    try {
+      const parsed = JSON.parse(fs.readFileSync(snapshotPath, 'utf8')) as TranscriptEntry;
+      return parsed?.id && parsed?.role === 'assistant' ? parsed : null;
+    } catch (error) {
+      console.warn('[TranscriptService] Ignoring malformed in-progress snapshot:', error);
+      return null;
+    }
+  }
+
+  getInProgressMessageId(sessionId: string): string | undefined {
+    return this.readInProgressMessage(sessionId)?.id;
+  }
+
+  writeInProgressMessage(sessionId: string, entry: TranscriptEntry): void {
+    this.ensureDir();
+    try {
+      fs.writeFileSync(this.getInProgressTranscriptPath(sessionId), JSON.stringify(entry), 'utf8');
+    } catch (error) {
+      console.error('[TranscriptService] Failed to write in-progress snapshot:', error);
+    }
+  }
+
+  clearInProgressMessage(sessionId: string, expectedId?: string): void {
+    const snapshotPath = this.getInProgressTranscriptPath(sessionId);
+    try {
+      if (!fs.existsSync(snapshotPath)) return;
+      if (expectedId) {
+        const current = this.readInProgressMessage(sessionId);
+        if (current && current.id !== expectedId) return;
+      }
+      fs.unlinkSync(snapshotPath);
+    } catch (error) {
+      console.warn('[TranscriptService] Failed to clear in-progress snapshot:', error);
+    }
+  }
+
+  private promoteInProgressMessage(sessionId: string): void {
+    const pending = this.readInProgressMessage(sessionId);
+    if (!pending) return;
+    this.ensureDir();
+    try {
+      fs.appendFileSync(this.getTranscriptPath(sessionId), `${JSON.stringify(pending)}\n`, 'utf8');
+      this.clearInProgressMessage(sessionId, pending.id);
+    } catch (error) {
+      // Leave the sidecar intact so the partial assistant output remains
+      // recoverable if promotion fails.
+      console.error('[TranscriptService] Failed to promote in-progress snapshot:', error);
+    }
+  }
+
   /** Does a transcript file exist for this session? */
   hasTranscript(sessionId: string): boolean {
     try {
-      return fs.existsSync(this.getTranscriptPath(sessionId));
+      return fs.existsSync(this.getTranscriptPath(sessionId))
+        || fs.existsSync(this.getInProgressTranscriptPath(sessionId));
     } catch {
       return false;
     }
@@ -284,8 +343,13 @@ class TranscriptService {
     this.ensureDir();
     const filePath = this.getTranscriptPath(sessionId);
     try {
+      // A new user turn makes any crash-recovery assistant snapshot part of
+      // the durable history. Promotion is an append, not a full JSONL rewrite.
+      if (entry.role === 'user') {
+        this.promoteInProgressMessage(sessionId);
+      }
       if (entry.role === 'assistant') {
-        const existingEntries = this.loadMessages(sessionId);
+        const existingEntries = this.loadCanonicalMessages(sessionId);
         const duplicateIndex = this.findExactAssistantDuplicateIndex(existingEntries, entry);
         if (duplicateIndex >= 0) {
           console.log('[TranscriptService] Collapsed duplicate assistant transcript row by content');
@@ -308,7 +372,7 @@ class TranscriptService {
    * streamed text/tool state without appending duplicate partial rows.
    */
   upsertMessage(sessionId: string, entry: TranscriptEntry): { changed: boolean; written: number; canonicalId: string } {
-    const existingEntries = this.loadMessages(sessionId);
+    const existingEntries = this.loadCanonicalMessages(sessionId);
     const nextEntries = [...existingEntries];
     const existingIndex = nextEntries.findIndex(existing => existing.id === entry.id);
     let canonicalId = entry.id;
@@ -343,7 +407,7 @@ class TranscriptService {
    * Load all (or the last `limit`) messages from a session's transcript file.
    * Returns an empty array if the file doesn't exist or is unreadable.
    */
-  loadMessages(sessionId: string, limit?: number): TranscriptEntry[] {
+  private loadCanonicalMessages(sessionId: string): TranscriptEntry[] {
     const filePath = this.getTranscriptPath(sessionId);
     if (!fs.existsSync(filePath)) return [];
 
@@ -363,14 +427,31 @@ class TranscriptService {
         }
       }
 
-      if (limit && limit > 0) {
-        return entries.slice(-limit);
-      }
       return entries;
     } catch (err) {
       console.error('[TranscriptService] Failed to load messages:', err);
       return [];
     }
+  }
+
+  loadMessages(sessionId: string, limit?: number): TranscriptEntry[] {
+    const entries = this.loadCanonicalMessages(sessionId);
+    const pending = this.readInProgressMessage(sessionId);
+    if (pending) {
+      const existingIndex = entries.findIndex((entry) => entry.id === pending.id);
+      if (existingIndex >= 0) {
+        entries[existingIndex] = this.mergeDuplicateAssistantEntry(entries[existingIndex], pending);
+      } else {
+        const duplicateIndex = this.findExactAssistantDuplicateIndex(entries, pending);
+        if (duplicateIndex >= 0) {
+          entries[duplicateIndex] = this.mergeDuplicateAssistantEntry(entries[duplicateIndex], pending);
+        } else {
+          entries.push(pending);
+        }
+      }
+    }
+
+    return limit && limit > 0 ? entries.slice(-limit) : entries;
   }
 
   /** Replace a session transcript with the supplied entries. */
@@ -399,7 +480,7 @@ class TranscriptService {
     messages: ChatMessage[],
     options: { existingEntries?: TranscriptEntry[] } = {}
   ): { changed: boolean; written: number } {
-    const existingEntries = options.existingEntries ?? this.loadMessages(sessionId);
+    const existingEntries = options.existingEntries ?? this.loadCanonicalMessages(sessionId);
     const existingMessages = transcriptEntriesToChatMessages(existingEntries);
     const incomingMessages = messages
       .map(normalizeTranscriptMessage)

@@ -194,9 +194,9 @@ const SecureInput = React.forwardRef<HTMLTextAreaElement, SecureInputProps>(({
 
       {/* Key indicator badge */}
       {hasKeys && (
-        <div className="absolute top-1.5 right-1.5 flex items-center gap-0.5 px-1.5 py-0.5 bg-amber-500/20 border border-amber-500/40 pointer-events-none z-10">
-          <Lock size={9} className="text-amber-400" />
-          <span className="text-[9px] font-bold text-amber-400">
+        <div className="absolute top-1 right-0 flex items-center gap-1 px-1.5 py-0.5 bg-amber/10 shadow-[inset_0_0_0_1px_rgba(240,180,41,0.45)] pointer-events-none z-10">
+          <Lock size={10} className="text-amber" />
+          <span className="font-mono text-[10px] text-amber">
             {detectedKeys.length}
           </span>
         </div>

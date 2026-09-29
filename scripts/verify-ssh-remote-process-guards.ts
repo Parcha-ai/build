@@ -1,13 +1,76 @@
 import assert from 'assert';
 import fs from 'fs';
 import path from 'path';
+import { filterRemoteClaudeArguments } from '../src/main/services/ssh.service';
+import { normalizeRemoteWorkdir } from '../src/shared/utils/remote-workdir';
 
 const root = path.resolve(__dirname, '..');
 const sshService = fs.readFileSync(path.join(root, 'src/main/services/ssh.service.ts'), 'utf8');
+const terminalService = fs.readFileSync(path.join(root, 'src/main/services/terminal.service.ts'), 'utf8');
 const cursorCliService = fs.readFileSync(path.join(root, 'src/main/services/cursor-cli.service.ts'), 'utf8');
 const remoteBridgeScript = fs.readFileSync(path.join(root, 'src/main/services/remote-bridge-script.ts'), 'utf8');
+const devScript = fs.readFileSync(path.join(root, 'scripts/dev.sh'), 'utf8');
+
+assert.match(
+  devScript,
+  /\[ ! -f "\$GREP_DEV_USER_DATA\/claudette-sessions\.json" \] && \[ -f "\$PROD_DIR\/claudette-sessions\.json" \] && cp/,
+  'dev startup must preserve its own SSH session database across app restarts',
+);
+
+assert.deepEqual(
+  filterRemoteClaudeArguments([
+    '/local/node_modules/@anthropic-ai/claude-agent-sdk/claude',
+    '--output-format',
+    'stream-json',
+    '--mcp-config',
+    '{"mcpServers":{"local":{"command":"/local/node_modules/tool"}}}',
+    '--setting-sources=user,project',
+  ]),
+  ['--output-format', 'stream-json', '--setting-sources=user,project'],
+  'remote Claude argument filtering must remove --mcp-config with its local-only value',
+);
+const safeDesignConfig = JSON.stringify({
+  mcpServers: {
+    'claudette-design': { type: 'http', url: 'http://127.0.0.1:43123/mcp' },
+    linear: { type: 'stdio', command: 'npx', args: ['-y', 'mcp-remote@0.1.38', 'https://mcp.linear.app/mcp'] },
+    local: { command: '/local/node_modules/tool' },
+  },
+});
+assert.deepEqual(
+  filterRemoteClaudeArguments(['--verbose', '--mcp-config', safeDesignConfig, '--effort', 'low']),
+  [
+    '--verbose',
+    '--mcp-config',
+    JSON.stringify({ mcpServers: {
+      'claudette-design': { type: 'http', url: 'http://127.0.0.1:43123/mcp' },
+      linear: { type: 'stdio', command: 'npx', args: ['-y', 'mcp-remote@0.1.38', 'https://mcp.linear.app/mcp'] },
+    } }),
+    '--effort',
+    'low',
+  ],
+  'remote Claude must retain the DesignMode bridge and pinned authenticated mcp-remote wrappers',
+);
+assert.equal(normalizeRemoteWorkdir('Worktree: /home/ubuntu/worktrees/example'), '/home/ubuntu/worktrees/example');
+assert.equal(normalizeRemoteWorkdir('CWD: "~/project"'), '~/project');
+assert.equal(normalizeRemoteWorkdir('/home/ubuntu/project'), '/home/ubuntu/project');
+assert.deepEqual(
+  filterRemoteClaudeArguments(['--verbose', '--mcp-config={"mcpServers":{}}', '--effort', 'low']),
+  ['--verbose', '--effort', 'low'],
+  'remote Claude argument filtering must remove inline --mcp-config values',
+);
 
 assert.match(cursorCliService, /private remoteWorkdirCheckForShell\(value: string\): string \{/);
+
+assert.match(terminalService, /const sshConnectionId = `\$\{sessionId\}:terminal:\$\{terminalId\}`;/);
+assert.match(terminalService, /sshService\.createShell\(sshConnectionId, sshConfig\)/);
+assert.doesNotMatch(
+  terminalService,
+  /sshService\.createShell\(sessionId, sshConfig\)/,
+  'interactive SSH terminals must not share the active agent session connection key',
+);
+assert.match(terminalService, /sshTerminal\.disposeConnection\(\)/);
+assert.match(terminalService, /sshService\.disconnect\(sshConnectionId\)/);
+assert.match(terminalService, /if \(!terminal\) return;/);
 
 const createSshChatMethod = cursorCliService.match(/async createSshChat\(sshConfig: SSHConfig, remoteDir: string\): Promise<string \| null> \{[\s\S]*?\n {2}\}/)?.[0] || '';
 assert.match(createSshChatMethod, /this\.remoteWorkdirCheckForShell\(remoteDir\)/);
@@ -24,6 +87,16 @@ assert.ok(
 );
 
 assert.match(sshService, /private getRemoteWorkdirCdCommand\(remoteWorkdir: string\): string \{/);
+assert.doesNotMatch(
+  sshService,
+  /setTimeout\(\(\) => \{\s*this\.killAllRemoteProcesses\(\)/,
+  'opening the first SSH connection must never schedule remote process termination',
+);
+assert.match(
+  sshService,
+  /\[ "\$active" = "0" \] && \[ "\$stale" = "1" \]/,
+  'age-based bridge cleanup must never terminate a live remote agent',
+);
 assert.ok(
   sshService.includes('${workdir#\\\\~/}'),
   'SSH workdir preflight must strip literal ~/ before prefixing HOME',
@@ -31,6 +104,7 @@ assert.ok(
 assert.match(sshService, /Remote workdir not found:/);
 assert.match(sshService, /private async assertRemoteWorkdirExists\(sessionId: string, config: SSHConfig, remoteWorkdir\?: string\): Promise<void> \{/);
 assert.match(sshService, /await this\.assertRemoteWorkdirExists\(sessionId, config, bridge\.cwd\)/);
+assert.match(sshService, /cwd: normalizeRemoteWorkdir\(options\.cwd\) \|\| '\.'/);
 assert.match(sshService, /hasExitFile: boolean;/);
 assert.match(sshService, /exitCode\?: number \| null;/);
 assert.match(sshService, /hasexit=0; test -f "\$exitfile" && hasexit=1/);
@@ -66,15 +140,24 @@ assert.doesNotMatch(
 );
 
 const hasActiveRemoteProcessMethod = sshService.match(/async hasActiveRemoteProcess\(sessionId: string, config: SSHConfig\): Promise<boolean> \{[\s\S]*?\n {2}\}/)?.[0] || '';
-assert.match(hasActiveRemoteProcessMethod, /this\.buildSessionEnvProcessLoop\(sessionId/);
-assert.match(hasActiveRemoteProcessMethod, /ps -p "\$pid" -o args=/);
-assert.match(hasActiveRemoteProcessMethod, /@anthropic-ai\/claude-code/);
-assert.match(hasActiveRemoteProcessMethod, /codex/);
-assert.match(hasActiveRemoteProcessMethod, /cursor-agent/);
-assert.doesNotMatch(hasActiveRemoteProcessMethod, /buildSessionEnvProcessLoop\(sessionId, 'kill -0 "\$pid"/);
+assert.doesNotMatch(
+  hasActiveRemoteProcessMethod,
+  /buildSessionEnvProcessLoop|\/proc\/\[0-9\]/,
+  'normal turn admission must not scan every remote process environment',
+);
 assert.match(hasActiveRemoteProcessMethod, /active=1; break/);
-assert.match(hasActiveRemoteProcessMethod, /job\.active && !job\.recovered/);
-assert.match(hasActiveRemoteProcessMethod, /RECOVERABLE_BRIDGE_COMMANDS\.has\(job\.command\)/);
+assert.match(hasActiveRemoteProcessMethod, /bridge_dir=/);
+assert.match(hasActiveRemoteProcessMethod, /test -f "\$jobdir\/recovered\.json" && continue/);
+assert.match(
+  hasActiveRemoteProcessMethod,
+  /test -f "\$jobdir\/idle\.json" && continue/,
+  'an idle warm app-server must not block queue drain or look like an active user turn',
+);
+assert.doesNotMatch(
+  hasActiveRemoteProcessMethod,
+  /listDetachedBridgeJobs/,
+  'active process admission must inspect bridge jobs and legacy owners in one SSH round trip',
+);
 assert.doesNotMatch(
   hasActiveRemoteProcessMethod,
   /job\.active && !job\.completed/,
@@ -89,6 +172,9 @@ assert.ok(
   ),
   'stdout result should only complete inactive detached bridge jobs'
 );
+assert.match(listDetachedBridgeJobsMethod, /idle=0; test -f "\$jobdir\/idle\.json" && idle=1/);
+assert.match(sshService, /if \(job\.idle\) return false;/);
+assert.match(sshService, /async setDetachedBridgeJobIdle\(/);
 
 const attachDetachedStart = sshService.indexOf('private attachDetachedCommandProcess');
 const launchDetachedStart = sshService.indexOf('private async launchDetachedRemoteBridge', attachDetachedStart);
@@ -107,6 +193,21 @@ assert.ok(
     'elif test "$active" = "0" && test -f "$jobdir/stdout.log" && grep -q \\\'"type":"result"\\\' "$jobdir/stdout.log"'
   ),
   'new-turn cleanup must not treat active async-agent jobs as completed just because stdout has a result event'
+);
+assert.match(
+  cleanupMethod,
+  /completedTurn\?: boolean[\s\S]*?if test "\$completed_turn" = "1"[\s\S]*?"type":"result"/,
+  'an explicitly completed foreground turn must retire its still-unwinding result bridge',
+);
+assert.match(
+  cleanupMethod,
+  /completedTurnCleanupGuards\.set/,
+  'completed-turn cleanup must synchronously guard against renderer reattach races',
+);
+assert.match(
+  sshService,
+  /hasRecoverableRemoteProcess\([\s\S]*?hasCompletedTurnCleanupGuard\(sessionId\)/,
+  'recoverability probes must ignore a terminal bridge while completed-turn cleanup is in flight',
 );
 
 const killMethod = sshService.match(/async killRemoteProcesses\(sessionId: string, config: SSHConfig\): Promise<void> \{[\s\S]*?\n {2}\}/)?.[0] || '';

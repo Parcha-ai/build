@@ -43,6 +43,21 @@ assert.match(
   /REMOTE_CODEX_SANDBOX_TTL/,
   'Remote sandbox capability must be cached',
 );
+assert.match(
+  claudeService,
+  /Auto Build.*route cannot use sandboxed Codex on SSH[\s\S]*?falling back to/,
+  'Auto Build must route away from sandboxed Codex when the SSH host cannot run Bubblewrap',
+);
+assert.match(
+  claudeService,
+  /routerConfig\.fallbackModel,\s*tierFallbackModel,\s*'claude-sonnet-5'/,
+  'SSH sandbox failure must prefer a compatible configured fallback and then Sonnet',
+);
+assert.doesNotMatch(
+  claudeService,
+  /const fallbackModel = \[\s*routerConfig\.prePlanModel/,
+  'SSH sandbox failure must not silently reuse the Fable pre-plan model',
+);
 
 const messageBuffer = new CodexAgentMessageBuffer();
 assert.equal(messageBuffer.accept('first progress update'), undefined);

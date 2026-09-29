@@ -3,6 +3,8 @@ import { isSessionNotFoundError, useSessionStore } from '../../stores/session.st
 import { useAuthStore } from '../../stores/auth.store';
 import { ChevronDown, Check } from 'lucide-react';
 import CostBadge from '../analytics/CostBadge';
+import { MicrophoneButton } from '../chat/MicrophoneButton';
+import { VoiceModeErrorBoundary } from '../chat/VoiceModeErrorBoundary';
 import type { Branch } from '../../../shared/types';
 
 // Dev instance name from environment variable (set by scripts/dev.sh, passed via preload)
@@ -50,6 +52,9 @@ export default function StatusBar() {
   const [appVersion, setAppVersion] = useState('0.0.0');
   const [updateInfo, setUpdateInfo] = useState<{ version: string; downloadUrl: string; releaseNotes?: string } | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const [aheadBehind, setAheadBehind] = useState<{ ahead: number; behind: number; tracking: boolean } | null>(null);
+  const [todayCost, setTodayCost] = useState<number | null>(null);
+  const contextUsage = useSessionStore((s) => (s.activeSessionId ? s.contextUsage[s.activeSessionId] : null));
 
   // Fetch app version on mount
   useEffect(() => {
@@ -66,6 +71,34 @@ export default function StatusBar() {
   }, []);
 
   const activeSession = sessions.find((s) => s.id === activeSessionId);
+
+  // Ahead/behind upstream for local sessions (read-only git status).
+  useEffect(() => {
+    setAheadBehind(null);
+    if (!activeSessionId || activeSession?.sshConfig) return;
+    let cancelled = false;
+    window.electronAPI.git.getStatus(activeSessionId)
+      .then((status: { tracking: string | null; ahead: number; behind: number }) => {
+        if (!cancelled) setAheadBehind({ ahead: status.ahead || 0, behind: status.behind || 0, tracking: !!status.tracking });
+      })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [activeSessionId, activeSession?.sshConfig, activeSession?.branch]);
+
+  // Today's spend across all sessions.
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = () => {
+      window.electronAPI?.analytics?.getSummary?.()
+        .then((summary: { todayTotalCost?: number }) => {
+          if (!cancelled && typeof summary?.todayTotalCost === 'number') setTodayCost(summary.todayTotalCost);
+        })
+        .catch(() => undefined);
+    };
+    refresh();
+    const unsub = window.electronAPI?.analytics?.onTokenEvent?.(() => refresh());
+    return () => { cancelled = true; unsub?.(); };
+  }, []);
 
   // Watch for branch changes via file system events (not polling)
   useEffect(() => {
@@ -170,121 +203,127 @@ export default function StatusBar() {
   const getStatusColor = (status: string) => {
     switch (status) {
       case 'running':
-        return 'bg-green-500';
+        return 'bg-diff-add';
       case 'stopped':
-        return 'bg-gray-500';
+        return 'shadow-[inset_0_0_0_1.5px_#666666]';
       case 'error':
-        return 'bg-red-500';
+        return 'bg-diff-del';
       case 'starting':
       case 'stopping':
       case 'creating':
-        return 'bg-yellow-500';
+        return 'bg-amber';
       default:
-        return 'bg-gray-500';
+        return 'shadow-[inset_0_0_0_1.5px_#666666]';
     }
   };
 
   return (
-    <div className="h-8 flex items-center px-4 text-[11px] font-mono bg-claude-surface border-t border-claude-border text-claude-text-secondary">
+    <div className="h-[26px] flex-shrink-0 flex items-center gap-4 px-3.5 text-[11px] font-mono bg-ink-0 border-t border-line text-fg-4">
       {/* Left section */}
-      <div className="flex items-center gap-3">
-        {/* Docker status */}
-        <div className="flex items-center gap-1.5">
-          <div
-            className={`w-1.5 h-1.5 ${dockerStatus?.available ? 'bg-green-500' : 'bg-red-500'}`}
-            style={{ borderRadius: 0 }}
-          />
-          <span style={{ letterSpacing: '0.05em' }}>
-            DOCKER {dockerStatus?.version || 'N/A'}
-          </span>
-        </div>
-
-        {/* Session status */}
+      <div className="flex items-center gap-4 min-w-0">
+        {/* Branch dropdown */}
         {activeSession && (
-          <>
-            <div className="w-px h-3 bg-claude-border" />
-            <div className="flex items-center gap-1.5">
-              <div
-                className={`w-1.5 h-1.5 ${getStatusColor(activeSession.status)} ${
-                  activeSession.status === 'starting' ||
-                  activeSession.status === 'stopping' ||
-                  activeSession.status === 'creating'
-                    ? 'animate-pulse'
-                    : ''
-                }`}
-                style={{ borderRadius: 0 }}
-              />
-              <span style={{ letterSpacing: '0.05em' }}>
-                {activeSession.status.toUpperCase()}
+          <div className="relative" ref={menuRef}>
+            <button
+              onClick={handleBranchClick}
+              disabled={switchingBranch}
+              className="flex items-center gap-1.5 text-fg-3 hover:text-fg transition-colors disabled:opacity-50"
+              title="Switch branch"
+            >
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" className="flex-shrink-0">
+                <circle cx="6" cy="6" r="2.2" />
+                <circle cx="6" cy="18" r="2.2" />
+                <circle cx="18" cy="8" r="2.2" />
+                <path d="M6 8.2v7.6M18 10.2c0 4-3 5.8-9.8 6.6" />
+              </svg>
+              <span className="truncate max-w-[240px]">
+                {switchingBranch ? 'switching…' : activeSession.branch}
               </span>
-            </div>
+              <ChevronDown size={10} className={`transition-transform text-fg-5 ${showBranchMenu ? 'rotate-180' : ''}`} />
+            </button>
 
-            <div className="w-px h-3 bg-claude-border" />
-
-            {/* Branch dropdown */}
-            <div className="relative" ref={menuRef}>
-              <button
-                onClick={handleBranchClick}
-                disabled={switchingBranch}
-                className="flex items-center gap-1 hover:text-claude-text transition-colors disabled:opacity-50"
-              >
-                <span style={{ letterSpacing: '0.05em' }}>BRANCH:</span>
-                <span className="font-bold text-claude-text">
-                  {switchingBranch ? 'SWITCHING...' : activeSession.branch}
-                </span>
-                <ChevronDown size={10} className={`transition-transform ${showBranchMenu ? 'rotate-180' : ''}`} />
-              </button>
-
-              {/* Branch dropdown menu */}
-              {showBranchMenu && (
-                <div
-                  className="absolute bottom-full left-0 mb-1 w-56 max-h-64 overflow-y-auto bg-claude-surface border border-claude-border shadow-lg"
-                  style={{ borderRadius: 0 }}
-                >
-                  {loadingBranches ? (
-                    <div className="px-3 py-2 text-claude-text-secondary">Loading branches...</div>
-                  ) : branches.length === 0 ? (
-                    <div className="px-3 py-2 text-claude-text-secondary">No branches found</div>
-                  ) : (
-                    branches.map((branch) => (
-                      <button
-                        key={branch.name}
-                        onClick={() => handleBranchSwitch(branch.name)}
-                        className={`w-full px-3 py-1.5 flex items-center gap-2 text-left hover:bg-claude-bg transition-colors ${
-                          branch.name === activeSession.branch ? 'text-claude-accent' : 'text-claude-text'
-                        }`}
-                      >
-                        {branch.name === activeSession.branch && (
-                          <Check size={10} className="text-claude-accent flex-shrink-0" />
-                        )}
-                        <span className={`truncate ${branch.name === activeSession.branch ? '' : 'ml-4'}`}>
-                          {branch.name}
-                        </span>
-                        {branch.current && (
-                          <span className="ml-auto text-[8px] text-claude-text-secondary">HEAD</span>
-                        )}
-                      </button>
-                    ))
-                  )}
-                </div>
-              )}
-            </div>
-
-            {/* Subagent indicator */}
-            {hasActiveSubagents && (
-              <>
-                <div className="w-px h-3 bg-claude-border" />
-                <div className="flex items-center gap-1.5">
-                  <div className="w-1.5 h-1.5 bg-purple-500 animate-pulse" style={{ borderRadius: 0 }} />
-                  <span style={{ letterSpacing: '0.05em' }} className="text-purple-400">
-                    AGENT: {activeTaskTools.length > 1
-                      ? `${activeTaskTools.length} ACTIVE`
-                      : getSubagentType(activeTaskTools[0].input) || 'TASK'}
-                  </span>
-                </div>
-              </>
+            {/* Branch dropdown menu */}
+            {showBranchMenu && (
+              <div className="absolute bottom-full left-0 mb-1 w-64 max-h-64 overflow-y-auto py-1 bg-ink-3 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1),0_12px_40px_rgba(0,0,0,0.35)] z-50">
+                {loadingBranches ? (
+                  <div className="px-3 py-2 text-fg-4">Loading branches...</div>
+                ) : branches.length === 0 ? (
+                  <div className="px-3 py-2 text-fg-4">No branches found</div>
+                ) : (
+                  branches.map((branch) => (
+                    <button
+                      key={branch.name}
+                      onClick={() => handleBranchSwitch(branch.name)}
+                      className={`w-full h-7 px-3 flex items-center gap-2 text-left hover:bg-claude-surface-hover transition-colors ${
+                        branch.name === activeSession.branch ? 'text-fg' : 'text-fg-3'
+                      }`}
+                    >
+                      {branch.name === activeSession.branch && (
+                        <Check size={10} className="text-accent flex-shrink-0" />
+                      )}
+                      <span className={`truncate ${branch.name === activeSession.branch ? '' : 'ml-4'}`}>
+                        {branch.name}
+                      </span>
+                      {branch.current && (
+                        <span className="ml-auto text-[9.5px] text-fg-5">HEAD</span>
+                      )}
+                    </button>
+                  ))
+                )}
+              </div>
             )}
-          </>
+          </div>
+        )}
+
+        {/* Ahead / behind upstream */}
+        {activeSession && aheadBehind?.tracking && (
+          <span className="tabular-nums" title="Commits ahead / behind upstream">
+            ↑{aheadBehind.ahead} ↓{aheadBehind.behind}
+          </span>
+        )}
+
+        {/* Session status — only surfaced when it's not the normal running state */}
+        {activeSession && activeSession.status !== 'running' && (
+          <div className="flex items-center gap-1.5" title="Session status">
+            <span
+              className={`w-1.5 h-1.5 rounded-full ${getStatusColor(activeSession.status)} ${
+                activeSession.status === 'starting' ||
+                activeSession.status === 'stopping' ||
+                activeSession.status === 'creating'
+                  ? 'animate-pulse'
+                  : ''
+              }`}
+            />
+            <span>{activeSession.status}</span>
+          </div>
+        )}
+
+        {/* Dev instance */}
+        {isDevMode && DEV_INSTANCE_NAME && (
+          <span className="flex items-center gap-1.5" title={`Dev instance${activeSession ? ` · session ${activeSession.status}` : ''}`}>
+            <span className={`w-1.5 h-1.5 rounded-full ${activeSession && activeSession.status !== 'running' ? getStatusColor(activeSession.status) : 'bg-diff-add'}`} />
+            <span className="text-fg-3">{DEV_INSTANCE_NAME}</span>
+          </span>
+        )}
+
+        {/* Docker status — only when docker is actually available */}
+        {dockerStatus?.available && (
+          <div className="flex items-center gap-1.5" title="Docker">
+            <span className="w-1.5 h-1.5 rounded-full bg-diff-add" />
+            <span>docker {dockerStatus.version || ''}</span>
+          </div>
+        )}
+
+        {/* Subagent indicator */}
+        {activeSession && hasActiveSubagents && (
+          <div className="flex items-center gap-1.5">
+            <span className="w-1.5 h-1.5 rounded-full bg-accent status-pulse" />
+            <span className="text-accent-text">
+              agent: {activeTaskTools.length > 1
+                ? `${activeTaskTools.length} active`
+                : (getSubagentType(activeTaskTools[0].input) || 'TASK').toLowerCase()}
+            </span>
+          </div>
         )}
       </div>
 
@@ -292,44 +331,56 @@ export default function StatusBar() {
       <div className="flex-1" />
 
       {/* Right section */}
-      <div className="flex items-center gap-3">
-        {activeSession && (
-          <>
-            <CostBadge />
-            <div className="w-px h-3 bg-claude-border" />
-          </>
-        )}
+      <div className="flex items-center gap-4">
+        {/* Singleton transport controller; its visible control lives in the active composer. */}
+        <VoiceModeErrorBoundary>
+          <MicrophoneButton />
+        </VoiceModeErrorBoundary>
 
-        {activeSession?.status === 'running' && (
-          <>
-            <div className="flex items-center gap-1.5">
-              <span style={{ letterSpacing: '0.05em' }}>PORT:</span>
-              <span className="font-bold text-claude-text">{activeSession.ports.web}</span>
-            </div>
-          </>
-        )}
-
-        <div className="flex items-center gap-1.5">
-          {updateInfo ? (
-            <button
-              onClick={() => window.electronAPI?.app.openExternal(updateInfo.downloadUrl)}
-              className="flex items-center gap-1.5 hover:text-white transition-colors"
-              title={`v${updateInfo.version} available — click to download${updateInfo.releaseNotes ? '\n\n' + updateInfo.releaseNotes.slice(0, 200) : ''}`}
+        {/* Context window meter */}
+        {activeSession && contextUsage && contextUsage.contextWindowSize > 0 && (() => {
+          const pct = Math.max(0, Math.min(100, Math.round(contextUsage.percentage)));
+          const fill = pct >= 90 ? 'bg-diff-del' : pct >= 75 ? 'bg-amber' : 'bg-fg-3';
+          return (
+            <span
+              className="flex items-center gap-1.5"
+              title={`Context: ${contextUsage.inputTokens.toLocaleString()} / ${contextUsage.contextWindowSize.toLocaleString()} tokens`}
             >
-              <div className="w-1.5 h-1.5 bg-green-400 animate-pulse" style={{ borderRadius: 0 }} />
-              <span style={{ letterSpacing: '0.05em' }} className="text-green-400">
-                UPDATE v{updateInfo.version}
+              ctx
+              <span className="w-12 h-1 bg-[#262626] overflow-hidden flex">
+                <span className={fill} style={{ width: `${pct}%` }} />
               </span>
-            </button>
-          ) : (
-            <span style={{ letterSpacing: '0.05em' }}>G-BUILD v{appVersion}</span>
-          )}
-          {isDevMode && (
-            <span className="text-amber-400 font-bold ml-1" style={{ letterSpacing: '0.05em' }}>
-              [{DEV_INSTANCE_NAME}]
+              <span className="tabular-nums">{pct}%</span>
             </span>
-          )}
-        </div>
+          );
+        })()}
+
+        {activeSession && <CostBadge />}
+
+        {todayCost !== null && todayCost > 0 && (
+          <span className="tabular-nums" title="Spend today (all sessions)">
+            ${todayCost.toFixed(2)} today
+          </span>
+        )}
+
+        {activeSession?.status === 'running' && !!activeSession.ports?.web && (
+          <span title="Web port">
+            :{activeSession.ports.web}
+          </span>
+        )}
+
+        {updateInfo ? (
+          <button
+            onClick={() => window.electronAPI?.app.openExternal(updateInfo.downloadUrl)}
+            className="flex items-center gap-1.5 text-accent-text hover:text-fg transition-colors"
+            title={`v${updateInfo.version} available — click to download${updateInfo.releaseNotes ? '\n\n' + updateInfo.releaseNotes.slice(0, 200) : ''}`}
+          >
+            <span className="w-1.5 h-1.5 rounded-full bg-accent status-pulse" />
+            <span>update v{updateInfo.version}</span>
+          </button>
+        ) : (
+          <span className="text-fg-5">v{appVersion}</span>
+        )}
       </div>
     </div>
   );

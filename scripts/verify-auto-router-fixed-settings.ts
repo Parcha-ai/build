@@ -8,6 +8,10 @@ const settings = {
     // This verifier exercises fixed tier/model precedence independently from
     // the default-on pre-build specification gate.
     prePlanEnabled: false,
+    prModel: 'claude-fable-5',
+    prEffort: 'max',
+    prWorkflow: 'single',
+    prVerification: 'none',
     categories: [
       { id: 'plan', label: 'Legacy Planning', model: 'claude-haiku-4-5-20251001' },
       {
@@ -93,6 +97,10 @@ const autoRouterSource = fs.readFileSync(path.join(root, 'src/main/services/auto
 const configWriter = settingsDialog.match(/function autoBuildConfigFromState[\s\S]*?\n}\n\nfunction migrateAutoBuildModels/)?.[0] || '';
 
 async function main(): Promise<void> {
+  assert.equal(config.prModel, 'claude-fable-5');
+  assert.equal(config.prEffort, 'max');
+  assert.equal(config.prWorkflow, 'single');
+  assert.equal(config.prVerification, 'none');
   assert.equal(config.planModel, 'claude-opus-4-7');
   assert.equal(config.buildModel, 'codex:gpt-5.5');
   assert.equal(config.verifyModel, 'gemini:gemini-3.5-flash');
@@ -113,10 +121,11 @@ async function main(): Promise<void> {
   assert.equal(customCategory?.budgetUsd, 7.5);
   assert.equal(customCategory?.verification, 'required');
 
-  for (const tier of ['plan', 'build', 'verify', 'refine', 'fallback']) {
+  for (const tier of ['pr', 'plan', 'build', 'verify', 'refine', 'fallback']) {
     assert.match(settingsDialog, new RegExp(`id: '${tier}'`), `Settings UI must expose fixed ${tier} tier row`);
   }
 
+  assert.match(configWriter, /prModel/);
   assert.match(configWriter, /planModel/);
   assert.match(configWriter, /buildModel/);
   assert.match(configWriter, /verifyModel/);
@@ -127,6 +136,8 @@ async function main(): Promise<void> {
   assert.match(configWriter, /buildWorkflow/);
   assert.match(configWriter, /buildBudgetUsd/);
   assert.match(configWriter, /buildVerification/);
+  assert.match(configWriter, /prWorkflow/);
+  assert.match(configWriter, /prVerification/);
   assert.match(configWriter, /budgetUsd/);
   assert.match(configWriter, /verification/);
   assert.doesNotMatch(settingsDialog, /useFlueMetaHarness|Flue/i, 'Flue must not be exposed as a separate user-selectable mode');
@@ -134,6 +145,7 @@ async function main(): Promise<void> {
   assert.doesNotMatch(autoRouterSource, /useFlueMetaHarness/, 'Router must treat Auto Build as the single meta-routing mode');
 
   autoRouterService.setConfig({
+    prModel: 'claude-fable-5',
     planModel: 'claude-sonnet-4-6',
     buildModel: 'codex:gpt-5.5',
     verifyModel: 'codex:gpt-5.5',

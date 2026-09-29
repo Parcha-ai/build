@@ -43,16 +43,16 @@ export const MessageQueuePanel: React.FC<MessageQueuePanelProps> = ({ sessionId 
   };
 
   return (
-    <div className="border-t border-claude-border bg-claude-bg/50 text-xs font-mono">
+    <div className="mb-1.5 bg-ink-1 text-[12.5px] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)]">
       {/* Compact header */}
-      <div className="flex items-center justify-between px-3 py-1 border-b border-claude-border/50">
-        <span className="text-claude-text-secondary uppercase" style={{ letterSpacing: '0.05em' }}>
-          {queueWillSteer ? 'Steering' : 'Queue'} ({queue.length})
+      <div className="flex items-center justify-between px-3 py-1.5 border-b border-line">
+        <span className="text-[11px] font-medium uppercase tracking-[0.04em] text-fg-4">
+          {queueWillSteer ? 'Steering' : 'Queue'} <span className="font-mono">({queue.length})</span>
         </span>
         {queue.length > 1 && (
           <button
             onClick={() => clearQueue(sessionId)}
-            className="text-red-400 hover:text-red-300 text-[10px] uppercase"
+            className="text-[11.5px] text-fg-4 hover:text-diff-del-text"
           >
             Clear
           </button>
@@ -65,12 +65,12 @@ export const MessageQueuePanel: React.FC<MessageQueuePanelProps> = ({ sessionId 
           <div
             key={item.id}
             className={`flex items-start gap-2 px-3 py-1.5 ${
-              index === 0 ? 'bg-claude-accent/5' : ''
-            } ${index > 0 ? 'border-t border-claude-border/30' : ''}`}
+              index === 0 ? 'bg-white/[0.02]' : ''
+            } ${index > 0 ? 'border-t border-line' : ''}`}
           >
             {/* Position indicator */}
-            <span className={`flex-shrink-0 w-4 text-center ${
-              index === 0 ? 'text-green-400' : 'text-claude-text-secondary'
+            <span className={`flex-shrink-0 w-4 text-center font-mono text-[11px] leading-[18px] ${
+              index === 0 ? 'text-accent' : 'text-fg-5'
             }`}>
               {index === 0 ? '>' : index + 1}
             </span>
@@ -86,19 +86,19 @@ export const MessageQueuePanel: React.FC<MessageQueuePanelProps> = ({ sessionId 
                     if (e.key === 'Enter') handleSaveEdit(item.id);
                     if (e.key === 'Escape') { setEditingId(null); setEditText(''); }
                   }}
-                  className="flex-1 bg-claude-bg border border-claude-border px-1.5 py-0.5 text-xs text-claude-text focus:outline-none focus:border-claude-accent"
+                  className="flex-1 bg-ink-3 px-2 py-1 text-[12.5px] text-fg shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] focus:outline-none focus:shadow-[inset_0_0_0_1px_rgba(76,154,255,0.6)]"
                   autoFocus
                 />
                 <button
                   onClick={() => handleSaveEdit(item.id)}
-                  className="p-0.5 text-green-400 hover:text-green-300"
+                  className="p-0.5 text-accent hover:text-accent-text"
                   title="Save"
                 >
                   <Check size={12} />
                 </button>
                 <button
                   onClick={() => { setEditingId(null); setEditText(''); }}
-                  className="p-0.5 text-claude-text-secondary hover:text-claude-text"
+                  className="p-0.5 text-fg-4 hover:text-fg"
                   title="Cancel"
                 >
                   <X size={12} />
@@ -106,7 +106,7 @@ export const MessageQueuePanel: React.FC<MessageQueuePanelProps> = ({ sessionId 
               </div>
             ) : (
               <>
-                <span className="flex-1 text-claude-text break-words whitespace-pre-wrap">
+                <span className="flex-1 text-fg-2 leading-[18px] break-words whitespace-pre-wrap">
                   {item.message}
                 </span>
 
@@ -114,7 +114,7 @@ export const MessageQueuePanel: React.FC<MessageQueuePanelProps> = ({ sessionId 
                 <div className="flex-shrink-0 flex items-center gap-0.5 opacity-50 hover:opacity-100 transition-opacity">
                   <button
                     onClick={() => { setEditingId(item.id); setEditText(item.message); }}
-                    className="p-0.5 text-claude-text-secondary hover:text-claude-text"
+                    className="p-0.5 text-fg-4 hover:text-fg"
                     title="Edit"
                   >
                     <Pencil size={11} />
@@ -122,7 +122,7 @@ export const MessageQueuePanel: React.FC<MessageQueuePanelProps> = ({ sessionId 
                   {index !== 0 && (
                     <button
                       onClick={() => moveToFront(sessionId, item.id)}
-                      className="p-0.5 text-claude-text-secondary hover:text-blue-400"
+                      className="p-0.5 text-fg-4 hover:text-accent-text"
                       title="Move to front"
                     >
                       <ArrowUp size={11} />
@@ -130,7 +130,7 @@ export const MessageQueuePanel: React.FC<MessageQueuePanelProps> = ({ sessionId 
                   )}
                   <button
                     onClick={() => handleFastStack(item.id, item.message, item.attachments, item.suppressUserMessage)}
-                    className="inline-flex items-center gap-0.5 px-1 py-0.5 text-[9px] uppercase tracking-wide text-claude-text-secondary hover:text-amber-400"
+                    className="inline-flex items-center gap-1 px-1 py-0.5 text-[11px] text-fg-4 hover:text-amber"
                     title="Fast Stack — fork now and run in this chat (⌘⇧↵)"
                   >
                     <Layers size={11} />
@@ -138,7 +138,7 @@ export const MessageQueuePanel: React.FC<MessageQueuePanelProps> = ({ sessionId 
                   </button>
                   <button
                     onClick={() => removeFromQueue(sessionId, item.id)}
-                    className="p-0.5 text-claude-text-secondary hover:text-red-400"
+                    className="p-0.5 text-fg-4 hover:text-diff-del-text"
                     title="Remove"
                   >
                     <X size={11} />

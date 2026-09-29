@@ -23,6 +23,7 @@ import Store from 'electron-store';
 import { execFileSync } from 'child_process';
 import * as os from 'os';
 import * as path from 'path';
+import * as fs from 'fs';
 import { findUsableLocalExecutable, hasUsableLocalExecutable } from '../utils/local-executable';
 import {
   ZAI_GLM_CLAUDE_MODEL_PICKER_ID,
@@ -36,12 +37,17 @@ let cursorCliAvailableCache: boolean | undefined;
 let cursorCliAuthCache: { checkedAt: number; loggedIn: boolean } | undefined;
 let geminiCliAvailableCache: boolean | undefined;
 let openCodeCliAvailableCache: boolean | undefined;
+let primeAgentCliAvailableCache: boolean | undefined;
 let settingsObjectCache: { expiresAt: number; value: Record<string, unknown> } | undefined;
 
 const DEFAULT_CONFIG: AutoRouterConfig = {
   enabled: true,
   prePlanEnabled: true,
   prePlanModel: 'claude-fable-5',
+  prModel: 'claude-fable-5',
+  prEffort: 'max',
+  prWorkflow: 'single',
+  prVerification: 'none',
   planModel: 'claude-sonnet-4-6',
   buildModel: 'codex:gpt-5.6-sol',
   verifyModel: 'codex:gpt-5.6-sol',
@@ -130,7 +136,74 @@ function isExplicitMutatingWorkflowExecution(message: string): boolean {
   if (new RegExp(`\\b(?:don'?t|do not|never)\\s+(?:(?:run|execute|invoke|start|do)\\s+)?(?:the\\s+)?/${MUTATING_WORKFLOW_NAMES}\\b`, 'i').test(trimmed)) {
     return false;
   }
-  return new RegExp(`\\b(?:run|execute|invoke|start|do|finish|continue|resume)\\b[\\s\\S]{0,80}?/${MUTATING_WORKFLOW_NAMES}\\b`, 'i').test(trimmed);
+  return new RegExp(`\\b(?:run|execute|invoke|start|do|create|open|publish|ship|finish|continue|resume)\\b[\\s\\S]{0,80}?/${MUTATING_WORKFLOW_NAMES}\\b`, 'i').test(trimmed);
+}
+
+function isExplicitPrWorkflowExecution(message: string): boolean {
+  if (!isExplicitMutatingWorkflowExecution(message)) return false;
+  return /<invoked_workflow\b[^>]*\bname=["']\/(?:pr|git-pr|pr-tests|pr-loop)["']/i.test(message)
+    || /\/(?:pr|git-pr|pr-tests|pr-loop)\b/i.test(message);
+}
+
+/** A native PR workflow can outlive one model turn while checks or reviewers
+ * run. Prose follow-ups that explicitly refer to that workflow are recovery
+ * continuations, not generic build/ops requests. Keeping them in the PR
+ * category returns a disconnected workflow to its configured PR model. */
+function isPrWorkflowContinuation(message: string): boolean {
+  const normalized = message.toLowerCase().replace(/\s+/g, ' ').trim();
+  const namesWorkflow = /\b(?:pr|pull request)\s+(?:workflow|process|pipeline)\b/.test(normalized)
+    || /\b(?:workflow|process|pipeline)\s+(?:for|on|of)\s+(?:the\s+)?(?:pr|pull request)\b/.test(normalized);
+  if (!namesWorkflow) return false;
+
+  return /\b(?:continue|resume|finish|complete|proceed|while|still|remaining|blockers?|comments?|checks?|review)\b/.test(normalized);
+}
+
+/**
+ * Git publication is an operational phase, not a design problem. These short
+ * follow-ups are especially easy for a language-model router to overthink, so
+ * keep them out of both the meta-controller and the pre-build planning gate.
+ */
+function classifyNonPlanningGitIntent(message: string): HeuristicResult | undefined {
+  const normalized = message.toLowerCase().replace(/\s+/g, ' ').trim();
+  const pullRequest = '(?:pr|pull request)';
+  const publicationObject = `(?:${pullRequest}|branch|commit|changes)`;
+  const workflowFailureQuestion = /^(?:why\b|what(?:'s| is)\b|how come\b)[\s\S]{0,160}\b(?:plan mode|planning|verification scope|verify scope|stuck|keep(?:s)? going)\b/i;
+  if (workflowFailureQuestion.test(normalized)) {
+    return {
+      tier: 'verify',
+      confidence: 1,
+      reason: 'Question about an unwanted planning or verification loop requires diagnosis, never another planning turn',
+    };
+  }
+  const mutatingPatterns = [
+    new RegExp(`\\b(?:create|open|write|make|publish|ship|finish|setup|set up)\\s+(?:the\\s+|a\\s+)?${pullRequest}\\b`, 'i'),
+    new RegExp(`\\b(?:push|publish)\\s+(?:the\\s+)?${publicationObject}\\b`, 'i'),
+    new RegExp(`\\bcommit\\b[\\s\\S]{0,80}\\bpush\\b|\\bpush\\b[\\s\\S]{0,80}\\b${pullRequest}\\b`, 'i'),
+    /\bpr\s+this\b|\bget\s+(?:the\s+|a\s+)?pr\s+(?:up|open|created|published)\b/i,
+  ];
+  if (mutatingPatterns.some((pattern) => pattern.test(normalized))) {
+    return {
+      tier: 'build',
+      confidence: 1,
+      reason: 'Explicit commit, push, or pull-request publication request must execute without a planning turn',
+    };
+  }
+
+  const statusPatterns = [
+    new RegExp(`\\b(?:is there|do (?:we|you) have|where(?:'s| is)|what(?:'s| is))\\b[\\s\\S]{0,80}\\b${pullRequest}\\b`, 'i'),
+    new RegExp(`\\b${pullRequest}\\b[\\s\\S]{0,50}\\b(?:yet|status|state|link|url|open|created|published)\\b`, 'i'),
+    new RegExp(`\\b(?:did|have|has)\\b[\\s\\S]{0,60}\\b(?:push|publish|create|open)(?:ed)?\\b[\\s\\S]{0,60}\\b${pullRequest}\\b`, 'i'),
+    /\bcheck\b[\s\S]{0,60}\b(?:pr|pull request|branch|ci)\s+(?:status|state|checks?)\b/i,
+  ];
+  if (statusPatterns.some((pattern) => pattern.test(normalized))) {
+    return {
+      tier: 'verify',
+      confidence: 1,
+      reason: 'Pull-request or branch status lookup is verification, not planning',
+    };
+  }
+
+  return undefined;
 }
 
 function escapeRegExp(value: string): string {
@@ -204,6 +277,7 @@ interface RemoteCliCapabilities {
   cursor?: boolean;
   gemini?: boolean;
   opencode?: boolean;
+  prime?: boolean;
 }
 
 interface ModelAvailabilityOptions {
@@ -408,7 +482,7 @@ function cleanPolicy(policy: MetaHarnessPolicy): MetaHarnessPolicy {
 }
 
 function isFixedAutoRouterCategoryId(value: string): boolean {
-  return value === 'plan' || value === 'build' || value === 'verify' || value === 'refine' || value === 'fallback';
+  return value === 'pr' || value === 'plan' || value === 'build' || value === 'verify' || value === 'refine' || value === 'fallback';
 }
 
 function isCurrentCustomAutoRouterCategory(category: AutoRouterCategoryConfig): boolean {
@@ -525,6 +599,7 @@ function harnessFromModel(model: string): Harness {
   if (model.startsWith('cursor:')) return 'cursor';
   if (model.startsWith('gemini:')) return 'gemini';
   if (model.startsWith('opencode:')) return 'opencode';
+  if (model.startsWith('prime:')) return 'prime';
   if (model.startsWith('custom:')) return 'custom';
   return 'claude';
 }
@@ -767,11 +842,26 @@ function hasOpenCodeRunner(): boolean {
   return openCodeCliAvailableCache;
 }
 
+function hasPrimeAgentRunner(): boolean {
+  if (primeAgentCliAvailableCache !== undefined) return primeAgentCliAvailableCache;
+  const home = os.homedir();
+  const installed = binaryExistsInPath(['prime-agent'], [
+    `${home}/.local/bin/prime-agent`,
+    `${home}/bin/prime-agent`,
+    '/usr/local/bin/prime-agent',
+    '/opt/homebrew/bin/prime-agent',
+  ]);
+  const authenticated = fs.existsSync(path.join(home, '.prime', 'agent', 'auth.json'));
+  primeAgentCliAvailableCache = installed && authenticated;
+  return primeAgentCliAvailableCache;
+}
+
 function hasRemoteCliForModel(model: string, capabilities?: RemoteCliCapabilities): boolean {
   if (model.startsWith('codex:')) return capabilities?.codex === true;
   if (model.startsWith('cursor:')) return capabilities?.cursor === true;
   if (model.startsWith('gemini:')) return capabilities?.gemini === true;
   if (model.startsWith('opencode:')) return capabilities?.opencode === true;
+  if (model.startsWith('prime:')) return capabilities?.prime === true;
   if (model.startsWith('custom:')) return true;
   if (model.startsWith('claude:') || model.startsWith('claude-') || !model.includes(':')) {
     return capabilities?.claude === true;
@@ -852,6 +942,10 @@ function hasConfiguredCredentialForModel(model: string, options?: ModelAvailabil
 
   if (model.startsWith('opencode:')) {
     return !!(settings.deepseekApiKey || process.env.DEEPSEEK_API_KEY) && (options?.isSSH ? true : hasOpenCodeRunner());
+  }
+
+  if (model.startsWith('prime:')) {
+    return options?.isSSH ? true : hasPrimeAgentRunner();
   }
 
   if (model.startsWith('custom:')) {
@@ -1110,7 +1204,8 @@ function getConfig(): AutoRouterConfig {
     const categories = saved.categories as Array<{ id: string; model: string }> | undefined;
     if (categories) {
       for (const cat of categories) {
-        if (cat.id === 'plan') config.planModel = cat.model;
+        if (cat.id === 'pr') config.prModel = cat.model;
+        else if (cat.id === 'plan') config.planModel = cat.model;
         else if (cat.id === 'build') config.buildModel = cat.model;
         else if (cat.id === 'verify') config.verifyModel = cat.model;
         else if (cat.id === 'refine') config.refineModel = cat.model;
@@ -1118,41 +1213,48 @@ function getConfig(): AutoRouterConfig {
       }
     }
 
+    if (typeof saved.prModel === 'string') config.prModel = saved.prModel;
     if (typeof saved.planModel === 'string') config.planModel = saved.planModel;
     if (typeof saved.buildModel === 'string') config.buildModel = saved.buildModel;
     if (typeof saved.verifyModel === 'string') config.verifyModel = saved.verifyModel;
     if (typeof saved.refineModel === 'string') config.refineModel = saved.refineModel;
     if (typeof saved.fallbackModel === 'string') config.fallbackModel = saved.fallbackModel;
 
+    if (typeof saved.prEffort === 'string') config.prEffort = saved.prEffort;
     if (typeof saved.planEffort === 'string') config.planEffort = saved.planEffort;
     if (typeof saved.buildEffort === 'string') config.buildEffort = saved.buildEffort;
     if (typeof saved.verifyEffort === 'string') config.verifyEffort = saved.verifyEffort;
     if (typeof saved.refineEffort === 'string') config.refineEffort = saved.refineEffort;
     if (typeof saved.fallbackEffort === 'string') config.fallbackEffort = saved.fallbackEffort;
 
+    if (isMetaHarnessSpeed(saved.prSpeed)) config.prSpeed = saved.prSpeed;
     if (isMetaHarnessSpeed(saved.planSpeed)) config.planSpeed = saved.planSpeed;
     if (isMetaHarnessSpeed(saved.buildSpeed)) config.buildSpeed = saved.buildSpeed;
     if (isMetaHarnessSpeed(saved.verifySpeed)) config.verifySpeed = saved.verifySpeed;
     if (isMetaHarnessSpeed(saved.refineSpeed)) config.refineSpeed = saved.refineSpeed;
     if (isMetaHarnessSpeed(saved.fallbackSpeed)) config.fallbackSpeed = saved.fallbackSpeed;
 
+    if (isMetaWorkflowMode(saved.prWorkflow)) config.prWorkflow = saved.prWorkflow;
     if (isMetaWorkflowMode(saved.planWorkflow)) config.planWorkflow = saved.planWorkflow;
     if (isMetaWorkflowMode(saved.buildWorkflow)) config.buildWorkflow = saved.buildWorkflow;
     if (isMetaWorkflowMode(saved.verifyWorkflow)) config.verifyWorkflow = saved.verifyWorkflow;
     if (isMetaWorkflowMode(saved.refineWorkflow)) config.refineWorkflow = saved.refineWorkflow;
     if (isMetaWorkflowMode(saved.fallbackWorkflow)) config.fallbackWorkflow = saved.fallbackWorkflow;
 
+    const prBudgetUsd = numberOrUndefined(saved.prBudgetUsd);
     const planBudgetUsd = numberOrUndefined(saved.planBudgetUsd);
     const buildBudgetUsd = numberOrUndefined(saved.buildBudgetUsd);
     const verifyBudgetUsd = numberOrUndefined(saved.verifyBudgetUsd);
     const refineBudgetUsd = numberOrUndefined(saved.refineBudgetUsd);
     const fallbackBudgetUsd = numberOrUndefined(saved.fallbackBudgetUsd);
+    if (prBudgetUsd !== undefined) config.prBudgetUsd = prBudgetUsd;
     if (planBudgetUsd !== undefined) config.planBudgetUsd = planBudgetUsd;
     if (buildBudgetUsd !== undefined) config.buildBudgetUsd = buildBudgetUsd;
     if (verifyBudgetUsd !== undefined) config.verifyBudgetUsd = verifyBudgetUsd;
     if (refineBudgetUsd !== undefined) config.refineBudgetUsd = refineBudgetUsd;
     if (fallbackBudgetUsd !== undefined) config.fallbackBudgetUsd = fallbackBudgetUsd;
 
+    if (isMetaVerificationMode(saved.prVerification)) config.prVerification = saved.prVerification;
     if (isMetaVerificationMode(saved.planVerification)) config.planVerification = saved.planVerification;
     if (isMetaVerificationMode(saved.buildVerification)) config.buildVerification = saved.buildVerification;
     if (isMetaVerificationMode(saved.verifyVerification)) config.verifyVerification = saved.verifyVerification;
@@ -1329,6 +1431,7 @@ const HARNESS_REQUEST_PATTERNS: Record<Harness, RegExp> = {
   cursor: /\bcursor(?:\s+(?:agent|composer))?\b/i,
   gemini: /\bgemini\b/i,
   opencode: /\bopen\s*code\b|\bopencode\b/i,
+  prime: /\bprime(?:\s+agent)?\b/i,
   custom: /\bcustom\s+(?:model|harness|agent)\b/i,
 };
 
@@ -1341,6 +1444,7 @@ const HARNESS_NAME_PATTERN_SOURCES: Record<Harness, string> = {
   cursor: 'cursor(?:\\s+(?:agent|composer))?',
   gemini: 'gemini',
   opencode: '(?:open\\s*code|opencode)',
+  prime: 'prime(?:\\s+agent)?',
   custom: 'custom\\s+(?:model|harness|agent)',
 };
 
@@ -1704,7 +1808,7 @@ function canRunMutatingStages(permissionMode?: string): boolean {
 }
 
 function isExecutableDelegateHarness(harness: Harness): boolean {
-  return harness === 'codex' || harness === 'cursor' || harness === 'gemini' || harness === 'opencode';
+  return harness === 'codex' || harness === 'cursor' || harness === 'gemini' || harness === 'opencode' || harness === 'prime';
 }
 
 function pickDelegateStageModel(
@@ -1749,11 +1853,15 @@ function buildOrchestrationHandoff(
     leadTier === 'plan' && stages.some((stage) => stage.trigger === 'after-plan')
       ? '- Planning scope: stop at the plan. Do not edit files, run mutating commands, or continue into execution; follow-up execution can run after this response.'
       : '',
+    leadTier !== 'plan'
+      ? '- Execution ownership: when the request is actionable and tools and authority are available, execute it now. Do not replace execution with a plan, edit recipe, verification commands, delegated-agent handoff, or status-only report. Stop only for genuinely missing user input, authority, access, or destructive-action confirmation.'
+      : '',
     signals.needsBrowser ? '- Browser/UI work: use browser or screenshot tools for verification when available.' : '',
     signals.likelyNeedsProjectContext ? '- Project context matters: follow injected CLAUDE.md, AGENTS.md, agents, and skills as if native to this environment.' : '',
     signals.hasErrorLog ? '- Failure/debugging work: reproduce or inspect the failure before changing code, then verify the fix.' : '',
     signals.asksForMultiHarness ? '- The user asked to compare available execution options: handle that directly and summarize tradeoffs.' : '',
     '- Context switches are expensive. Carry the current scope as far as practical in the lead harness, and use later stages only at the listed phase boundaries.',
+    '- Delegation does not transfer ownership to the user. Treat delegate output as internal evidence, integrate it, finish the routed scope, and report the user-facing outcome.',
     '- For handoffs, prefer artifact references over copied history: transcript file references let the next harness search its own context, and plan-to-execution handoffs should point at the plan file path when available.',
     goalObjective
       ? `- Goal-driven turn: objective is "${goalObjective.slice(0, 600)}". Keep a concrete internal checklist, complete only the current routed scope, and report <goal>COMPLETE</goal> when the objective is fully achieved or <goal>BLOCKED</goal> when external input or unavailable services prevent meaningful progress.`
@@ -2263,6 +2371,7 @@ function restoreWorkflowFailuresFromMetadata(sessionId: string, message: ChatMes
       failure.harness === 'cursor' ||
       failure.harness === 'gemini' ||
       failure.harness === 'opencode' ||
+      failure.harness === 'prime' ||
       failure.harness === 'custom'
     ) {
       restoreHarnessFailure(
@@ -2508,13 +2617,22 @@ class AutoRouterService {
     const phase = mergeSessionPhase(storedPhase, inferredPhase);
     sessionPhases.set(sessionId, phase);
     const signals = extractTaskSignals(message, routeOptions.attachmentCount || 0, routeOptions.attachmentTypes || []);
-    const explicitWorkflowExecution = isExplicitMutatingWorkflowExecution(message)
+    const manualPlanMode = routeOptions.permissionMode === 'plan';
+    const nonPlanningGitIntent = manualPlanMode
+      ? undefined
+      : classifyNonPlanningGitIntent(message);
+    const prWorkflowContinuation = isPrWorkflowContinuation(message);
+    const explicitWorkflowExecution = (isExplicitMutatingWorkflowExecution(message) || prWorkflowContinuation)
       && canRunMutatingStages(routeOptions.permissionMode);
-    let planningGate = explicitWorkflowExecution
+    const explicitPrWorkflowExecution = explicitWorkflowExecution
+      && (isExplicitPrWorkflowExecution(message) || prWorkflowContinuation);
+    let planningGate = explicitWorkflowExecution || nonPlanningGitIntent
       ? {
         action: 'none' as const,
         confidence: 1,
-        reason: 'Explicit mutating workflow invocation must execute immediately',
+        reason: nonPlanningGitIntent
+          ? 'Git publication and status operations do not need a planning pass'
+          : 'Explicit mutating workflow invocation must execute immediately',
         changeKind: 'general' as const,
       }
       : classifyPlanningGateHeuristic(message, signals, routeOptions);
@@ -2534,12 +2652,16 @@ class AutoRouterService {
         confidence: 1,
         reason: 'User explicitly invoked a mutating execution workflow',
       }
+      : nonPlanningGitIntent
+        ? nonPlanningGitIntent
       : classifyHeuristic(message, routeOptions.gstackMode, routeOptions.permissionMode, phase);
 
     // Step 2: Apply workflow awareness
     let result = explicitWorkflowExecution
       ? requestedResult
-      : applyWorkflowAwareness(requestedResult, phase, signals, message);
+      : nonPlanningGitIntent
+        ? requestedResult
+        : applyWorkflowAwareness(requestedResult, phase, signals, message);
     result = enforcePermissionMode(result, routeOptions.permissionMode);
     const approvedPlanExecution = Boolean(
       routeOptions.approvedPlanContinuation
@@ -2567,7 +2689,9 @@ class AutoRouterService {
     let metaLead: ModelChoice | undefined;
     let metaOrchestration: OrchestrationPlan | undefined;
     const deterministicResult = result;
-    const useDeterministicFastPath = shouldUseDeterministicFastPath(message, result, phase, signals, routeOptions);
+    const useDeterministicFastPath = manualPlanMode
+      || Boolean(nonPlanningGitIntent)
+      || shouldUseDeterministicFastPath(message, result, phase, signals, routeOptions);
 
     // Step 3: Let the Cerebras-backed controller classify the route. Execution
     // is still delegated through existing harnesses.
@@ -2778,9 +2902,34 @@ class AutoRouterService {
         reason: `Approved plan handoff uses the configured Execution model ${config.buildModel}`,
       }
       : undefined;
-    const lead = prePlanLead || explicitHarnessLead || approvedExecutionLead || customCategoryLead || metaLead || continuationLead || chooseModelForTier(result.tier, config, signals, routeOptions);
+    const prCategoryForPolicy: ResolvedAutoRouterCategory | undefined = explicitPrWorkflowExecution
+      ? {
+        id: 'pr',
+        label: 'Pull requests',
+        description: 'Native /pr publication workflow',
+        tier: 'build',
+        keywords: ['/pr', '/git-pr', '/pr-tests', '/pr-loop'],
+        model: firstAvailable([config.prModel], config.buildModel, routeOptions),
+        effort: config.prEffort,
+        speed: config.prSpeed,
+        workflow: config.prWorkflow,
+        budgetUsd: config.prBudgetUsd,
+        verification: config.prVerification,
+      }
+      : undefined;
+    const prLead: ModelChoice | undefined = prCategoryForPolicy
+      ? {
+        model: prCategoryForPolicy.model,
+        harness: harnessFromModel(prCategoryForPolicy.model),
+        reason: `First-class PR category uses configured model ${prCategoryForPolicy.model}`,
+      }
+      : undefined;
+    const lead = prePlanLead || explicitHarnessLead || prLead || approvedExecutionLead || customCategoryLead || metaLead || continuationLead || chooseModelForTier(result.tier, config, signals, routeOptions);
     const resolvedModel = lead.model;
-    const routePolicy = resolveRoutePolicy(result.tier, config, prePlanLead ? undefined : customCategoryForPolicy);
+    const matchedCategoryForPolicy = prePlanLead
+      ? undefined
+      : prCategoryForPolicy || customCategoryForPolicy;
+    const routePolicy = resolveRoutePolicy(result.tier, config, matchedCategoryForPolicy);
     const orchestration: OrchestrationPlan = prePlanLead
       ? {
         mode: 'single',
@@ -2812,6 +2961,35 @@ class AutoRouterService {
           'Do not run implementation or helper build stages before explicit plan approval.',
         ].join(' '),
       }
+      : prLead
+        ? {
+          mode: 'single',
+          leadHarness: prLead.harness,
+          leadModel: prLead.model,
+          stages: [{
+            tier: 'build',
+            harness: prLead.harness,
+            model: prLead.model,
+            ...routePolicy,
+            purpose: 'Run the native PR workflow end to end',
+            required: true,
+            trigger: 'now',
+          }],
+          contextPolicy: {
+            includeTranscript: true,
+            includeTranscriptReferences: true,
+            includePlanFileReference: true,
+            avoidBulkContextOnHandoff: true,
+            maxHandoffConversationChars: 24000,
+            includeProjectInstructions: true,
+            includeSkills: true,
+            includeAgents: true,
+            includeMemories: true,
+          },
+          // Claude Code's native /pr definition is authoritative. Do not add
+          // an Auto-generated execution recipe on top of the command.
+          handoffPrompt: '',
+        }
       : metaOrchestration || buildOrchestrationPlan(result.tier, requestedResult.tier, lead, config, signals, phase, routeOptions);
     if (orchestration.stages[0]) {
       orchestration.stages[0] = {
@@ -2824,6 +3002,10 @@ class AutoRouterService {
     const cooldownSummary = formatActiveHarnessCooldowns(sessionId);
     const decision: RoutingDecision = {
       tier: result.tier,
+      ...(matchedCategoryForPolicy ? {
+        categoryId: matchedCategoryForPolicy.id,
+        categoryLabel: matchedCategoryForPolicy.label || matchedCategoryForPolicy.id,
+      } : {}),
       domain: signals.domain,
       resolvedModel,
       resolvedHarness: lead.harness,
@@ -2849,9 +3031,9 @@ class AutoRouterService {
         leadTier: result.tier,
         leadHarness: lead.harness,
         leadModel: lead.model,
-        ...(customCategoryForPolicy ? {
-          categoryId: customCategoryForPolicy.id,
-          categoryLabel: customCategoryForPolicy.label || customCategoryForPolicy.id,
+        ...(matchedCategoryForPolicy ? {
+          categoryId: matchedCategoryForPolicy.id,
+          categoryLabel: matchedCategoryForPolicy.label || matchedCategoryForPolicy.id,
         } : {}),
         ...routePolicy,
       },

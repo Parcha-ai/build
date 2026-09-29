@@ -127,7 +127,14 @@ if (hasElectronAPI) {
       inherit: true,
       rules: [],
       colors: {
-        'editor.background': '#1a1a2e',
+        'editor.background': '#0F0F0F',
+        'editor.lineHighlightBackground': '#171717',
+        'editorLineNumber.foreground': '#4D4D4D',
+        'editorLineNumber.activeForeground': '#A0A0A0',
+        'editor.selectionBackground': '#4C9AFF40',
+        'editorGutter.background': '#0F0F0F',
+        'diffEditor.insertedTextBackground': '#3FB95022',
+        'diffEditor.removedTextBackground': '#F8514922',
       },
     });
   }).catch((err) => {

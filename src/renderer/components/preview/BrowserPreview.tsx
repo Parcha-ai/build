@@ -14,10 +14,12 @@ import {
   FileSpreadsheet,
   Presentation,
   File,
+  MoreHorizontal,
 } from 'lucide-react';
 import { useUIStore } from '../../stores/ui.store';
 import { useSessionStore } from '../../stores/session.store';
 import type { Session } from '../../../shared/types';
+import ArcImportMenu from './ArcImportMenu';
 
 interface AutomationIndicator {
   type: 'click' | 'type' | 'navigate' | 'snapshot';
@@ -191,6 +193,29 @@ export default function BrowserPreview({
   const [isAutomationActive, setIsAutomationActive] = useState(false);
   const [automationIndicator, setAutomationIndicator] = useState<AutomationIndicator | null>(null);
   const [clickRipples, setClickRipples] = useState<Array<{ id: number; x: number; y: number }>>([]);
+  const [isToolbarMenuOpen, setToolbarMenuOpen] = useState(false);
+  const [showFullToolbarActions, setShowFullToolbarActions] = useState(false);
+  const toolbarRef = useRef<HTMLDivElement>(null);
+  const toolbarMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const toolbar = toolbarRef.current;
+    if (!toolbar) return undefined;
+    const update = () => setShowFullToolbarActions(toolbar.getBoundingClientRect().width >= 520);
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(toolbar);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (!isToolbarMenuOpen) return undefined;
+    const closeOnOutsideClick = (event: MouseEvent) => {
+      if (!toolbarMenuRef.current?.contains(event.target as Node)) setToolbarMenuOpen(false);
+    };
+    document.addEventListener('mousedown', closeOnOutsideClick);
+    return () => document.removeEventListener('mousedown', closeOnOutsideClick);
+  }, [isToolbarMenuOpen]);
 
   // Use per-session inspector state for multi-session support
   const {
@@ -851,6 +876,8 @@ Use the Edit tool to make the change. The page will reload automatically once yo
           const elementWithScreenshot = {
             ...data,
             screenshot: screenshotBase64,
+            pageUrl: url,
+            selectedAt: Date.now(),
           };
 
           // Generate structured markdown for the element context
@@ -946,13 +973,13 @@ ${data.textContent ? `**Text Content:** "${data.textContent.slice(0, 100)}${data
           // Create overlay with purple theme (for elements)
           const overlay = document.createElement('div');
           overlay.id = 'grep-inspector';
-          overlay.style.cssText = 'position:fixed !important;pointer-events:none !important;background:rgba(93,95,239,0.15) !important;border:2px solid #5D5FEF !important;z-index:2147483647 !important;transition:all 0.05s ease !important;display:block !important;visibility:visible !important;box-sizing:border-box !important;';
+          overlay.style.cssText = 'position:fixed !important;pointer-events:none !important;background:rgba(76,154,255,0.15) !important;border:2px solid #4C9AFF !important;z-index:2147483647 !important;transition:all 0.05s ease !important;display:block !important;visibility:visible !important;box-sizing:border-box !important;';
           document.body.appendChild(overlay);
 
           // Create info tooltip - positioned ABOVE element like React DevTools
           const tooltip = document.createElement('div');
           tooltip.id = 'grep-inspector-tooltip';
-          tooltip.style.cssText = 'position:fixed !important;background:#5D5FEF !important;color:#fff !important;padding:3px 8px !important;font-size:11px !important;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,monospace !important;border-radius:3px !important;z-index:2147483647 !important;pointer-events:none !important;white-space:nowrap !important;display:block !important;visibility:visible !important;box-shadow:0 2px 8px rgba(0,0,0,0.3) !important;';
+          tooltip.style.cssText = 'position:fixed !important;background:#4C9AFF !important;color:#0A0A0A !important;padding:3px 8px !important;font-size:11px !important;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,monospace !important;border-radius:3px !important;z-index:2147483647 !important;pointer-events:none !important;white-space:nowrap !important;display:block !important;visibility:visible !important;box-shadow:0 2px 8px rgba(0,0,0,0.3) !important;';
           document.body.appendChild(tooltip);
 
           document.body.style.cursor = 'crosshair';
@@ -1180,7 +1207,7 @@ ${data.textContent ? `**Text Content:** "${data.textContent.slice(0, 100)}${data
               // Get display name and position tooltip ABOVE the element
               const displayName = getDisplayName(el);
               tooltip.textContent = displayName;
-              tooltip.style.background = '#5D5FEF !important'; // Purple for elements
+              tooltip.style.background = '#4C9AFF !important'; // Accent for elements
               tooltip.style.display = 'block';
 
               // Position tooltip above element, or below if not enough space
@@ -1239,13 +1266,13 @@ ${data.textContent ? `**Text Content:** "${data.textContent.slice(0, 100)}${data
                 background: rgba(255, 255, 255, 0.98) !important;
                 color: #000 !important;
                 padding: 2px 6px !important;
-                border: 2px solid #5D5FEF !important;
+                border: 2px solid #4C9AFF !important;
                 border-radius: 4px !important;
                 font: inherit !important;
                 line-height: inherit !important;
                 z-index: 2147483647 !important;
                 outline: none !important;
-                box-shadow: 0 4px 12px rgba(93, 95, 239, 0.3) !important;
+                box-shadow: 0 4px 12px rgba(76, 154, 255, 0.3) !important;
                 white-space: pre-wrap !important;
                 word-wrap: break-word !important;
               \`;
@@ -1292,7 +1319,7 @@ ${data.textContent ? `**Text Content:** "${data.textContent.slice(0, 100)}${data
                   if (replacement && replacement !== originalText) {
                     // Add shimmer to original element
                     element.style.animation = 'grep-shimmer 1.5s infinite';
-                    element.style.backgroundImage = 'linear-gradient(90deg, transparent, rgba(93,95,239,0.3), transparent)';
+                    element.style.backgroundImage = 'linear-gradient(90deg, transparent, rgba(76,154,255,0.3), transparent)';
                     element.style.backgroundSize = '200% 100%';
 
                     const data = {
@@ -1522,67 +1549,72 @@ ${data.textContent ? `**Text Content:** "${data.textContent.slice(0, 100)}${data
     }
   };
 
-  if (session.status !== 'running') {
-    return (
-      <div
-        className="h-full flex items-center justify-center bg-claude-bg text-claude-text-secondary"
-        style={{ display: isVisible ? 'flex' : 'none' }}
-      >
-        <p>Start the session to preview</p>
-      </div>
-    );
-  }
+  const captureViewport = async () => {
+    const webview = webviewRef.current;
+    if (!webview) return;
+    try {
+      const image = await webview.capturePage();
+      const dataUrl = image.toDataURL();
+      const base64 = dataUrl.split(',')[1] || '';
+      window.electronAPI.browser.sendChatInsert({
+        sessionId: session.id,
+        screenshot: base64,
+        content: '',
+      });
+      logBrowserPreview('[BrowserPreview] Screenshot captured and attached to input');
+    } catch (error) {
+      console.error('[BrowserPreview] Screenshot capture failed:', error);
+    }
+  };
 
   return (
     <div
-      className="h-full flex flex-col bg-claude-bg"
+      className="h-full flex flex-col bg-ink-1"
       style={{ display: isVisible ? 'flex' : 'none' }}
     >
       {/* Toolbar */}
-      <div className="h-10 flex items-center gap-2 px-2 bg-claude-surface border-b border-claude-border">
+      <div
+        ref={toolbarRef}
+        data-testid="browser-toolbar"
+        className="h-11 flex flex-shrink-0 items-center gap-1 px-3 bg-ink-1 border-b border-line"
+      >
         {/* Navigation */}
         <button
           onClick={() => webviewRef.current?.goBack()}
           disabled={!canGoBack}
-          className="p-1.5 rounded hover:bg-claude-bg transition-colors disabled:opacity-30"
+          className="flex-shrink-0 w-7 h-7 flex items-center justify-center text-fg-4 hover:text-fg hover:bg-claude-surface-hover transition-colors disabled:opacity-30"
+          title="Back"
         >
           <ArrowLeft size={16} />
         </button>
         <button
           onClick={() => webviewRef.current?.goForward()}
           disabled={!canGoForward}
-          className="p-1.5 rounded hover:bg-claude-bg transition-colors disabled:opacity-30"
+          className="flex-shrink-0 w-7 h-7 flex items-center justify-center text-fg-4 hover:text-fg hover:bg-claude-surface-hover transition-colors disabled:opacity-30"
+          title="Forward"
         >
           <ArrowRight size={16} />
         </button>
         <button
           onClick={() => webviewRef.current?.reloadIgnoringCache()}
-          className="p-1.5 rounded hover:bg-claude-bg transition-colors"
+          className="flex-shrink-0 w-7 h-7 flex items-center justify-center text-fg-4 hover:text-fg hover:bg-claude-surface-hover transition-colors"
           title="Hard refresh (ignore cache)"
         >
           <RotateCw size={16} className={isLoading ? 'animate-spin' : ''} />
         </button>
-        <button
-          onClick={clearStorage}
-          className="p-1.5 rounded hover:bg-claude-bg transition-colors text-red-400 hover:text-red-300"
-          title="Clear all storage (cookies, localStorage, sessionStorage, IndexedDB)"
-        >
-          <Trash2 size={16} />
-        </button>
-
         {/* URL bar */}
-        <form onSubmit={handleUrlSubmit} className="flex-1">
+        <form onSubmit={handleUrlSubmit} className="min-w-0 flex-1">
           {(() => {
             const docInfo = getDocumentInfo(url);
             if (docInfo.isFile && docInfo.docType !== 'web') {
               // Show document-style URL bar
               return (
-                <div className="w-full px-3 py-1 bg-claude-bg border border-claude-border rounded text-sm flex items-center gap-2">
-                  <DocumentIcon docType={docInfo.docType} className="w-4 h-4 text-claude-text-secondary flex-shrink-0" />
-                  <span className="truncate text-claude-text" title={url}>
+                <div className="flex min-w-0 w-full h-7 items-center gap-2 bg-[#1E1E1E] px-2.5 text-[12px]">
+                  <DocumentIcon docType={docInfo.docType} className="w-3.5 h-3.5 text-fg-4 flex-shrink-0" />
+                  <span className="truncate text-fg-2" title={url}>
                     {docInfo.displayName}
                   </span>
-                  <span className="text-claude-text-secondary text-xs uppercase flex-shrink-0 px-2 py-0.5 bg-claude-surface rounded">
+                  <span className="font-mono text-fg-3 text-[9.5px] uppercase flex-shrink-0 px-1.5 py-0.5 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.16)]">
                     {docInfo.docType === 'docx' ? 'Word' : docInfo.docType === 'xlsx' ? 'Excel' : docInfo.docType === 'slides' ? 'Slides' : 'Document'}
                   </span>
                 </div>
@@ -1590,87 +1622,130 @@ ${data.textContent ? `**Text Content:** "${data.textContent.slice(0, 100)}${data
             }
             // Regular URL input
             return (
-              <input
-                type="text"
-                value={inputUrl}
-                onChange={(e) => setInputUrl(e.target.value)}
-                className="w-full px-3 py-1 bg-claude-bg border border-claude-border rounded text-sm focus:outline-none focus:border-claude-accent font-mono"
-              />
+              <div className="flex min-w-0 w-full h-7 items-center gap-2 bg-[#1E1E1E] px-2.5 focus-within:shadow-[inset_0_0_0_1px_rgba(76,154,255,0.45)]">
+                <span className="w-1.5 h-1.5 rounded-full bg-diff-add flex-shrink-0" />
+                <input
+                  type="text"
+                  value={inputUrl}
+                  onChange={(e) => setInputUrl(e.target.value)}
+                  className="min-w-0 flex-1 bg-transparent font-mono text-[11.5px] text-fg-3 focus:text-fg focus:outline-none"
+                />
+              </div>
             );
           })()}
         </form>
 
         {/* Actions */}
+        <ArcImportMenu
+          partitionId={partitionId || session.id}
+          onImported={() => webviewRef.current?.reloadIgnoringCache()}
+        />
         <button
           onClick={() => setInspectorActive(!isInspectorActive)}
-          className={`p-1.5 rounded transition-colors ${
+          className={`flex-shrink-0 w-7 h-7 flex items-center justify-center transition-colors ${
             isInspectorActive
-              ? 'text-white'
-              : 'hover:bg-claude-bg'
+              ? 'bg-[rgba(76,154,255,0.13)] text-accent-text'
+              : 'text-fg-4 hover:text-fg hover:bg-claude-surface-hover'
           }`}
-          style={isInspectorActive ? { backgroundColor: '#5D5FEF' } : undefined}
           title="Select element"
         >
           <Target size={16} />
         </button>
-        <button
-          onClick={async () => {
-            const webview = webviewRef.current;
-            if (!webview) return;
-            try {
-              const image = await webview.capturePage();
-              const dataUrl = image.toDataURL();
-              const base64 = dataUrl.split(',')[1] || '';
-              // Dispatch to InputArea as an image attachment
-              window.electronAPI.browser.sendChatInsert({
-                sessionId: session.id,
-                screenshot: base64,
-                content: '',
-              });
-              logBrowserPreview('[BrowserPreview] Screenshot captured and attached to input');
-            } catch (err) {
-              console.error('[BrowserPreview] Screenshot capture failed:', err);
-            }
-          }}
-          className="p-1.5 rounded hover:bg-claude-bg transition-colors"
-          title="Screenshot viewport and attach to input"
-        >
-          <Camera size={16} />
-        </button>
-        <button
-          onClick={() => webviewRef.current?.openDevTools()}
-          className="p-1.5 rounded hover:bg-claude-bg transition-colors"
-          title="Open DevTools"
-        >
-          <Code size={16} />
-        </button>
-        <button
-          onClick={() => window.electronAPI.app.openExternal(url)}
-          className="p-1.5 rounded hover:bg-claude-bg transition-colors"
-          title="Open in browser"
-        >
-          <ExternalLink size={16} />
-        </button>
-        <button
-          onClick={() => window.electronAPI.app.openBrowserWindow()}
-          className="p-1.5 rounded hover:bg-claude-bg transition-colors"
-          title="Pop out to separate window"
-        >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <rect x="2" y="7" width="15" height="14" rx="2" />
-            <rect x="7" y="3" width="15" height="14" rx="2" />
-          </svg>
-        </button>
+        {showFullToolbarActions && (
+          <>
+            <button type="button" onClick={() => void captureViewport()} className="flex-shrink-0 w-7 h-7 flex items-center justify-center text-fg-4 hover:text-fg hover:bg-claude-surface-hover transition-colors" title="Screenshot to chat" aria-label="Screenshot to chat">
+              <Camera size={16} />
+            </button>
+            <button type="button" onClick={() => void clearStorage()} className="flex-shrink-0 w-7 h-7 flex items-center justify-center text-diff-del-text hover:bg-claude-surface-hover transition-colors" title="Clear browser data" aria-label="Clear browser data">
+              <Trash2 size={16} />
+            </button>
+            <button type="button" onClick={() => webviewRef.current?.openDevTools()} className="flex-shrink-0 w-7 h-7 flex items-center justify-center text-fg-4 hover:text-fg hover:bg-claude-surface-hover transition-colors" title="Open DevTools" aria-label="Open DevTools">
+              <Code size={16} />
+            </button>
+            <button type="button" onClick={() => void window.electronAPI.app.openExternal(url)} className="flex-shrink-0 w-7 h-7 flex items-center justify-center text-fg-4 hover:text-fg hover:bg-claude-surface-hover transition-colors" title="Open in system browser" aria-label="Open in system browser">
+              <ExternalLink size={16} />
+            </button>
+            <button type="button" onClick={() => void window.electronAPI.app.openBrowserWindow()} className="flex-shrink-0 w-7 h-7 flex items-center justify-center text-fg-4 hover:text-fg hover:bg-claude-surface-hover transition-colors" title="Pop out browser" aria-label="Pop out browser">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="2" y="7" width="15" height="14" rx="2" />
+                <rect x="7" y="3" width="15" height="14" rx="2" />
+              </svg>
+            </button>
+          </>
+        )}
+        {!showFullToolbarActions && <div ref={toolbarMenuRef} className="relative flex-shrink-0">
+          <button
+            type="button"
+            onClick={() => setToolbarMenuOpen((current) => !current)}
+            className={`w-7 h-7 flex items-center justify-center transition-colors ${isToolbarMenuOpen ? 'bg-[rgba(76,154,255,0.13)] text-accent-text' : 'text-fg-4 hover:text-fg hover:bg-claude-surface-hover'}`}
+            title="More browser actions"
+            aria-label="More browser actions"
+            aria-expanded={isToolbarMenuOpen}
+          >
+            <MoreHorizontal size={16} />
+          </button>
+          {isToolbarMenuOpen && (
+            <div
+              data-testid="browser-toolbar-menu"
+              className="absolute right-0 top-full z-50 mt-2 w-56 overflow-hidden bg-ink-1 py-1 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1),0_12px_40px_rgba(0,0,0,0.45)]"
+            >
+              <button
+                type="button"
+                onClick={() => { setToolbarMenuOpen(false); void captureViewport(); }}
+                className="flex w-full h-8 items-center gap-2 px-3 text-left text-[13px] text-fg-2 hover:bg-claude-surface-hover hover:text-fg"
+              >
+                <Camera size={14} />
+                Screenshot to chat
+              </button>
+              <button
+                type="button"
+                onClick={() => { setToolbarMenuOpen(false); void clearStorage(); }}
+                className="flex w-full h-8 items-center gap-2 px-3 text-left text-[13px] text-diff-del-text hover:bg-claude-surface-hover"
+              >
+                <Trash2 size={14} />
+                Clear browser data
+              </button>
+              <div className="my-1 border-t border-line" />
+              <button
+                type="button"
+                onClick={() => { setToolbarMenuOpen(false); webviewRef.current?.openDevTools(); }}
+                className="flex w-full h-8 items-center gap-2 px-3 text-left text-[13px] text-fg-2 hover:bg-claude-surface-hover hover:text-fg"
+              >
+                <Code size={14} />
+                Open DevTools
+              </button>
+              <button
+                type="button"
+                onClick={() => { setToolbarMenuOpen(false); void window.electronAPI.app.openExternal(url); }}
+                className="flex w-full h-8 items-center gap-2 px-3 text-left text-[13px] text-fg-2 hover:bg-claude-surface-hover hover:text-fg"
+              >
+                <ExternalLink size={14} />
+                Open in system browser
+              </button>
+              <button
+                type="button"
+                onClick={() => { setToolbarMenuOpen(false); void window.electronAPI.app.openBrowserWindow(); }}
+                className="flex w-full h-8 items-center gap-2 px-3 text-left text-[13px] text-fg-2 hover:bg-claude-surface-hover hover:text-fg"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="2" y="7" width="15" height="14" rx="2" />
+                  <rect x="7" y="3" width="15" height="14" rx="2" />
+                </svg>
+                Pop out browser
+              </button>
+            </div>
+          )}
+        </div>}
       </div>
 
       {/* Inspector mode banner */}
       {isInspectorActive && (
-        <div className="h-8 flex items-center justify-center gap-2 text-white text-sm" style={{ backgroundColor: '#5D5FEF' }}>
+        <div className="h-8 flex items-center justify-center gap-2 text-accent-text text-[12.5px] bg-[rgba(76,154,255,0.13)] border-b border-[rgba(76,154,255,0.35)]">
           <Target size={14} />
           <span>Click to select · Hold Shift + drag to select region</span>
           <button
             onClick={cancelInspector}
-            className="ml-2 p-0.5 rounded hover:opacity-80"
+            className="ml-2 p-0.5 hover:bg-white/10"
           >
             <X size={14} />
           </button>
@@ -1682,10 +1757,10 @@ ${data.textContent ? `**Text Content:** "${data.textContent.slice(0, 100)}${data
         ref={containerRef}
         className={`flex-1 relative transition-all duration-300 ${
           isAutomationActive
-            ? 'ring-2 ring-opacity-75 shadow-[0_0_20px_rgba(93,95,239,0.4)]'
+            ? 'ring-2 ring-opacity-75 shadow-[0_0_20px_rgba(76,154,255,0.3)]'
             : ''
         }`}
-        style={isAutomationActive ? { '--tw-ring-color': '#5D5FEF' } as React.CSSProperties : undefined}
+        style={isAutomationActive ? { '--tw-ring-color': '#4C9AFF' } as React.CSSProperties : undefined}
       >
         {/* Live webview — always visible. Stagehand controls this same webview via CDP,
             so the user sees automation happening in real time. */}
@@ -1902,13 +1977,13 @@ ${data.textContent ? `**Text Content:** "${data.textContent.slice(0, 100)}${data
             {/* Selection rectangle */}
             {isDragging && regionStart && regionEnd && (
               <div
-                className="absolute border-2 border-teal-400 pointer-events-none"
+                className="absolute border-2 border-accent pointer-events-none"
                 style={{
                   left: Math.min(regionStart.x, regionEnd.x),
                   top: Math.min(regionStart.y, regionEnd.y),
                   width: Math.abs(regionEnd.x - regionStart.x),
                   height: Math.abs(regionEnd.y - regionStart.y),
-                  backgroundColor: 'rgba(13, 148, 136, 0.15)',
+                  backgroundColor: 'rgba(76, 154, 255, 0.12)',
                 }}
               />
             )}
@@ -1917,7 +1992,7 @@ ${data.textContent ? `**Text Content:** "${data.textContent.slice(0, 100)}${data
 
         {/* Automation indicator overlay */}
         {isAutomationActive && (
-          <div className="absolute top-2 right-2 z-50 flex items-center gap-2 text-white px-3 py-1.5 rounded-full text-xs font-medium shadow-lg animate-pulse" style={{ backgroundColor: 'rgba(93,95,239,0.9)' }}>
+          <div className="absolute top-2 right-2 z-50 flex items-center gap-2 text-white px-3 py-1.5 text-[12px] font-medium shadow-lg animate-pulse" style={{ backgroundColor: 'rgba(76,154,255,0.9)' }}>
             <Bot size={14} className="animate-bounce" />
             <span>
               {automationIndicator?.type === 'click' && `Clicking: ${automationIndicator.selector}`}
@@ -1942,13 +2017,13 @@ ${data.textContent ? `**Text Content:** "${data.textContent.slice(0, 100)}${data
             {/* Outer expanding ring */}
             <div
               className="w-10 h-10 rounded-full border-2 animate-ping"
-              style={{ borderColor: '#5D5FEF', animationDuration: '0.6s' }}
+              style={{ borderColor: '#4C9AFF', animationDuration: '0.6s' }}
             />
             {/* Inner solid dot */}
             <div
               className="absolute inset-0 flex items-center justify-center"
             >
-              <div className="w-3 h-3 rounded-full animate-pulse" style={{ backgroundColor: '#5D5FEF' }} />
+              <div className="w-3 h-3 rounded-full animate-pulse" style={{ backgroundColor: '#4C9AFF' }} />
             </div>
           </div>
         ))}
@@ -1956,12 +2031,12 @@ ${data.textContent ? `**Text Content:** "${data.textContent.slice(0, 100)}${data
         {/* Text editing loading overlay */}
         {sessionEditingText[session.id] && (
           <div className="absolute inset-0 bg-black/30 flex items-center justify-center z-40 pointer-events-none">
-            <div className="bg-claude-sidebar rounded-lg p-6 shadow-xl border border-claude-border">
+            <div className="bg-ink-1 p-6 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1),0_12px_40px_rgba(0,0,0,0.45)]">
               <div className="flex items-center gap-3">
                 <div className="text-2xl animate-spin">⟳</div>
-                <div className="text-claude-text">
+                <div className="text-fg">
                   <div className="font-medium">Editing file...</div>
-                  <div className="text-sm text-claude-text-secondary">
+                  <div className="text-[13px] text-fg-3">
                     Claude is updating the source code
                   </div>
                 </div>
@@ -1974,13 +2049,13 @@ ${data.textContent ? `**Text Content:** "${data.textContent.slice(0, 100)}${data
 
       {/* Automation mode footer indicator */}
       {isAutomationActive && (
-        <div className="h-6 flex items-center justify-center gap-2 text-white text-xs" style={{ backgroundColor: '#5D5FEF' }}>
+        <div className="h-6 flex items-center justify-center gap-2 text-accent-text text-[11.5px] bg-[rgba(76,154,255,0.13)] border-t border-[rgba(76,154,255,0.35)]">
           <Bot size={12} />
           <span>Browser automation in progress</span>
           <div className="flex gap-1 ml-2">
-            <div className="w-1.5 h-1.5 rounded-full bg-white animate-bounce" style={{ animationDelay: '0ms' }} />
-            <div className="w-1.5 h-1.5 rounded-full bg-white animate-bounce" style={{ animationDelay: '150ms' }} />
-            <div className="w-1.5 h-1.5 rounded-full bg-white animate-bounce" style={{ animationDelay: '300ms' }} />
+            <div className="w-1.5 h-1.5 rounded-full bg-accent animate-bounce" style={{ animationDelay: '0ms' }} />
+            <div className="w-1.5 h-1.5 rounded-full bg-accent animate-bounce" style={{ animationDelay: '150ms' }} />
+            <div className="w-1.5 h-1.5 rounded-full bg-accent animate-bounce" style={{ animationDelay: '300ms' }} />
           </div>
         </div>
       )}

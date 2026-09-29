@@ -1,14 +1,18 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { ListTodo, Plus, Focus, Square, CheckSquare } from 'lucide-react';
+import { CheckSquare, Clock3, Pause, Play, Plus, Square, StopCircle } from 'lucide-react';
 import { useTaskStore } from '../../stores/task.store';
+import { useSessionStore } from '../../stores/session.store';
+import { formatPomodoroTime } from '../../../shared/utils/pomodoro';
 import TaskItem from './TaskItem';
-import type { FocusTask } from '../../../shared/types';
+import PomodoroCompletionDialog from './PomodoroCompletionDialog';
+import PomodoroSetupDialog from './PomodoroSetupDialog';
 
 export default function TaskList() {
   const {
     tasks,
     focusModeEnabled,
     activeTaskId,
+    pomodoroState,
     isLoaded,
     loadTasks,
     addTask,
@@ -16,22 +20,45 @@ export default function TaskList() {
     deleteTask,
     reorderTasks,
     markTaskDone,
-    toggleFocusMode,
     addSubtask,
     toggleSubtask,
     deleteSubtask,
+    pausePomodoro,
+    resumePomodoro,
+    stopPomodoro,
+    syncPomodoroState,
   } = useTaskStore();
+  const setActiveSession = useSessionStore((state) => state.setActiveSession);
 
   const [isAdding, setIsAdding] = useState(false);
   const [newTaskTitle, setNewTaskTitle] = useState('');
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
+  const [setupTaskId, setSetupTaskId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!isLoaded) {
       loadTasks();
     }
   }, [isLoaded, loadTasks]);
+
+  useEffect(() => {
+    const stopStateListener = window.electronAPI.pomodoro.onStateChanged(syncPomodoroState);
+    const stopUIListener = window.electronAPI.pomodoro.onUIRequested((request) => {
+      if (request.sessionId) setActiveSession(request.sessionId);
+      if (request.action === 'start-first') {
+        const firstTask = [...useTaskStore.getState().tasks]
+          .sort((a, b) => a.order - b.order)
+          .find((task) => task.status !== 'done');
+        if (firstTask) setSetupTaskId(firstTask.id);
+        else setIsAdding(true);
+      }
+    });
+    return () => {
+      stopStateListener();
+      stopUIListener();
+    };
+  }, [setActiveSession, syncPomodoroState]);
 
   const sortedTasks = [...tasks].sort((a, b) => a.order - b.order);
 
@@ -111,60 +138,121 @@ export default function TaskList() {
   }, [draggedId, tasks, reorderTasks]);
 
   const pendingCount = tasks.filter(t => t.status !== 'done').length;
+  const totalCount = tasks.length;
+  const doneCount = totalCount - pendingCount;
+  const setupTask = setupTaskId ? tasks.find((task) => task.id === setupTaskId) : undefined;
+
+  const startFirstTask = useCallback(() => {
+    if (pomodoroState.status !== 'idle') {
+      if (pomodoroState.sessionId) setActiveSession(pomodoroState.sessionId);
+      return;
+    }
+    const firstTask = [...tasks]
+      .sort((a, b) => a.order - b.order)
+      .find((task) => task.status !== 'done');
+    if (firstTask) setSetupTaskId(firstTask.id);
+    else setIsAdding(true);
+  }, [pomodoroState, setActiveSession, tasks]);
+
+  const finishTaskAndMoveNext = useCallback(async (taskId: string) => {
+    await markTaskDone(taskId);
+    const nextTask = [...useTaskStore.getState().tasks]
+      .sort((a, b) => a.order - b.order)
+      .find((task) => task.status !== 'done');
+    if (nextTask) setSetupTaskId(nextTask.id);
+  }, [markTaskDone]);
 
   return (
-    <div className="mb-3">
-      {/* Header */}
-      <div className="px-3 py-1.5 flex items-center gap-2">
-        <ListTodo size={12} className="text-emerald-400" />
-        <span className="text-[10px] font-bold text-claude-text-secondary uppercase tracking-wider flex-1">
-          Tasks
-          {pendingCount > 0 && (
-            <span className="ml-1.5 text-[9px] text-emerald-400">
-              {pendingCount}
-            </span>
-          )}
+    <div className="group/today bg-ink-1 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.05)] pt-2.5 pb-2">
+      {/* Header — TODAY ........ done / total */}
+      <div className="px-2.5 mb-1.5 h-4 flex items-center gap-2">
+        <span className="text-[11px] text-fg-4 uppercase tracking-[0.04em] flex-1">
+          Today
         </span>
         <button
-          onClick={toggleFocusMode}
-          className={`p-0.5 transition-colors ${
-            focusModeEnabled
-              ? 'text-green-400 hover:text-green-300'
-              : 'text-claude-text-secondary hover:text-claude-text'
+          onClick={startFirstTask}
+          className={`transition-colors ${
+            pomodoroState.status !== 'idle'
+              ? 'text-accent hover:text-accent-text'
+              : 'text-fg-5 hover:text-fg-2 opacity-0 group-hover/today:opacity-100'
           }`}
-          title={focusModeEnabled ? 'Disable Focus Mode' : 'Enable Focus Mode'}
+          title={pomodoroState.status === 'idle' ? 'Start first task Pomodoro' : 'Open active focus session'}
         >
-          <Focus size={12} />
+          <Clock3 size={11} />
         </button>
         <button
           onClick={() => setIsAdding(true)}
-          className="p-0.5 text-claude-text-secondary hover:text-claude-text transition-colors"
+          className="text-fg-5 hover:text-fg-2 transition-colors opacity-0 group-hover/today:opacity-100"
           title="Add Task"
         >
           <Plus size={12} />
         </button>
+        {totalCount > 0 && (
+          <span className="font-mono text-[11px] text-fg-4 tabular-nums" title={`${pendingCount} remaining`}>
+            {doneCount} / {totalCount}
+          </span>
+        )}
       </div>
 
-      {/* Task list */}
-      <div>
+      {/* Active timer — the same clock is also kept alive in the system menu bar. */}
+      {pomodoroState.status !== 'idle' && (
+        <div className="mx-2 mb-1.5 shadow-[inset_0_0_0_1px_rgba(76,154,255,0.35)] bg-[rgba(76,154,255,0.08)] px-2.5 py-2">
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => pomodoroState.status === 'paused' ? void resumePomodoro() : void pausePomodoro()}
+              disabled={pomodoroState.status === 'completed'}
+              className="text-accent hover:text-accent-text disabled:opacity-30"
+              title={pomodoroState.status === 'paused' ? 'Resume' : 'Pause'}
+            >
+              {pomodoroState.status === 'paused' ? <Play size={12} /> : <Pause size={12} />}
+            </button>
+            <button
+              type="button"
+              onClick={() => pomodoroState.sessionId && setActiveSession(pomodoroState.sessionId)}
+              className="min-w-0 flex-1 text-left"
+              title={pomodoroState.sessionId ? 'Open focus session' : 'Outside Build focus'}
+            >
+              <span className="block truncate text-[12px] font-medium text-fg">{pomodoroState.taskTitle}</span>
+              <span className="block truncate text-[11px] text-fg-3">{pomodoroState.subtaskTitle}</span>
+            </button>
+            <span className="font-mono text-[12px] font-medium tabular-nums text-accent-text">
+              {formatPomodoroTime(pomodoroState.remainingSeconds)}
+            </span>
+            <button
+              type="button"
+              onClick={() => void stopPomodoro()}
+              className="text-fg-4 hover:text-diff-del"
+              title="Stop Pomodoro"
+            >
+              <StopCircle size={11} />
+            </button>
+          </div>
+          {pomodoroState.external && (
+            <div className="mt-1 text-[10px] uppercase tracking-[0.04em] text-amber/80">Outside Build · menu bar active</div>
+          )}
+        </div>
+      )}
+
+      {/* Task list — ~6 rows visible (22px each), then scroll */}
+      <div className="max-h-[132px] overflow-y-auto [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:bg-transparent hover:[&::-webkit-scrollbar-thumb]:bg-[#2B2B2B]">
         {sortedTasks.map((task) => {
           const isCurrent = task.id === activeTaskId;
-          const isDimmed = focusModeEnabled && !isCurrent && task.status !== 'done';
 
           // In focus mode: active task is prominent, others are collapsed
           if (focusModeEnabled && !isCurrent) {
             return (
               <div
                 key={task.id}
-                className="px-2 py-0.5 flex items-center gap-1.5 opacity-30"
+                className="h-[22px] px-2.5 flex items-center gap-2 opacity-30"
               >
                 {task.status === 'done' ? (
-                  <CheckSquare size={9} className="text-green-500/50 flex-shrink-0" />
+                  <CheckSquare size={11} className="text-fg-4 flex-shrink-0" />
                 ) : (
-                  <Square size={9} className="text-claude-text-secondary/50 flex-shrink-0" />
+                  <Square size={11} className="text-fg-5 flex-shrink-0" />
                 )}
-                <span className={`text-[9px] font-mono truncate ${
-                  task.status === 'done' ? 'line-through text-claude-text-secondary/30' : 'text-claude-text-secondary/50'
+                <span className={`text-[11.5px] truncate ${
+                  task.status === 'done' ? 'line-through text-fg-5' : 'text-fg-4'
                 }`}>
                   {task.title}
                 </span>
@@ -173,7 +261,7 @@ export default function TaskList() {
           }
 
           return (
-            <div key={task.id} className={focusModeEnabled && isCurrent ? 'bg-green-500/5 border-l-2 border-green-500 py-1' : ''}>
+            <div key={task.id}>
               <TaskItem
                 task={task}
                 isActive={isCurrent}
@@ -182,6 +270,7 @@ export default function TaskList() {
                 onUpdate={updateTask}
                 onDelete={deleteTask}
                 onToggleDone={handleToggleDone}
+                onStartPomodoro={setSetupTaskId}
                 onAddSubtask={addSubtask}
                 onToggleSubtask={toggleSubtask}
                 onDeleteSubtask={deleteSubtask}
@@ -199,7 +288,7 @@ export default function TaskList() {
 
       {/* Inline add input */}
       {isAdding && (
-        <div className="px-2 py-1">
+        <div className="px-2.5 py-1">
           <input
             type="text"
             value={newTaskTitle}
@@ -211,11 +300,19 @@ export default function TaskList() {
               }
             }}
             placeholder="New task..."
-            className="w-full bg-transparent text-[11px] font-mono text-claude-text placeholder:text-claude-text-secondary focus:outline-none border-b border-claude-border focus:border-emerald-500"
+            className="w-full bg-transparent text-[12.5px] text-fg placeholder:text-fg-5 focus:outline-none border-b border-line focus:border-accent"
             autoFocus
           />
         </div>
       )}
+
+      {setupTask && (
+        <PomodoroSetupDialog task={setupTask} onClose={() => setSetupTaskId(null)} />
+      )}
+      <PomodoroCompletionDialog
+        onPlanNextSlot={setSetupTaskId}
+        onFinishTask={(taskId) => void finishTaskAndMoveNext(taskId)}
+      />
     </div>
   );
 }

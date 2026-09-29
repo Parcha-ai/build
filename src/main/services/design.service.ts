@@ -31,6 +31,19 @@ export interface DesignWorkspace {
   remote?: { sessionId: string; config: SSHConfig; remoteDir: string };
 }
 
+export interface DesignActivationTarget {
+  sessionId: string;
+  sessionCwd: string;
+  sessionName?: string;
+  ssh?: { config: SSHConfig; remoteWorkdir: string };
+}
+
+export interface DesignActivationResult {
+  workspace: DesignWorkspace;
+  conversationId: string;
+  conversationUrl: string;
+}
+
 interface DesignDaemonState {
   url: string;
   port: number;
@@ -256,6 +269,31 @@ export class DesignService {
     return { conversationId, conversationUrl };
   }
 
+  /**
+   * App-level DesignMode entrypoint shared by voice and harness adapters.
+   * The caller is responsible only for presenting the returned panel URL.
+   */
+  async activateDesignMode(
+    target: DesignActivationTarget,
+    brief: string,
+  ): Promise<DesignActivationResult> {
+    const normalizedBrief = brief.trim();
+    if (!normalizedBrief) throw new Error('DesignMode requires a design brief');
+
+    const workspace = await this.ensureDesignWorkspace(
+      target.sessionId,
+      target.sessionCwd,
+      target.sessionName,
+      target.ssh,
+    );
+    const run = await this.startDesignRun(target.sessionId, normalizedBrief);
+    return {
+      workspace,
+      conversationId: run.conversationId,
+      conversationUrl: run.conversationUrl,
+    };
+  }
+
   // Completed design runs per Build session — the daemon does NOT persist
   // run messages itself (in OD's own topology the web client does that), so
   // Build captures the transcript from the SSE stream it already holds.
@@ -388,7 +426,7 @@ export class DesignService {
         : workspace.workspaceDir;
       return [
         '## Design Session Context',
-        `The user ran a design session (Open Design) for this Build session. Design files live in ${filesLocation} — read them directly when working with the designs. Files: ${files.join(', ') || '(none yet)'}`,
+        `The user ran DesignMode for this Build session. Design files live in ${filesLocation} — read them directly when working with the designs. Files: ${files.join(', ') || '(none yet)'}`,
         '',
         body,
       ].join('\n');

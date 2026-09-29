@@ -8,14 +8,14 @@ import { getSessionDisplayName } from '../../utils/session-display';
 // Generate a consistent color from session ID
 function getSessionColor(sessionId: string): string {
   const colors = [
-    '#5D5FEF', // Purple (Claudette accent)
-    '#3B82F6', // Blue
-    '#10B981', // Green
-    '#F59E0B', // Amber
-    '#EF4444', // Red
-    '#8B5CF6', // Violet
-    '#EC4899', // Pink
-    '#06B6D4', // Cyan
+    '#4C9AFF', // Accent blue
+    '#3FB950', // Green
+    '#F0B429', // Amber
+    '#F85149', // Red
+    '#8DBBFF', // Accent text
+    '#7EE2A0', // Soft green
+    '#A0A0A0', // Graphite
+    '#FFA198', // Soft red
   ];
   let hash = 0;
   for (let i = 0; i < sessionId.length; i++) {
@@ -28,10 +28,10 @@ function getSessionColor(sessionId: string): string {
 // Get status color
 function getStatusColor(status: string): string {
   switch (status) {
-    case 'running': return '#10B981';
-    case 'stopped': return '#6B7280';
-    case 'error': return '#EF4444';
-    default: return '#F59E0B';
+    case 'running': return '#4C9AFF';
+    case 'stopped': return '#666666';
+    case 'error': return '#F85149';
+    default: return '#F0B429';
   }
 }
 
@@ -52,11 +52,11 @@ export default function SessionSwitcher() {
       ref={(el) => el?.focus()}
     >
       <div
-        className="bg-claude-surface border border-claude-border p-6 max-w-[90vw]"
+        className="bg-ink-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1),0_12px_40px_rgba(0,0,0,0.45)] p-6 max-w-[90vw]"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Title */}
-        <div className="text-sm font-mono text-claude-text-secondary mb-4 text-center">
+        <div className="text-[11px] uppercase tracking-[0.04em] text-fg-4 mb-4 text-center">
           Switch Session
         </div>
 
@@ -76,7 +76,7 @@ export default function SessionSwitcher() {
                 key={sessionId}
                 className={`flex-shrink-0 w-48 transition-all duration-150 cursor-pointer ${
                   isSelected
-                    ? 'ring-2 ring-claude-accent scale-105'
+                    ? 'shadow-[0_0_0_1.5px_#4C9AFF]'
                     : 'opacity-60 hover:opacity-80'
                 }`}
                 onClick={() => {
@@ -88,37 +88,36 @@ export default function SessionSwitcher() {
               >
                 {/* Color block representing the session */}
                 <div
-                  className="h-28 flex items-center justify-center border border-claude-border"
-                  style={{ backgroundColor: `${sessionColor}20` }}
+                  className="h-28 flex items-center justify-center bg-ink-1 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)]"
                 >
                   <div
-                    className="w-16 h-16 flex items-center justify-center text-2xl font-bold text-white"
-                    style={{ backgroundColor: sessionColor }}
+                    className="w-14 h-14 flex items-center justify-center text-2xl font-semibold tracking-[-0.02em]"
+                    style={{ backgroundColor: `${sessionColor}24`, color: sessionColor, boxShadow: `inset 0 0 0 1px ${sessionColor}55` }}
                   >
                     {displayName.charAt(0).toUpperCase()}
                   </div>
                 </div>
 
                 {/* Session info */}
-                <div className="p-2 bg-claude-bg border-x border-b border-claude-border">
+                <div className="px-2.5 py-2 bg-ink-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)]">
                   <div className="flex items-center gap-2">
                     <Circle
                       size={8}
                       fill={getStatusColor(session.status)}
                       color={getStatusColor(session.status)}
                     />
-                    <span className="text-sm font-mono text-claude-text truncate flex-1">
+                    <span className="text-[13px] font-medium text-fg truncate flex-1">
                       {displayName.split(' - ')[0]}
                     </span>
                     {isCurrent && (
-                      <span className="text-[10px] px-1 bg-claude-accent text-white">
-                        ACTIVE
+                      <span className="font-mono text-[9.5px] px-[5px] py-px uppercase text-fg-3 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.16)]">
+                        Active
                       </span>
                     )}
                   </div>
-                  <div className="flex items-center gap-1 text-xs text-claude-text-secondary mt-1">
-                    <GitBranch size={10} />
-                    <span className="truncate">{session.branch}</span>
+                  <div className="flex items-center gap-1.5 text-[11.5px] text-fg-3 mt-1">
+                    <GitBranch size={10} className="text-fg-4" />
+                    <span className="font-mono text-[11px] truncate">{session.branch}</span>
                   </div>
                 </div>
               </div>
@@ -133,12 +132,11 @@ export default function SessionSwitcher() {
               useUIStore.getState().toggleCommandCenter();
               closeSwitcher();
             }}
-            className={`flex items-center gap-2 px-3 py-1.5 text-[10px] font-bold uppercase border transition-colors ${
+            className={`flex items-center gap-2 h-[30px] px-3 text-[12px] transition-colors ${
               useUIStore.getState().isCommandCenterActive
-                ? 'border-claude-accent text-claude-accent bg-claude-accent/10'
-                : 'border-claude-border text-claude-text-secondary hover:text-claude-text hover:border-claude-text-secondary'
+                ? 'bg-[rgba(76,154,255,0.13)] shadow-[inset_0_0_0_1px_rgba(76,154,255,0.35)] text-accent-text'
+                : 'shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] text-fg-2 hover:text-fg hover:bg-claude-surface-hover'
             }`}
-            style={{ letterSpacing: '0.1em', borderRadius: 0 }}
           >
             <LayoutGrid size={12} />
             Command Center
@@ -146,18 +144,18 @@ export default function SessionSwitcher() {
         </div>
 
         {/* Keyboard hints */}
-        <div className="mt-4 text-center text-[10px] text-claude-text-secondary font-mono">
-          <kbd className="px-1.5 py-0.5 bg-claude-bg border border-claude-border">Tab</kbd>
+        <div className="mt-4 text-center text-[10.5px] text-fg-5 font-mono">
+          <kbd className="px-1.5 py-0.5 bg-ink-4 text-fg-3">Tab</kbd>
           <span className="mx-1">next</span>
-          <span className="mx-2 text-claude-border">|</span>
-          <kbd className="px-1.5 py-0.5 bg-claude-bg border border-claude-border">Shift+Tab</kbd>
+          <span className="mx-2 text-fg-5/50">|</span>
+          <kbd className="px-1.5 py-0.5 bg-ink-4 text-fg-3">Shift+Tab</kbd>
           <span className="mx-1">prev</span>
-          <span className="mx-2 text-claude-border">|</span>
+          <span className="mx-2 text-fg-5/50">|</span>
           <span className="mx-1">Release</span>
-          <kbd className="px-1.5 py-0.5 bg-claude-bg border border-claude-border">Ctrl</kbd>
+          <kbd className="px-1.5 py-0.5 bg-ink-4 text-fg-3">Ctrl</kbd>
           <span className="mx-1">to switch</span>
-          <span className="mx-2 text-claude-border">|</span>
-          <kbd className="px-1.5 py-0.5 bg-claude-bg border border-claude-border">Esc</kbd>
+          <span className="mx-2 text-fg-5/50">|</span>
+          <kbd className="px-1.5 py-0.5 bg-ink-4 text-fg-3">Esc</kbd>
           <span className="mx-1">cancel</span>
         </div>
       </div>

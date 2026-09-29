@@ -42,7 +42,7 @@ for PROD_DIR in "$HOME/Library/Application Support/Build" "$HOME/Library/Applica
   if [ -d "$PROD_DIR" ]; then
     [ ! -f "$GREP_DEV_USER_DATA/claudette-settings.json" ] && [ -f "$PROD_DIR/claudette-settings.json" ] && cp "$PROD_DIR/claudette-settings.json" "$GREP_DEV_USER_DATA/claudette-settings.json"
     [ ! -f "$GREP_DEV_USER_DATA/claudette-mcp-servers.json" ] && [ -f "$PROD_DIR/claudette-mcp-servers.json" ] && cp "$PROD_DIR/claudette-mcp-servers.json" "$GREP_DEV_USER_DATA/claudette-mcp-servers.json"
-    [ -f "$PROD_DIR/claudette-sessions.json" ] && cp "$PROD_DIR/claudette-sessions.json" "$GREP_DEV_USER_DATA/claudette-sessions.json" 2>/dev/null
+    [ ! -f "$GREP_DEV_USER_DATA/claudette-sessions.json" ] && [ -f "$PROD_DIR/claudette-sessions.json" ] && cp "$PROD_DIR/claudette-sessions.json" "$GREP_DEV_USER_DATA/claudette-sessions.json" 2>/dev/null
     echo "Synced from $PROD_DIR (settings: $([ -f $GREP_DEV_USER_DATA/claudette-settings.json ] && echo 'kept' || echo 'copied'))"
     break
   fi

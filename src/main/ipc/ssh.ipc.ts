@@ -11,6 +11,7 @@ import crypto from 'crypto';
 import { IPC_CHANNELS } from '../../shared/constants/channels';
 import { sshService } from '../services/ssh.service';
 import type { SSHConfig, Session, SavedSSHConfig, DownloadSessionConfig, SSHResumeCandidate } from '../../shared/types';
+import { normalizeRemoteWorkdir } from '../../shared/utils/remote-workdir';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const sessionStore: any = new CachedStore({ name: getSessionStoreName() });
@@ -107,6 +108,53 @@ async function getMainRepoPath(repoPath: string): Promise<string> {
 }
 
 export function registerSSHHandlers(ipcMain: IpcMain): void {
+  ipcMain.handle(
+    IPC_CHANNELS.DOCKER_REMOTE_OVERVIEW,
+    async (_event, config: SSHConfig) => {
+      const connectionId = `docker-health-${config.username}@${config.host}:${config.port || 22}`;
+      const command = [
+        'set -e',
+        'command -v docker >/dev/null 2>&1 || { echo "Docker is not installed or is not on PATH" >&2; exit 127; }',
+        'printf "__DOCKER_VERSION__\\n"',
+        'docker version --format "{{.Server.Version}}"',
+        'printf "__DOCKER_INFO__\\n"',
+        'docker info --format "{{json .}}"',
+        'printf "__DOCKER_PS__\\n"',
+        'docker ps -a --no-trunc --format "{{json .}}"',
+        'printf "__DOCKER_STATS__\\n"',
+        'docker stats --no-stream --format "{{json .}}" 2>/dev/null || true',
+      ].join('; ');
+
+      try {
+        const output = await sshService.runRemoteCommand(connectionId, config, command);
+        const section = (name: string, next?: string) => {
+          const start = output.indexOf(`__${name}__\n`);
+          if (start < 0) return '';
+          const contentStart = start + name.length + 5;
+          const end = next ? output.indexOf(`__${next}__\n`, contentStart) : output.length;
+          return output.slice(contentStart, end < 0 ? output.length : end).trim();
+        };
+        const parseLines = (value: string) => value.split('\n').filter(Boolean).map((line) => {
+          try { return JSON.parse(line); } catch { return null; }
+        }).filter(Boolean);
+        const infoRaw = section('DOCKER_INFO', 'DOCKER_PS');
+        return {
+          connected: true,
+          checkedAt: new Date().toISOString(),
+          version: section('DOCKER_VERSION', 'DOCKER_INFO'),
+          info: infoRaw ? JSON.parse(infoRaw) : {},
+          containers: parseLines(section('DOCKER_PS', 'DOCKER_STATS')),
+          stats: parseLines(section('DOCKER_STATS')),
+        };
+      } catch (error) {
+        return {
+          connected: false,
+          checkedAt: new Date().toISOString(),
+          error: error instanceof Error ? error.message : 'Could not inspect Docker on the remote host.',
+        };
+      }
+    }
+  );
   /**
    * Test an SSH connection and verify Claude Code is installed
    */
@@ -129,6 +177,13 @@ export function registerSSHHandlers(ipcMain: IpcMain): void {
     }
   );
 
+  ipcMain.handle(
+    IPC_CHANNELS.SSH_INSTALL_CLI,
+    async (_event, config: SSHConfig, harness: 'claude' | 'codex' | 'cursor' | 'gemini' | 'opencode' | 'prime') => {
+      return sshService.installRemoteCli(config, harness);
+    },
+  );
+
   /**
    * Create a new SSH session
    */
@@ -147,18 +202,23 @@ export function registerSSHHandlers(ipcMain: IpcMain): void {
 
       try {
         const sessionId = uuid();
+        const normalizedRemoteWorkdir = normalizeRemoteWorkdir(data.sshConfig.remoteWorkdir) || '~';
+        const sshConfig = {
+          ...data.sshConfig,
+          remoteWorkdir: normalizedRemoteWorkdir,
+        };
 
         // Create session object
         // Use host:parent/folder format for name if no custom name provided
-        const folderPath = getPathTail(data.sshConfig.remoteWorkdir, 2);
-        const defaultName = `${data.sshConfig.host}:${folderPath}`;
+        const folderPath = getPathTail(normalizedRemoteWorkdir, 2);
+        const defaultName = `${sshConfig.host}:${folderPath}`;
         const session: Session = {
           id: sessionId,
           name: data.name || defaultName,
-          repoPath: data.sshConfig.remoteWorkdir, // Remote path
-          worktreePath: data.sshConfig.remoteWorkdir,
+          repoPath: normalizedRemoteWorkdir, // Remote path
+          worktreePath: normalizedRemoteWorkdir,
           branch: 'main', // We could detect this via SSH if needed
-          sshConfig: data.sshConfig,
+          sshConfig,
           status: 'creating',
           ports: { web: 0, api: 0, debug: 0 },
           createdAt: new Date(),
@@ -210,14 +270,14 @@ export function registerSSHHandlers(ipcMain: IpcMain): void {
         // via SSH_SETUP_PROGRESS and SESSION_STATUS_CHANGED events.
         (async () => {
           try {
-            await sshService.connect(sessionId, data.sshConfig);
+          await sshService.connect(sessionId, sshConfig);
             sendSetupProgress(sessionId, 'running', 'Connected to remote host');
 
-            if (data.sshConfig.worktreeScript || data.sshConfig.syncSettings !== false) {
+            if (sshConfig.worktreeScript || sshConfig.syncSettings !== false) {
               console.log('[SSH IPC] Running pre-session setup...');
               const setupResult = await sshService.runPreSessionSetup(
                 sessionId,
-                data.sshConfig,
+                sshConfig,
                 (message) => {
                   console.log('[SSH IPC] Setup progress:', message);
                   sendSetupProgress(sessionId, 'running', undefined, message);
@@ -232,13 +292,14 @@ export function registerSSHHandlers(ipcMain: IpcMain): void {
               } else {
                 if (setupResult.workingDirectory) {
                   console.log('[SSH IPC] Updating session worktreePath to:', setupResult.workingDirectory);
-                  session.worktreePath = setupResult.workingDirectory;
-                  session.repoPath = setupResult.workingDirectory;
+                  const workingDirectory = normalizeRemoteWorkdir(setupResult.workingDirectory);
+                  session.worktreePath = workingDirectory;
+                  session.repoPath = workingDirectory;
                   if (session.sshConfig) {
-                    session.sshConfig.remoteWorkdir = setupResult.workingDirectory;
+                    session.sshConfig.remoteWorkdir = workingDirectory;
                   }
-                  const folderPath2 = getPathTail(setupResult.workingDirectory, 2);
-                  session.name = `${data.sshConfig.host}:${folderPath2}`;
+                  const folderPath2 = getPathTail(workingDirectory, 2);
+                  session.name = `${sshConfig.host}:${folderPath2}`;
                 }
                 if (setupResult.setupOutput) {
                   session.setupOutput = setupResult.setupOutput;
@@ -247,6 +308,12 @@ export function registerSSHHandlers(ipcMain: IpcMain): void {
                 sendSetupProgress(sessionId, 'completed', 'Setup completed successfully');
               }
             } else {
+              // Even when the user opts out of the broader Claude settings
+              // copy, initialize MCP once as part of session setup. This is
+              // deliberately outside model-turn startup.
+              void sshService.syncMcpConfigsToRemote(sessionId, sshConfig).catch((error) => {
+                console.warn('[SSH IPC] Background MCP session setup failed:', error);
+              });
               session.status = 'running';
               sendSetupProgress(sessionId, 'completed', 'Connected');
             }

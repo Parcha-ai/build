@@ -9,7 +9,7 @@ interface AudioWaveformProps {
 
 export const AudioWaveform: React.FC<AudioWaveformProps> = ({
   isActive,
-  color = 'rgb(239, 68, 68)', // red-500
+  color = 'rgb(248, 81, 73)', // graphite diff-del
   barCount = 5,
   height = 16,
 }) => {

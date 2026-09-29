@@ -114,64 +114,127 @@ export default function CommandCenterCell({ session, forks, isFocused }: Command
   }, [session.id, removeFromCommandCenter]);
   const headerLabel = getSessionDisplayName(displaySession);
 
-  const getStatusColor = (status: string) => {
+  const needsYou = !!(currentPermission || currentQuestion);
+
+  // Status dot per Graphite spec: running = accent pulse, needs you = amber
+  // with halo, error = red disc, transitional = muted pulse, idle = hollow ring.
+  const renderStatusDot = (status: string) => {
+    if (needsYou) {
+      return (
+        <span
+          className="w-[7px] h-[7px] rounded-full bg-amber flex-shrink-0"
+          style={{ boxShadow: '0 0 0 3px rgba(240,180,41,0.2)' }}
+        />
+      );
+    }
+    if (isSessionStreaming) {
+      return <span className="w-[7px] h-[7px] rounded-full bg-accent flex-shrink-0 status-pulse" />;
+    }
     switch (status) {
-      case 'running': return 'bg-green-500';
-      case 'error': return 'bg-red-500';
-      case 'starting': case 'stopping': case 'creating': return 'bg-yellow-500 animate-pulse';
-      default: return 'bg-gray-500';
+      case 'error':
+        return (
+          <span
+            className="w-[14px] h-[14px] -mx-[3px] rounded-full flex items-center justify-center flex-shrink-0 text-diff-del"
+            style={{ background: 'rgba(248,81,73,0.16)' }}
+          >
+            <X size={9} strokeWidth={3} />
+          </span>
+        );
+      case 'starting': case 'stopping': case 'creating':
+        return <span className="w-[7px] h-[7px] rounded-full bg-fg-4 flex-shrink-0 status-pulse" />;
+      case 'running':
+        return <span className="w-[7px] h-[7px] rounded-full flex-shrink-0" style={{ boxShadow: 'inset 0 0 0 1.5px #666666' }} />;
+      default:
+        return <span className="w-[7px] h-[7px] rounded-full flex-shrink-0" style={{ boxShadow: 'inset 0 0 0 1.5px rgba(255,255,255,0.18)' }} />;
     }
   };
 
+  // Mono harness/model tag (display-only derivation of session.model)
+  const modelTag = displaySession.model
+    ? displaySession.model.replace(/^claude-/, '').replace(/-\d{8}$/, '').replace(/-/g, ' ').toUpperCase()
+    : null;
+
+  const repoName = (displaySession.repoPath || '').split('/').filter(Boolean).pop();
+  const metaParts = [
+    repoName,
+    displaySession.sshConfig?.host ? `ssh ${displaySession.sshConfig.host}` : null,
+    displaySession.branch,
+  ].filter(Boolean) as string[];
+
+  const cellShadow = needsYou
+    ? 'inset 0 0 0 1px rgba(240,180,41,0.5), 0 0 0 4px rgba(240,180,41,0.08)'
+    : isSessionStreaming
+      ? 'inset 0 0 0 1px rgba(76,154,255,0.45), 0 0 0 4px rgba(76,154,255,0.08)'
+      : isFocused
+        ? 'inset 0 0 0 1px rgba(255,255,255,0.22)'
+        : 'inset 0 0 0 1px rgba(255,255,255,0.08)';
+
   return (
     <div
-      className={`flex flex-col overflow-hidden bg-claude-bg border transition-all ${
-        isFocused
-          ? 'border-claude-accent ring-2 ring-claude-accent/40'
-          : 'border-claude-border hover:border-claude-text-secondary/40'
-      }`}
-      style={{ borderRadius: 0, minWidth: 400 }}
+      className="flex flex-col overflow-hidden bg-[#171717] transition-shadow"
+      style={{ borderRadius: 0, minWidth: 400, boxShadow: cellShadow }}
       onClick={handleFocus}
     >
-      {/* Compact header — with fork tabs inline */}
+      {/* Header — status dot, title, model tag; meta line; fork tabs */}
       <div
-        className="h-6 flex items-center px-2 bg-claude-surface/50 border-b border-claude-border cursor-pointer flex-shrink-0"
+        className="flex flex-col gap-1 px-4 pt-3.5 pb-2.5 cursor-pointer flex-shrink-0"
         onDoubleClick={handleDoubleClickHeader}
       >
-        <div className="flex items-center gap-1.5 min-w-0 flex-shrink-0">
-          <div className={`w-1.5 h-1.5 flex-shrink-0 ${getStatusColor(displaySession.status)}`} style={{ borderRadius: 0 }} />
-          <span className="text-[10px] font-bold text-claude-text truncate uppercase" style={{ letterSpacing: '0.05em' }}>
+        <div className="flex items-center gap-2 min-w-0">
+          {renderStatusDot(displaySession.status)}
+          <span className="text-[14px] font-medium text-fg truncate min-w-0">
             {headerLabel}
           </span>
           {isSessionStreaming && (
-            <span className="text-[9px] font-bold text-green-400 flex-shrink-0" style={{ letterSpacing: '0.05em' }}>
-              ACTIVE
+            <span className="text-[11px] text-accent-text flex-shrink-0 text-shimmer">
+              Active
             </span>
           )}
           <PullRequestStatusIcon
             sessionId={displaySession.id}
             branch={displaySession.branch}
-            size={10}
+            size={11}
           />
+          <div className="flex-1" />
+          {modelTag && (
+            <span
+              className="font-mono text-[9.5px] px-1.5 py-0.5 text-fg-3 flex-shrink-0 whitespace-nowrap"
+              style={{ boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.16)' }}
+            >
+              {modelTag}
+            </span>
+          )}
+          <button
+            onClick={handleRemove}
+            className="w-5 h-5 flex items-center justify-center text-fg-4 hover:text-diff-del hover:bg-white/5 flex-shrink-0"
+            style={{ borderRadius: 0 }}
+            title="Remove from Command Center"
+          >
+            <X size={12} />
+          </button>
         </div>
+        {metaParts.length > 0 && (
+          <div className="font-mono text-[11px] text-fg-4 pl-[15px] truncate">
+            {metaParts.join(' · ')}
+          </div>
+        )}
 
-        {/* Fork tabs inline — only when session has forks */}
+        {/* Fork tabs — only when session has forks */}
         {hasForks && (
-          <div className="flex items-center ml-2 overflow-x-auto flex-1 min-w-0">
+          <div className="flex items-center gap-0.5 mt-1.5 pl-[15px] overflow-x-auto min-w-0">
             {forks.map((fork) => {
               const isActive = fork.id === activeTabId;
               const isRoot = !fork.parentSessionId;
-              const label = isRoot ? 'ROOT' : getSessionDisplayName(fork);
+              const label = isRoot ? 'Root' : getSessionDisplayName(fork);
               return (
                 <button
                   key={fork.id}
                   onClick={(e) => { e.stopPropagation(); setActiveTabId(fork.id); }}
-                  className={`px-1.5 py-0.5 text-[9px] font-bold uppercase whitespace-nowrap transition-colors ${
+                  className={`flex items-center px-2 py-1 text-[11.5px] whitespace-nowrap transition-colors ${
                     isActive
-                      ? 'text-claude-text border-b border-claude-accent'
-                      : 'text-claude-text-secondary hover:text-claude-text'
+                      ? 'bg-[#262626] text-fg'
+                      : 'text-fg-4 hover:text-fg-2'
                   }`}
-                  style={{ letterSpacing: '0.05em' }}
                   title={getSessionDisplayName(fork)}
                 >
                   {label}
@@ -187,21 +250,10 @@ export default function CommandCenterCell({ session, forks, isFocused }: Command
             })}
           </div>
         )}
-
-        {!hasForks && <div className="flex-1" />}
-
-        <button
-          onClick={handleRemove}
-          className="p-0.5 text-claude-text-secondary hover:text-red-400 hover:bg-red-400/10 flex-shrink-0 ml-1"
-          style={{ borderRadius: 0 }}
-          title="Remove from Command Center"
-        >
-          <X size={10} />
-        </button>
       </div>
 
       {/* Messages — scrollable, auto-scrolled to bottom */}
-      <div ref={messagesContainerRef} className="flex-1 overflow-y-auto overflow-x-hidden min-w-0">
+      <div ref={messagesContainerRef} className="flex-1 mx-3 bg-[#0B0B0B] overflow-y-auto overflow-x-hidden min-w-0">
         <MessageList
           sessionId={displayId}
           messages={sessionMessages}
@@ -220,7 +272,7 @@ export default function CommandCenterCell({ session, forks, isFocused }: Command
 
       {/* Permission dialog — only in focused cell */}
       {isFocused && currentPermission && (
-        <div className="border-t border-claude-border px-2 py-1.5 bg-claude-surface">
+        <div className="mx-3 mt-2 px-2 py-1.5 bg-ink-1">
           <PermissionDialog
             request={currentPermission}
             onApprove={(modifiedInput, alwaysApprove) => approvePermission(displayId, modifiedInput, alwaysApprove)}
@@ -237,7 +289,8 @@ export default function CommandCenterCell({ session, forks, isFocused }: Command
       {!isFocused && currentQuestion && (
         <button
           type="button"
-          className="flex-shrink-0 border-t border-blue-400/40 bg-blue-400/10 px-2 py-1.5 text-left text-[10px] font-bold uppercase tracking-[0.08em] text-blue-300 hover:bg-blue-400/20"
+          className="flex-shrink-0 mx-3 mt-2 px-3 py-2 text-left text-[12px] font-medium text-amber hover:bg-[rgba(240,180,41,0.12)]"
+          style={{ background: 'rgba(240,180,41,0.07)', boxShadow: 'inset 0 0 0 1px rgba(240,180,41,0.22)' }}
           onClick={(event) => {
             event.stopPropagation();
             handleFocus();
@@ -249,7 +302,7 @@ export default function CommandCenterCell({ session, forks, isFocused }: Command
 
       {/* Question dialog — focused cell */}
       {isFocused && currentQuestion && (
-        <div className="border-t border-claude-border px-2 py-1.5 bg-claude-surface">
+        <div className="mx-3 mt-2 px-2 py-1.5 bg-ink-1">
           <QuestionDialog
             request={currentQuestion}
             onAnswer={(answers) => answerQuestion(displayId, answers)}

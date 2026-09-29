@@ -9,6 +9,7 @@ export interface ModelPricing {
 export const MODEL_PRICING: Record<string, ModelPricing> = {
   'claude-fable-5': { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.50 },
   'claude-sonnet-5': { input: 3, output: 15, cacheRead: 0.30, cacheWrite: 3.75 },
+  'claude-opus-5': { input: 5, output: 25, cacheRead: 0.50, cacheWrite: 6.25 },
   'claude-opus-4-8': { input: 5, output: 25, cacheRead: 0.50, cacheWrite: 6.25 },
   'claude-opus-4-7': { input: 5, output: 25, cacheRead: 0.50, cacheWrite: 6.25 },
   'claude-opus-4-6': { input: 5, output: 25, cacheRead: 0.50, cacheWrite: 6.25 },
@@ -60,7 +61,7 @@ export function getKnownModelPricing(modelId: string): ModelPricing | undefined 
     }
   }
   if (normalized.includes('fable')) return MODEL_PRICING['claude-fable-5'];
-  if (normalized.includes('opus')) return MODEL_PRICING['claude-opus-4-7'];
+  if (normalized.includes('opus')) return MODEL_PRICING['claude-opus-5'];
   if (normalized.includes('haiku')) return MODEL_PRICING['claude-haiku-4-5'];
   if (normalized.includes('sonnet')) return MODEL_PRICING['claude-sonnet-5'];
   if (normalized.includes('composer')) return MODEL_PRICING['composer-2.5'];

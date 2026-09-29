@@ -2,6 +2,7 @@ import { IpcMain, app, shell, dialog, BrowserWindow } from 'electron';
 import { execFile } from 'child_process';
 import { IPC_CHANNELS } from '../../shared/constants/channels';
 import { SettingsService } from '../services/settings.service';
+import { planningLockService } from '../services/planning-lock.service';
 
 // Track the detached browser window
 let browserWindow: BrowserWindow | null = null;
@@ -51,6 +52,10 @@ export function registerSettingsHandlers(ipcMain: IpcMain): void {
     }
   });
 
+  ipcMain.handle(IPC_CHANNELS.APP_SET_PLANNING_LOCK, async (event, active: boolean, calendarUrl?: string) => {
+    planningLockService.setActive(active, calendarUrl, BrowserWindow.fromWebContents(event.sender));
+  });
+
   ipcMain.handle(IPC_CHANNELS.APP_OPEN_PATH, async (_, filePath: string) => {
     return await shell.openPath(filePath);
   });
@@ -61,6 +66,59 @@ export function registerSettingsHandlers(ipcMain: IpcMain): void {
 
   ipcMain.handle(IPC_CHANNELS.APP_SHOW_DIALOG, async (_, options) => {
     return dialog.showOpenDialog(options);
+  });
+
+  // Capture the invoking Build window for on-demand Realtime voice vision.
+  // Keep the encoded image small enough for a single WebRTC data-channel event
+  // while retaining enough detail to read the active session and app chrome.
+  ipcMain.handle(IPC_CHANNELS.APP_CAPTURE_SCREEN, async (event, requestedRegion?: {
+    x?: number;
+    y?: number;
+    width?: number;
+    height?: number;
+    target?: string;
+  }) => {
+    const sourceWindow = BrowserWindow.fromWebContents(event.sender);
+    if (!sourceWindow || sourceWindow.isDestroyed()) {
+      throw new Error('The active Build window is unavailable for capture.');
+    }
+
+    const contentBounds = sourceWindow.getContentBounds();
+    const hasValidRegion = requestedRegion
+      && [requestedRegion.x, requestedRegion.y, requestedRegion.width, requestedRegion.height]
+        .every((value) => typeof value === 'number' && Number.isFinite(value))
+      && (requestedRegion.width || 0) > 1
+      && (requestedRegion.height || 0) > 1;
+    const captureRect = hasValidRegion ? {
+      x: Math.max(0, Math.floor(requestedRegion.x || 0)),
+      y: Math.max(0, Math.floor(requestedRegion.y || 0)),
+      width: Math.max(1, Math.min(
+        contentBounds.width - Math.max(0, Math.floor(requestedRegion.x || 0)),
+        Math.ceil(requestedRegion.width || 1),
+      )),
+      height: Math.max(1, Math.min(
+        contentBounds.height - Math.max(0, Math.floor(requestedRegion.y || 0)),
+        Math.ceil(requestedRegion.height || 1),
+      )),
+    } : undefined;
+    const captured = await sourceWindow.webContents.capturePage(captureRect);
+    const originalSize = captured.getSize();
+    const maxWidth = 1280;
+    const maxHeight = 900;
+    const scale = Math.min(1, maxWidth / originalSize.width, maxHeight / originalSize.height);
+    const width = Math.max(1, Math.round(originalSize.width * scale));
+    const height = Math.max(1, Math.round(originalSize.height * scale));
+    const image = scale < 1
+      ? captured.resize({ width, height, quality: 'best' })
+      : captured;
+    const jpeg = image.toJPEG(68);
+
+    return {
+      dataUrl: `data:image/jpeg;base64,${jpeg.toString('base64')}`,
+      width,
+      height,
+      target: captureRect ? (requestedRegion?.target || 'open panel') : 'full Build window',
+    };
   });
 
   // Browser pop-out window for Command Center mode

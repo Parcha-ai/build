@@ -5,12 +5,12 @@ import CommandAutocomplete from '../chat/CommandAutocomplete';
 import type { AgentDefinition, Command, Skill } from '../../../shared/types';
 
 const PERMISSION_PROMPTS: Record<PermissionMode, { prompt: string; color: string }> = {
-  auto: { prompt: '⚡', color: 'text-cyan-400' },
-  acceptEdits: { prompt: '>>', color: 'text-green-400' },
-  default: { prompt: '>', color: 'text-amber-400' },
-  bypassPermissions: { prompt: '>>>', color: 'text-purple-400' },
-  plan: { prompt: '?', color: 'text-blue-400' },
-  dontAsk: { prompt: '#', color: 'text-gray-500' },
+  auto: { prompt: '⚡', color: 'text-accent-text' },
+  acceptEdits: { prompt: '>>', color: 'text-fg-3' },
+  default: { prompt: '>', color: 'text-amber' },
+  bypassPermissions: { prompt: '>>>', color: 'text-diff-del-text' },
+  plan: { prompt: '?', color: 'text-accent-text' },
+  dontAsk: { prompt: '#', color: 'text-fg-5' },
 };
 
 interface CompactInputAreaProps {
@@ -224,9 +224,9 @@ export default function CompactInputArea({ sessionId, disabled, isStreaming }: C
   }, [input, commandStartIndex, commandType]);
 
   return (
-    <div ref={containerRef} className="border-t border-claude-border px-2 py-1.5 bg-claude-surface/50 relative">
+    <div ref={containerRef} className="mx-2 mb-2 px-2.5 py-2 bg-ink-3 relative shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1),0_12px_40px_rgba(0,0,0,0.35)]">
       <div className="flex items-end gap-1.5">
-        <span className={`${config.color} font-bold text-xs leading-6 flex-shrink-0`}>
+        <span className={`${config.color} font-mono text-[11.5px] leading-6 flex-shrink-0`}>
           {config.prompt}
         </span>
         <textarea
@@ -237,17 +237,17 @@ export default function CompactInputArea({ sessionId, disabled, isStreaming }: C
           placeholder={disabled ? 'Session not running' : 'Message...'}
           disabled={disabled}
           rows={1}
-          className="flex-1 bg-transparent text-claude-text text-xs font-mono resize-none focus:outline-none placeholder:text-claude-text-secondary/50 leading-5"
-          style={{ minHeight: '20px', maxHeight: '80px' }}
+          className="flex-1 bg-transparent text-fg text-[13px] resize-none focus:outline-none placeholder:text-fg-4 leading-6 caret-accent"
+          style={{ minHeight: '24px', maxHeight: '80px' }}
         />
         {isStreaming && (
           <button
             onClick={() => cancelStream(sessionId)}
-            className="p-0.5 text-red-400 hover:bg-red-400/20 flex-shrink-0"
+            className="flex h-6 w-6 items-center justify-center bg-fg text-ink-0 hover:bg-white flex-shrink-0"
             style={{ borderRadius: 0 }}
             title="Stop"
           >
-            <Square size={12} />
+            <Square size={10} fill="currentColor" strokeWidth={0} />
           </button>
         )}
       </div>

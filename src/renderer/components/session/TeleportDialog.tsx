@@ -60,18 +60,17 @@ export default function TeleportDialog({ session, onClose, onTeleported }: Telep
   };
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-claude-surface border border-claude-border w-full max-w-md max-h-[90vh] flex flex-col" style={{ borderRadius: 0 }}>
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+      <div className="bg-ink-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1),0_16px_40px_rgba(0,0,0,0.4)] w-full max-w-md max-h-[90vh] flex flex-col">
         {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-claude-border flex-shrink-0">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-line flex-shrink-0">
           <div className="flex items-center gap-2">
-            <Upload size={16} className="text-cyan-400" />
-            <span className="font-mono text-sm font-bold">TELEPORT TO SSH</span>
+            <Upload size={16} className="text-fg-3" />
+            <span className="text-[16px] font-semibold tracking-tight text-fg">TELEPORT TO SSH</span>
           </div>
           <button
             onClick={onClose}
-            className="p-1 hover:bg-claude-bg transition-colors"
-            style={{ borderRadius: 0 }}
+            className="p-1 text-fg-3 hover:text-fg hover:bg-claude-surface-hover transition-colors"
             disabled={status === 'teleporting'}
           >
             <X size={16} />
@@ -91,35 +90,34 @@ export default function TeleportDialog({ session, onClose, onTeleported }: Telep
 
           {status === 'teleporting' && (
             <div className="flex flex-col items-center justify-center py-12">
-              <Loader2 size={32} className="animate-spin text-cyan-400 mb-4" />
-              <span className="text-sm font-mono text-cyan-400">{progressMessage || 'Teleporting...'}</span>
+              <Loader2 size={32} className="animate-spin text-accent mb-4" />
+              <span className="text-[13px] text-fg-2">{progressMessage || 'Teleporting...'}</span>
             </div>
           )}
 
           {status === 'success' && (
             <div className="flex flex-col items-center justify-center py-12">
-              <Check size={32} className="text-green-400 mb-4" />
-              <span className="text-sm font-mono text-green-400">Teleportation complete!</span>
-              <span className="text-xs text-claude-text-secondary mt-2">Switching to remote session...</span>
+              <Check size={32} className="text-diff-add mb-4" />
+              <span className="text-[13px] text-diff-add-text">Teleportation complete!</span>
+              <span className="text-[12px] text-fg-4 mt-2">Switching to remote session...</span>
             </div>
           )}
 
           {status === 'error' && error && (
             <div className="py-8">
-              <div className="text-red-400 text-sm bg-red-400/10 p-4 border border-red-400/30 mb-4" style={{ borderRadius: 0 }}>
+              <div className="text-diff-del-text text-[13px] bg-diff-del/10 p-4 shadow-[inset_0_0_0_1px_rgba(248,81,73,0.35)] mb-4">
                 <div className="flex items-center gap-2 mb-2">
                   <AlertCircle size={16} />
-                  <span className="font-bold">Teleportation Failed</span>
+                  <span className="font-semibold">Teleportation Failed</span>
                 </div>
-                <span className="text-xs">{error}</span>
+                <span className="text-[12px]">{error}</span>
               </div>
               <button
                 onClick={() => {
                   setStatus('idle');
                   setError(null);
                 }}
-                className="w-full py-2 text-sm bg-claude-bg hover:bg-claude-surface border border-claude-border"
-                style={{ borderRadius: 0 }}
+                className="w-full h-8 text-[13px] text-fg-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] hover:bg-claude-surface-hover"
               >
                 Try Again
               </button>

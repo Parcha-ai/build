@@ -184,8 +184,8 @@ export default function MCPMarketplace({
     return (
       <div className="h-full flex items-center justify-center">
         <div className="flex flex-col items-center gap-3">
-          <Loader2 size={24} className="animate-spin text-claude-accent" />
-          <span className="text-sm text-claude-text-secondary">Loading MCP Registry...</span>
+          <Loader2 size={24} className="animate-spin text-accent" />
+          <span className="text-[13px] text-fg-3">Loading MCP Registry...</span>
         </div>
       </div>
     );
@@ -195,11 +195,11 @@ export default function MCPMarketplace({
     return (
       <div className="h-full flex items-center justify-center">
         <div className="flex flex-col items-center gap-3 text-center max-w-md">
-          <AlertCircle size={24} className="text-red-400" />
-          <p className="text-sm text-red-400">{error}</p>
+          <AlertCircle size={24} className="text-diff-del" />
+          <p className="text-[13px] text-diff-del-text">{error}</p>
           <button
             onClick={loadServers}
-            className="flex items-center gap-2 px-3 py-1.5 text-xs font-mono bg-claude-surface text-claude-text hover:bg-claude-surface/80 transition-colors"
+            className="flex items-center gap-2 h-8 px-3 text-[13px] text-fg-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)] hover:bg-claude-surface-hover transition-colors"
           >
             <RefreshCw size={12} />
             Retry
@@ -212,16 +212,16 @@ export default function MCPMarketplace({
   return (
     <div className="h-full flex flex-col">
       {/* Search and Filter Bar */}
-      <div className="p-3 border-b border-claude-border space-y-3 flex-shrink-0">
+      <div className="p-3 border-b border-line space-y-3 flex-shrink-0">
         {/* Search Input */}
         <div className="relative">
-          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-claude-text-secondary" />
+          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-fg-4" />
           <input
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="Search MCP servers..."
-            className="w-full pl-9 pr-3 py-2 bg-claude-surface border border-claude-border text-sm text-claude-text placeholder:text-claude-text-secondary focus:outline-none focus:border-claude-accent"
+            className="w-full pl-9 pr-3 py-2 bg-ink-3 border-0 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] text-[13px] text-fg placeholder:text-fg-5 focus:outline-none focus:ring-1 focus:ring-accent/50"
           />
         </div>
 
@@ -232,10 +232,10 @@ export default function MCPMarketplace({
               <button
                 key={cat}
                 onClick={() => setSelectedCategory(cat)}
-                className={`px-2.5 py-1 text-xs font-mono whitespace-nowrap transition-colors ${
+                className={`h-7 px-2.5 text-[12px] whitespace-nowrap transition-colors ${
                   selectedCategory === cat
-                    ? 'bg-claude-accent text-white'
-                    : 'bg-claude-surface text-claude-text-secondary hover:text-claude-text'
+                    ? 'bg-claude-surface-hover text-fg shadow-[inset_0_0_0_1px_rgba(255,255,255,0.14)]'
+                    : 'text-fg-3 hover:text-fg hover:bg-claude-surface-hover'
                 }`}
               >
                 {cat}
@@ -245,7 +245,7 @@ export default function MCPMarketplace({
           <button
             onClick={handleRefresh}
             disabled={refreshing}
-            className="p-1.5 text-claude-text-secondary hover:text-claude-text transition-colors disabled:opacity-50"
+            className="p-1.5 text-fg-3 hover:text-fg hover:bg-claude-surface-hover transition-colors disabled:opacity-50"
             title="Refresh"
           >
             <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
@@ -254,7 +254,7 @@ export default function MCPMarketplace({
       </div>
 
       {/* Results Count */}
-      <div className="px-3 py-2 text-xs text-claude-text-secondary border-b border-claude-border flex-shrink-0">
+      <div className="px-3 py-2 text-[12px] text-fg-4 border-b border-line flex-shrink-0">
         {filteredServers.length} server{filteredServers.length !== 1 ? 's' : ''} found
         {searchQuery && ` for "${searchQuery}"`}
         {selectedCategory !== 'All' && ` in ${selectedCategory}`}
@@ -264,10 +264,10 @@ export default function MCPMarketplace({
       <div className="flex-1 overflow-y-auto p-3">
         {filteredServers.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-center">
-            <Server size={32} className="text-claude-text-secondary opacity-50 mb-3" />
-            <p className="text-sm text-claude-text-secondary">No servers found</p>
+            <Server size={32} className="text-fg-5 mb-3" />
+            <p className="text-[13px] text-fg-3">No servers found</p>
             {searchQuery && (
-              <p className="text-xs text-claude-text-secondary mt-1">
+              <p className="text-[12px] text-fg-4 mt-1">
                 Try adjusting your search or category filter
               </p>
             )}
@@ -284,35 +284,35 @@ export default function MCPMarketplace({
               return (
                 <div
                   key={server.id}
-                  className="p-4 border border-claude-border hover:border-claude-accent/50 transition-colors bg-claude-bg group"
+                  className="p-4 bg-ink-1 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.07)] hover:bg-claude-surface-hover transition-colors group"
                 >
                   {/* Header Row */}
                   <div className="flex items-start gap-3 mb-3">
                     {/* Icon */}
-                    <div className="w-10 h-10 flex items-center justify-center bg-claude-surface border border-claude-border flex-shrink-0">
+                    <div className="w-10 h-10 flex items-center justify-center bg-ink-3 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1)] flex-shrink-0">
                       {server.icon ? (
                         <img src={server.icon} alt="" className="w-6 h-6 object-contain" />
                       ) : (
-                        <Server size={20} className="text-claude-accent" />
+                        <Server size={20} className="text-fg-3" />
                       )}
                     </div>
 
                     {/* Title and Meta */}
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 flex-wrap">
-                        <h3 className="font-mono text-sm text-claude-text font-medium truncate">
+                        <h3 className="text-[14px] text-fg font-semibold tracking-tight truncate">
                           {server.name}
                         </h3>
-                        <span className="text-[10px] text-claude-text-secondary bg-claude-surface px-1.5 py-0.5">
+                        <span className="font-mono text-[10px] text-fg-3 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.16)] px-1.5 py-0.5">
                           v{server.version}
                         </span>
                         {server.isLatest && (
-                          <span className="text-[10px] text-green-400 bg-green-400/10 px-1.5 py-0.5">
+                          <span className="font-mono text-[10px] uppercase text-diff-add-text bg-diff-add/10 px-1.5 py-0.5">
                             Latest
                           </span>
                         )}
                       </div>
-                      <p className="text-[11px] text-claude-text-secondary font-mono mt-0.5 truncate">
+                      <p className="text-[11.5px] text-fg-4 font-mono mt-0.5 truncate">
                         {server.id}
                       </p>
                     </div>
@@ -320,14 +320,14 @@ export default function MCPMarketplace({
                     {/* Install Button */}
                     <div className="flex-shrink-0">
                       {installed ? (
-                        <span className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-mono bg-green-500/10 text-green-400 border border-green-500/30">
+                        <span className="flex items-center gap-1.5 h-8 px-3 text-[13px] bg-diff-add/10 text-diff-add-text shadow-[inset_0_0_0_1px_rgba(63,185,80,0.3)]">
                           <Check size={12} />
                           Installed
                         </span>
                       ) : (
                         <button
                           onClick={() => handleInstallClick(server)}
-                          className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-mono bg-claude-accent text-white hover:bg-claude-accent/80 transition-colors"
+                          className="flex items-center gap-1.5 h-8 px-3 text-[13px] font-semibold bg-fg text-ink-0 hover:bg-white transition-colors"
                         >
                           <Download size={12} />
                           Install
@@ -337,12 +337,12 @@ export default function MCPMarketplace({
                   </div>
 
                   {/* Description */}
-                  <p className="text-xs text-claude-text-secondary mb-3 line-clamp-2">
+                  <p className="text-[13px] text-fg-3 mb-3 line-clamp-2">
                     {server.description}
                   </p>
 
                   {/* Metadata Row */}
-                  <div className="flex items-center gap-4 flex-wrap text-[10px] text-claude-text-secondary">
+                  <div className="flex items-center gap-4 flex-wrap text-[11.5px] text-fg-4">
                     {/* Category */}
                     <span className="flex items-center gap-1">
                       <Tag size={10} />
@@ -365,7 +365,7 @@ export default function MCPMarketplace({
 
                     {/* Auth Required */}
                     {server.requiresAuth && (
-                      <span className="flex items-center gap-1 text-amber-400">
+                      <span className="flex items-center gap-1 text-amber">
                         <Key size={10} />
                         Auth Required
                       </span>
@@ -387,7 +387,7 @@ export default function MCPMarketplace({
                             href={server.repositoryUrl}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="hover:text-claude-accent transition-colors"
+                            className="hover:text-accent-text transition-colors"
                             title="View Repository"
                             onClick={(e) => {
                               e.preventDefault();
@@ -402,7 +402,7 @@ export default function MCPMarketplace({
                             href={server.websiteUrl}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="hover:text-claude-accent transition-colors"
+                            className="hover:text-accent-text transition-colors"
                             title="View Website"
                             onClick={(e) => {
                               e.preventDefault();
@@ -422,13 +422,13 @@ export default function MCPMarketplace({
                       {server.keywords.slice(0, 5).map((keyword) => (
                         <span
                           key={keyword}
-                          className="text-[10px] text-claude-text-secondary bg-claude-surface px-1.5 py-0.5"
+                          className="text-[11px] text-fg-3 bg-ink-4 px-1.5 py-0.5"
                         >
                           {keyword}
                         </span>
                       ))}
                       {server.keywords.length > 5 && (
-                        <span className="text-[10px] text-claude-text-secondary">
+                        <span className="text-[11px] text-fg-4">
                           +{server.keywords.length - 5} more
                         </span>
                       )}

@@ -23,10 +23,25 @@ assert.match(
   /Reusing native thread developer instructions/,
   'resumed native Codex turns must reuse their seeded instruction layer',
 );
+assert.doesNotMatch(
+  codexService,
+  /sshService\.syncMcp(?:Auth|Configs)ToRemote|sshService\.scheduleMcpConfigsToRemote/,
+  'Codex turn startup must never trigger MCP synchronization',
+);
 assert.match(
   codexService,
-  /if \(nativeThread\?\.persistThread\) \{[\s\S]*?void sshService\.syncMcpConfigsToRemote/,
-  'persistent native Codex turns must schedule remote MCP sync without awaiting it',
+  /canReuse[\s\S]*?warm process reused[\s\S]*?warm connection ready[\s\S]*?warm thread reused/,
+  'persistent Codex sessions must reuse an initialized app-server between turns',
+);
+assert.match(
+  codexService,
+  /CODEX_APP_SERVER_IDLE_TTL_MS = 10 \* 60 \* 1000/,
+  'warm Codex app-servers must have a bounded idle lifetime',
+);
+assert.match(
+  codexService,
+  /setDetachedBridgeJobIdle\([\s\S]*?false[\s\S]*?turn\/start[\s\S]*?setDetachedBridgeJobIdle\([\s\S]*?true/,
+  'SSH Codex app-servers must be active during a turn and ignored by recovery while idle',
 );
 assert.match(
   codexService,

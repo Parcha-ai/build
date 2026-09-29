@@ -13,28 +13,33 @@ const sendMessageMethod = sendMessageStart >= 0 && loadMessagesStart > sendMessa
 
 assert.ok(sendMessageMethod, 'must find renderer sendMessage implementation');
 
-const normalSendStart = sendMessageMethod.indexOf('const { addMessage, setStreaming, permissionMode, thinkingMode, selectedModel, gstackMode, cascadeMode } = state;');
-const optimisticComment = sendMessageMethod.indexOf('pressing\n    // Enter always produces immediate visible feedback');
-const addUserMessageIndex = sendMessageMethod.indexOf('addMessage(sessionId, userMessage);');
-const preVisibleSendPath = sendMessageMethod.slice(normalSendStart, addUserMessageIndex);
+const normalSendStart = sendMessageMethod.indexOf('// Echo the submitted message before any backend or SSH probe.');
+const optimisticComment = normalSendStart;
+const addUserMessageIndex = sendMessageMethod.indexOf('state.addMessage(sessionId, userMessage);');
+const firstBackendProbeIndex = sendMessageMethod.indexOf('window.electronAPI.claude.hasActiveQuery(sessionId)');
+const firstRemoteProbeIndex = sendMessageMethod.indexOf('window.electronAPI.ssh.hasActiveRemoteProcess(sessionId)');
 const postVisibleRemoteProbeIndex = sendMessageMethod.indexOf('window.electronAPI.ssh.hasActiveRemoteProcess(sessionId)', addUserMessageIndex);
 const setStreamingIndex = sendMessageMethod.indexOf('setStreaming(sessionId, true);');
+const awaitRemoteProbeIndex = sendMessageMethod.indexOf('await remoteActiveProcessPromise');
 const secureScanIndex = sendMessageMethod.indexOf('window.electronAPI.secureKeys.interceptAndReplace');
 const sanitizedUpdateIndex = sendMessageMethod.indexOf('if (modifiedText !== message) {');
 const supplementalPersistIndex = sendMessageMethod.indexOf('persistSupplementalMessage(sessionId, outboundUserMessage)');
 const ipcSendIndex = sendMessageMethod.indexOf('window.electronAPI.claude.sendMessage(');
 
 assert.ok(normalSendStart >= 0, 'must locate normal send branch');
-assert.ok(optimisticComment > normalSendStart, 'normal send branch must document immediate feedback behavior');
+assert.ok(optimisticComment >= normalSendStart, 'normal send branch must document immediate feedback behavior');
 assert.ok(addUserMessageIndex > normalSendStart, 'normal send branch must add a user message');
-assert.doesNotMatch(
-  preVisibleSendPath,
-  /hasActiveRemoteProcess|hasActiveQuery/,
-  'renderer sendMessage must not block visible feedback on backend or remote active-process probes',
-);
+assert.ok(firstBackendProbeIndex > addUserMessageIndex, 'backend-active probing must happen after the user message is visible');
+assert.ok(firstRemoteProbeIndex > addUserMessageIndex, 'remote-active probing must happen after the user message is visible');
 assert.ok(postVisibleRemoteProbeIndex > addUserMessageIndex, 'remote-active queue fallback must run only after the user message is visible');
 assert.ok(addUserMessageIndex < secureScanIndex, 'user message must be shown before secure-key scanning');
 assert.ok(setStreamingIndex > addUserMessageIndex, 'streaming state must start after the user message is visible');
+assert.ok(awaitRemoteProbeIndex > setStreamingIndex, 'remote ownership must be awaited only after streaming state is visible');
+assert.equal(
+  (sendMessageMethod.match(/window\.electronAPI\.ssh\.hasActiveRemoteProcess\(sessionId\)/g) || []).length,
+  1,
+  'normal send must perform exactly one remote ownership probe',
+);
 assert.ok(setStreamingIndex < secureScanIndex, 'streaming state must start before secure-key scanning');
 assert.ok(sanitizedUpdateIndex > secureScanIndex, 'sanitized text must update the optimistic bubble after scanning');
 assert.ok(supplementalPersistIndex > sanitizedUpdateIndex, 'supplemental persistence must use the sanitized outbound user message');

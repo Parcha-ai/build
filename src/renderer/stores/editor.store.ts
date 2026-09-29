@@ -17,12 +17,22 @@ export interface EditorTab {
   planRequestId?: string; // For plan approval tabs, track the request ID
 }
 
+interface EditorWorkspace {
+  isEditorOpen: boolean;
+  tabs: EditorTab[];
+  activeTabId: string | null;
+  isLoading: boolean;
+  error: string | null;
+}
+
 interface EditorState {
   isEditorOpen: boolean;
   tabs: EditorTab[];
   activeTabId: string | null;
   isLoading: boolean;
   error: string | null;
+  activeSessionId: string | null;
+  sessionWorkspaces: Record<string, EditorWorkspace>;
 
   // Quick Search state
   isQuickSearchOpen: boolean;
@@ -40,6 +50,9 @@ interface EditorState {
   saveAllTabs: () => Promise<void>;
   closeEditor: () => void;
   openEditor: () => void;
+  closeEditorForSession: (sessionId: string) => void;
+  setActiveSession: (sessionId: string | null) => void;
+  cleanupSession: (sessionId: string) => void;
   togglePreviewMode: (tabId: string) => void; // Toggle between preview and edit for markdown
 
   // Quick Search actions
@@ -51,6 +64,39 @@ interface EditorState {
   openFileSearch: () => void;
   closeFileSearch: () => void;
   toggleFileSearch: () => void;
+}
+
+function emptyEditorWorkspace(): EditorWorkspace {
+  return {
+    isEditorOpen: false,
+    tabs: [],
+    activeTabId: null,
+    isLoading: false,
+    error: null,
+  };
+}
+
+function getEditorWorkspace(state: EditorState, sessionId: string): EditorWorkspace {
+  return state.sessionWorkspaces[sessionId] || emptyEditorWorkspace();
+}
+
+function updateEditorWorkspace(
+  state: EditorState,
+  sessionId: string | null,
+  update: (workspace: EditorWorkspace) => EditorWorkspace,
+): Partial<EditorState> {
+  if (!sessionId) return update({
+    isEditorOpen: state.isEditorOpen,
+    tabs: state.tabs,
+    activeTabId: state.activeTabId,
+    isLoading: state.isLoading,
+    error: state.error,
+  });
+  const workspace = update(getEditorWorkspace(state, sessionId));
+  return {
+    sessionWorkspaces: { ...state.sessionWorkspaces, [sessionId]: workspace },
+    ...(state.activeSessionId === sessionId ? workspace : {}),
+  };
 }
 
 // Get language from file extension
@@ -122,6 +168,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   activeTabId: null,
   isLoading: false,
   error: null,
+  activeSessionId: null,
+  sessionWorkspaces: {},
   isQuickSearchOpen: false,
   isFileSearchOpen: false,
 
@@ -137,33 +185,46 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       return;
     }
 
-    // Get active session ID from session store (dynamic import to avoid circular dependency)
+    // Capture the owning session before any async work. If the user switches
+    // sessions while the file is loading, the completed tab must stay in the
+    // workspace that requested it.
     const { useSessionStore } = await import('./session.store');
     const activeSessionId = useSessionStore.getState().activeSessionId;
     console.log('[EditorStore] Active session ID:', activeSessionId);
 
-    const { tabs } = get();
+    if (!activeSessionId) {
+      set({ error: 'No active session', isLoading: false });
+      return;
+    }
+
+    const workspace = getEditorWorkspace(get(), activeSessionId);
+    const { tabs } = workspace;
     console.log('[EditorStore] Current tabs:', tabs.length);
 
     // Check if file is already open
     const existingTab = tabs.find(tab => tab.filePath === normalizedFilePath);
     if (existingTab) {
       console.log('[EditorStore] File already open, activating tab:', existingTab.id);
-      set({
+      set((state) => updateEditorWorkspace(state, activeSessionId, (current) => ({
+        ...current,
         activeTabId: existingTab.id,
         isEditorOpen: true,
-        // Update line number if provided
-        tabs: tabs.map(tab =>
-          tab.id === existingTab.id
-            ? { ...tab, lineNumber: normalizedLineNumber ?? tab.lineNumber }
-            : tab
-        )
+        tabs: current.tabs.map(tab => tab.id === existingTab.id
+          ? { ...tab, lineNumber: normalizedLineNumber ?? tab.lineNumber }
+          : tab),
+      })));
+      import('./ui.store').then(({ useUIStore }) => {
+        useUIStore.getState().prepareSessionForEditor(activeSessionId);
       });
       return;
     }
 
     console.log('[EditorStore] Setting loading state');
-    set({ isLoading: true, error: null });
+    set((state) => updateEditorWorkspace(state, activeSessionId, (current) => ({
+      ...current,
+      isLoading: true,
+      error: null,
+    })));
 
     try {
       console.log('[EditorStore] Reading file via IPC, sessionId:', activeSessionId);
@@ -172,7 +233,11 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
       if (!result.success) {
         console.error('[EditorStore] Failed to read file:', result.error);
-        set({ error: result.error || 'Failed to read file', isLoading: false });
+        set((state) => updateEditorWorkspace(state, activeSessionId, (current) => ({
+          ...current,
+          error: result.error || 'Failed to read file',
+          isLoading: false,
+        })));
         return;
       }
 
@@ -195,44 +260,40 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       };
 
       console.log('[EditorStore] Setting tab state, isEditorOpen will be true');
-      set(state => ({
-        tabs: [...state.tabs, newTab],
+      set((state) => updateEditorWorkspace(state, activeSessionId, (current) => ({
+        ...current,
+        tabs: [...current.tabs, newTab],
         activeTabId: newTab.id,
         isEditorOpen: true,
         isLoading: false,
-      }));
+      })));
       console.log('[EditorStore] Tab created successfully, ID:', newTab.id);
 
       // Close competing panels (Browser, Extensions, Plan) when opening editor
       // Import dynamically to avoid circular dependency
       console.log('[EditorStore] Closing competing panels');
       import('./ui.store').then(({ useUIStore }) => {
-        useUIStore.setState({
-          isBrowserPanelOpen: false,
-          isExtensionsPanelOpen: false,
-          isPlanPanelOpen: false,
-          isHtmlPanelOpen: false,
-          isDesignPanelOpen: false,
-        });
+        useUIStore.getState().prepareSessionForEditor(activeSessionId);
         console.log('[EditorStore] Competing panels closed');
       });
     } catch (error) {
       console.error('[EditorStore] Exception in openFile:', error);
-      set({
+      set((state) => updateEditorWorkspace(state, activeSessionId, (current) => ({
+        ...current,
         error: error instanceof Error ? error.message : 'Failed to open file',
-        isLoading: false
-      });
+        isLoading: false,
+      })));
     }
   },
 
   closeTab: (tabId: string) => {
-    set(state => {
-      const newTabs = state.tabs.filter(tab => tab.id !== tabId);
-      let newActiveTabId = state.activeTabId;
+    set(state => updateEditorWorkspace(state, state.activeSessionId, (workspace) => {
+      const newTabs = workspace.tabs.filter(tab => tab.id !== tabId);
+      let newActiveTabId = workspace.activeTabId;
 
       // If we closed the active tab, activate another one
-      if (state.activeTabId === tabId) {
-        const closedIndex = state.tabs.findIndex(tab => tab.id === tabId);
+      if (workspace.activeTabId === tabId) {
+        const closedIndex = workspace.tabs.findIndex(tab => tab.id === tabId);
         if (newTabs.length > 0) {
           // Prefer the tab to the left, or the first tab if we closed the leftmost
           newActiveTabId = newTabs[Math.max(0, closedIndex - 1)]?.id || newTabs[0]?.id || null;
@@ -242,24 +303,34 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       }
 
       return {
+        ...workspace,
         tabs: newTabs,
         activeTabId: newActiveTabId,
         isEditorOpen: newTabs.length > 0,
       };
-    });
+    }));
   },
 
   closeAllTabs: () => {
-    set({ tabs: [], activeTabId: null, isEditorOpen: false });
+    set((state) => updateEditorWorkspace(state, state.activeSessionId, (workspace) => ({
+      ...workspace,
+      tabs: [],
+      activeTabId: null,
+      isEditorOpen: false,
+    })));
   },
 
   setActiveTab: (tabId: string) => {
-    set({ activeTabId: tabId });
+    set((state) => updateEditorWorkspace(state, state.activeSessionId, (workspace) => ({
+      ...workspace,
+      activeTabId: tabId,
+    })));
   },
 
   updateTabContent: (tabId: string, content: string) => {
-    set(state => ({
-      tabs: state.tabs.map(tab => {
+    set(state => updateEditorWorkspace(state, state.activeSessionId, (workspace) => ({
+      ...workspace,
+      tabs: workspace.tabs.map(tab => {
         if (tab.id !== tabId) return tab;
         return {
           ...tab,
@@ -267,7 +338,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
           isDirty: content !== tab.originalContent,
         };
       }),
-    }));
+    })));
   },
 
   saveTab: async (tabId: string) => {
@@ -275,23 +346,26 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       set({ error: 'File operations not available in preview mode' });
       return false;
     }
-    const { tabs } = get();
+    const sessionId = get().activeSessionId;
+    const tabs = sessionId ? getEditorWorkspace(get(), sessionId).tabs : get().tabs;
     const tab = tabs.find(t => t.id === tabId);
     if (!tab) return false;
 
     try {
       // Pass sessionId so SSH sessions write to the remote machine
-      const { useSessionStore } = await import('./session.store');
-      const activeSessionId = useSessionStore.getState().activeSessionId;
-      const result = await window.electronAPI.fs.writeFile(tab.filePath, tab.content, activeSessionId || undefined);
+      const result = await window.electronAPI.fs.writeFile(tab.filePath, tab.content, sessionId || undefined);
 
       if (!result.success) {
-        set({ error: result.error || 'Failed to save file' });
+        set((state) => updateEditorWorkspace(state, sessionId, (workspace) => ({
+          ...workspace,
+          error: result.error || 'Failed to save file',
+        })));
         return false;
       }
 
-      set(state => ({
-        tabs: state.tabs.map(t => {
+      set(state => updateEditorWorkspace(state, sessionId, (workspace) => ({
+        ...workspace,
+        tabs: workspace.tabs.map(t => {
           if (t.id !== tabId) return t;
           return {
             ...t,
@@ -300,17 +374,22 @@ export const useEditorStore = create<EditorState>((set, get) => ({
           };
         }),
         error: null,
-      }));
+      })));
 
       return true;
     } catch (error) {
-      set({ error: error instanceof Error ? error.message : 'Failed to save file' });
+      set((state) => updateEditorWorkspace(state, sessionId, (workspace) => ({
+        ...workspace,
+        error: error instanceof Error ? error.message : 'Failed to save file',
+      })));
       return false;
     }
   },
 
   saveAllTabs: async () => {
-    const { tabs, saveTab } = get();
+    const state = get();
+    const tabs = state.activeSessionId ? getEditorWorkspace(state, state.activeSessionId).tabs : state.tabs;
+    const { saveTab } = state;
     const dirtyTabs = tabs.filter(tab => tab.isDirty);
     await Promise.all(dirtyTabs.map(tab => saveTab(tab.id)));
   },
@@ -331,51 +410,76 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       planRequestId: requestId,
     };
 
-    set(state => ({
-      tabs: [...state.tabs.filter(t => !t.isPlanTab), planTab], // Replace any existing plan tab
+    const sessionId = get().activeSessionId;
+    set(state => updateEditorWorkspace(state, sessionId, (workspace) => ({
+      ...workspace,
+      tabs: [...workspace.tabs.filter(t => !t.isPlanTab), planTab],
       activeTabId: planTab.id,
       isEditorOpen: true,
-    }));
+    })));
 
     // Close competing panels
     import('./ui.store').then(({ useUIStore }) => {
-      useUIStore.setState({
-        isBrowserPanelOpen: false,
-        isExtensionsPanelOpen: false,
-        isPlanPanelOpen: false,
-        isHtmlPanelOpen: false,
-        isDesignPanelOpen: false,
-      });
+      useUIStore.getState().prepareSessionForEditor(sessionId || undefined);
     });
   },
 
   closeEditor: () => {
-    set({ isEditorOpen: false });
+    set((state) => updateEditorWorkspace(state, state.activeSessionId, (workspace) => ({
+      ...workspace,
+      isEditorOpen: false,
+    })));
   },
 
   openEditor: () => {
-    set({ isEditorOpen: true });
+    const sessionId = get().activeSessionId;
+    set((state) => updateEditorWorkspace(state, sessionId, (workspace) => ({
+      ...workspace,
+      isEditorOpen: true,
+    })));
     // Close competing panels when manually opening editor
     // Import dynamically to avoid circular dependency
     import('./ui.store').then(({ useUIStore }) => {
-      useUIStore.setState({
-        isBrowserPanelOpen: false,
-        isExtensionsPanelOpen: false,
-        isPlanPanelOpen: false,
-        isHtmlPanelOpen: false,
-        isDesignPanelOpen: false,
-      });
+      useUIStore.getState().prepareSessionForEditor(sessionId || undefined);
+    });
+  },
+
+  closeEditorForSession: (sessionId) => {
+    set((state) => updateEditorWorkspace(state, sessionId, (workspace) => ({
+      ...workspace,
+      isEditorOpen: false,
+    })));
+  },
+
+  setActiveSession: (sessionId) => {
+    set((state) => ({
+      activeSessionId: sessionId,
+      ...(sessionId ? getEditorWorkspace(state, sessionId) : emptyEditorWorkspace()),
+    }));
+  },
+
+  cleanupSession: (sessionId) => {
+    set((state) => {
+      const sessionWorkspaces = { ...state.sessionWorkspaces };
+      delete sessionWorkspaces[sessionId];
+      return {
+        sessionWorkspaces,
+        ...(state.activeSessionId === sessionId
+          ? { activeSessionId: null, ...emptyEditorWorkspace() }
+          : {}),
+      };
     });
   },
 
   togglePreviewMode: (tabId: string) => {
-    set(state => ({
-      tabs: state.tabs.map(tab =>
+    set(state => updateEditorWorkspace(state, state.activeSessionId, (workspace) => ({
+      ...workspace,
+      tabs: workspace.tabs.map(tab =>
         tab.id === tabId
           ? { ...tab, isPreviewMode: !tab.isPreviewMode }
           : tab
-      )
-    }));
+      ),
+    })));
   },
 
   // Quick Search actions

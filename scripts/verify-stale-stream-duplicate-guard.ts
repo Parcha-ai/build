@@ -48,28 +48,18 @@ assert.match(
 );
 assert.match(
   sessionStore,
-  /let remoteActiveProcess = false;/,
-  'renderer must track live SSH processes before starting a new stream',
+  /let remoteActiveProcessPromise: Promise<boolean> = Promise\.resolve\(false\);/,
+  'renderer must start one live SSH ownership probe for an otherwise idle send',
 );
 assert.ok(
-  sessionStore.indexOf('remoteActiveProcess = currentSession?.sshConfig') > 0
-    && sessionStore.indexOf('remoteActiveProcess = currentSession?.sshConfig') < sessionStore.indexOf('// Start streaming immediately'),
-  'renderer must check remote process liveness before clearing stream state for a new send',
+  sessionStore.indexOf('remoteActiveProcessPromise = currentSession?.sshConfig') > 0
+    && sessionStore.indexOf('remoteActiveProcessPromise = currentSession?.sshConfig') < sessionStore.indexOf('// Start streaming immediately'),
+  'renderer must start remote process liveness checking before clearing stream state for a new send',
 );
 assert.match(
   sessionStore,
-  /state\.isStreaming\[sessionId\] \|\| state\.isProcessingQueue\[sessionId\] \|\| backendActiveQuery \|\| remoteActiveProcess/,
-  'queue branch must include stale-renderer live SSH processes',
-);
-assert.match(
-  sessionStore,
-  /deferDrain: remoteActiveProcess \|\| undefined/,
-  'messages queued behind a live SSH process must defer drain until reattach/completion',
-);
-assert.match(
-  sessionStore,
-  /queued message and requesting reattach[\s\S]*?startRemoteProcessMonitor\(sessionId, get, set, loadMessages,[\s\S]*?attachStream: true/,
-  'remote-active prequeue must immediately request stream reattach without resetting stream state',
+  /setStreaming\(sessionId, true\);[\s\S]*?const remoteActive = await remoteActiveProcessPromise;/,
+  'renderer must show optimistic stream state before awaiting the single remote ownership probe',
 );
 assert.match(
   sessionStore,
@@ -90,6 +80,15 @@ assert.match(
   sessionStore,
   /queued message after optimistic send and requesting reattach[\s\S]*?startRemoteProcessMonitor\(sessionId, get, set, loadMessages,[\s\S]*?attachStream: true/,
   'remote-active SSH enqueue must immediately request a stream reattach',
+);
+const sendMessageMethod = sessionStore.slice(
+  sessionStore.indexOf('sendMessage: async (sessionId, message, attachments, opts) => {'),
+  sessionStore.indexOf('\n  loadMessages:', sessionStore.indexOf('sendMessage: async (sessionId, message, attachments, opts) => {')),
+);
+assert.equal(
+  (sendMessageMethod.match(/window\.electronAPI\.ssh\.hasActiveRemoteProcess\(sessionId\)/g) || []).length,
+  1,
+  'a send must never perform duplicate sequential remote ownership probes',
 );
 assert.match(
   claudeIpc,
@@ -214,13 +213,13 @@ assert.match(
 );
 assert.match(
   claudeIpc,
-  /id = writeAssistantToTranscript\(sessionId, snapshotMessage/,
-  'snapshot writers must adopt the canonical transcript id after the first write',
+  /const snapshotId = id;[\s\S]*?id = writeAssistantToTranscript\(sessionId, finalizedMessage[\s\S]*?clearInProgressMessage\(sessionId, snapshotId\)/,
+  'snapshot writers must adopt the canonical transcript id when the final message is committed',
 );
 assert.match(
   claudeIpc,
-  /if \(signature === lastWrittenSignature\) return;/,
-  'forced recovery events must not rewrite an unchanged transcript snapshot',
+  /if \(snapshotVersion === lastWrittenVersion\) return;/,
+  'forced recovery events must not rewrite an unchanged transcript sidecar',
 );
 
 console.log('stale stream duplicate guard verifier passed');

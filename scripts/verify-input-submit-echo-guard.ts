@@ -41,15 +41,10 @@ assert.match(
   /suppressSubmittedInputEcho\(content, 'send-annotation'\)/,
   'send-annotation populate path must not restore the just-submitted input',
 );
-assert.match(
+assert.doesNotMatch(
   inputArea,
-  /suppressSubmittedInputEcho\(text, 'voice-interim-transcript'\)/,
-  'voice interim transcript path must not restore the just-submitted input',
-);
-assert.match(
-  inputArea,
-  /suppressSubmittedInputEcho\(text, 'voice-final-transcript'\)/,
-  'voice final transcript path must not restore the just-submitted input',
+  /voice-(?:interim|final)-transcript/,
+  'app-level Realtime voice must not write transcripts into the focused session composer',
 );
 assert.match(
   installedVerifier,

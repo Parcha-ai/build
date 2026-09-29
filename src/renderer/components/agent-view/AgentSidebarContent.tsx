@@ -56,21 +56,21 @@ export default function AgentSidebarContent() {
   return (
     <>
       {/* Agent view header with time filter */}
-      <div className="px-3 py-1.5 flex items-center justify-between border-b border-claude-border bg-claude-surface/50 flex-shrink-0">
-        <span className="text-[10px] text-claude-text-secondary">
+      <div className="mx-2.5 px-2.5 h-7 flex items-center justify-between border-b border-line flex-shrink-0">
+        <span className="font-mono text-[10.5px] text-fg-4">
           {prioritizedSessions.length} session{prioritizedSessions.length !== 1 ? 's' : ''}
         </span>
         <div className="relative" ref={filterDropdownRef}>
           <button
             onClick={() => setShowFilterDropdown(!showFilterDropdown)}
-            className="flex items-center gap-1 text-[10px] text-claude-text-secondary hover:text-claude-text"
+            className="flex items-center gap-1 font-mono text-[10.5px] text-fg-4 hover:text-fg-2"
           >
             <Clock size={10} />
             <span>{agentViewTimeFilterHours}h</span>
             <ChevronDown size={8} />
           </button>
           {showFilterDropdown && (
-            <div className="absolute top-full right-0 mt-1 bg-claude-surface border border-claude-border shadow-lg z-50">
+            <div className="absolute top-full right-0 mt-1 bg-ink-3 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.1),0_12px_40px_rgba(0,0,0,0.35)] z-50 py-1">
               {[6, 12, 24, 48].map(hours => (
                 <button
                   key={hours}
@@ -78,8 +78,8 @@ export default function AgentSidebarContent() {
                     setAgentViewTimeFilterHours(hours);
                     setShowFilterDropdown(false);
                   }}
-                  className={`w-full text-left px-3 py-1.5 text-[10px] hover:bg-claude-bg ${
-                    hours === agentViewTimeFilterHours ? 'text-claude-accent' : 'text-claude-text'
+                  className={`w-full text-left px-3 h-7 text-[12px] whitespace-nowrap hover:bg-claude-surface-hover ${
+                    hours === agentViewTimeFilterHours ? 'text-accent-text' : 'text-fg-2'
                   }`}
                 >
                   Last {hours}h
@@ -91,12 +91,12 @@ export default function AgentSidebarContent() {
       </div>
 
       {/* Priority-grouped session list */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 overflow-y-auto px-2.5">
         {prioritizedSessions.length === 0 ? (
-          <div className="flex items-center justify-center h-full text-claude-text-secondary">
+          <div className="flex items-center justify-center h-full text-fg-4">
             <div className="text-center px-4">
-              <div className="text-[10px] font-bold uppercase mb-1" style={{ letterSpacing: '0.1em' }}>NO SESSIONS</div>
-              <div className="text-[10px]">No active sessions in the last {agentViewTimeFilterHours}h</div>
+              <div className="text-[11px] uppercase tracking-[0.04em] mb-1 text-fg-3">No sessions</div>
+              <div className="text-[11.5px] text-fg-5">No active sessions in the last {agentViewTimeFilterHours}h</div>
             </div>
           </div>
         ) : (
@@ -106,22 +106,23 @@ export default function AgentSidebarContent() {
             const config = PRIORITY_CONFIG[priority];
             return (
               <div key={priority}>
-                <div
-                  className="sticky top-0 z-10 flex items-center gap-2 px-3 py-1.5 border-b border-claude-border"
-                  style={{ backgroundColor: `${config.color}10` }}
-                >
-                  <div
-                    className={`w-2.5 h-2.5 flex-shrink-0 ${config.dotClass}`}
-                    style={{ borderRadius: 0 }}
-                  />
+                <div className="sticky top-0 z-10 flex items-center gap-2 px-2.5 pt-3 pb-1.5 bg-ink-0">
                   <span
-                    className="text-[9px] font-bold uppercase"
-                    style={{ letterSpacing: '0.1em', color: config.color }}
-                  >
+                    className={`w-[7px] h-[7px] flex-shrink-0 rounded-full ${
+                      priority === 'needs-input'
+                        ? 'bg-amber shadow-[0_0_0_3px_rgba(240,180,41,0.18)]'
+                        : priority === 'error'
+                          ? 'bg-diff-del'
+                          : priority === 'active'
+                            ? 'bg-accent status-pulse'
+                            : 'shadow-[inset_0_0_0_1.5px_#666666]'
+                    }`}
+                  />
+                  <span className="text-[11px] uppercase tracking-[0.04em] text-fg-4">
                     {config.label}
                   </span>
-                  <span className="text-[9px] text-claude-text-secondary">
-                    ({group.length})
+                  <span className="font-mono text-[10.5px] text-fg-5">
+                    {group.length}
                   </span>
                 </div>
                 {group.map(({ session, priority: p }) => {

@@ -6,6 +6,7 @@ import type { CursorStreamEvent } from './cursor.service';
 import { terminateProcessTree } from '../utils/process-tree';
 import { mcpService } from './mcp.service';
 import { sshService } from './ssh.service';
+import type { SpawnedProcess } from './ssh.service';
 import type { SSHConfig } from '../../shared/types';
 import { findUsableLocalExecutable } from '../utils/local-executable';
 import { prependPolicyPreamble, type HarnessPolicyTranslation } from './harness-policy.service';
@@ -51,7 +52,11 @@ interface CursorAssistantState {
 const settingsStore = new Store({ name: 'claudette-settings' }) as any;
 
 class CursorCliService {
-  private activeProcesses: Map<string, { process: ChildProcess; abortController: AbortController }> = new Map();
+  private activeProcesses: Map<string, {
+    process: ChildProcess | SpawnedProcess;
+    abortController: AbortController;
+    remote: boolean;
+  }> = new Map();
   private agentBinaryCache: string | null | false = null;
   private chatIds: Map<string, string> = new Map();
 
@@ -404,18 +409,11 @@ class CursorCliService {
       },
     };
 
-    let child: ChildProcess;
+    let child: ChildProcess | SpawnedProcess;
     this.cancel(sessionId);
     const abortController = new AbortController();
 
     if (sshConfig) {
-      console.log(`[Cursor CLI] Waiting for MCP config sync before SSH agent start: ${sessionId.substring(0, 8)}`);
-      const syncResult = await sshService.syncMcpConfigsToRemote(sessionId, sshConfig);
-      if (!syncResult.success) {
-        yield { type: 'error', error: `Failed to sync MCP config to remote: ${syncResult.error}` };
-        return;
-      }
-
       const remoteDir = workDir || sshConfig.remoteWorkdir || '~';
       const remoteArgs = [
         '--print',
@@ -442,10 +440,6 @@ class CursorCliService {
         this.remoteWorkdirCheckForShell(remoteDir),
         `cd ${this.remotePathForShell(remoteDir)}`,
         this.getRemotePathPrefix(),
-        apiKey ? `export CURSOR_API_KEY=${this.quoteForRemoteShell(apiKey)}` : '',
-        `export CLAUDETTE_SESSION_ID=${this.quoteForRemoteShell(this.getSafeSessionId(sessionId))}`,
-        'export BUILD_HARNESS=cursor',
-        ...Object.entries(policy?.env || {}).map(([key, value]) => `export ${key}=${this.quoteForRemoteShell(value)}`),
         'agent_bin="$(command -v cursor-agent || command -v agent)" || { echo "Cursor Agent CLI not found on remote. Install it with: curl https://cursor.com/install -fsS | bash" >&2; exit 127; }',
         'prompt="$(cat)"',
         `"$agent_bin" ${remoteArgs.join(' ')} "$prompt"`,
@@ -453,15 +447,22 @@ class CursorCliService {
 
       console.log(`[Cursor CLI] SSH exec on ${sshConfig.host}: cursor-agent --print <prompt:${effectiveMessage.length} chars> --model ${cursorModel}${chatId ? ` --resume ${chatId}` : ' (new chat)'}`);
 
-      child = spawn('ssh', this.buildSshArgs(sshConfig, remoteCmd), {
-        signal: abortController.signal,
+      child = sshService.createDetachedCommandProcess(sessionId, sshConfig, {
+        command: 'bash',
+        recoveryCommand: 'cursor',
+        args: ['-lc', remoteCmd],
+        cwd: remoteDir,
         env: {
-          ...(process.env as Record<string, string>),
+          ...(apiKey ? { CURSOR_API_KEY: apiKey } : {}),
           CLAUDETTE_SESSION_ID: this.getSafeSessionId(sessionId),
           BUILD_HARNESS: 'cursor',
+          ...(policy?.env || {}),
         },
+        signal: abortController.signal,
+        closeStdinOnEnd: true,
+        requireDetached: true,
       });
-      child.stdin?.end(effectiveMessage);
+      child.stdin.end(effectiveMessage);
     } else {
       const syncResult = await mcpService.syncLocalHarnessConfigs();
       if (Object.keys(syncResult.errors).length > 0) {
@@ -516,11 +517,11 @@ class CursorCliService {
       }
     });
 
-    this.activeProcesses.set(sessionId, { process: child, abortController });
+    this.activeProcesses.set(sessionId, { process: child, abortController, remote: Boolean(sshConfig) });
 
     let stderrOutput = '';
     let nonJsonOutput = '';
-    if (child.stderr) {
+    if ('stderr' in child && child.stderr) {
       child.stderr.on('data', (data: Buffer) => {
         const text = data.toString();
         stderrOutput += text;
@@ -617,11 +618,77 @@ class CursorCliService {
     yield { type: 'message_complete' };
   }
 
+  /** Replay a Cursor CLI JSONL log from the detached SSH bridge. */
+  async *replayDetachedAsChat(
+    sessionId: string,
+    detachedProcess: SpawnedProcess,
+    model?: string,
+  ): AsyncGenerator<CursorStreamEvent> {
+    yield {
+      type: 'system',
+      systemInfo: {
+        tools: ['Bash', 'Edit', 'Read', 'Write', 'Glob', 'Grep', 'Ls'],
+        model: model?.replace('cursor:', '') || 'cursor-agent',
+      },
+    };
+
+    const assistantState: CursorAssistantState = { emittedText: '' };
+    const rl = readline.createInterface({ input: detachedProcess.stdout });
+    let sawAssistantText = false;
+    let sawToolActivity = false;
+    try {
+      for await (const line of rl) {
+        if (!line.trim()) continue;
+        try {
+          const translated = this.translateEvent(JSON.parse(line) as CursorCliJsonEvent, assistantState);
+          if (!translated) continue;
+          if (translated.type === 'text_delta' && translated.content?.trim()) sawAssistantText = true;
+          if (translated.type === 'tool_use' || translated.type === 'tool_result') sawToolActivity = true;
+          if (translated.type === 'message_complete' && !sawAssistantText && !translated.message?.content?.trim() && sawToolActivity) {
+            const completion = 'Cursor completed tool work but did not return a final text response.';
+            yield { type: 'text_delta', content: completion };
+            translated.message = {
+              id: `cursor-cli-recovered-tool-only-${Date.now()}`,
+              role: 'assistant',
+              content: completion,
+              timestamp: new Date(),
+              harness: 'cursor',
+            };
+          }
+          yield translated;
+          if (translated.type === 'message_complete' || translated.type === 'error') return;
+        } catch {
+          // Bridge diagnostics and non-JSON stderr are not chat output.
+        }
+      }
+    } finally {
+      rl.close();
+    }
+
+    if (!sawAssistantText && sawToolActivity) {
+      const completion = 'Cursor completed tool work but did not return a final text response.';
+      yield { type: 'text_delta', content: completion };
+      yield {
+        type: 'message_complete',
+        message: {
+          id: `cursor-cli-recovered-tool-only-${Date.now()}`,
+          role: 'assistant',
+          content: completion,
+          timestamp: new Date(),
+          harness: 'cursor',
+        },
+      };
+      return;
+    }
+    yield { type: 'message_complete' };
+  }
+
   cancel(sessionId: string): void {
     const active = this.activeProcesses.get(sessionId);
     if (active) {
       console.log(`[Cursor CLI] Cancelling run for ${sessionId}`);
-      terminateProcessTree(active.process, 1000, true);
+      if (active.remote) active.process.kill('SIGTERM');
+      else terminateProcessTree(active.process as ChildProcess, 1000, true);
       active.abortController.abort();
       this.activeProcesses.delete(sessionId);
     }
@@ -630,8 +697,12 @@ class CursorCliService {
   disposeAll(): void {
     for (const [id, active] of this.activeProcesses) {
       try {
-        terminateProcessTree(active.process, 1000, true);
-        active.abortController.abort();
+        // Detached SSH turns belong to the remote bridge and intentionally
+        // outlive the desktop process. Only local children are app-owned.
+        if (!active.remote) {
+          terminateProcessTree(active.process as ChildProcess, 1000, true);
+          active.abortController.abort();
+        }
       } catch { /* best-effort */ }
       this.activeProcesses.delete(id);
     }

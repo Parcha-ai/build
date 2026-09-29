@@ -8,6 +8,21 @@ export const IPC_CHANNELS = {
   AUTH_GET_REPOS: 'auth:get-repos',
   AUTH_STATUS: 'auth:status',
   AUTH_CHECK_PROVIDERS: 'auth:check-providers',
+  AUTH_SETUP_PROVIDER: 'auth:setup-provider',
+
+  // Parable subscription setup
+  PARABLE_GET_STATUS: 'parable:get-status',
+  PARABLE_GET_SETUP_COMMAND: 'parable:get-setup-command',
+  PARABLE_SETUP_START: 'parable:setup-start',
+  PARABLE_AUTH_START: 'parable:auth-start',
+  PARABLE_AUTH_CANCEL: 'parable:auth-cancel',
+  PARABLE_AUTH_GET_RUN: 'parable:auth-get-run',
+  PARABLE_AUTH_EVENT: 'parable:auth-event',
+  PARABLE_CONFIG_GET: 'parable:config-get',
+  PARABLE_CONFIG_SET: 'parable:config-set',
+  PARABLE_CONFIG_GET_DATA: 'parable:config-get-data',
+  PARABLE_CONFIG_SET_DATA: 'parable:config-set-data',
+  PARABLE_SYNC_AUTH_SSH: 'parable:sync-auth-ssh',
 
   // Session channels
   SESSION_CREATE: 'session:create',
@@ -17,6 +32,7 @@ export const IPC_CHANNELS = {
   SESSION_LIST: 'session:list',
   SESSION_GET: 'session:get',
   SESSION_UPDATE: 'session:update',
+  SESSION_AUTO_TITLE: 'session:auto-title',
   SESSION_REWIND_FORK: 'session:rewind-fork',
   SESSION_CREATE_FORK: 'session:create-fork', // Create conversation fork
   SESSION_FAST_STACK_FORK: 'session:fast-stack-fork', // One-shot in-place fork for an immediate queued turn
@@ -29,6 +45,7 @@ export const IPC_CHANNELS = {
   DOCKER_STATUS: 'docker:status',
   DOCKER_CONTAINER_STATS: 'docker:container-stats',
   DOCKER_CONTAINER_LOGS: 'docker:container-logs',
+  DOCKER_REMOTE_OVERVIEW: 'docker:remote-overview',
 
   // Terminal channels
   TERMINAL_CREATE: 'terminal:create',
@@ -104,6 +121,8 @@ export const IPC_CHANNELS = {
   BROWSER_CAPTURE_SNAPSHOT: 'browser:capture-snapshot',
   BROWSER_GET_SNAPSHOT: 'browser:get-snapshot',
   BROWSER_CLEAR_STORAGE: 'browser:clear-storage',
+  BROWSER_LIST_ARC_PROFILES: 'browser:list-arc-profiles',
+  BROWSER_IMPORT_ARC_COOKIES: 'browser:import-arc-cookies',
   BROWSER_UPDATE: 'browser:update', // Stagehand screenshot/URL updates
   BROWSER_OPEN_PANEL: 'browser:open-panel', // Request to open browser panel
   BROWSER_REGISTER: 'browser:register', // Webview registration from renderer
@@ -113,6 +132,7 @@ export const IPC_CHANNELS = {
   DESIGN_OPEN_PANEL: 'design:open-panel', // Main -> renderer: open design panel for a session
   DESIGN_GET_STATUS: 'design:get-status', // Renderer -> main: daemon status + session workspace
   DESIGN_ENSURE_WORKSPACE: 'design:ensure-workspace', // Renderer -> main: start daemon + create/attach project
+  DESIGN_START_RUN: 'design:start-run', // Renderer -> main: start DesignMode with a brief and open its panel
   DESIGN_PUSH_WORKSPACE: 'design:push-workspace', // Renderer -> main: sync SSH mirror to remote now
 
   // Settings channels
@@ -130,10 +150,12 @@ export const IPC_CHANNELS = {
   APP_OPEN_PATH: 'app:open-path',
   APP_GET_PATH: 'app:get-path',
   APP_SHOW_DIALOG: 'app:show-dialog',
+  APP_CAPTURE_SCREEN: 'app:capture-screen',
   APP_CMD_R_PRESSED: 'app:cmd-r-pressed',
   APP_SHORTCUT_TRIGGERED: 'app:shortcut-triggered',
   APP_OPEN_BROWSER_WINDOW: 'app:open-browser-window',
   APP_CLOSE_BROWSER_WINDOW: 'app:close-browser-window',
+  APP_SET_PLANNING_LOCK: 'app:set-planning-lock',
 
   // Dev mode channels
   DEV_OPEN_LOCAL_REPO: 'dev:open-local-repo',
@@ -151,6 +173,7 @@ export const IPC_CHANNELS = {
   // File system channels
   FS_LIST_FILES: 'fs:list-files',
   FS_READ_FILE: 'fs:read-file',
+  FS_OPEN_PATH: 'fs:open-path',
   FS_WRITE_FILE: 'fs:write-file',
   FS_SEARCH_FILES: 'fs:search-files',
   FS_SEARCH_SYMBOLS: 'fs:search-symbols',
@@ -165,8 +188,6 @@ export const IPC_CHANNELS = {
   AUDIO_GET_VOICES: 'audio:get-voices',
   AUDIO_SETTINGS_GET: 'audio:settings-get',
   AUDIO_SETTINGS_SET: 'audio:settings-set',
-  AUDIO_GET_ELEVENLABS_KEY: 'audio:get-elevenlabs-key',
-  AUDIO_SET_ELEVENLABS_KEY: 'audio:set-elevenlabs-key',
   AUDIO_GET_OPENAI_KEY: 'audio:get-openai-key',
   AUDIO_SET_OPENAI_KEY: 'audio:set-openai-key',
   AUDIO_REQUEST_MICROPHONE_PERMISSION: 'audio:request-microphone-permission', // macOS microphone permission
@@ -202,6 +223,7 @@ export const IPC_CHANNELS = {
 
   // SSH channels
   SSH_TEST_CONNECTION: 'ssh:test-connection',
+  SSH_INSTALL_CLI: 'ssh:install-cli',
   SSH_CREATE_SESSION: 'ssh:create-session',
   SSH_LIST_RESUME_CANDIDATES: 'ssh:list-resume-candidates',
   SSH_SYNC_SETTINGS: 'ssh:sync-settings',
@@ -228,28 +250,15 @@ export const IPC_CHANNELS = {
   SECURE_KEYS_LIST: 'secure-keys:list',
   SECURE_KEYS_CLEAR_SESSION: 'secure-keys:clear-session',
 
-  // Voice mode channels (ElevenLabs Conversational AI)
-  VOICE_CONNECT: 'voice:connect',
-  VOICE_DISCONNECT: 'voice:disconnect',
-  VOICE_SEND_AUDIO: 'voice:send-audio',
-  VOICE_SEND_TEXT: 'voice:send-text',
-  VOICE_END_INPUT: 'voice:end-input',
-  VOICE_CLEAR_AUDIO_BUFFER: 'voice:clear-audio-buffer', // Clear server-side audio buffer to prevent echo
-  VOICE_CONTEXT_UPDATE: 'voice:context-update',
-  VOICE_CONNECTED: 'voice:connected',
-  VOICE_DISCONNECTED: 'voice:disconnected',
-  VOICE_RECONNECTING: 'voice:reconnecting',
-  VOICE_USER_TRANSCRIPT: 'voice:user-transcript',
-  VOICE_AGENT_RESPONSE: 'voice:agent-response',
-  VOICE_AUDIO_CHUNK: 'voice:audio-chunk',
-  VOICE_INTERRUPTION: 'voice:interruption',
-  VOICE_ERROR: 'voice:error',
-  VOICE_TOOL_CALL: 'voice:tool-call',
-  VOICE_TOOL_RESULT: 'voice:tool-result',
-  VOICE_UPDATE_AGENT_PROMPT: 'voice:update-agent-prompt',
-  VOICE_USER_ACTIVITY: 'voice:user-activity',
-  VOICE_GET_SIGNED_URL: 'voice:get-signed-url', // Get signed URL for SDK-based WebSocket connection
-  VOICE_GET_CONVERSATION_TOKEN: 'voice:get-conversation-token', // Get conversation token for WebRTC connection (better echo cancellation)
+  // OpenAI Realtime voice mode channels.
+  VOICE_CREATE_REALTIME_SESSION: 'voice:create-realtime-session',
+  VOICE_GET_CONFIGURATION: 'voice:get-configuration',
+  VOICE_LOG_ROUTING_EVENT: 'voice:log-routing-event',
+  VOICE_APPEND_MEMORY: 'voice:append-memory',
+  VOICE_GET_MEMORY: 'voice:get-memory',
+  VOICE_DEPLOY_REMOTE_AGENT: 'voice:deploy-remote-agent',
+  VOICE_GET_REMOTE_AGENT_STATUS: 'voice:get-remote-agent-status',
+  VOICE_STOP_REMOTE_AGENT: 'voice:stop-remote-agent',
 
   // Memory channels (agent memory system)
   MEMORY_REMEMBER: 'memory:remember',
@@ -265,6 +274,15 @@ export const IPC_CHANNELS = {
   MCP_INSTALL_SERVER: 'mcp:install-server',
   MCP_INSTALL_SERVER_RAW: 'mcp:install-server-raw',
   MCP_UNINSTALL_SERVER: 'mcp:uninstall-server',
+
+  // Pomodoro focus timer + menu-bar controls
+  POMODORO_GET_STATE: 'pomodoro:get-state',
+  POMODORO_START: 'pomodoro:start',
+  POMODORO_PAUSE: 'pomodoro:pause',
+  POMODORO_RESUME: 'pomodoro:resume',
+  POMODORO_STOP: 'pomodoro:stop',
+  POMODORO_STATE_CHANGED: 'pomodoro:state-changed',
+  POMODORO_UI_REQUESTED: 'pomodoro:ui-requested',
 
   // Plugin channels (plugin marketplace management)
   PLUGIN_GET_POPULAR_MARKETPLACES: 'plugin:get-popular-marketplaces',
